@@ -993,8 +993,7 @@ export class MidyGM2 {
   }
 
   setBankMSB(channelNumber, msb) {
-    const channel = this.channels[channelNumber];
-    channel.bankMSB = msb;
+    this.channels[channelNumber].bankMSB = msb;
   }
 
   setModulation(channelNumber, modulation) {
