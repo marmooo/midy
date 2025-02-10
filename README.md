@@ -88,14 +88,14 @@ presets required for playback.
 
 ```
 const baseUrl = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
-for (const instrument of this.midy.instruments) {
+for (const instrument of midy.instruments) {
   const [bankNumber, programNumber] = instrument.split(":").map(Number);
-  if (this.midy.soundFontTable[programNumber].has(bankNumber)) continue;
+  if (midy.soundFontTable[programNumber].has(bankNumber)) continue;
   const program = programNumber.toString().padStart(3, "0");
   if (bankNumber === 128) {
-    await this.midy.loadSoundFont(`${baseUrl}/128.sf3`);
+    await midy.loadSoundFont(`${baseUrl}/128.sf3`);
   } else {
-    await this.midy.loadSoundFont(`${baseUrl}/${program}.sf3`);
+    await midy.loadSoundFont(`${baseUrl}/${program}.sf3`);
   }
 }
 ```
