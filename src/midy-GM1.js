@@ -569,7 +569,7 @@ export class MidyGM1 {
       (peekFreq - baseFreq) * (1 - noteInfo.modSustain);
     const filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: this.cbToRatio(noteInfo.initialFilterQ),
+      Q: noteInfo.initialFilterQ / 10, // dB
       frequency: baseFreq,
     });
     const modDelay = startTime + noteInfo.modDelay;
