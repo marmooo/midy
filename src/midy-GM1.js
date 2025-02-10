@@ -743,7 +743,7 @@ export class MidyGM1 {
       scheduledNotes.forEach((scheduledNote) => {
         if (scheduledNote) {
           const { initialAttenuation } = scheduledNote.noteInfo;
-          const gain = this.cbToRatio(initialAttenuation) * pressure;
+          const gain = this.cbToRatio(-initialAttenuation) * pressure;
           scheduledNote.gainNode.gain.cancelScheduledValues(now);
           scheduledNote.gainNode.gain.setValueAtTime(gain, now);
         }
