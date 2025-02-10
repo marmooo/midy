@@ -440,7 +440,7 @@ export class MidyGM1 {
 
   getActiveNotes(channel) {
     const activeNotes = new Map();
-    channel.scheduledNotes.forEeach((scheduledNotes) => {
+    channel.scheduledNotes.forEach((scheduledNotes) => {
       const activeNote = this.getActiveChannelNotes(scheduledNotes);
       if (activeNote) {
         activeNotes.set(activeNote.noteNumber, activeNote);
