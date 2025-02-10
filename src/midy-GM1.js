@@ -836,7 +836,8 @@ export class MidyGM1 {
   }
 
   setSustainPedal(channelNumber, value) {
-    this.channels[channelNumber].sustainPedal = value >= 64;
+    const isOn = value >= 64;
+    this.channels[channelNumber].sustainPedal = isOn;
     if (!isOn) {
       this.releaseSustainPedal(channelNumber);
     }
