@@ -693,7 +693,8 @@ export class MidyGM1 {
     channel.scheduledNotes.forEach((scheduledNotes) => {
       scheduledNotes.forEach((scheduledNote) => {
         if (scheduledNote) {
-          const { gainNode, bufferSource, noteInfo } = scheduledNote;
+          const { bufferSource, gainNode, filterNode, noteInfo } =
+            scheduledNote;
           const volEndTime = now + noteInfo.volRelease;
           gainNode.gain.cancelScheduledValues(now);
           gainNode.gain.linearRampToValueAtTime(0, volEndTime);

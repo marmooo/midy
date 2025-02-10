@@ -848,7 +848,7 @@ export class Midy {
     channel.scheduledNotes.forEach((scheduledNotes) => {
       scheduledNotes.forEach((scheduledNote) => {
         if (scheduledNote) {
-          const { gainNode, filterNode, bufferSource, noteInfo } =
+          const { bufferSource, gainNode, filterNode, noteInfo } =
             scheduledNote;
           const volEndTime = now + noteInfo.volRelease;
           gainNode.gain.cancelScheduledValues(now);
