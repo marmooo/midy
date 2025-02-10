@@ -561,12 +561,16 @@ export class MidyGM1 {
     }
 
     // filter envelope
+    const maxFreq = this.audioContext.sampleRate;
     const baseFreq = this.centToHz(noteInfo.initialFilterFc);
     const peekFreq = this.centToHz(
       noteInfo.initialFilterFc + noteInfo.modEnvToFilterFc,
     );
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - noteInfo.modSustain);
+    const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
+    const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
+    const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
     const filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: noteInfo.initialFilterQ / 10, // dB
@@ -577,10 +581,10 @@ export class MidyGM1 {
     const modHold = modAttack + noteInfo.modHold;
     const modDecay = modHold + noteInfo.modDecay;
     filterNode.frequency
-      .setValueAtTime(baseFreq, modDelay)
-      .exponentialRampToValueAtTime(peekFreq, modAttack)
-      .setValueAtTime(peekFreq, modHold)
-      .linearRampToValueAtTime(sustainFreq, modDecay);
+      .setValueAtTime(adjustedBaseFreq, modDelay)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .setValueAtTime(adjustedPeekFreq, modHold)
+      .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
 
     bufferSource.connect(filterNode);
     filterNode.connect(gainNode);

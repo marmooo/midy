@@ -691,12 +691,16 @@ export class Midy {
     // filter envelope
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
+    const maxFreq = this.audioContext.sampleRate;
     const baseFreq = this.centToHz(noteInfo.initialFilterFc) * softPedalFactor;
     const peekFreq = this.centToHz(
       noteInfo.initialFilterFc + noteInfo.modEnvToFilterFc,
     ) * softPedalFactor;
     const sustainFreq = (baseFreq +
       (peekFreq - baseFreq) * (1 - noteInfo.modSustain)) * softPedalFactor;
+    const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
+    const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
+    const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
     const filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: noteInfo.initialFilterQ / 10, // dB
@@ -707,10 +711,10 @@ export class Midy {
     const modHold = modAttack + noteInfo.modHold;
     const modDecay = modHold + noteInfo.modDecay;
     filterNode.frequency
-      .setValueAtTime(baseFreq, modDelay)
-      .exponentialRampToValueAtTime(peekFreq, modAttack)
-      .setValueAtTime(peekFreq, modHold)
-      .linearRampToValueAtTime(sustainFreq, modDecay);
+      .setValueAtTime(adjustedBaseFreq, modDelay)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .setValueAtTime(adjustedPeekFreq, modHold)
+      .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
 
     bufferSource.connect(filterNode);
     filterNode.connect(gainNode);
