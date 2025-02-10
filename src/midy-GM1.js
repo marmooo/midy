@@ -561,7 +561,7 @@ export class MidyGM1 {
     }
 
     // filter envelope
-    const maxFreq = this.audioContext.sampleRate;
+    const maxFreq = this.audioContext.sampleRate / 2;
     const baseFreq = this.centToHz(noteInfo.initialFilterFc);
     const peekFreq = this.centToHz(
       noteInfo.initialFilterFc + noteInfo.modEnvToFilterFc,
@@ -574,7 +574,7 @@ export class MidyGM1 {
     const filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: noteInfo.initialFilterQ / 10, // dB
-      frequency: baseFreq,
+      frequency: adjustedBaseFreq,
     });
     const modDelay = startTime + noteInfo.modDelay;
     const modAttack = modDelay + noteInfo.modAttack;
@@ -657,10 +657,13 @@ export class MidyGM1 {
       const volEndTime = stopTime + noteInfo.volRelease * velocityRate;
       gainNode.gain.cancelScheduledValues(stopTime);
       gainNode.gain.linearRampToValueAtTime(0, volEndTime);
+      const maxFreq = this.audioContext.sampleRate / 2;
       const baseFreq = this.centToHz(noteInfo.initialFilterFc);
+      const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
       const modEndTime = stopTime + noteInfo.modRelease * velocityRate;
-      filterNode.frequency.cancelScheduledValues(stopTime);
-      filterNode.frequency.linearRampToValueAtTime(baseFreq, modEndTime);
+      filterNode.frequency
+        .cancelScheduledValues(stopTime)
+        .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
       targetNote.ending = true;
       this.scheduleTask(() => {
         bufferSource.loop = false;
@@ -694,10 +697,13 @@ export class MidyGM1 {
           const volEndTime = now + noteInfo.volRelease;
           gainNode.gain.cancelScheduledValues(now);
           gainNode.gain.linearRampToValueAtTime(0, volEndTime);
+          const maxFreq = this.audioContext.sampleRate / 2;
           const baseFreq = this.centToHz(noteInfo.initialFilterFc);
-          const modEndTime = stopTime + noteInfo.modRelease;
-          filterNode.frequency.cancelScheduledValues(stopTime);
-          filterNode.frequency.linearRampToValueAtTime(baseFreq, modEndTime);
+          const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
+          const modEndTime = now + noteInfo.modRelease;
+          filterNode.frequency
+            .cancelScheduledValues(stopTime)
+            .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
           bufferSource.stop(volEndTime);
         }
       });
