@@ -6,7 +6,6 @@ import {
 
 export class MidyGM1 {
   ticksPerBeat = 120;
-  secondsPerBeat = 0.5;
   totalTime = 0;
   noteCheckInterval = 0.1;
   lookAhead = 1;
@@ -88,10 +87,10 @@ export class MidyGM1 {
     const response = await fetch(midiUrl);
     const arrayBuffer = await response.arrayBuffer();
     const midi = parseMidi(new Uint8Array(arrayBuffer));
+    this.ticksPerBeat = midi.header.ticksPerBeat;
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
-    this.ticksPerBeat = midi.header.ticksPerBeat;
     this.totalTime = this.calcTotalTime();
   }
 
@@ -177,8 +176,7 @@ export class MidyGM1 {
   async scheduleTimelineEvents(t, offset, queueIndex) {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
-      const time = this.ticksToSecond(event.ticks, this.secondsPerBeat);
-      if (time > t + this.lookAhead) break;
+      if (event.startTime > t + this.lookAhead) break;
       switch (event.type) {
         case "controller":
           this.handleControlChange(
@@ -193,7 +191,7 @@ export class MidyGM1 {
               event.channel,
               event.noteNumber,
               event.velocity,
-              time + this.startDelay - offset,
+              event.startTime + this.startDelay - offset,
             );
             break;
           }
@@ -203,7 +201,7 @@ export class MidyGM1 {
             event.channel,
             event.noteNumber,
             event.velocity,
-            time + this.startDelay - offset,
+            event.startTime + this.startDelay - offset,
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -212,9 +210,6 @@ export class MidyGM1 {
         }
         case "programChange":
           this.handleProgramChange(event.channel, event.programNumber);
-          break;
-        case "setTempo":
-          this.secondsPerBeat = event.microsecondsPerBeat / 1000000;
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -225,9 +220,8 @@ export class MidyGM1 {
   }
 
   getQueueIndex(second) {
-    const ticks = this.secondToTicks(second, this.secondsPerBeat);
     for (let i = 0; i < this.timeline.length; i++) {
-      if (ticks <= this.timeline[i].ticks) {
+      if (second <= this.timeline[i].startTime) {
         return i;
       }
     }
@@ -348,6 +342,25 @@ export class MidyGM1 {
       }
       return 0;
     });
+    let prevTempoTime = 0;
+    let prevTempoTicks = 0;
+    let secondsPerBeat = 0.5;
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const timeFromPrevTempo = this.ticksToSecond(
+        event.ticks - prevTempoTicks,
+        secondsPerBeat,
+      );
+      event.startTime = prevTempoTime + timeFromPrevTempo;
+      if (event.type === "setTempo") {
+        prevTempoTime += this.ticksToSecond(
+          event.ticks - prevTempoTicks,
+          secondsPerBeat,
+        );
+        secondsPerBeat = event.microsecondsPerBeat / 1000000;
+        prevTempoTicks = event.ticks;
+      }
+    }
     return { instruments, timeline };
   }
 
@@ -408,31 +421,11 @@ export class MidyGM1 {
   }
 
   calcTotalTime() {
-    const endOfTracks = [];
-    let prevTicks = 0;
     let totalTime = 0;
-    let secondsPerBeat = 0.5;
     for (let i = 0; i < this.timeline.length; i++) {
       const event = this.timeline[i];
-      switch (event.type) {
-        case "setTempo": {
-          const durationTicks = event.ticks - prevTicks;
-          totalTime += this.ticksToSecond(durationTicks, secondsPerBeat);
-          secondsPerBeat = event.microsecondsPerBeat / 1000000;
-          prevTicks = event.ticks;
-          break;
-        }
-        case "endOfTrack":
-          endOfTracks.push(event);
-      }
+      if (totalTime < event.startTime) totalTime = event.startTime;
     }
-    let maxTicks = 0;
-    for (let i = 0; i < endOfTracks.length; i++) {
-      const event = endOfTracks[i];
-      if (maxTicks < event.ticks) maxTicks = event.ticks;
-    }
-    const durationTicks = maxTicks - prevTicks;
-    totalTime += this.ticksToSecond(durationTicks, secondsPerBeat);
     return totalTime;
   }
 
