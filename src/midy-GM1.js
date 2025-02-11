@@ -188,13 +188,16 @@ export class MidyGM1 {
           );
           break;
         case "noteOn":
-          await this.scheduleNoteOn(
-            event.channel,
-            event.noteNumber,
-            event.velocity,
-            time + this.startDelay - offset,
-          );
-          break;
+          if (event.velocity !== 0) {
+            await this.scheduleNoteOn(
+              event.channel,
+              event.noteNumber,
+              event.velocity,
+              time + this.startDelay - offset,
+            );
+            break;
+          }
+          /* falls through */
         case "noteOff": {
           const notePromise = this.scheduleNoteRelease(
             event.channel,

@@ -210,13 +210,16 @@ export class Midy {
           );
           break;
         case "noteOn":
-          await this.scheduleNoteOn(
-            this.omni ? 0 : event.channel,
-            event.noteNumber,
-            event.velocity,
-            time + this.startDelay - offset,
-          );
-          break;
+          if (event.velocity !== 0) {
+            await this.scheduleNoteOn(
+              event.channel,
+              event.noteNumber,
+              event.velocity,
+              time + this.startDelay - offset,
+            );
+            break;
+          }
+          /* falls through */
         case "noteOff": {
           const notePromise = this.scheduleNoteRelease(
             this.omni ? 0 : event.channel,
