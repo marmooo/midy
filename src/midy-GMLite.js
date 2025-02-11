@@ -328,17 +328,13 @@ export class MidyGMLite {
         timeline.push(event);
       });
     });
+    const priority = {
+      setTempo: 0,
+      controller: 1,
+    };
     timeline.sort((a, b) => {
-      if (a.ticks !== b.ticks) {
-        return a.ticks - b.ticks;
-      }
-      if (a.type !== "controller" && b.type === "controller") {
-        return -1;
-      }
-      if (a.type === "controller" && b.type !== "controller") {
-        return 1;
-      }
-      return 0;
+      if (a.ticks !== b.ticks) return a.ticks - b.ticks;
+      return (priority[a.type] || 2) - (priority[b.type] || 2);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
