@@ -703,7 +703,7 @@ export class MidyGM1 {
           const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
           const modEndTime = now + noteInfo.modRelease;
           filterNode.frequency
-            .cancelScheduledValues(stopTime)
+            .cancelScheduledValues(now)
             .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
           bufferSource.stop(volEndTime);
         }
