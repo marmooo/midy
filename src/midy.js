@@ -1086,16 +1086,18 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.vibratoRate = vibratoRate / 127 * 4 + 3; // 3-7Hz
-    channel.modulationEffect.lfo.frequency.cancelScheduledValues(now);
-    channel.modulationEffect.lfo.frequency.setValueAtTime(depth, now);
+    channel.modulationEffect.lfo.frequency
+      .cancelScheduledValues(now)
+      .setValueAtTime(channel.vibratoRate, now);
   }
 
   setVibratoDepth(channelNumber, vibratoDepth) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.vibratoDepth = vibratoDepth / 127;
-    channel.modulationEffect.lfoGain.gain.cancelScheduledValues(now);
-    channel.modulationEffect.lfoGain.gain.setValueAtTime(depth, now);
+    channel.modulationEffect.lfoGain.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(channel.vibratoDepth, now);
   }
 
   setVibratoDelay(channelNumber, vibratoDelay) {
