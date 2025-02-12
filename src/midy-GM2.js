@@ -1069,7 +1069,6 @@ export class MidyGM2 {
   setSoftPedal(channelNumber, softPedal) {
     const channel = this.channels[channelNumber];
     channel.softPedal = softPedal / 127;
-    this.updateChannelGain(channel);
   }
 
   setRPNMSB(channelNumber, value) {

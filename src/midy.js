@@ -1080,7 +1080,6 @@ export class Midy {
   setSoftPedal(channelNumber, softPedal) {
     const channel = this.channels[channelNumber];
     channel.softPedal = softPedal / 127;
-    this.updateChannelGain(channel);
   }
 
   setVibratoRate(channelNumber, vibratoRate) {
