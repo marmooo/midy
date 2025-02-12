@@ -833,8 +833,8 @@ export class MidyGM2 {
     return this.scheduleNoteRelease(channelNumber, noteNumber, velocity, now);
   }
 
-  releaseSustainPedal(channelNumber) {
-    const velocity = 127;
+  releaseSustainPedal(channelNumber, halfVelocity) {
+    const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
     channel.sustainPedal = false;
@@ -1029,7 +1029,7 @@ export class MidyGM2 {
     const isOn = value >= 64;
     this.channels[channelNumber].sustainPedal = isOn;
     if (!isOn) {
-      this.releaseSustainPedal(channelNumber);
+      this.releaseSustainPedal(channelNumber, value);
     }
   }
 
