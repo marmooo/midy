@@ -679,25 +679,14 @@ export class MidyGM1 {
   }
 
   releaseSustainPedal(channelNumber) {
-    const now = this.audioContext.currentTime;
+    const velocity = 127;
     const channel = this.channels[channelNumber];
     channel.sustainPedal = false;
     channel.scheduledNotes.forEach((scheduledNotes) => {
       scheduledNotes.forEach((scheduledNote) => {
         if (scheduledNote) {
-          const { bufferSource, gainNode, filterNode, noteInfo } =
-            scheduledNote;
-          const volEndTime = now + noteInfo.volRelease;
-          gainNode.gain.cancelScheduledValues(now);
-          gainNode.gain.linearRampToValueAtTime(0, volEndTime);
-          const maxFreq = this.audioContext.sampleRate / 2;
-          const baseFreq = this.centToHz(noteInfo.initialFilterFc);
-          const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
-          const modEndTime = now + noteInfo.modRelease;
-          filterNode.frequency
-            .cancelScheduledValues(now)
-            .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
-          bufferSource.stop(volEndTime);
+          const { noteNumber } = scheduledNote;
+          this.releaseNote(channelNumber, noteNumber, velocity);
         }
       });
     });
