@@ -836,15 +836,18 @@ export class MidyGM2 {
   releaseSustainPedal(channelNumber) {
     const velocity = 127;
     const channel = this.channels[channelNumber];
+    const promises = [];
     channel.sustainPedal = false;
     channel.scheduledNotes.forEach((scheduledNotes) => {
       scheduledNotes.forEach((scheduledNote) => {
         if (scheduledNote) {
           const { noteNumber } = scheduledNote;
-          this.releaseNote(channelNumber, noteNumber, velocity);
+          const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+          promises.push(promise);
         }
       });
     });
+    return promises;
   }
 
   releaseSostenuto(channelNumber) {
