@@ -30,7 +30,7 @@ export class Midy {
 
   static channelSettings = {
     currentBufferSource: null,
-    volume: 1,
+    volume: 100 / 127,
     pan: 0,
     portamentoTime: 0,
     reverb: 0,

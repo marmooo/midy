@@ -24,7 +24,7 @@ export class MidyGMLite {
   notePromises = [];
 
   static channelSettings = {
-    volume: 1,
+    volume: 100 / 127,
     pan: 0,
     vibratoRate: 5,
     vibratoDepth: 0.5,
