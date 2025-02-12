@@ -102,6 +102,7 @@ export class Midy {
     const response = await fetch(midiUrl);
     const arrayBuffer = await response.arrayBuffer();
     const midi = parseMidi(new Uint8Array(arrayBuffer));
+    this.ticksPerBeat = midi.header.ticksPerBeat;
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
