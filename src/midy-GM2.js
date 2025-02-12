@@ -850,18 +850,18 @@ export class MidyGM2 {
     return promises;
   }
 
-  releaseSostenuto(channelNumber) {
-    const now = this.audioContext.currentTime;
+  releaseSostenutoPedal(channelNumber, halfVelocity) {
+    const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
+    const promises = [];
     channel.sostenutoPedal = false;
     channel.sostenutoNotes.forEach((activeNote) => {
-      const { gainNode, bufferSource, noteInfo } = activeNote;
-      const fadeTime = noteInfo.volRelease;
-      gainNode.gain.cancelScheduledValues(now);
-      gainNode.gain.linearRampToValueAtTime(0, now + fadeTime);
-      bufferSource.stop(now + fadeTime);
+      const { noteNumber } = activeNote;
+      const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+      promises.push(promise);
     });
     channel.sostenutoNotes.clear();
+    return promises;
   }
 
   handleMIDIMessage(statusByte, data1, data2) {
@@ -1061,6 +1061,8 @@ export class MidyGM2 {
     if (isOn) {
       const activeNotes = this.getActiveNotes(channel);
       channel.sostenutoNotes = new Map(activeNotes);
+    } else {
+      this.releaseSostenutoPedal(channelNumber, value);
     }
   }
 
