@@ -34,7 +34,7 @@ export class MidyGMLite {
     dataLSB: 0,
     program: 0,
     pitchBend: 0,
-    modulationDepthRange: 2,
+    modulationDepthRange: 0.5,
   };
 
   static effectSettings = {

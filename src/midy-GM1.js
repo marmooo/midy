@@ -36,7 +36,7 @@ export class MidyGM1 {
     pitchBend: 0,
     fineTuning: 0,
     coarseTuning: 0,
-    modulationDepthRange: 2,
+    modulationDepthRange: 0.5,
   };
 
   static effectSettings = {
