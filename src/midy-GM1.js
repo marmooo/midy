@@ -460,44 +460,6 @@ export class MidyGM1 {
     };
   }
 
-  createReverbEffect(audioContext, options = {}) {
-    const {
-      decay = 0.8,
-      preDecay = 0,
-    } = options;
-    const sampleRate = audioContext.sampleRate;
-    const length = sampleRate * decay;
-    const impulse = new AudioBuffer({
-      numberOfChannels: 2,
-      length,
-      sampleRate,
-    });
-    const preDecayLength = Math.min(sampleRate * preDecay, length);
-    for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
-      const channelData = impulse.getChannelData(channel);
-      for (let i = 0; i < preDecayLength; i++) {
-        channelData[i] = Math.random() * 2 - 1;
-      }
-      for (let i = preDecayLength; i < length; i++) {
-        const attenuation = Math.exp(
-          -(i - preDecayLength) / sampleRate / decay,
-        );
-        channelData[i] = (Math.random() * 2 - 1) * attenuation;
-      }
-    }
-    const convolverNode = new ConvolverNode(audioContext, {
-      buffer: impulse,
-    });
-    const dryGain = new GainNode(audioContext);
-    const wetGain = new GainNode(audioContext);
-    convolverNode.connect(wetGain);
-    return {
-      convolverNode,
-      dryGain,
-      wetGain,
-    };
-  }
-
   connectNoteEffects(channel, gainNode) {
     gainNode.connect(channel.pannerNode);
   }
