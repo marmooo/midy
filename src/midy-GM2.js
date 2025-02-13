@@ -508,11 +508,8 @@ export class MidyGM2 {
     const lfo = new OscillatorNode(audioContext, {
       frequency: 5,
     });
-    const lfoGain = new GainNode(audioContext);
-    lfo.connect(lfoGain);
     return {
       lfo,
-      lfoGain,
     };
   }
 
@@ -670,15 +667,6 @@ export class MidyGM2 {
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
       .linearRampToValueAtTime(sustainVolume, volDecay);
-    if (channel.modulation > 0) {
-      const lfoGain = channel.modulationEffect.lfoGain;
-      lfoGain.connect(bufferSource.detune);
-      lfoGain.gain.cancelScheduledValues(startTime + channel.vibratoDelay);
-      lfoGain.gain.setValueAtTime(
-        channel.modulation,
-        startTime + channel.vibratoDelay,
-      );
-    }
 
     // filter envelope
     const softPedalFactor = 1 -
@@ -708,6 +696,20 @@ export class MidyGM2 {
       .setValueAtTime(adjustedPeekFreq, modHold)
       .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
 
+    let lfoGain;
+    if (channel.modulation > 0) {
+      const vibratoDelay = startTime + channel.vibratoDelay;
+      const vibratoAttack = vibratoDelay + 0.1;
+      lfoGain = new GainNode(this.audioContext, {
+        gain: 0,
+      });
+      lfoGain.gain
+        .setValueAtTime(1e-6, vibratoDelay) // exponentialRampToValueAtTime() requires a non-zero value
+        .exponentialRampToValueAtTime(channel.modulation, vibratoAttack);
+      channel.modulationEffect.lfo.connect(lfoGain);
+      lfoGain.connect(bufferSource.detune);
+    }
+
     bufferSource.connect(filterNode);
     filterNode.connect(gainNode);
 
@@ -716,7 +718,7 @@ export class MidyGM2 {
       channel.currentBufferSource = bufferSource;
     }
     bufferSource.start(startTime, noteInfo.start / noteInfo.sampleRate);
-    return { bufferSource, gainNode, filterNode };
+    return { bufferSource, gainNode, filterNode, lfoGain };
   }
 
   calcBank(channel, channelNumber) {
@@ -742,7 +744,7 @@ export class MidyGM2 {
       noteNumber,
     );
     if (!noteInfo) return;
-    const { bufferSource, gainNode, filterNode } = await this
+    const { bufferSource, gainNode, filterNode, lfoGain } = await this
       .createNoteAudioChain(
         channel,
         noteInfo,
@@ -764,11 +766,12 @@ export class MidyGM2 {
     }
     const scheduledNotes = channel.scheduledNotes;
     const scheduledNote = {
-      gainNode,
-      filterNode,
       bufferSource,
-      noteNumber,
+      filterNode,
+      gainNode,
+      lfoGain,
       noteInfo,
+      noteNumber,
       startTime,
     };
     if (scheduledNotes.has(noteNumber)) {
@@ -799,7 +802,8 @@ export class MidyGM2 {
       const targetNote = targetNotes[i];
       if (!targetNote) continue;
       if (targetNote.ending) continue;
-      const { bufferSource, filterNode, gainNode, noteInfo } = targetNote;
+      const { bufferSource, filterNode, gainNode, lfoGain, noteInfo } =
+        targetNote;
       const velocityRate = (velocity + 127) / 127;
       const volEndTime = stopTime + noteInfo.volRelease * velocityRate;
       gainNode.gain.cancelScheduledValues(stopTime);
@@ -821,6 +825,7 @@ export class MidyGM2 {
           bufferSource.disconnect(0);
           filterNode.disconnect(0);
           gainNode.disconnect(0);
+          if (lfoGain) lfoGain.disconnect(0);
           resolve();
         };
         bufferSource.stop(volEndTime);
@@ -981,13 +986,9 @@ export class MidyGM2 {
   }
 
   setModulation(channelNumber, modulation) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.modulation = (modulation * 100 / 127) *
-      channel.modulationDepthRange;
-    const lfoGain = channel.modulationEffect.lfoGain;
-    lfoGain.gain.cancelScheduledValues(now);
-    lfoGain.gain.setValueAtTime(channel.modulation, now);
+    channel.modulation = (modulation / 127) *
+      (channel.modulationDepthRange * 100);
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
