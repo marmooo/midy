@@ -744,7 +744,7 @@ export class Midy {
       noteNumber,
     );
     if (!noteInfo) return;
-    const { bufferSource, gainNode, filterNode } = await this
+    const { bufferSource, gainNode, filterNode, lfoGain } = await this
       .createNoteAudioChain(
         channel,
         noteInfo,
