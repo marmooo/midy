@@ -703,7 +703,7 @@ export class MidyGMLite {
     if (activeNotes.has(noteNumber)) {
       const activeNote = activeNotes.get(noteNumber);
       const gain = activeNote.gainNode.gain.value;
-      scheduledNote.gainNode.gain
+      activeNote.gainNode.gain
         .cancelScheduledValues(now)
         .setValueAtTime(gain * pressure, now);
     }
