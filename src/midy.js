@@ -1386,14 +1386,18 @@ export class Midy {
   }
 
   handleMasterVolumeSysEx(data) {
-    const volume = (data[5] * 128 + data[4] - 8192) / 8192;
+    const volume = (data[5] * 128 + data[4]) / 16383;
     this.handleMasterVolume(volume);
   }
 
   handleMasterVolume(volume) {
-    const now = this.audioContext.currentTime;
-    this.masterGain.gain.cancelScheduledValues(now);
-    this.masterGain.gain.setValueAtTime(volume * volume, now);
+    if (volume < 0 && 1 < volume) {
+      console.error("Master Volume is out of range");
+    } else {
+      const now = this.audioContext.currentTime;
+      this.masterGain.gain.cancelScheduledValues(now);
+      this.masterGain.gain.setValueAtTime(volume * volume, now);
+    }
   }
 
   handleMasterFineTuningSysEx(data) {
@@ -1402,7 +1406,7 @@ export class Midy {
   }
 
   handleMasterFineTuning(fineTuning) {
-    if (fineTuning < 0 && 1 < fineTuning) {
+    if (fineTuning < -1 && 1 < fineTuning) {
       console.error("Master Fine Tuning value is out of range");
     } else {
       this.masterFineTuning = fineTuning;
