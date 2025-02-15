@@ -1254,10 +1254,10 @@ export class MidyGM2 {
         switch (data[3]) {
           // case 1:
           //   // TODO
-          //   return this.handleChannelPressure();
+          //   return this.setChannelPressure();
           // case 3:
           //   // TODO
-          //   return this.handleControlChange();
+          //   return this.setControlChange();
           default:
             console.warn(`Unsupported Exclusive Message ${data}`);
         }
