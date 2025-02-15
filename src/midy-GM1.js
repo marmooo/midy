@@ -201,13 +201,6 @@ export class MidyGM1 {
           }
           break;
         }
-        case "noteAftertouch":
-          this.handlePolyphonicKeyPressure(
-            event.channel,
-            event.noteNumber,
-            event.amount,
-          );
-          break;
         case "controller":
           this.handleControlChange(
             event.channel,
@@ -217,9 +210,6 @@ export class MidyGM1 {
           break;
         case "programChange":
           this.handleProgramChange(event.channel, event.programNumber);
-          break;
-        case "channelAftertouch":
-          this.handleChannelPressure(event.channel, event.amount);
           break;
         case "pitchBend":
           this.handlePitchBend(event.channel, event.value);
@@ -683,14 +673,10 @@ export class MidyGM1 {
         return this.releaseNote(channelNumber, data1, data2);
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
-      case 0xA0:
-        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:
         return this.handleProgramChange(channelNumber, data1);
-      case 0xD0:
-        return; // this.handleChannelPressure(channelNumber, data1);
       case 0xE0:
         return this.handlePitchBendMessage(channelNumber, data1, data2);
       default:

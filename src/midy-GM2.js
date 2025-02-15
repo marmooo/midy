@@ -235,13 +235,6 @@ export class MidyGM2 {
           }
           break;
         }
-        case "noteAftertouch":
-          this.handlePolyphonicKeyPressure(
-            event.channel,
-            event.noteNumber,
-            event.amount,
-          );
-          break;
         case "controller":
           this.handleControlChange(
             this.omni ? 0 : event.channel,
@@ -902,8 +895,6 @@ export class MidyGM2 {
         return this.releaseNote(channelNumber, data1, data2);
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
-      case 0xA0:
-        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:

@@ -670,14 +670,10 @@ export class MidyGMLite {
         return this.releaseNote(channelNumber, data1, data2);
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
-      case 0xA0:
-        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:
         return this.handleProgramChange(channelNumber, data1);
-      case 0xD0:
-        return; // this.handleChannelPressure(channelNumber, data1);
       case 0xE0:
         return this.handlePitchBendMessage(channelNumber, data1, data2);
       default:
