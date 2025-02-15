@@ -701,17 +701,14 @@ export class MidyGM1 {
   handlePolyphonicKeyPressure(channelNumber, noteNumber, pressure) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     pressure /= 127;
-    if (scheduledNotes) {
-      scheduledNotes.forEach((scheduledNote) => {
-        if (scheduledNote) {
-          const { initialAttenuation } = scheduledNote.noteInfo;
-          const gain = this.cbToRatio(-initialAttenuation) * pressure;
-          scheduledNote.gainNode.gain.cancelScheduledValues(now);
-          scheduledNote.gainNode.gain.setValueAtTime(gain, now);
-        }
-      });
+    const activeNotes = this.getActiveNotes(channel);
+    if (activeNotes.has(noteNumber)) {
+      const activeNote = activeNotes.get(noteNumber);
+      const gain = activeNote.gainNode.gain.value;
+      scheduledNote.gainNode.gain
+        .cancelScheduledValues(now)
+        .setValueAtTime(gain * pressure, now);
     }
   }
 
