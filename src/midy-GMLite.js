@@ -715,7 +715,17 @@ export class MidyGMLite {
   }
 
   handleChannelPressure(channelNumber, pressure) {
-    this.channels[channelNumber].channelPressure = pressure;
+    const now = this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    pressure /= 127;
+    channel.channelPressure = pressure;
+    const activeNotes = this.getActiveNotes(channel);
+    activeNotes.forEach((activeNote) => {
+      const gain = activeNote.gainNode.gain.value;
+      activeNote.gainNode.gain
+        .cancelScheduledValues(now)
+        .setValueAtTime(gain * pressure, now);
+    });
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
