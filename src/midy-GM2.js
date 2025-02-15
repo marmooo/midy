@@ -63,6 +63,15 @@ export class MidyGM2 {
     pitchBendRange: 2,
   };
 
+  static controllerDestinationSettings = {
+    pitchControl: 0,
+    filterCutoffControl: 0,
+    amplitudeControl: 1,
+    lfoPitchDepth: 0,
+    lfoFilterDepth: 0,
+    lfoAmplitudeDepth: 0,
+  };
+
   constructor(audioContext) {
     this.audioContext = audioContext;
     this.masterGain = new GainNode(audioContext);
@@ -137,11 +146,14 @@ export class MidyGM2 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
-        ...MidyGM2.channelSettings,
-        ...MidyGM2.effectSettings,
+        ...Midy.channelSettings,
+        ...Midy.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
         sostenutoNotes: new Map(),
+        channelPressure: {
+          ...Midy.controllerDestinationSettings,
+        },
       };
     });
     return channels;
@@ -891,7 +903,7 @@ export class MidyGM2 {
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
       case 0xA0:
-        return this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
+        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:
@@ -905,20 +917,6 @@ export class MidyGM2 {
     }
   }
 
-  handlePolyphonicKeyPressure(channelNumber, noteNumber, pressure) {
-    const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    pressure /= 127;
-    const activeNotes = this.getActiveNotes(channel);
-    if (activeNotes.has(noteNumber)) {
-      const activeNote = activeNotes.get(noteNumber);
-      const gain = activeNote.gainNode.gain.value;
-      activeNote.gainNode.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(gain * pressure, now);
-    }
-  }
-
   handleProgramChange(channelNumber, program) {
     const channel = this.channels[channelNumber];
     channel.bank = channel.bankMSB * 128 + channel.bankLSB;
@@ -928,15 +926,17 @@ export class MidyGM2 {
   handleChannelPressure(channelNumber, pressure) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    pressure /= 127;
+    pressure /= 64;
     channel.channelPressure = pressure;
     const activeNotes = this.getActiveNotes(channel);
-    activeNotes.forEach((activeNote) => {
-      const gain = activeNote.gainNode.gain.value;
-      activeNote.gainNode.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(gain * pressure, now);
-    });
+    if (channel.channelPressure.amplitudeControl !== 1) {
+      activeNotes.forEach((activeNote) => {
+        const gain = activeNote.gainNode.gain.value;
+        activeNote.gainNode.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(gain * pressure, now);
+      });
+    }
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
