@@ -472,6 +472,15 @@ export class MidyGM1 {
     return 8.176 * Math.pow(2, cent / 1200);
   }
 
+  calcSemitoneOffset(channel) {
+    const tuning = channel.coarseTuning + channel.fineTuning;
+    return channel.pitchBend * channel.pitchBendRange + tuning;
+  }
+
+  calcPlaybackRate(noteInfo, noteNumber, semitoneOffset) {
+    return noteInfo.playbackRate(noteNumber) * Math.pow(2, semitoneOffset / 12);
+  }
+
   async createNoteAudioChain(
     channel,
     noteInfo,
@@ -480,12 +489,13 @@ export class MidyGM1 {
     startTime,
     isSF3,
   ) {
-    const tuning = channel.coarseTuning + channel.fineTuning;
-    const semitoneOffset = channel.pitchBend * channel.pitchBendRange + tuning;
-    const playbackRate = noteInfo.playbackRate(noteNumber) *
-      Math.pow(2, semitoneOffset / 12);
     const bufferSource = await this.createNoteBufferNode(noteInfo, isSF3);
-    bufferSource.playbackRate.value = playbackRate;
+    const semitoneOffset = this.calcSemitoneOffset(channel);
+    bufferSource.playbackRate.value = this.calcPlaybackRate(
+      noteInfo,
+      noteNumber,
+      semitoneOffset,
+    );
 
     // volume envelope
     const gainNode = new GainNode(this.audioContext, {
@@ -695,8 +705,22 @@ export class MidyGM1 {
   }
 
   handlePitchBend(channelNumber, pitchBend) {
-    pitchBend = (pitchBend - 8192) / 8192;
-    this.channels[channelNumber].pitchBend = pitchBend;
+    const now = this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    channel.pitchBend = (pitchBend - 8192) / 8192;
+    const semitoneOffset = this.calcSemitoneOffset(channel);
+    const activeNotes = this.getActiveNotes(channel);
+    activeNotes.forEach((activeNote) => {
+      const { bufferSource, noteInfo, noteNumber } = activeNote;
+      const playbackRate = calcPlaybackRate(
+        noteInfo,
+        noteNumber,
+        semitoneOffset,
+      );
+      bufferSource.playbackRate
+        .cancelScheduledValues(now)
+        .setValueAtTime(playbackRate * pressure, now);
+    });
   }
 
   handleControlChange(channelNumber, controller, value) {
