@@ -176,13 +176,6 @@ export class MidyGMLite {
       const event = this.timeline[queueIndex];
       if (event.startTime > t + this.lookAhead) break;
       switch (event.type) {
-        case "controller":
-          this.handleControlChange(
-            event.channel,
-            event.controllerType,
-            event.value,
-          );
-          break;
         case "noteOn":
           if (event.velocity !== 0) {
             await this.scheduleNoteOn(
@@ -206,8 +199,28 @@ export class MidyGMLite {
           }
           break;
         }
+        case "noteAftertouch":
+          this.handlePolyphonicKeyPressure(
+            event.channel,
+            event.noteNumber,
+            event.amount,
+          );
+          break;
+        case "controller":
+          this.handleControlChange(
+            event.channel,
+            event.controllerType,
+            event.value,
+          );
+          break;
         case "programChange":
           this.handleProgramChange(event.channel, event.programNumber);
+          break;
+        case "channelAftertouch":
+          this.handleChannelPressure(event.channel, event.amount);
+          break;
+        case "pitchBend":
+          this.handlePitchBend(event.channel, event.value);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -676,7 +689,7 @@ export class MidyGMLite {
       case 0xD0:
         return this.handleChannelPressure(channelNumber, data1);
       case 0xE0:
-        return this.handlePitchBend(channelNumber, data1, data2);
+        return this.handlePitchBendMessage(channelNumber, data1, data2);
       default:
         console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
     }
@@ -708,8 +721,13 @@ export class MidyGMLite {
     this.channels[channelNumber].channelPressure = pressure;
   }
 
-  handlePitchBend(channelNumber, lsb, msb) {
-    const pitchBend = (msb * 128 + lsb - 8192) / 8192;
+  handlePitchBendMessage(channelNumber, lsb, msb) {
+    const pitchBend = msb * 128 + lsb;
+    this.handlePitchBend(channelNumber, pitchBend);
+  }
+
+  handlePitchBend(channelNumber, pitchBend) {
+    pitchBend = (pitchBend - 8192) / 8192;
     this.channels[channelNumber].pitchBend = pitchBend;
   }
 
