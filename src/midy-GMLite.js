@@ -199,13 +199,6 @@ export class MidyGMLite {
           }
           break;
         }
-        case "noteAftertouch":
-          this.handlePolyphonicKeyPressure(
-            event.channel,
-            event.noteNumber,
-            event.amount,
-          );
-          break;
         case "controller":
           this.handleControlChange(
             event.channel,
@@ -215,9 +208,6 @@ export class MidyGMLite {
           break;
         case "programChange":
           this.handleProgramChange(event.channel, event.programNumber);
-          break;
-        case "channelAftertouch":
-          this.handleChannelPressure(event.channel, event.amount);
           break;
         case "pitchBend":
           this.handlePitchBend(event.channel, event.value);
@@ -681,13 +671,13 @@ export class MidyGMLite {
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
       case 0xA0:
-        return this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
+        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:
         return this.handleProgramChange(channelNumber, data1);
       case 0xD0:
-        return this.handleChannelPressure(channelNumber, data1);
+        return; // this.handleChannelPressure(channelNumber, data1);
       case 0xE0:
         return this.handlePitchBendMessage(channelNumber, data1, data2);
       default:
@@ -695,37 +685,9 @@ export class MidyGMLite {
     }
   }
 
-  handlePolyphonicKeyPressure(channelNumber, noteNumber, pressure) {
-    const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    pressure /= 127;
-    const activeNotes = this.getActiveNotes(channel);
-    if (activeNotes.has(noteNumber)) {
-      const activeNote = activeNotes.get(noteNumber);
-      const gain = activeNote.gainNode.gain.value;
-      activeNote.gainNode.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(gain * pressure, now);
-    }
-  }
-
   handleProgramChange(channelNumber, program) {
     const channel = this.channels[channelNumber];
     channel.program = program;
-  }
-
-  handleChannelPressure(channelNumber, pressure) {
-    const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    pressure /= 127;
-    channel.channelPressure = pressure;
-    const activeNotes = this.getActiveNotes(channel);
-    activeNotes.forEach((activeNote) => {
-      const gain = activeNote.gainNode.gain.value;
-      activeNote.gainNode.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(gain * pressure, now);
-    });
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
