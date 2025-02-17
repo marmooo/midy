@@ -536,13 +536,6 @@ export class MidyGM2 {
     }
   }
 
-  createModulationEffect(audioContext) {
-    const modLFO = new OscillatorNode(audioContext, {
-      frequency: 5,
-    });
-    return { modLFO };
-  }
-
   createReverbEffect(audioContext, options = {}) {
     const {
       decay = 0.8,

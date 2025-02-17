@@ -460,13 +460,6 @@ export class MidyGMLite {
     }
   }
 
-  createModulationEffect(audioContext) {
-    const modLFO = new OscillatorNode(audioContext, {
-      frequency: 5,
-    });
-    return { modLFO };
-  }
-
   connectNoteEffects(channel, gainNode) {
     gainNode.connect(channel.pannerNode);
   }

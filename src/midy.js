@@ -546,16 +546,6 @@ export class Midy {
     }
   }
 
-  createModulationEffect(audioContext) {
-    const modLFO = new OscillatorNode(audioContext, {
-      frequency: 5,
-    });
-    const vibLFO = new OscillatorNode(audioContext, {
-      frequency: 5,
-    });
-    return { modLFO, vibLFO };
-  }
-
   createReverbEffect(audioContext, options = {}) {
     const {
       decay = 0.8,
