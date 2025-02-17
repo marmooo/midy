@@ -127,7 +127,6 @@ export class MidyGMLite {
         ...MidyGMLite.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
-        sostenutoNotes: new Map(),
       };
     });
     return channels;
