@@ -4,6 +4,22 @@ import {
   SoundFont,
 } from "https://cdn.jsdelivr.net/npm/@marmooo/soundfont-parser@0.0.2/+esm";
 
+class Note {
+  bufferSource;
+  gainNode;
+  filterNode;
+  modLFO;
+  modLFOGain;
+  vibLFO;
+  vibLFOGain;
+
+  constructor(noteNumber, startTime, instrumentKey) {
+    this.noteNumber = noteNumber;
+    this.startTime = startTime;
+    this.instrumentKey = instrumentKey;
+  }
+}
+
 export class MidyGM2 {
   ticksPerBeat = 120;
   totalTime = 0;
@@ -143,24 +159,24 @@ export class MidyGM2 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
-        ...Midy.channelSettings,
-        ...Midy.effectSettings,
+        ...MidyGM2.channelSettings,
+        ...MidyGM2.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
         sostenutoNotes: new Map(),
         channelPressure: {
-          ...Midy.controllerDestinationSettings,
+          ...MidyGM2.controllerDestinationSettings,
         },
       };
     });
     return channels;
   }
 
-  async createNoteBuffer(noteInfo, isSF3) {
-    const sampleEnd = noteInfo.sample.length + noteInfo.end;
+  async createNoteBuffer(instrumentKey, isSF3) {
+    const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
     if (isSF3) {
-      const sample = new Uint8Array(noteInfo.sample.length);
-      sample.set(noteInfo.sample);
+      const sample = new Uint8Array(instrumentKey.sample.length);
+      sample.set(instrumentKey.sample);
       const audioBuffer = await this.audioContext.decodeAudioData(
         sample.buffer,
       );
@@ -170,12 +186,12 @@ export class MidyGM2 {
       }
       return audioBuffer;
     } else {
-      const sample = noteInfo.sample.subarray(0, sampleEnd);
+      const sample = instrumentKey.sample.subarray(0, sampleEnd);
       const floatSample = this.convertToFloat32Array(sample);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
-        sampleRate: noteInfo.sampleRate,
+        sampleRate: instrumentKey.sampleRate,
       });
       const channelData = audioBuffer.getChannelData(0);
       channelData.set(floatSample);
@@ -183,14 +199,15 @@ export class MidyGM2 {
     }
   }
 
-  async createNoteBufferNode(noteInfo, isSF3) {
+  async createNoteBufferNode(instrumentKey, isSF3) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(noteInfo, isSF3);
+    const audioBuffer = await this.createNoteBuffer(instrumentKey, isSF3);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = noteInfo.sampleModes % 2 !== 0;
+    bufferSource.loop = instrumentKey.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
-      bufferSource.loopStart = noteInfo.loopStart / noteInfo.sampleRate;
-      bufferSource.loopEnd = noteInfo.loopEnd / noteInfo.sampleRate;
+      bufferSource.loopStart = instrumentKey.loopStart /
+        instrumentKey.sampleRate;
+      bufferSource.loopEnd = instrumentKey.loopEnd / instrumentKey.sampleRate;
     }
     return bufferSource;
   }
@@ -653,39 +670,42 @@ export class MidyGM2 {
     return channel.pitchBend * channel.pitchBendRange + tuning;
   }
 
-  calcPlaybackRate(noteInfo, noteNumber, semitoneOffset) {
-    return noteInfo.playbackRate(noteNumber) * Math.pow(2, semitoneOffset / 12);
+  calcPlaybackRate(instrumentKey, noteNumber, semitoneOffset) {
+    return instrumentKey.playbackRate(noteNumber) *
+      Math.pow(2, semitoneOffset / 12);
   }
 
-  async createNoteAudioChain(
+  async createNote(
     channel,
-    noteInfo,
+    instrumentKey,
     noteNumber,
     velocity,
     startTime,
     isSF3,
   ) {
-    const bufferSource = await this.createNoteBufferNode(noteInfo, isSF3);
+    const note = new Note(noteNumber, startTime, instrumentKey);
+    note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
     const semitoneOffset = this.calcSemitoneOffset(channel);
-    bufferSource.playbackRate.value = this.calcPlaybackRate(
-      noteInfo,
+    note.bufferSource.playbackRate.value = this.calcPlaybackRate(
+      instrumentKey,
       noteNumber,
       semitoneOffset,
     );
 
     // volume envelope
-    const gainNode = new GainNode(this.audioContext, {
+    note.gainNode = new GainNode(this.audioContext, {
       gain: 0,
     });
     let volume = (velocity / 127) * channel.volume * channel.expression;
     if (volume === 0) volume = 1e-6; // exponentialRampToValueAtTime() requires a non-zero value
-    const attackVolume = this.cbToRatio(-noteInfo.initialAttenuation) * volume;
-    const sustainVolume = attackVolume * (1 - noteInfo.volSustain);
-    const volDelay = startTime + noteInfo.volDelay;
-    const volAttack = volDelay + noteInfo.volAttack;
-    const volHold = volAttack + noteInfo.volHold;
-    const volDecay = volHold + noteInfo.volDecay;
-    gainNode.gain
+    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation) *
+      volume;
+    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
+    const volDelay = startTime + instrumentKey.volDelay;
+    const volAttack = volDelay + instrumentKey.volAttack;
+    const volHold = volAttack + instrumentKey.volHold;
+    const volDecay = volHold + instrumentKey.volDecay;
+    note.gainNode.gain
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
@@ -695,79 +715,76 @@ export class MidyGM2 {
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
     const maxFreq = this.audioContext.sampleRate / 2;
-    let baseFreq = this.centToHz(noteInfo.initialFilterFc) * softPedalFactor;
+    let baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
+      softPedalFactor;
     let peekFreq = this.centToHz(
-      noteInfo.initialFilterFc + noteInfo.modEnvToFilterFc,
+      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
     ) * softPedalFactor;
     let sustainFreq = (baseFreq +
-      (peekFreq - baseFreq) * (1 - noteInfo.modSustain)) * softPedalFactor;
-    const modDelay = startTime + noteInfo.modDelay;
-    const modAttack = modDelay + noteInfo.modAttack;
-    const modHold = modAttack + noteInfo.modHold;
-    const modDecay = modHold + noteInfo.modDecay;
+      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain)) * softPedalFactor;
+    const modDelay = startTime + instrumentKey.modDelay;
+    const modAttack = modDelay + instrumentKey.modAttack;
+    const modHold = modAttack + instrumentKey.modHold;
+    const modDecay = modHold + instrumentKey.modDecay;
 
     // modulation
-    let modLFO, modLFOGain;
     if (channel.modulation > 0) {
-      const delayModLFO = startTime + noteInfo.delayModLFO;
+      const delayModLFO = startTime + instrumentKey.delayModLFO;
       if (delayModLFO <= modDelay) {
-        baseFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+        baseFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
       }
       if (delayModLFO <= modAttack) {
-        peekFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+        peekFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
       }
       if (delayModLFO <= modHold) {
-        sustainFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+        sustainFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
       }
-      modLFOGain = new GainNode(this.audioContext, {
-        gain: this.cbToRatio(noteInfo.modLfoToVolume) * channel.modulation,
+      note.modLFOGain = new GainNode(this.audioContext, {
+        gain: this.cbToRatio(instrumentKey.modLfoToVolume) * channel.modulation,
       });
-      modLFO = new OscillatorNode(this.audioContext, {
-        frequency: this.centToHz(noteInfo.freqModLFO),
+      note.modLFO = new OscillatorNode(this.audioContext, {
+        frequency: this.centToHz(instrumentKey.freqModLFO),
       });
-      modLFO.start(delayModLFO);
-      modLFO.connect(modLFOGain);
-      bufferSource.detune.setValueAtTime(
-        bufferSource.detune.value + noteInfo.modLfoToPitch,
+      note.modLFO.start(delayModLFO);
+      note.modLFO.connect(note.modLFOGain);
+      note.bufferSource.detune.setValueAtTime(
+        note.bufferSource.detune.value + instrumentKey.modLfoToPitch,
         delayModLFO,
       );
-      modLFOGain.connect(bufferSource.detune);
+      note.modLFOGain.connect(note.bufferSource.detune);
     }
 
     // filter envelope
     const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
     const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
     const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
-    const filterNode = new BiquadFilterNode(this.audioContext, {
+    note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: noteInfo.initialFilterQ / 10, // dB
+      Q: instrumentKey.initialFilterQ / 10, // dB
       frequency: adjustedBaseFreq,
     });
-    filterNode.frequency
+    note.filterNode.frequency
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
       .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
-    bufferSource.detune.setValueAtTime(
-      bufferSource.detune.value + noteInfo.modEnvToPitch,
+    note.bufferSource.detune.setValueAtTime(
+      note.bufferSource.detune.value + instrumentKey.modEnvToPitch,
       modDelay,
     );
 
-    bufferSource.connect(filterNode);
-    filterNode.connect(gainNode);
+    note.bufferSource.connect(note.filterNode);
+    note.filterNode.connect(note.gainNode);
 
     if (this.mono && channel.currentBufferSource) {
       channel.currentBufferSource.stop(startTime);
-      channel.currentBufferSource = bufferSource;
+      channel.currentBufferSource = note.bufferSource;
     }
-    bufferSource.start(startTime, noteInfo.start / noteInfo.sampleRate);
-    return {
-      bufferSource,
-      gainNode,
-      filterNode,
-      modLFO,
-      modLFOGain,
-    };
+    note.bufferSource.start(
+      startTime,
+      instrumentKey.start / instrumentKey.sampleRate,
+    );
+    return note;
   }
 
   calcBank(channel, channelNumber) {
@@ -787,53 +804,30 @@ export class MidyGM2 {
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const isSF3 = soundFont.parsed.info.version.major === 3;
-    const noteInfo = soundFont.getInstrumentKey(
+    const instrumentKey = soundFont.getInstrumentKey(
       bankNumber,
       channel.program,
       noteNumber,
     );
-    if (!noteInfo) return;
-    const {
-      bufferSource,
-      gainNode,
-      filterNode,
-      modLFO,
-      modLFOGain,
-    } = await this
-      .createNoteAudioChain(
-        channel,
-        noteInfo,
-        noteNumber,
-        velocity,
-        startTime,
-        isSF3,
-      );
-    this.connectNoteEffects(channel, gainNode);
+    if (!instrumentKey) return;
+    const note = await this.createNote(
+      channel,
+      instrumentKey,
+      noteNumber,
+      velocity,
+      startTime,
+      isSF3,
+    );
+    this.connectNoteEffects(channel, note.gainNode);
 
     if (channel.sostenutoPedal) {
-      channel.sostenutoNotes.set(noteNumber, {
-        gainNode,
-        filterNode,
-        bufferSource,
-        noteNumber,
-        noteInfo,
-      });
+      channel.sostenutoNotes.set(noteNumber, note);
     }
     const scheduledNotes = channel.scheduledNotes;
-    const scheduledNote = {
-      bufferSource,
-      filterNode,
-      gainNode,
-      modLFO,
-      modLFOGain,
-      noteInfo,
-      noteNumber,
-      startTime,
-    };
     if (scheduledNotes.has(noteNumber)) {
-      scheduledNotes.get(noteNumber).push(scheduledNote);
+      scheduledNotes.get(noteNumber).push(note);
     } else {
-      scheduledNotes.set(noteNumber, [scheduledNote]);
+      scheduledNotes.set(noteNumber, [note]);
     }
   }
 
@@ -864,16 +858,16 @@ export class MidyGM2 {
         gainNode,
         modLFO,
         modLFOGain,
-        noteInfo,
+        instrumentKey,
       } = targetNote;
       const velocityRate = (velocity + 127) / 127;
-      const volEndTime = stopTime + noteInfo.volRelease * velocityRate;
+      const volEndTime = stopTime + instrumentKey.volRelease * velocityRate;
       gainNode.gain.cancelScheduledValues(stopTime);
       gainNode.gain.linearRampToValueAtTime(0, volEndTime);
       const maxFreq = this.audioContext.sampleRate / 2;
-      const baseFreq = this.centToHz(noteInfo.initialFilterFc);
+      const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
       const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
-      const modEndTime = stopTime + noteInfo.modRelease * velocityRate;
+      const modEndTime = stopTime + instrumentKey.modRelease * velocityRate;
       filterNode.frequency
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
@@ -987,9 +981,9 @@ export class MidyGM2 {
     const semitoneOffset = this.calcSemitoneOffset(channel);
     const activeNotes = this.getActiveNotes(channel);
     activeNotes.forEach((activeNote) => {
-      const { bufferSource, noteInfo, noteNumber } = activeNote;
+      const { bufferSource, instrumentKey, noteNumber } = activeNote;
       const playbackRate = calcPlaybackRate(
-        noteInfo,
+        instrumentKey,
         noteNumber,
         semitoneOffset,
       );
