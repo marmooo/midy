@@ -522,47 +522,18 @@ export class MidyGM1 {
       .setValueAtTime(attackVolume, volHold)
       .linearRampToValueAtTime(sustainVolume, volDecay);
 
-    // filter config
+    // filter envelope
     const maxFreq = this.audioContext.sampleRate / 2;
-    let baseFreq = this.centToHz(instrumentKey.initialFilterFc);
-    let peekFreq = this.centToHz(
+    const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
+    const peekFreq = this.centToHz(
       instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
     );
-    let sustainFreq = baseFreq +
+    const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
     const modDelay = startTime + instrumentKey.modDelay;
     const modAttack = modDelay + instrumentKey.modAttack;
     const modHold = modAttack + instrumentKey.modHold;
     const modDecay = modHold + instrumentKey.modDecay;
-
-    // modulation
-    if (channel.modulation > 0) {
-      const delayModLFO = startTime + instrumentKey.delayModLFO;
-      if (delayModLFO <= modDelay) {
-        baseFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
-      }
-      if (delayModLFO <= modAttack) {
-        peekFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
-      }
-      if (delayModLFO <= modHold) {
-        sustainFreq += this.centToHz(instrumentKey.modLfoToFilterFc);
-      }
-      note.modLFOGain = new GainNode(this.audioContext, {
-        gain: this.cbToRatio(instrumentKey.modLfoToVolume) * channel.modulation,
-      });
-      note.modLFO = new OscillatorNode(this.audioContext, {
-        frequency: this.centToHz(instrumentKey.freqModLFO),
-      });
-      note.modLFO.start(delayModLFO);
-      note.modLFO.connect(note.modLFOGain);
-      note.bufferSource.detune.setValueAtTime(
-        note.bufferSource.detune.value + instrumentKey.modLfoToPitch,
-        delayModLFO,
-      );
-      note.modLFOGain.connect(note.bufferSource.detune);
-    }
-
-    // filter envelope
     const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
     const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
     const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
@@ -580,6 +551,28 @@ export class MidyGM1 {
       note.bufferSource.detune.value + instrumentKey.modEnvToPitch,
       modDelay,
     );
+
+    // modulation
+    if (channel.modulation > 0) {
+      const delayModLFO = startTime + instrumentKey.delayModLFO;
+      note.modLFOGain = new GainNode(this.audioContext, {
+        gain: this.cbToRatio(instrumentKey.modLfoToVolume) * channel.modulation,
+      });
+      note.modLFO = new OscillatorNode(this.audioContext, {
+        frequency: this.centToHz(instrumentKey.freqModLFO),
+      });
+      note.modLFO.start(delayModLFO);
+      note.filterNode.frequency.setValueAtTime(
+        note.filterNode.frequency.value + instrumentKey.modLfoToFilterFc,
+        delayModLFO,
+      );
+      note.bufferSource.detune.setValueAtTime(
+        note.bufferSource.detune.value + instrumentKey.modLfoToPitch,
+        delayModLFO,
+      );
+      note.modLFO.connect(note.modLFOGain);
+      note.modLFOGain.connect(note.bufferSource.detune);
+    }
 
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.gainNode);
