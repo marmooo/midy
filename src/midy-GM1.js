@@ -101,14 +101,11 @@ export class MidyGM1 {
     const pannerNode = new StereoPannerNode(audioContext, {
       pan: MidyGM1.channelSettings.pan,
     });
-    const modulationEffect = this.createModulationEffect(audioContext);
-    modulationEffect.lfo.start();
     pannerNode.connect(gainNode);
     gainNode.connect(this.masterGain);
     return {
       gainNode,
       pannerNode,
-      modulationEffect,
     };
   }
 
@@ -452,12 +449,10 @@ export class MidyGM1 {
   }
 
   createModulationEffect(audioContext) {
-    const lfo = new OscillatorNode(audioContext, {
+    const modLFO = new OscillatorNode(audioContext, {
       frequency: 5,
     });
-    return {
-      lfo,
-    };
+    return { modLFO };
   }
 
   connectNoteEffects(channel, gainNode) {
@@ -515,14 +510,48 @@ export class MidyGM1 {
       .setValueAtTime(attackVolume, volHold)
       .linearRampToValueAtTime(sustainVolume, volDecay);
 
-    // filter envelope
+    // filter config
     const maxFreq = this.audioContext.sampleRate / 2;
-    const baseFreq = this.centToHz(noteInfo.initialFilterFc);
-    const peekFreq = this.centToHz(
+    let baseFreq = this.centToHz(noteInfo.initialFilterFc);
+    let peekFreq = this.centToHz(
       noteInfo.initialFilterFc + noteInfo.modEnvToFilterFc,
     );
-    const sustainFreq = baseFreq +
+    let sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - noteInfo.modSustain);
+    const modDelay = startTime + noteInfo.modDelay;
+    const modAttack = modDelay + noteInfo.modAttack;
+    const modHold = modAttack + noteInfo.modHold;
+    const modDecay = modHold + noteInfo.modDecay;
+
+    // modulation
+    let modLFO, modLFOGain;
+    if (channel.modulation > 0) {
+      const delayModLFO = startTime + noteInfo.delayModLFO;
+      if (delayModLFO <= modDelay) {
+        baseFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+      }
+      if (delayModLFO <= modAttack) {
+        peekFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+      }
+      if (delayModLFO <= modHold) {
+        sustainFreq += this.centToHz(noteInfo.modLfoToFilterFc);
+      }
+      modLFOGain = new GainNode(this.audioContext, {
+        gain: this.cbToRatio(noteInfo.modLfoToVolume) * channel.modulation,
+      });
+      modLFO = new OscillatorNode(this.audioContext, {
+        frequency: this.centToHz(noteInfo.freqModLFO),
+      });
+      modLFO.start(delayModLFO);
+      modLFO.connect(modLFOGain);
+      bufferSource.detune.setValueAtTime(
+        bufferSource.detune.value + noteInfo.modLfoToPitch,
+        delayModLFO,
+      );
+      modLFOGain.connect(bufferSource.detune);
+    }
+
+    // filter envelope
     const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
     const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
     const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
@@ -531,34 +560,28 @@ export class MidyGM1 {
       Q: noteInfo.initialFilterQ / 10, // dB
       frequency: adjustedBaseFreq,
     });
-    const modDelay = startTime + noteInfo.modDelay;
-    const modAttack = modDelay + noteInfo.modAttack;
-    const modHold = modAttack + noteInfo.modHold;
-    const modDecay = modHold + noteInfo.modDecay;
     filterNode.frequency
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
       .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
-
-    let lfoGain;
-    if (channel.modulation > 0) {
-      const vibratoDelay = startTime + channel.vibratoDelay;
-      const vibratoAttack = vibratoDelay + 0.1;
-      lfoGain = new GainNode(this.audioContext, {
-        gain: 0,
-      });
-      lfoGain.gain
-        .setValueAtTime(1e-6, vibratoDelay) // exponentialRampToValueAtTime() requires a non-zero value
-        .exponentialRampToValueAtTime(channel.modulation, vibratoAttack);
-      channel.modulationEffect.lfo.connect(lfoGain);
-      lfoGain.connect(bufferSource.detune);
-    }
+    bufferSource.detune.setValueAtTime(
+      bufferSource.detune.value + noteInfo.modEnvToPitch,
+      modDelay,
+    );
 
     bufferSource.connect(filterNode);
     filterNode.connect(gainNode);
     bufferSource.start(startTime, noteInfo.start / noteInfo.sampleRate);
-    return { bufferSource, gainNode, filterNode, lfoGain };
+    return {
+      bufferSource,
+      gainNode,
+      filterNode,
+      modLFO,
+      modLFOGain,
+      vibLFO,
+      vibLFOGain,
+    };
   }
 
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
@@ -574,7 +597,13 @@ export class MidyGM1 {
       noteNumber,
     );
     if (!noteInfo) return;
-    const { bufferSource, gainNode, filterNode, lfoGain } = await this
+    const {
+      bufferSource,
+      gainNode,
+      filterNode,
+      modLFO,
+      modLFOGain,
+    } = await this
       .createNoteAudioChain(
         channel,
         noteInfo,
@@ -590,7 +619,8 @@ export class MidyGM1 {
       bufferSource,
       filterNode,
       gainNode,
-      lfoGain,
+      modLFO,
+      modLFOGain,
       noteInfo,
       noteNumber,
       startTime,
@@ -622,8 +652,14 @@ export class MidyGM1 {
       const targetNote = targetNotes[i];
       if (!targetNote) continue;
       if (targetNote.ending) continue;
-      const { bufferSource, filterNode, gainNode, lfoGain, noteInfo } =
-        targetNote;
+      const {
+        bufferSource,
+        filterNode,
+        gainNode,
+        modLFO,
+        modLFOGain,
+        noteInfo,
+      } = targetNote;
       const velocityRate = (velocity + 127) / 127;
       const volEndTime = stopTime + noteInfo.volRelease * velocityRate;
       gainNode.gain.cancelScheduledValues(stopTime);
@@ -645,7 +681,8 @@ export class MidyGM1 {
           bufferSource.disconnect(0);
           filterNode.disconnect(0);
           gainNode.disconnect(0);
-          if (lfoGain) lfoGain.disconnect(0);
+          if (modLFOGain) modLFOGain.disconnect(0);
+          if (modLFO) modLFO.stop();
           resolve();
         };
         bufferSource.stop(volEndTime);
