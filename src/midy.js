@@ -529,10 +529,10 @@ export class Midy {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
 
-  getActiveNotes(channel) {
+  getActiveNotes(channel, time) {
     const activeNotes = new Map();
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList);
+      const activeNote = this.getActiveNote(noteList, time);
       if (activeNote) {
         activeNotes.set(activeNote.noteNumber, activeNote);
       }
@@ -540,9 +540,11 @@ export class Midy {
     return activeNotes;
   }
 
-  getActiveNote(noteList) {
+  getActiveNote(noteList, time) {
     for (let i = noteList.length - 1; i >= 0; i--) {
-      if (!noteList[i]) return noteList[i + 1];
+      const note = noteList[i];
+      if (!note) return;
+      if (note.startTime < time) return note;
     }
     return noteList[0];
   }
@@ -981,7 +983,7 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     pressure /= 64;
-    const activeNotes = this.getActiveNotes(channel);
+    const activeNotes = this.getActiveNotes(channel, now);
     if (channel.polyphonicKeyPressure.amplitudeControl !== 1) {
       if (activeNotes.has(noteNumber)) {
         const activeNote = activeNotes.get(noteNumber);
@@ -1004,7 +1006,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     pressure /= 64;
     channel.channelPressure = pressure;
-    const activeNotes = this.getActiveNotes(channel);
+    const activeNotes = this.getActiveNotes(channel, now);
     if (channel.channelPressure.amplitudeControl !== 1) {
       activeNotes.forEach((activeNote) => {
         const gain = activeNote.gainNode.gain.value;
@@ -1025,7 +1027,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     channel.pitchBend = (pitchBend - 8192) / 8192;
     const semitoneOffset = this.calcSemitoneOffset(channel);
-    const activeNotes = this.getActiveNotes(channel);
+    const activeNotes = this.getActiveNotes(channel, now);
     activeNotes.forEach((activeNote) => {
       const { bufferSource, instrumentKey, noteNumber } = activeNote;
       const playbackRate = calcPlaybackRate(
@@ -1186,7 +1188,8 @@ export class Midy {
     const channel = this.channels[channelNumber];
     channel.sostenutoPedal = isOn;
     if (isOn) {
-      const activeNotes = this.getActiveNotes(channel);
+      const now = this.audioContext.currentTime;
+      const activeNotes = this.getActiveNotes(channel, now);
       channel.sostenutoNotes = new Map(activeNotes);
     } else {
       this.releaseSostenutoPedal(channelNumber, value);
@@ -1300,7 +1303,7 @@ export class Midy {
     const stopPedal = true;
     const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList);
+      const activeNote = this.getActiveNote(noteList, now);
       if (activeNote) {
         const notePromise = this.scheduleNoteRelease(
           channelNumber,
@@ -1326,7 +1329,7 @@ export class Midy {
     const stopPedal = false;
     const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList);
+      const activeNote = this.getActiveNote(noteList, now);
       if (activeNote) {
         const notePromise = this.scheduleNoteRelease(
           channelNumber,
