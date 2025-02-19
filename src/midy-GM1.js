@@ -43,9 +43,6 @@ export class MidyGM1 {
   static channelSettings = {
     volume: 100 / 127,
     pan: 0,
-    vibratoRate: 5,
-    vibratoDepth: 0.5,
-    vibratoDelay: 2.5,
     bank: 0,
     dataMSB: 0,
     dataLSB: 0,
