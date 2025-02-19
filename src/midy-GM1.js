@@ -446,8 +446,8 @@ export class MidyGM1 {
 
   getActiveNotes(channel) {
     const activeNotes = new Map();
-    channel.scheduledNotes.forEach((scheduledNotes) => {
-      const activeNote = this.getActiveChannelNotes(scheduledNotes);
+    channel.scheduledNotes.forEach((noteList) => {
+      const activeNote = this.getActiveNote(noteList);
       if (activeNote) {
         activeNotes.set(activeNote.noteNumber, activeNote);
       }
@@ -455,10 +455,10 @@ export class MidyGM1 {
     return activeNotes;
   }
 
-  getActiveChannelNotes(scheduledNotes) {
-    for (let i = 0; i < scheduledNotes; i++) {
-      const scheduledNote = scheduledNotes[i];
-      if (scheduledNote) return scheduledNote;
+  getActiveNote(noteList) {
+    for (let i = 0; i < noteList; i++) {
+      const note = noteList[i];
+      if (note) return note;
     }
   }
 
@@ -861,8 +861,8 @@ export class MidyGM1 {
     const velocity = 0;
     const stopPedal = true;
     const promises = [];
-    channel.scheduledNotes.forEach((scheduledNotes) => {
-      const activeNote = this.getActiveChannelNotes(scheduledNotes);
+    channel.scheduledNotes.forEach((noteList) => {
+      const activeNote = this.getActiveNote(noteList);
       if (activeNote) {
         const notePromise = this.scheduleNoteRelease(
           channelNumber,
@@ -887,8 +887,8 @@ export class MidyGM1 {
     const velocity = 0;
     const stopPedal = false;
     const promises = [];
-    channel.scheduledNotes.forEach((scheduledNotes) => {
-      const activeNote = this.getActiveChannelNotes(scheduledNotes);
+    channel.scheduledNotes.forEach((noteList) => {
+      const activeNote = this.getActiveNote(noteList);
       if (activeNote) {
         const notePromise = this.scheduleNoteRelease(
           channelNumber,
