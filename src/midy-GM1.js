@@ -456,10 +456,10 @@ export class MidyGM1 {
   }
 
   getActiveNote(noteList) {
-    for (let i = 0; i < noteList; i++) {
-      const note = noteList[i];
-      if (note) return note;
+    for (let i = noteList.length - 1; i >= 0; i--) {
+      if (!noteList[i]) return noteList[i + 1];
     }
+    return noteList[0];
   }
 
   connectNoteEffects(channel, gainNode) {
