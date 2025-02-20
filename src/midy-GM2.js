@@ -532,7 +532,7 @@ export class MidyGM2 {
       const note = noteList[i];
       if (!note) return;
       if (time < note.startTime) continue;
-      return (note.ending) ? null : undefined;
+      return (note.ending) ? null : note;
     }
     return noteList[0];
   }
