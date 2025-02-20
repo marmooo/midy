@@ -788,9 +788,22 @@ export class MidyGM1 {
   }
 
   setModulation(channelNumber, modulation) {
+    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.modulation = (modulation / 127) *
       (channel.modulationDepthRange * 100);
+    const activeNotes = this.getActiveNotes(channel, now);
+    activeNotes.forEach((activeNote) => {
+      if (activeNote.modLFO) {
+        activeNote.gainNode.gain.setValueAtTime(
+          this.cbToRatio(activeNote.instrumentKey.modLfoToVolume) *
+            channel.modulation,
+          now,
+        );
+      } else {
+        this.startModulation(channel, activeNote, now);
+      }
+    });
   }
 
   setVolume(channelNumber, volume) {
