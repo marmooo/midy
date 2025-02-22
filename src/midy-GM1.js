@@ -819,8 +819,13 @@ export class MidyGM1 {
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
-    channel.gainNode.gain.cancelScheduledValues(now);
-    channel.gainNode.gain.setValueAtTime(volume, now);
+    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    channel.gainL.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainLeft, now);
+    channel.gainR.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainRight, now);
   }
 
   setSustainPedal(channelNumber, value) {
