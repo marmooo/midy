@@ -1026,19 +1026,17 @@ export class Midy {
   handlePitchBend(channelNumber, pitchBend) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    const prevPitchBend = channel.pitchBend;
     channel.pitchBend = (pitchBend - 8192) / 8192;
-    const semitoneOffset = this.calcSemitoneOffset(channel);
+    const detuneChange = (channel.pitchBend - prevPitchBend) *
+      channel.pitchBendRange * 100;
     const activeNotes = this.getActiveNotes(channel, now);
     activeNotes.forEach((activeNote) => {
-      const { bufferSource, instrumentKey, noteNumber } = activeNote;
-      const playbackRate = calcPlaybackRate(
-        instrumentKey,
-        noteNumber,
-        semitoneOffset,
-      );
-      bufferSource.playbackRate
+      const { bufferSource } = activeNote;
+      const detune = bufferSource.detune.value + detuneChange;
+      bufferSource.detune
         .cancelScheduledValues(now)
-        .setValueAtTime(playbackRate * pressure, now);
+        .setValueAtTime(detune, now);
     });
   }
 
