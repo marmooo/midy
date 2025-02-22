@@ -333,8 +333,8 @@ export class MidyGM1 {
       });
     });
     const priority = {
-      setTempo: 0,
-      controller: 1,
+      controller: 0,
+      sysEx: 1,
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;

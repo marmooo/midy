@@ -105,7 +105,9 @@ export class MidyGMLite {
   }
 
   setChannelAudioNodes(audioContext) {
-    const { gainLeft, gainRight } = this.panToGain(MidyGMLite.channelSettings.pan);
+    const { gainLeft, gainRight } = this.panToGain(
+      MidyGMLite.channelSettings.pan,
+    );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
@@ -329,8 +331,8 @@ export class MidyGMLite {
       });
     });
     const priority = {
-      setTempo: 0,
-      controller: 1,
+      controller: 0,
+      sysEx: 1,
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
