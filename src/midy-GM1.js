@@ -42,7 +42,7 @@ export class MidyGM1 {
 
   static channelSettings = {
     volume: 100 / 127,
-    pan: 0,
+    pan: 64,
     bank: 0,
     dataMSB: 0,
     dataLSB: 0,
@@ -109,17 +109,16 @@ export class MidyGM1 {
   }
 
   setChannelAudioNodes(audioContext) {
-    const gainNode = new GainNode(audioContext, {
-      gain: MidyGM1.channelSettings.volume,
-    });
-    const pannerNode = new StereoPannerNode(audioContext, {
-      pan: MidyGM1.channelSettings.pan,
-    });
-    pannerNode.connect(gainNode);
-    gainNode.connect(this.masterGain);
+    const { gainLeft, gainRight } = this.panToGain(MidyGM1.channelSettings.pan);
+    const gainL = new GainNode(audioContext, { gain: gainLeft });
+    const gainR = new GainNode(audioContext, { gain: gainRight });
+    const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
+    gainL.connect(merger, 0, 0);
+    gainR.connect(merger, 0, 1);
+    merger.connect(this.masterGain);
     return {
-      gainNode,
-      pannerNode,
+      gainL,
+      gainR,
     };
   }
 
@@ -799,12 +798,18 @@ export class MidyGM1 {
     this.updateChannelGain(channel);
   }
 
+  panToGain(pan) {
+    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    return {
+      gainLeft: Math.cos(theta),
+      gainRight: Math.sin(theta),
+    };
+  }
+
   setPan(channelNumber, pan) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.pan = pan / 127 * 2 - 1; // -1 (left) - +1 (right)
-    channel.pannerNode.pan.cancelScheduledValues(now);
-    channel.pannerNode.pan.setValueAtTime(channel.pan, now);
+    channel.pan = pan;
+    this.updateChannelGain(channel);
   }
 
   setExpression(channelNumber, expression) {

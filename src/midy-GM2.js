@@ -1064,12 +1064,18 @@ export class MidyGM2 {
     this.updateChannelGain(channel);
   }
 
+  panToGain(pan) {
+    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    return {
+      gainLeft: Math.cos(theta),
+      gainRight: Math.sin(theta),
+    };
+  }
+
   setPan(channelNumber, pan) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.pan = pan / 127 * 2 - 1; // -1 (left) - +1 (right)
-    channel.pannerNode.pan.cancelScheduledValues(now);
-    channel.pannerNode.pan.setValueAtTime(channel.pan, now);
+    channel.pan = pan;
+    this.updateChannelGain(channel);
   }
 
   setExpression(channelNumber, expression) {
@@ -1085,8 +1091,13 @@ export class MidyGM2 {
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
-    channel.gainNode.gain.cancelScheduledValues(now);
-    channel.gainNode.gain.setValueAtTime(volume, now);
+    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    channel.gainL.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainLeft, now);
+    channel.gainR.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainRight, now);
   }
 
   setSustainPedal(channelNumber, value) {
@@ -1123,7 +1134,8 @@ export class MidyGM2 {
     const channel = this.channels[channelNumber];
     channel.sostenutoPedal = isOn;
     if (isOn) {
-      const activeNotes = this.getActiveNotes(channel);
+      const now = this.audioContext.currentTime;
+      const activeNotes = this.getActiveNotes(channel, now);
       channel.sostenutoNotes = new Map(activeNotes);
     } else {
       this.releaseSostenutoPedal(channelNumber, value);

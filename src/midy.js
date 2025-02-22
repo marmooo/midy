@@ -48,7 +48,7 @@ export class Midy {
   static channelSettings = {
     currentBufferSource: null,
     volume: 100 / 127,
-    pan: 0,
+    pan: 64,
     portamentoTime: 0,
     reverb: 0,
     chorus: 0,
@@ -136,22 +136,23 @@ export class Midy {
   }
 
   setChannelAudioNodes(audioContext) {
-    const gainNode = new GainNode(audioContext, {
-      gain: Midy.channelSettings.volume,
-    });
-    const pannerNode = new StereoPannerNode(audioContext, {
-      pan: Midy.channelSettings.pan,
-    });
+    const { gainLeft, gainRight } = this.panToGain(Midy.channelSettings.pan);
+    const gainL = new GainNode(audioContext, { gain: gainLeft });
+    const gainR = new GainNode(audioContext, { gain: gainRight });
+    const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
+    gainL.connect(merger, 0, 0);
+    gainR.connect(merger, 0, 1);
+    merger.connect(this.masterGain);
     const reverbEffect = this.createReverbEffect(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     chorusEffect.lfo.start();
-    reverbEffect.dryGain.connect(pannerNode);
-    reverbEffect.wetGain.connect(pannerNode);
-    pannerNode.connect(gainNode);
-    gainNode.connect(this.masterGain);
+    reverbEffect.dryGain.connect(gainL);
+    reverbEffect.dryGain.connect(gainR);
+    reverbEffect.wetGain.connect(gainL);
+    reverbEffect.wetGain.connect(gainR);
     return {
-      gainNode,
-      pannerNode,
+      gainL,
+      gainR,
       reverbEffect,
       chorusEffect,
     };
@@ -475,6 +476,14 @@ export class Midy {
   async start() {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
+    this.scheduleTask(() => {
+      this.setPan(0, 127);
+      console.log(this.channels[0].gainL.gain);
+    }, 5);
+    this.scheduleTask(() => {
+      this.setPan(0, 0);
+      console.log(this.channels[0].gainL.gain);
+    }, 10);
     await this.playNotes();
     this.isPlaying = false;
   }
@@ -1130,12 +1139,18 @@ export class Midy {
     this.updateChannelGain(channel);
   }
 
+  panToGain(pan) {
+    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    return {
+      gainLeft: Math.cos(theta),
+      gainRight: Math.sin(theta),
+    };
+  }
+
   setPan(channelNumber, pan) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.pan = pan / 127 * 2 - 1; // -1 (left) - +1 (right)
-    channel.pannerNode.pan.cancelScheduledValues(now);
-    channel.pannerNode.pan.setValueAtTime(channel.pan, now);
+    channel.pan = pan;
+    this.updateChannelGain(channel);
   }
 
   setExpression(channelNumber, expression) {
@@ -1151,8 +1166,13 @@ export class Midy {
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
-    channel.gainNode.gain.cancelScheduledValues(now);
-    channel.gainNode.gain.setValueAtTime(volume, now);
+    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    channel.gainL.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainLeft, now);
+    channel.gainR.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volume * gainRight, now);
   }
 
   setSustainPedal(channelNumber, value) {
