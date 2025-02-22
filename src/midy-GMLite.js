@@ -301,7 +301,6 @@ export class MidyGMLite {
     const tmpChannels = new Array(16);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
-        durationTicks: new Map(),
         programNumber: -1,
         bank: this.channels[i].bank,
       };
@@ -318,16 +317,6 @@ export class MidyGMLite {
               instruments.add(`${channel.bank}:0`);
               channel.programNumber = 0;
             }
-            channel.durationTicks.set(event.noteNumber, {
-              ticks: event.ticks,
-              noteOn: event,
-            });
-            break;
-          }
-          case "noteOff": {
-            const { ticks, noteOn } = tmpChannels[event.channel].durationTicks
-              .get(event.noteNumber);
-            noteOn.durationTicks = event.ticks - ticks;
             break;
           }
           case "programChange": {

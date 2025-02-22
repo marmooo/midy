@@ -343,7 +343,6 @@ export class MidyGM2 {
     const tmpChannels = new Array(16);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
-        durationTicks: new Map(),
         programNumber: -1,
         bankMSB: this.channels[i].bankMSB,
         bankLSB: this.channels[i].bankLSB,
@@ -373,16 +372,6 @@ export class MidyGM2 {
               }
               channel.programNumber = 0;
             }
-            channel.durationTicks.set(event.noteNumber, {
-              ticks: event.ticks,
-              noteOn: event,
-            });
-            break;
-          }
-          case "noteOff": {
-            const { ticks, noteOn } = tmpChannels[event.channel].durationTicks
-              .get(event.noteNumber);
-            noteOn.durationTicks = event.ticks - ticks;
             break;
           }
           case "controller":
