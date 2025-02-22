@@ -866,6 +866,7 @@ export class MidyGMLite {
   }
 
   setPitchBendRange(channelNumber, pitchBendRange) {
+    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prevPitchBendRange = channel.pitchBendRange;
     channel.pitchBendRange = pitchBendRange;
