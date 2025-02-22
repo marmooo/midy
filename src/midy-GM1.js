@@ -10,8 +10,6 @@ class Note {
   filterNode;
   modLFO;
   modLFOGain;
-  vibLFO;
-  vibLFOGain;
 
   constructor(noteNumber, velocity, startTime, instrumentKey) {
     this.noteNumber = noteNumber;
