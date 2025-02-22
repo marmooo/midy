@@ -1283,8 +1283,11 @@ export class Midy {
     const { dataMSB, dataLSB } = channel;
     switch (rpn) {
       case 0:
-        channel.pitchBendRange = dataMSB + dataLSB / 100;
-        break;
+        return this.handlePitchBendRangeMessage(
+          channelNumber,
+          dataMSB,
+          dataLSB,
+        );
       case 1:
         channel.fineTuning = (dataMSB * 128 + dataLSB - 8192) / 8192;
         break;
@@ -1299,6 +1302,16 @@ export class Midy {
           `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,
         );
     }
+  }
+
+  handlePitchBendRangeMessage(channelNumber, dataMSB, dataLSB) {
+    const pitchBendRange = dataMSB + dataLSB / 100;
+    this.setPitchBendRange(channelNumber, pitchBendRange);
+  }
+
+  setPitchBendRange(channelNumber, pitchBendRange) {
+    const channel = this.channels[channelNumber];
+    channel.pitchBendRange = pitchBendRange;
   }
 
   allSoundOff(channelNumber) {

@@ -848,13 +848,26 @@ export class MidyGMLite {
     const { dataMSB, dataLSB } = channel;
     switch (rpn) {
       case 0:
-        channel.pitchBendRange = dataMSB + dataLSB / 100;
-        break;
+        return this.handlePitchBendRangeMessage(
+          channelNumber,
+          dataMSB,
+          dataLSB,
+        );
       default:
         console.warn(
           `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,
         );
     }
+  }
+
+  handlePitchBendRangeMessage(channelNumber, dataMSB, dataLSB) {
+    const pitchBendRange = dataMSB + dataLSB / 100;
+    this.setPitchBendRange(channelNumber, pitchBendRange);
+  }
+
+  setPitchBendRange(channelNumber, pitchBendRange) {
+    const channel = this.channels[channelNumber];
+    channel.pitchBendRange = pitchBendRange;
   }
 
   allSoundOff(channelNumber) {
