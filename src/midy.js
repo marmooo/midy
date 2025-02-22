@@ -275,7 +275,7 @@ export class Midy {
           this.handleChannelPressure(event.channel, event.amount);
           break;
         case "pitchBend":
-          this.handlePitchBend(event.channel, event.value);
+          this.setPitchBend(event.channel, event.value);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -1002,10 +1002,10 @@ export class Midy {
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
     const pitchBend = msb * 128 + lsb;
-    this.handlePitchBend(channelNumber, pitchBend);
+    this.setPitchBend(channelNumber, pitchBend);
   }
 
-  handlePitchBend(channelNumber, pitchBend) {
+  setPitchBend(channelNumber, pitchBend) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prevPitchBend = channel.pitchBend;
@@ -1437,9 +1437,9 @@ export class Midy {
           case 1:
             return this.handleMasterVolumeSysEx(data);
           case 3:
-            return this.handleMasterFineTuning(data);
+            return this.handleMasterFineTuningSysEx(data);
           case 4:
-            return this.handleMasterCoarseTuning(data);
+            return this.handleMasterCoarseTuningSysEx(data);
           // case 5: // TODO: Global Parameter Control
           default:
             console.warn(`Unsupported Exclusive Message ${data}`);
@@ -1482,10 +1482,10 @@ export class Midy {
 
   handleMasterVolumeSysEx(data) {
     const volume = (data[5] * 128 + data[4]) / 16383;
-    this.handleMasterVolume(volume);
+    this.setMasterVolume(volume);
   }
 
-  handleMasterVolume(volume) {
+  setMasterVolume(volume) {
     if (volume < 0 && 1 < volume) {
       console.error("Master Volume is out of range");
     } else {
@@ -1497,10 +1497,10 @@ export class Midy {
 
   handleMasterFineTuningSysEx(data) {
     const fineTuning = (data[5] * 128 + data[4] - 8192) / 8192;
-    this.handleMasterFineTuning(fineTuning);
+    this.setMasterFineTuning(fineTuning);
   }
 
-  handleMasterFineTuning(fineTuning) {
+  setMasterFineTuning(fineTuning) {
     if (fineTuning < -1 && 1 < fineTuning) {
       console.error("Master Fine Tuning value is out of range");
     } else {
@@ -1510,10 +1510,10 @@ export class Midy {
 
   handleMasterCoarseTuningSysEx(data) {
     const coarseTuning = data[4];
-    this.handleMasterCoarseTuning(coarseTuning);
+    this.setMasterCoarseTuning(coarseTuning);
   }
 
-  handleMasterCoarseTuning(coarseTuning) {
+  setMasterCoarseTuning(coarseTuning) {
     if (coarseTuning < 0 && 127 < coarseTuning) {
       console.error("Master Coarse Tuning value is out of range");
     } else {

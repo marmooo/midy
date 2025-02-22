@@ -220,7 +220,7 @@ export class MidyGMLite {
           this.handleProgramChange(event.channel, event.programNumber);
           break;
         case "pitchBend":
-          this.handlePitchBend(event.channel, event.value);
+          this.setPitchBend(event.channel, event.value);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -715,10 +715,10 @@ export class MidyGMLite {
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
     const pitchBend = msb * 128 + lsb;
-    this.handlePitchBend(channelNumber, pitchBend);
+    this.setPitchBend(channelNumber, pitchBend);
   }
 
-  handlePitchBend(channelNumber, pitchBend) {
+  setPitchBend(channelNumber, pitchBend) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prevPitchBend = channel.pitchBend;
@@ -974,10 +974,10 @@ export class MidyGMLite {
 
   handleMasterVolumeSysEx(data) {
     const volume = (data[5] * 128 + data[4]) / 16383;
-    this.handleMasterVolume(volume);
+    this.setMasterVolume(volume);
   }
 
-  handleMasterVolume(volume) {
+  setMasterVolume(volume) {
     if (volume < 0 && 1 < volume) {
       console.error("Master Volume is out of range");
     } else {
