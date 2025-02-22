@@ -587,12 +587,8 @@ export class Midy {
       variance = delay * 0.1,
     } = options;
 
-    const lfo = new OscillatorNode(audioContext, {
-      frequency: chorusRate,
-    });
-    const lfoGain = new GainNode(audioContext, {
-      gain: chorusDepth,
-    });
+    const lfo = new OscillatorNode(audioContext, { frequency: chorusRate });
+    const lfoGain = new GainNode(audioContext, { gain: chorusDepth });
 
     const chorusGains = [];
     const delayNodes = [];
@@ -606,9 +602,7 @@ export class Midy {
       });
       delayNodes.push(delayNode);
 
-      const chorusGain = new GainNode(audioContext, {
-        gain: baseGain,
-      });
+      const chorusGain = new GainNode(audioContext, { gain: baseGain });
       chorusGains.push(chorusGain);
 
       lfo.connect(lfoGain);
@@ -674,9 +668,7 @@ export class Midy {
 
   setVolumeEnvelope(channel, note) {
     const { instrumentKey, startTime, velocity } = note;
-    note.gainNode = new GainNode(this.audioContext, {
-      gain: 0,
-    });
+    note.gainNode = new GainNode(this.audioContext, { gain: 0 });
     let volume = (velocity / 127) * channel.volume * channel.expression;
     if (volume === 0) volume = 1e-6; // exponentialRampToValueAtTime() requires a non-zero value
     const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation) *

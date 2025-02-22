@@ -477,9 +477,7 @@ export class MidyGM1 {
 
   setVolumeEnvelope(channel, note) {
     const { instrumentKey, startTime, velocity } = note;
-    note.gainNode = new GainNode(this.audioContext, {
-      gain: 0,
-    });
+    note.gainNode = new GainNode(this.audioContext, { gain: 0 });
     let volume = (velocity / 127) * channel.volume * channel.expression;
     if (volume === 0) volume = 1e-6; // exponentialRampToValueAtTime() requires a non-zero value
     const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation) *
