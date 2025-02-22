@@ -476,14 +476,6 @@ export class Midy {
   async start() {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
-    this.scheduleTask(() => {
-      this.setPan(0, 127);
-      console.log(this.channels[0].gainL.gain);
-    }, 5);
-    this.scheduleTask(() => {
-      this.setPan(0, 0);
-      console.log(this.channels[0].gainL.gain);
-    }, 10);
     await this.playNotes();
     this.isPlaying = false;
   }
