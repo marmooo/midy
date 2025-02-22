@@ -1182,7 +1182,18 @@ export class MidyGM2 {
 
   setPitchBendRange(channelNumber, pitchBendRange) {
     const channel = this.channels[channelNumber];
+    const prevPitchBendRange = channel.pitchBendRange;
     channel.pitchBendRange = pitchBendRange;
+    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) *
+      channel.pitchBend * 100;
+    const activeNotes = this.getActiveNotes(channel, now);
+    activeNotes.forEach((activeNote) => {
+      const { bufferSource } = activeNote;
+      const detune = bufferSource.detune.value + detuneChange;
+      bufferSource.detune
+        .cancelScheduledValues(now)
+        .setValueAtTime(detune, now);
+    });
   }
 
   allSoundOff(channelNumber) {
