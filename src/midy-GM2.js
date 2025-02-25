@@ -999,9 +999,9 @@ export class MidyGM2 {
       case 93:
         return this.setChorus(channelNumber, value);
       case 100:
-        return this.setRPNMSB(channelNumber, value);
-      case 101:
         return this.setRPNLSB(channelNumber, value);
+      case 101:
+        return this.setRPNMSB(channelNumber, value);
       case 120:
         return this.allSoundOff(channelNumber);
       case 121:
