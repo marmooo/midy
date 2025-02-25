@@ -1173,18 +1173,8 @@ export class MidyGM2 {
     }
   }
 
-  handlePitchBendRangeMessage(channelNumber, dataMSB, dataLSB) {
-    const pitchBendRange = dataMSB + dataLSB / 100;
-    this.setPitchBendRange(channelNumber, pitchBendRange);
-  }
-
-  setPitchBendRange(channelNumber, pitchBendRange) {
+  updateDetune(channel, detuneChange) {
     const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    const prevPitchBendRange = channel.pitchBendRange;
-    channel.pitchBendRange = pitchBendRange;
-    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) *
-      channel.pitchBend * 100;
     const activeNotes = this.getActiveNotes(channel, now);
     activeNotes.forEach((activeNote) => {
       const { bufferSource } = activeNote;
@@ -1193,6 +1183,20 @@ export class MidyGM2 {
         .cancelScheduledValues(now)
         .setValueAtTime(detune, now);
     });
+  }
+
+  handlePitchBendRangeMessage(channelNumber, dataMSB, dataLSB) {
+    const pitchBendRange = dataMSB + dataLSB / 100;
+    this.setPitchBendRange(channelNumber, pitchBendRange);
+  }
+
+  setPitchBendRange(channelNumber, pitchBendRange) {
+    const channel = this.channels[channelNumber];
+    const prevPitchBendRange = channel.pitchBendRange;
+    channel.pitchBendRange = pitchBendRange;
+    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) *
+      channel.pitchBend * 100;
+    this.updateDetune(channel, detuneChange);
   }
 
   handleFineTuningMessage(channelNumber, dataMSB, dataLSB) {
