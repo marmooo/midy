@@ -1433,8 +1433,8 @@ export class Midy {
       channel.bankLSB = 0;
       channel.bank = 0;
     });
-    this.channels[9].bankMSB = 120;
-    this.channels[9].bank = 120 * 128;
+    this.channels[9].bankMSB = 1;
+    this.channels[9].bank = 128;
   }
 
   GM2SystemOn() {
