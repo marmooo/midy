@@ -1219,18 +1219,47 @@ export class Midy {
     channel.vibratoDelay = vibratoDelay / 127 * 5; // 0-5sec
   }
 
-  incrementRPNValue(channelNumber) {
+  limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
+    if (maxLSB < channel.dataLSB) {
+      channel.dataMSB++;
+      channel.dataLSB = minLSB;
+    } else if (channel.dataLSB < 0) {
+      channel.dataMSB--;
+      channel.dataLSB = maxLSB;
+    }
+    if (maxMSB < channel.dataMSB) {
+      channel.dataMSB = maxMSB;
+      channel.dataLSB = maxLSB;
+    } else if (channel.dataMSB < 0) {
+      channel.dataMSB = minMSB;
+      channel.dataLSB = minLSB;
+    }
+  }
+
+  limitDataMSB(channel, minMSB, maxMSB) {
+    if (maxMSB < channel.dataMSB) {
+      channel.dataMSB = maxMSB;
+    } else if (channel.dataMSB < 0) {
+      channel.dataMSB = minMSB;
+    }
+  }
+
+  // TODO: support 3-4?
+  handleRPN(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
     switch (rpn) {
       case 0:
-        channel.pitchBendRange = Math.min(1, channel.pitchBendRange + 1);
+        channel.dataLSB += value;
+        this.handlePitchBendRangeMessage(channelNumber);
         break;
       case 1:
-        channel.fineTuning = Math.min(1, channel.fineTuning + 1);
+        channel.dataLSB += value;
+        this.handleFineTuningMessage(channelNumber);
         break;
       case 2:
-        channel.coarseTuning = Math.min(88, channel.coarseTuning + 1);
+        channel.dataMSB += value;
+        this.handleCoarseTuningMessage(channelNumber);
         break;
       default:
         console.warn(
@@ -1239,24 +1268,12 @@ export class Midy {
     }
   }
 
+  incrementRPNValue(channelNumber) {
+    this.handleRPN(channelNumber, 1);
+  }
+
   decrementRPNValue(channelNumber) {
-    const channel = this.channels[channelNumber];
-    const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
-    switch (rpn) {
-      case 0:
-        channel.pitchBendRange = Math.max(-1, channel.pitchBendRange - 1);
-        break;
-      case 1:
-        channel.fineTuning = Math.max(-1, channel.fineTuning - 1);
-        break;
-      case 2:
-        channel.coarseTuning = Math.max(40, channel.coarseTuning - 1);
-        break;
-      default:
-        console.warn(
-          `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB}, LSB=${channel.rpnLSB}.`,
-        );
-    }
+    this.handleRPN(channelNumber, -1);
   }
 
   setRPNMSB(channelNumber, value) {
@@ -1267,31 +1284,10 @@ export class Midy {
     this.channels[channelNumber].rpnLSB = value;
   }
 
-  // TODO: support 3-4?
   setDataEntry(channelNumber, value, isMSB) {
     const channel = this.channels[channelNumber];
-    const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
     isMSB ? channel.dataMSB = value : channel.dataLSB = value;
-    const { dataMSB, dataLSB } = channel;
-    switch (rpn) {
-      case 0:
-        return this.handlePitchBendRangeMessage(
-          channelNumber,
-          dataMSB,
-          dataLSB,
-        );
-      case 1:
-        return this.handleFineTuningMessage(channelNumber, dataMSB, dataLSB);
-      case 2:
-        return this.handleCoarseTuningMessage(channelNumber, dataMSB);
-      case 5:
-        channel.modulationDepthRange = dataMSB + dataLSB / 128;
-        break;
-      default:
-        console.warn(
-          `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,
-        );
-    }
+    this.handleRPN(channelNumber, 0);
   }
 
   updateDetune(channel, detuneChange) {
@@ -1306,8 +1302,10 @@ export class Midy {
     });
   }
 
-  handlePitchBendRangeMessage(channelNumber, dataMSB, dataLSB) {
-    const pitchBendRange = dataMSB + dataLSB / 100;
+  handlePitchBendRangeMessage(channelNumber) {
+    const channel = this.channels[channelNumber];
+    this.limitData(channel, 0, 127, 0, 99);
+    const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
     this.setPitchBendRange(channelNumber, pitchBendRange);
   }
 
@@ -1320,8 +1318,10 @@ export class Midy {
     this.updateDetune(channel, detuneChange);
   }
 
-  handleFineTuningMessage(channelNumber, dataMSB, dataLSB) {
-    const fineTuning = (dataMSB * 128 + dataLSB - 8192) / 8192;
+  handleFineTuningMessage(channelNumber) {
+    const channel = this.channels[channelNumber];
+    this.limitData(channel, 0, 127, 0, 127);
+    const fineTuning = (channel.dataMSB * 128 + channel.dataLSB - 8192) / 8192;
     this.setFineTuning(channelNumber, fineTuning);
   }
 
@@ -1330,8 +1330,10 @@ export class Midy {
     channel.fineTuning = fineTuning;
   }
 
-  handleCoarseTuningMessage(channelNumber, dataMSB) {
-    const coarseTuning = dataMSB - 64;
+  handleCoarseTuningMessage(channelNumber) {
+    const channel = this.channels[channelNumber];
+    this.limitDataMSB(channel, 0, 127);
+    const coarseTuning = channel.dataMSB - 64;
     this.setFineTuning(channelNumber, coarseTuning);
   }
 
