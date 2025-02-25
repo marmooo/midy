@@ -1289,8 +1289,7 @@ export class Midy {
           dataLSB,
         );
       case 1:
-        channel.fineTuning = (dataMSB * 128 + dataLSB - 8192) / 8192;
-        break;
+        return this.handleFineTuningMessage(channelNumber, dataMSB, dataLSB);
       case 2:
         channel.coarseTuning = dataMSB - 64;
         break;
@@ -1324,6 +1323,16 @@ export class Midy {
         .cancelScheduledValues(now)
         .setValueAtTime(detune, now);
     });
+  }
+
+  handleFineTuningMessage(channelNumber, dataMSB, dataLSB) {
+    const fineTuning = (dataMSB * 128 + dataLSB - 8192) / 8192;
+    this.setFineTuning(channelNumber, fineTuning);
+  }
+
+  setFineTuning(channelNumber, fineTuning) {
+    const channel = this.channels[channelNumber];
+    channel.fineTuning = fineTuning;
   }
 
   allSoundOff(channelNumber) {
