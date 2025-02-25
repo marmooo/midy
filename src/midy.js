@@ -1291,8 +1291,7 @@ export class Midy {
       case 1:
         return this.handleFineTuningMessage(channelNumber, dataMSB, dataLSB);
       case 2:
-        channel.coarseTuning = dataMSB - 64;
-        break;
+        return this.handleCoarseTuningMessage(channelNumber, dataMSB);
       case 5:
         channel.modulationDepthRange = dataMSB + dataLSB / 128;
         break;
@@ -1333,6 +1332,16 @@ export class Midy {
   setFineTuning(channelNumber, fineTuning) {
     const channel = this.channels[channelNumber];
     channel.fineTuning = fineTuning;
+  }
+
+  handleCoarseTuningMessage(channelNumber, dataMSB) {
+    const coarseTuning = dataMSB - 64;
+    this.setFineTuning(channelNumber, coarseTuning);
+  }
+
+  setCoarseTuning(channelNumber, coarseTuning) {
+    const channel = this.channels[channelNumber];
+    channel.fineTuning = coarseTuning;
   }
 
   allSoundOff(channelNumber) {
