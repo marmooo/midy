@@ -133,22 +133,23 @@ export class MidyGM2 {
   }
 
   setChannelAudioNodes(audioContext) {
-    const gainNode = new GainNode(audioContext, {
-      gain: MidyGM2.channelSettings.volume,
-    });
-    const pannerNode = new StereoPannerNode(audioContext, {
-      pan: MidyGM2.channelSettings.pan,
-    });
+    const { gainLeft, gainRight } = this.panToGain(MidyGM2.channelSettings.pan);
+    const gainL = new GainNode(audioContext, { gain: gainLeft });
+    const gainR = new GainNode(audioContext, { gain: gainRight });
+    const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
+    gainL.connect(merger, 0, 0);
+    gainR.connect(merger, 0, 1);
+    merger.connect(this.masterGain);
     const reverbEffect = this.createReverbEffect(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     chorusEffect.lfo.start();
-    reverbEffect.dryGain.connect(pannerNode);
-    reverbEffect.wetGain.connect(pannerNode);
-    pannerNode.connect(gainNode);
-    gainNode.connect(this.masterGain);
+    reverbEffect.dryGain.connect(gainL);
+    reverbEffect.dryGain.connect(gainR);
+    reverbEffect.wetGain.connect(gainL);
+    reverbEffect.wetGain.connect(gainR);
     return {
-      gainNode,
-      pannerNode,
+      gainL,
+      gainR,
       reverbEffect,
       chorusEffect,
     };
