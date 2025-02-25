@@ -950,20 +950,12 @@ export class MidyGM2 {
   }
 
   setPitchBend(channelNumber, pitchBend) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prevPitchBend = channel.pitchBend;
     channel.pitchBend = (pitchBend - 8192) / 8192;
     const detuneChange = (channel.pitchBend - prevPitchBend) *
       channel.pitchBendRange * 100;
-    const activeNotes = this.getActiveNotes(channel, now);
-    activeNotes.forEach((activeNote) => {
-      const { bufferSource } = activeNote;
-      const detune = bufferSource.detune.value + detuneChange;
-      bufferSource.detune
-        .cancelScheduledValues(now)
-        .setValueAtTime(detune, now);
-    });
+    this.updateDetune(channel, detuneChange);
   }
 
   handleControlChange(channelNumber, controller, value) {
