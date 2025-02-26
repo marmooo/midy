@@ -1053,9 +1053,9 @@ export class Midy {
         return this.setReverb(channelNumber, value);
       case 93:
         return this.setChorus(channelNumber, value);
-      case 96:
+      case 96: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
         return incrementRPNValue(channelNumber);
-      case 97:
+      case 97: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
         return decrementRPNValue(channelNumber);
       case 100:
         return this.setRPNLSB(channelNumber, value);
