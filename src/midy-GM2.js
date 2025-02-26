@@ -1177,6 +1177,9 @@ export class MidyGM2 {
       case 2:
         this.handleCoarseTuningRPN(channelNumber);
         break;
+      case 5:
+        channel.modulationDepthRange = dataMSB + dataLSB / 128;
+        break;
       default:
         console.warn(
           `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,

@@ -1251,7 +1251,6 @@ export class Midy {
     }
   }
 
-  // TODO: support 3-4?
   handleRPN(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
@@ -1267,6 +1266,9 @@ export class Midy {
       case 2:
         channel.dataMSB += value;
         this.handleCoarseTuningRPN(channelNumber);
+        break;
+      case 5:
+        channel.modulationDepthRange = dataMSB + dataLSB / 128;
         break;
       default:
         console.warn(
