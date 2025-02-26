@@ -620,15 +620,13 @@ export class Midy {
   connectNoteEffects(channel, gainNode) {
     if (channel.reverb === 0) {
       if (channel.chorus === 0) { // no effect
-        gainNode.connect(channel.gainL);
-        gainNode.connect(channel.gainR);
+        gainNode.connect(channel.pannerNode);
       } else { // chorus
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
           gainNode.connect(delayNode);
         });
         channel.chorusEffect.chorusGains.forEach((chorusGain) => {
-          chorusGain.connect(channel.gainL);
-          chorusGain.connect(channel.gainR);
+          chorusGain.connect(channel.pannerNode);
         });
       }
     } else {
@@ -1025,7 +1023,7 @@ export class Midy {
       case 5:
         return this.setPortamentoTime(channelNumber, value);
       case 6:
-        return this.setDataEntry(channelNumber, value, true);
+        return this.dataEntryMSB(channelNumber, value);
       case 7:
         return this.setVolume(channelNumber, value);
       case 10:
@@ -1035,7 +1033,7 @@ export class Midy {
       case 32:
         return this.setBankLSB(channelNumber, value);
       case 38:
-        return this.setDataEntry(channelNumber, value, false);
+        return this.dataEntryLSB(channelNumber, value);
       case 64:
         return this.setSustainPedal(channelNumber, value);
       case 65:
@@ -1056,9 +1054,9 @@ export class Midy {
       case 93:
         return this.setChorus(channelNumber, value);
       case 96: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-        return incrementRPNValue(channelNumber);
+        return this.dataIncrement(channelNumber);
       case 97: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-        return decrementRPNValue(channelNumber);
+        return this.dataDecrement(channelNumber);
       case 100:
         return this.setRPNLSB(channelNumber, value);
       case 101:
@@ -1139,6 +1137,11 @@ export class Midy {
 
   setBankLSB(channelNumber, lsb) {
     this.channels[channelNumber].bankLSB = lsb;
+  }
+
+  dataEntryLSB(channelNumber, value) {
+    this.channels[channelNumber].dataLSB = value;
+    this.handleRPN(channelNumber, 0);
   }
 
   updateChannelGain(channel) {
@@ -1253,15 +1256,15 @@ export class Midy {
     switch (rpn) {
       case 0:
         channel.dataLSB += value;
-        this.handlePitchBendRangeMessage(channelNumber);
+        this.handlePitchBendRangeRPN(channelNumber);
         break;
       case 1:
         channel.dataLSB += value;
-        this.handleFineTuningMessage(channelNumber);
+        this.handleFineTuningRPN(channelNumber);
         break;
       case 2:
         channel.dataMSB += value;
-        this.handleCoarseTuningMessage(channelNumber);
+        this.handleCoarseTuningRPN(channelNumber);
         break;
       default:
         console.warn(
@@ -1270,11 +1273,11 @@ export class Midy {
     }
   }
 
-  incrementRPNValue(channelNumber) {
+  dataIncrement(channelNumber) {
     this.handleRPN(channelNumber, 1);
   }
 
-  decrementRPNValue(channelNumber) {
+  dataDecrement(channelNumber) {
     this.handleRPN(channelNumber, -1);
   }
 
@@ -1286,9 +1289,8 @@ export class Midy {
     this.channels[channelNumber].rpnLSB = value;
   }
 
-  setDataEntry(channelNumber, value, isMSB) {
-    const channel = this.channels[channelNumber];
-    isMSB ? channel.dataMSB = value : channel.dataLSB = value;
+  dataEntryMSB(channelNumber, value) {
+    this.channels[channelNumber].dataMSB = value;
     this.handleRPN(channelNumber, 0);
   }
 
@@ -1304,7 +1306,7 @@ export class Midy {
     });
   }
 
-  handlePitchBendRangeMessage(channelNumber) {
+  handlePitchBendRangeRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 99);
     const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
@@ -1320,7 +1322,7 @@ export class Midy {
     this.updateDetune(channel, detuneChange);
   }
 
-  handleFineTuningMessage(channelNumber) {
+  handleFineTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
     const fineTuning = (channel.dataMSB * 128 + channel.dataLSB - 8192) / 8192;
@@ -1332,7 +1334,7 @@ export class Midy {
     channel.fineTuning = fineTuning;
   }
 
-  handleCoarseTuningMessage(channelNumber) {
+  handleCoarseTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
     const coarseTuning = channel.dataMSB - 64;

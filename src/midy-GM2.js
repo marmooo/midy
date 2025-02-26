@@ -970,7 +970,7 @@ export class MidyGM2 {
       case 5:
         return this.setPortamentoTime(channelNumber, value);
       case 6:
-        return this.setDataEntry(channelNumber, value, true);
+        return this.dataEntryMSB(channelNumber, value);
       case 7:
         return this.setVolume(channelNumber, value);
       case 10:
@@ -980,7 +980,7 @@ export class MidyGM2 {
       case 32:
         return this.setBankLSB(channelNumber, value);
       case 38:
-        return this.setDataEntry(channelNumber, value, false);
+        return this.dataEntryLSB(channelNumber, value);
       case 64:
         return this.setSustainPedal(channelNumber, value);
       case 65:
@@ -1075,6 +1075,11 @@ export class MidyGM2 {
     this.channels[channelNumber].bankLSB = lsb;
   }
 
+  dataEntryLSB(channelNumber, value) {
+    this.channels[channelNumber].dataLSB = value;
+    this.handleRPN(channelNumber);
+  }
+
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
@@ -1159,21 +1164,18 @@ export class MidyGM2 {
     }
   }
 
-  handleRPN(channelNumber, value) {
+  handleRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
     switch (rpn) {
       case 0:
-        channel.dataLSB += value;
-        this.handlePitchBendRangeMessage(channelNumber);
+        this.handlePitchBendRangeRPN(channelNumber);
         break;
       case 1:
-        channel.dataLSB += value;
-        this.handleFineTuningMessage(channelNumber);
+        this.handleFineTuningRPN(channelNumber);
         break;
       case 2:
-        channel.dataMSB += value;
-        this.handleCoarseTuningMessage(channelNumber);
+        this.handleCoarseTuningRPN(channelNumber);
         break;
       default:
         console.warn(
@@ -1190,9 +1192,8 @@ export class MidyGM2 {
     this.channels[channelNumber].rpnLSB = value;
   }
 
-  setDataEntry(channelNumber, value, isMSB) {
-    const channel = this.channels[channelNumber];
-    isMSB ? channel.dataMSB = value : channel.dataLSB = value;
+  dataEntryMSB(channelNumber, value) {
+    this.channels[channelNumber].dataMSB = value;
     this.handleRPN(channelNumber);
   }
 
@@ -1208,7 +1209,7 @@ export class MidyGM2 {
     });
   }
 
-  handlePitchBendRangeMessage(channelNumber) {
+  handlePitchBendRangeRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 99);
     const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
@@ -1224,7 +1225,7 @@ export class MidyGM2 {
     this.updateDetune(channel, detuneChange);
   }
 
-  handleFineTuningMessage(channelNumber) {
+  handleFineTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
     const fineTuning = (channel.dataMSB * 128 + channel.dataLSB - 8192) / 8192;
@@ -1236,7 +1237,7 @@ export class MidyGM2 {
     channel.fineTuning = fineTuning;
   }
 
-  handleCoarseTuningMessage(channelNumber) {
+  handleCoarseTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
     const coarseTuning = channel.dataMSB - 64;

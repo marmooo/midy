@@ -733,7 +733,7 @@ export class MidyGMLite {
       case 1:
         return this.setModulation(channelNumber, value);
       case 6:
-        return this.setDataEntry(channelNumber, value, true);
+        return this.dataEntryMSB(channelNumber, value);
       case 7:
         return this.setVolume(channelNumber, value);
       case 10:
@@ -741,7 +741,7 @@ export class MidyGMLite {
       case 11:
         return this.setExpression(channelNumber, value);
       case 38:
-        return this.setDataEntry(channelNumber, value, false);
+        return this.dataEntryLSB(channelNumber, value);
       case 64:
         return this.setSustainPedal(channelNumber, value);
       case 100:
@@ -806,6 +806,11 @@ export class MidyGMLite {
     this.updateChannelGain(channel);
   }
 
+  dataEntryLSB(channelNumber, value) {
+    this.channels[channelNumber].dataLSB = value;
+    this.handleRPN(channelNumber);
+  }
+
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
@@ -831,7 +836,7 @@ export class MidyGMLite {
     const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
     switch (rpn) {
       case 0:
-        this.handlePitchBendRangeMessage(channelNumber);
+        this.handlePitchBendRangeRPN(channelNumber);
         break;
       default:
         console.warn(
@@ -848,9 +853,8 @@ export class MidyGMLite {
     this.channels[channelNumber].rpnLSB = value;
   }
 
-  setDataEntry(channelNumber, value, isMSB) {
-    const channel = this.channels[channelNumber];
-    isMSB ? channel.dataMSB = value : channel.dataLSB = value;
+  dataEntryMSB(channelNumber, value) {
+    this.channels[channelNumber].dataMSB = value;
     this.handleRPN(channelNumber);
   }
 
@@ -866,7 +870,7 @@ export class MidyGMLite {
     });
   }
 
-  handlePitchBendRangeMessage(channelNumber) {
+  handlePitchBendRangeRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 99);
     const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
