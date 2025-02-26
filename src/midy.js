@@ -620,13 +620,15 @@ export class Midy {
   connectNoteEffects(channel, gainNode) {
     if (channel.reverb === 0) {
       if (channel.chorus === 0) { // no effect
-        gainNode.connect(channel.pannerNode);
+        gainNode.connect(channel.gainL);
+        gainNode.connect(channel.gainR);
       } else { // chorus
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
           gainNode.connect(delayNode);
         });
         channel.chorusEffect.chorusGains.forEach((chorusGain) => {
-          chorusGain.connect(channel.pannerNode);
+          chorusGain.connect(channel.gainL);
+          chorusGain.connect(channel.gainR);
         });
       }
     } else {

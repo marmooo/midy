@@ -452,7 +452,8 @@ export class MidyGM1 {
   }
 
   connectNoteEffects(channel, gainNode) {
-    gainNode.connect(channel.pannerNode);
+    gainNode.connect(channel.gainL);
+    gainNode.connect(channel.gainR);
   }
 
   cbToRatio(cb) {
