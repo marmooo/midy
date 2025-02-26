@@ -48,7 +48,7 @@ export class MidyGM2 {
   static channelSettings = {
     currentBufferSource: null,
     volume: 100 / 127,
-    pan: 0,
+    pan: 64,
     portamentoTime: 0,
     reverb: 0,
     chorus: 0,
