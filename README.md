@@ -76,7 +76,7 @@ functions.
 ```
 midy.handleSysEx(data);             // [F0 F6 04 01 xx xx F7] data
 midy.handleMasterVolumeSysEx(data); // [F0 F6 04 01 xx xx F7] data
-midy.handleMasterVolume(volume);    // [0-1] volume
+midy.setMasterVolume(volume);       // [0-1] volume
 ```
 
 ### Multiple Soundfonts
