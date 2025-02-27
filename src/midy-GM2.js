@@ -1363,9 +1363,9 @@ export class MidyGM2 {
         switch (data[3]) {
           case 1:
             return this.handleMasterVolumeSysEx(data);
-          case 3:
+          case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
             return this.handleMasterFineTuningSysEx(data);
-          case 4:
+          case 4: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
             return this.handleMasterCoarseTuningSysEx(data);
           // case 5: // TODO: Global Parameter Control
           default:
