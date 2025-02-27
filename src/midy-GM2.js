@@ -990,9 +990,9 @@ export class MidyGM2 {
       case 67:
         return this.setSoftPedal(channelNumber, value);
       case 91:
-        return this.setReverb(channelNumber, value);
+        return this.setReverbSendLevel(channelNumber, value);
       case 93:
-        return this.setChorus(channelNumber, value);
+        return this.setChorusSendLevel(channelNumber, value);
       case 100:
         return this.setRPNLSB(channelNumber, value);
       case 101:
@@ -1104,7 +1104,7 @@ export class MidyGM2 {
     this.channels[channelNumber].portamento = value >= 64;
   }
 
-  setReverb(channelNumber, reverb) {
+  setReverbSendLevel(channelNumber, reverb) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const reverbEffect = channel.reverbEffect;
@@ -1115,7 +1115,7 @@ export class MidyGM2 {
     reverbEffect.wetGain.gain.setValueAtTime(channel.reverb, now);
   }
 
-  setChorus(channelNumber, chorus) {
+  setChorusSendLevel(channelNumber, chorus) {
     const channel = this.channels[channelNumber];
     channel.chorus = chorus / 127;
     channel.chorusEffect.lfoGain = channel.chorus;

@@ -1052,9 +1052,9 @@ export class Midy {
       case 78:
         return this.setVibratoDelay(channelNumber, value);
       case 91:
-        return this.setReverb(channelNumber, value);
+        return this.setReverbSendLevel(channelNumber, value);
       case 93:
-        return this.setChorus(channelNumber, value);
+        return this.setChorusSendLevel(channelNumber, value);
       case 96: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
         return this.dataIncrement(channelNumber);
       case 97: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
@@ -1170,7 +1170,7 @@ export class Midy {
     this.channels[channelNumber].portamento = value >= 64;
   }
 
-  setReverb(channelNumber, reverb) {
+  setReverbSendLevel(channelNumber, reverb) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const reverbEffect = channel.reverbEffect;
@@ -1181,7 +1181,7 @@ export class Midy {
     reverbEffect.wetGain.gain.setValueAtTime(channel.reverb, now);
   }
 
-  setChorus(channelNumber, chorus) {
+  setChorusSendLevel(channelNumber, chorus) {
     const channel = this.channels[channelNumber];
     channel.chorus = chorus / 127;
     channel.chorusEffect.lfoGain = channel.chorus;
