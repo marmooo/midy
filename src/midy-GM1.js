@@ -807,6 +807,11 @@ export class MidyGM1 {
     this.updateChannelGain(channel);
   }
 
+  dataEntryLSB(channelNumber, value) {
+    this.channels[channelNumber].dataLSB = value;
+    this.handleRPN(channelNumber, 0);
+  }
+
   updateChannelGain(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
