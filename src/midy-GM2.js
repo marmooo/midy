@@ -1237,7 +1237,10 @@ export class MidyGM2 {
 
   setFineTuning(channelNumber, fineTuning) {
     const channel = this.channels[channelNumber];
+    const prevFineTuning = channel.fineTuning;
     channel.fineTuning = fineTuning;
+    const detuneChange = channel.fineTuning - prevFineTuning;
+    this.updateDetune(channel, detuneChange);
   }
 
   handleCoarseTuningRPN(channelNumber) {
