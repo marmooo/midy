@@ -1178,7 +1178,7 @@ export class MidyGM2 {
         this.handleCoarseTuningRPN(channelNumber);
         break;
       case 5:
-        channel.modulationDepthRange = dataMSB + dataLSB / 128;
+        this.handleModulationDepthRangeRPN(channelNumber);
         break;
       default:
         console.warn(
@@ -1250,6 +1250,18 @@ export class MidyGM2 {
   setCoarseTuning(channelNumber, coarseTuning) {
     const channel = this.channels[channelNumber];
     channel.fineTuning = coarseTuning;
+  }
+
+  handleModulationDepthRangeRPN(channelNumber) {
+    const channel = this.channels[channelNumber];
+    this.limitData(channel, 0, 127, 0, 127);
+    const modulationDepthRange = dataMSB + dataLSB / 128;
+    this.setModulationDepthRange(channelNumber, modulationDepthRange);
+  }
+
+  setModulationDepthRange(channelNumber, modulationDepthRange) {
+    const channel = this.channels[channelNumber];
+    channel.modulationDepthRange = modulationDepthRange;
   }
 
   allSoundOff(channelNumber) {
