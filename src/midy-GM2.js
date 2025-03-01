@@ -1252,7 +1252,10 @@ export class MidyGM2 {
 
   setCoarseTuning(channelNumber, coarseTuning) {
     const channel = this.channels[channelNumber];
-    channel.fineTuning = coarseTuning;
+    const prevCoarseTuning = channel.coarseTuning;
+    channel.coarseTuning = coarseTuning;
+    const detuneChange = channel.coarseTuning - prevCoarseTuning;
+    this.updateDetune(channel, detuneChange);
   }
 
   handleModulationDepthRangeRPN(channelNumber) {
