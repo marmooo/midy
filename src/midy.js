@@ -1088,11 +1088,8 @@ export class Midy {
     this.channels[channelNumber].bankMSB = msb;
   }
 
-  setModulation(channelNumber, modulation) {
+  updateModulation(channel) {
     const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    channel.modulation = (modulation / 127) *
-      (channel.modulationDepthRange * 100);
     const activeNotes = this.getActiveNotes(channel, now);
     activeNotes.forEach((activeNote) => {
       if (activeNote.modLFO) {
@@ -1105,6 +1102,13 @@ export class Midy {
         this.startModulation(channel, activeNote, now);
       }
     });
+  }
+
+  setModulation(channelNumber, modulation) {
+    const channel = this.channels[channelNumber];
+    channel.modulation = (modulation / 127) *
+      (channel.modulationDepthRange * 100);
+    this.updateModulation(channel);
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
@@ -1367,6 +1371,9 @@ export class Midy {
   setModulationDepthRange(channelNumber, modulationDepthRange) {
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
+    channel.modulation = (modulation / 127) *
+      (channel.modulationDepthRange * 100);
+    this.updateModulation(channel);
   }
 
   allSoundOff(channelNumber) {
