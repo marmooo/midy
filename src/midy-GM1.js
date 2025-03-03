@@ -46,8 +46,8 @@ export class MidyGM1 {
     dataLSB: 0,
     program: 0,
     pitchBend: 0,
-    fineTuning: 0,
-    coarseTuning: 0,
+    fineTuning: 0, // cb
+    coarseTuning: 0, // cb
     modulationDepthRange: 0.5, // cb
   };
 

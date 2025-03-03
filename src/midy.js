@@ -25,8 +25,8 @@ export class Midy {
   ticksPerBeat = 120;
   totalTime = 0;
   reverbFactor = 0.1;
-  masterFineTuning = 0;
-  masterCoarseTuning = 0;
+  masterFineTuning = 0; // cb
+  masterCoarseTuning = 0; // cb
   mono = false; // CC#124, CC#125
   omni = false; // CC#126, CC#127
   noteCheckInterval = 0.1;
@@ -62,8 +62,8 @@ export class Midy {
     dataLSB: 0,
     program: 0,
     pitchBend: 0,
-    fineTuning: 0,
-    coarseTuning: 0,
+    fineTuning: 0, // cb
+    coarseTuning: 0, // cb
     modulationDepthRange: 0.5, // cb
   };
 
