@@ -48,7 +48,7 @@ export class MidyGM1 {
     pitchBend: 0,
     fineTuning: 0,
     coarseTuning: 0,
-    modulationDepthRange: 0.5,
+    modulationDepthRange: 0.5, // cb
   };
 
   static effectSettings = {
@@ -767,9 +767,9 @@ export class MidyGM1 {
     const activeNotes = this.getActiveNotes(channel, now);
     activeNotes.forEach((activeNote) => {
       if (activeNote.modLFO) {
-        activeNote.gainNode.gain.setValueAtTime(
-          this.cbToRatio(activeNote.instrumentKey.modLfoToVolume) *
-            channel.modulation,
+        const { gainNode, instrumentKey } = activeNote;
+        gainNode.gain.setValueAtTime(
+          this.cbToRatio(instrumentKey.modLfoToVolume + channel.modulation),
           now,
         );
       } else {
@@ -780,8 +780,7 @@ export class MidyGM1 {
 
   setModulation(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulation = (modulation / 127) *
-      (channel.modulationDepthRange * 100);
+    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {
