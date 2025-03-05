@@ -651,10 +651,10 @@ export class MidyGMLite {
       return new Promise((resolve) => {
         note.bufferSource.onended = () => {
           scheduledNotes[i] = null;
-          note.bufferSource.disconnect(0);
-          note.filterNode.disconnect(0);
-          note.gainNode.disconnect(0);
-          if (note.modLFOGain) note.modLFOGain.disconnect(0);
+          note.bufferSource.disconnect();
+          note.filterNode.disconnect();
+          note.gainNode.disconnect();
+          if (note.modLFOGain) note.modLFOGain.disconnect();
           if (note.modLFO) note.modLFO.stop();
           resolve();
         };
