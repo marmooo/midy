@@ -712,7 +712,7 @@ export class MidyGM2 {
   startModulation(channel, note, time) {
     const { instrumentKey } = note;
     note.modLFOGain = new GainNode(this.audioContext, {
-      gain: this.cbToRatio(instrumentKey.modLfoToVolume) * channel.modulation,
+      gain: this.cbToRatio(instrumentKey.modLfoToVolume + channel.modulation),
     });
     note.modLFO = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(instrumentKey.freqModLFO),
