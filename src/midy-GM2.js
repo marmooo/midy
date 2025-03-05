@@ -825,45 +825,42 @@ export class MidyGM2 {
     if (stopPedal && channel.sustainPedal) return;
     if (stopPedal && channel.sostenutoNotes.has(noteNumber)) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
-    const targetNotes = channel.scheduledNotes.get(noteNumber);
-    for (let i = 0; i < targetNotes.length; i++) {
-      const targetNote = targetNotes[i];
-      if (!targetNote) continue;
-      if (targetNote.ending) continue;
-      const {
-        bufferSource,
-        filterNode,
-        gainNode,
-        modLFO,
-        modLFOGain,
-        instrumentKey,
-      } = targetNote;
+    const scheduledNotes = channel.scheduledNotes.get(noteNumber);
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
       const velocityRate = (velocity + 127) / 127;
-      const volEndTime = stopTime + instrumentKey.volRelease * velocityRate;
-      gainNode.gain.cancelScheduledValues(stopTime);
-      gainNode.gain.linearRampToValueAtTime(0, volEndTime);
+      const volEndTime = stopTime +
+        note.instrumentKey.volRelease * velocityRate;
+      note.gainNode.gain
+        .cancelScheduledValues(stopTime)
+        .linearRampToValueAtTime(0, volEndTime);
       const maxFreq = this.audioContext.sampleRate / 2;
-      const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
+      const baseFreq = this.centToHz(note.instrumentKey.initialFilterFc);
       const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
-      const modEndTime = stopTime + instrumentKey.modRelease * velocityRate;
-      filterNode.frequency
+      const modEndTime = stopTime +
+        note.instrumentKey.modRelease * velocityRate;
+      note.filterNode.frequency
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(adjustedBaseFreq, modEndTime);
-      targetNote.ending = true;
+      note.ending = true;
       this.scheduleTask(() => {
-        bufferSource.loop = false;
+        note.bufferSource.loop = false;
       }, stopTime);
       return new Promise((resolve) => {
-        bufferSource.onended = () => {
-          targetNotes[i] = null;
-          bufferSource.disconnect(0);
-          filterNode.disconnect(0);
-          gainNode.disconnect(0);
-          if (modLFOGain) modLFOGain.disconnect(0);
-          if (modLFO) modLFO.stop();
+        note.bufferSource.onended = () => {
+          scheduledNotes[i] = null;
+          note.bufferSource.disconnect(0);
+          note.filterNode.disconnect(0);
+          note.gainNode.disconnect(0);
+          if (note.modLFOGain) note.modLFOGain.disconnect(0);
+          if (note.vibLFOGain) note.vibLFOGain.disconnect(0);
+          if (note.modLFO) note.modLFO.stop();
+          if (note.vibLFO) note.vibLFO.stop();
           resolve();
         };
-        bufferSource.stop(volEndTime);
+        note.bufferSource.stop(volEndTime);
       });
     }
   }
