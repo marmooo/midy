@@ -143,6 +143,7 @@ export class MidyGM2 {
     const reverbEffect = this.createFDNReverb(audioContext);
     // const reverbEffect = this.createSchroederReverb(audioContext);
     // const reverbEffect = this.createCombFilterReverb(audioContext);
+    // const reverbEffect = this.createAllpassReverb(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
@@ -692,6 +693,56 @@ export class MidyGM2 {
       feedbackGain,
       wetGain,
       dryGain: input,
+    };
+  }
+
+  createAllpassReverb(audioContext, options = {}) {
+    const {
+      delays = [0.1, 0.2, 0.3],
+      feedbacks = [0.7, 0.6, 0.5],
+      mix = 0.5,
+    } = options;
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
+    const wetGain = new GainNode(audioContext, { gain: mix });
+    const allpassFilters = [];
+    const delayNodes = [];
+    const feedbackGains = [];
+    for (let i = 0; i < delays.length; i++) {
+      const delayNode = new DelayNode(audioContext, {
+        maxDelayTime: delays[i],
+      });
+      const feedbackGain = new GainNode(audioContext, { gain: feedbacks[i] });
+      const allpassFilter = new BiquadFilterNode(audioContext, {
+        type: "allpass",
+        frequency: 1000,
+        Q: 1,
+      });
+      delayNodes.push(delayNode);
+      feedbackGains.push(feedbackGain);
+      allpassFilters.push(allpassFilter);
+      if (i === 0) {
+        input.connect(delayNode);
+      } else {
+        delayNodes[i - 1].connect(delayNode);
+      }
+      delayNode.connect(feedbackGain);
+      feedbackGain.connect(delayNode);
+      delayNode.connect(allpassFilter);
+      allpassFilter.connect(wetGain);
+    }
+    input.connect(dryGain);
+    dryGain.connect(output);
+    wetGain.connect(output);
+    return {
+      input,
+      output,
+      allpassFilters,
+      delayNodes,
+      feedbackGains,
+      dryGain,
+      wetGain,
     };
   }
 
