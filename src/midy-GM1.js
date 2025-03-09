@@ -113,10 +113,14 @@ export class MidyGM1 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    merger.connect(this.masterGain);
+    const reverbEffect = this.createConvolutionReverb(audioContext);
+    const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
       gainR,
+      merger,
+      reverbEffect,
+      chorusEffect,
     };
   }
 
@@ -451,9 +455,9 @@ export class MidyGM1 {
     return noteList[0];
   }
 
-  connectNoteEffects(channel, gainNode) {
-    gainNode.connect(channel.gainL);
-    gainNode.connect(channel.gainR);
+  connectEffects(channel, gainNode) {
+    gainNode.connect(channel.merger);
+    merger.connect(this.masterGain);
   }
 
   cbToRatio(cb) {
@@ -601,7 +605,7 @@ export class MidyGM1 {
       startTime,
       isSF3,
     );
-    this.connectNoteEffects(channel, note.gainNode);
+    this.connectEffects(channel, note.gainNode);
 
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {

@@ -113,10 +113,10 @@ export class MidyGMLite {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    merger.connect(this.masterGain);
     return {
       gainL,
       gainR,
+      merger,
     };
   }
 
@@ -451,9 +451,9 @@ export class MidyGMLite {
     return noteList[0];
   }
 
-  connectNoteEffects(channel, gainNode) {
-    gainNode.connect(channel.gainL);
-    gainNode.connect(channel.gainR);
+  connectEffects(channel, gainNode) {
+    gainNode.connect(channel.merger);
+    merger.connect(this.masterGain);
   }
 
   cbToRatio(cb) {
@@ -600,7 +600,7 @@ export class MidyGMLite {
       startTime,
       isSF3,
     );
-    this.connectNoteEffects(channel, note.gainNode);
+    this.connectEffects(channel, note.gainNode);
 
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {

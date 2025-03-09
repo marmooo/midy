@@ -139,17 +139,12 @@ export class MidyGM2 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    merger.connect(this.masterGain);
-    const reverbEffect = this.createReverbEffect(audioContext);
+    const reverbEffect = this.createConvolutionReverb(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
-    chorusEffect.lfo.start();
-    reverbEffect.dryGain.connect(gainL);
-    reverbEffect.dryGain.connect(gainR);
-    reverbEffect.wetGain.connect(gainL);
-    reverbEffect.wetGain.connect(gainR);
     return {
       gainL,
       gainR,
+      merger,
       reverbEffect,
       chorusEffect,
     };
@@ -527,11 +522,15 @@ export class MidyGM2 {
     return noteList[0];
   }
 
-  createReverbEffect(audioContext, options = {}) {
+  createConvolutionReverb(audioContext, options = {}) {
     const {
       decay = 0.8,
       preDecay = 0,
     } = options;
+    const input = new GainNode();
+    const output = new GainNode();
+    const dryGain = new GainNode(audioContext);
+    const wetGain = new GainNode(audioContext);
     const sampleRate = audioContext.sampleRate;
     const length = sampleRate * decay;
     const impulse = new AudioBuffer({
@@ -545,9 +544,10 @@ export class MidyGM2 {
       for (let i = 0; i < preDecayLength; i++) {
         channelData[i] = Math.random() * 2 - 1;
       }
+      const attenuationFactor = 1 / (sampleRate * decay);
       for (let i = preDecayLength; i < length; i++) {
         const attenuation = Math.exp(
-          -(i - preDecayLength) / sampleRate / decay,
+          -(i - preDecayLength) * attenuationFactor,
         );
         channelData[i] = (Math.random() * 2 - 1) * attenuation;
       }
@@ -555,10 +555,13 @@ export class MidyGM2 {
     const convolverNode = new ConvolverNode(audioContext, {
       buffer: impulse,
     });
-    const dryGain = new GainNode(audioContext);
-    const wetGain = new GainNode(audioContext);
+    input.connect(convolverNode);
     convolverNode.connect(wetGain);
+    wetGain.connect(output);
+    dryGain.connect(output);
     return {
+      input,
+      output,
       convolverNode,
       dryGain,
       wetGain,
@@ -573,64 +576,57 @@ export class MidyGM2 {
       delay = 0.01,
       variance = delay * 0.1,
     } = options;
-
     const lfo = new OscillatorNode(audioContext, { frequency: chorusRate });
     const lfoGain = new GainNode(audioContext, { gain: chorusDepth });
-
+    const output = new GainNode(audioContext);
     const chorusGains = [];
     const delayNodes = [];
     const baseGain = 1 / chorusCount;
-
     for (let i = 0; i < chorusCount; i++) {
       const randomDelayFactor = (Math.random() - 0.5) * variance;
       const delayTime = (i + 1) * delay + randomDelayFactor;
       const delayNode = new DelayNode(audioContext, {
         maxDelayTime: delayTime,
       });
-      delayNodes.push(delayNode);
-
       const chorusGain = new GainNode(audioContext, { gain: baseGain });
+      delayNodes.push(delayNode);
       chorusGains.push(chorusGain);
-
-      lfo.connect(lfoGain);
       lfoGain.connect(delayNode.delayTime);
       delayNode.connect(chorusGain);
+      chorusGain.connect(output);
     }
+    lfo.connect(lfoGain);
+    lfo.start();
     return {
       lfo,
       lfoGain,
       delayNodes,
       chorusGains,
+      output,
     };
   }
 
-  connectNoteEffects(channel, gainNode) {
+  connectEffects(channel, gainNode) {
+    gainNode.connect(channel.merger);
     if (channel.reverb === 0) {
       if (channel.chorus === 0) { // no effect
-        gainNode.connect(channel.gainL);
-        gainNode.connect(channel.gainR);
+        channel.merger.connect(this.masterGain);
       } else { // chorus
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
-          gainNode.connect(delayNode);
+          channel.merger.connect(delayNode);
         });
-        channel.chorusEffect.chorusGains.forEach((chorusGain) => {
-          chorusGain.connect(channel.gainL);
-          chorusGain.connect(channel.gainR);
-        });
+        channel.chorusEffect.output.connect(this.masterGain);
       }
     } else {
       if (channel.chorus === 0) { // reverb
-        gainNode.connect(channel.reverbEffect.convolverNode);
-        gainNode.connect(channel.reverbEffect.dryGain);
+        channel.merger.connect(channel.reverbEffect.input);
+        channel.reverbEffect.output.connect(this.masterGain);
       } else { // reverb + chorus
-        gainNode.connect(channel.reverbEffect.convolverNode);
-        gainNode.connect(channel.reverbEffect.dryGain);
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
-          gainNode.connect(delayNode);
+          channel.merger.connect(delayNode);
         });
-        channel.chorusEffect.chorusGains.forEach((chorusGain) => {
-          chorusGain.connect(channel.reverbEffect.convolverNode);
-        });
+        channel.merger.connect(channel.reverbEffect.input);
+        channel.reverbEffect.output.connect(this.masterGain);
       }
     }
   }
@@ -796,7 +792,7 @@ export class MidyGM2 {
       startTime,
       isSF3,
     );
-    this.connectNoteEffects(channel, note.gainNode);
+    this.connectEffects(channel, note.gainNode);
 
     if (channel.sostenutoPedal) {
       channel.sostenutoNotes.set(noteNumber, note);
