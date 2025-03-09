@@ -139,7 +139,8 @@ export class MidyGM2 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    const reverbEffect = this.createConvolutionReverb(audioContext);
+    // const reverbEffect = this.createConvolutionReverb(audioContext);
+    const reverbEffect = this.createFDNReverb(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
@@ -563,6 +564,55 @@ export class MidyGM2 {
       input,
       output,
       convolverNode,
+      dryGain,
+      wetGain,
+    };
+  }
+
+  createFDNReverb(audioContext, options = {}) {
+    const {
+      delays = [0.1, 0.15, 0.2],
+      feedbacks = [0.7, 0.6, 0.5],
+      mix = 0.5,
+    } = options;
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
+    const wetGain = new GainNode(audioContext, { gain: mix });
+    const delaysArray = new Array(delays.length).fill(0).map((_, i) =>
+      delays[i % delays.length]
+    );
+    const feedbacksArray = new Array(delays.length).fill(0).map((_, i) =>
+      feedbacks[i % feedbacks.length]
+    );
+    const delayNodes = [];
+    const feedbackGains = [];
+    for (let i = 0; i < delays.length; i++) {
+      const delayNode = new DelayNode(audioContext, {
+        maxDelayTime: delaysArray[i],
+      });
+      const feedbackGain = new GainNode(audioContext, {
+        gain: feedbacksArray[i],
+      });
+      delayNodes.push(delayNode);
+      feedbackGains.push(feedbackGain);
+      if (i === 0) {
+        input.connect(delayNode);
+      } else {
+        delayNodes[i - 1].connect(delayNode);
+      }
+      delayNode.connect(feedbackGain);
+      feedbackGain.connect(delayNode);
+      delayNode.connect(wetGain);
+    }
+    input.connect(dryGain);
+    dryGain.connect(output);
+    wetGain.connect(output);
+    return {
+      input,
+      output,
+      delayNodes,
+      feedbackGains,
       dryGain,
       wetGain,
     };
