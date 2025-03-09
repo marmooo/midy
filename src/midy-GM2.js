@@ -144,6 +144,7 @@ export class MidyGM2 {
     // const reverbEffect = this.createSchroederReverb(audioContext);
     // const reverbEffect = this.createCombFilterReverb(audioContext);
     // const reverbEffect = this.createAllpassReverb(audioContext);
+    // const reverbEffect = this.createDelayLineReverb(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
@@ -743,6 +744,38 @@ export class MidyGM2 {
       feedbackGains,
       dryGain,
       wetGain,
+    };
+  }
+
+  createDelayLineReverb(audioContext, options = {}) {
+    const {
+      delayTime = 0.01,
+      feedback = 0.5,
+      mix = 0.5,
+    } = options;
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
+    const wetGain = new GainNode(audioContext, { gain: mix });
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: delayTime,
+    });
+    const feedbackGainNode = new GainNode(audioContext, {
+      gain: feedback,
+    });
+    input.connect(dryGain);
+    dryGain.connect(output);
+    delayNode.connect(feedbackGainNode);
+    feedbackGainNode.connect(delayNode);
+    delayNode.connect(wetGain);
+    wetGain.connect(output);
+    return {
+      input,
+      output,
+      delayNode,
+      feedbackGainNode,
+      wetGain,
+      dryGain,
     };
   }
 
