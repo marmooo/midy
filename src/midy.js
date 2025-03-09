@@ -596,20 +596,14 @@ export class Midy {
     const output = new GainNode(audioContext);
     const dryGain = new GainNode(audioContext, { gain: 1 - mix });
     const wetGain = new GainNode(audioContext, { gain: mix });
-    const delaysArray = new Array(delays.length).fill(0).map((_, i) =>
-      delays[i % delays.length]
-    );
-    const feedbacksArray = new Array(delays.length).fill(0).map((_, i) =>
-      feedbacks[i % feedbacks.length]
-    );
     const delayNodes = [];
     const feedbackGains = [];
     for (let i = 0; i < delays.length; i++) {
       const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: delaysArray[i],
+        maxDelayTime: delays[i],
       });
       const feedbackGain = new GainNode(audioContext, {
-        gain: feedbacksArray[i],
+        gain: feedbacks[i],
       });
       delayNodes.push(delayNode);
       feedbackGains.push(feedbackGain);
