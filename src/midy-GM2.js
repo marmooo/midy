@@ -86,8 +86,22 @@ export class MidyGM2 {
     lfoAmplitudeDepth: 0,
   };
 
-  constructor(audioContext) {
+  static reverbAlgorithms = {
+    ConvolutionReverb: this.createConvolutionReverb,
+    FDNReverb: this.createFDNReverb,
+    SchroederReverb: this.createSchroederReverb,
+    CombFilterReverb: this.createCombFilterReverb,
+    AllpassReverb: this.createAllpassReverb,
+    DelayLineReverb: this.createDelayLineReverb,
+  };
+
+  static defaultOptions = {
+    reverbAlgorithm: MidyGM2.reverbAlgorithms.FDNReverb,
+  };
+
+  constructor(audioContext, options = MidyGM2.defaultOptions) {
     this.audioContext = audioContext;
+    this.options = { ...MidyGM2.defaultOptions, ...options };
     this.masterGain = new GainNode(audioContext);
     this.masterGain.connect(audioContext.destination);
     this.channels = this.createChannels(audioContext);
@@ -139,12 +153,7 @@ export class MidyGM2 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    // const reverbEffect = this.createConvolutionReverb(audioContext);
-    const reverbEffect = this.createFDNReverb(audioContext);
-    // const reverbEffect = this.createSchroederReverb(audioContext);
-    // const reverbEffect = this.createCombFilterReverb(audioContext);
-    // const reverbEffect = this.createAllpassReverb(audioContext);
-    // const reverbEffect = this.createDelayLineReverb(audioContext);
+    const reverbEffect = this.options.reverbAlgorithm(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
@@ -616,7 +625,7 @@ export class MidyGM2 {
     };
   }
 
-  createSchroederReverb(audioContext, options = {}) {
+  static createSchroederReverb(audioContext, options = {}) {
     const {
       combDelays = [0.015, 0.025, 0.03],
       combFeedbacks = [0.7, 0.5, 0.3],
@@ -662,7 +671,7 @@ export class MidyGM2 {
     };
   }
 
-  createCombFilterReverb(audioContext, options = {}) {
+  static createCombFilterReverb(audioContext, options = {}) {
     const {
       delayTime = 0.03,
       feedback = 0.7,
@@ -691,7 +700,7 @@ export class MidyGM2 {
     };
   }
 
-  createAllpassReverb(audioContext, options = {}) {
+  static createAllpassReverb(audioContext, options = {}) {
     const {
       delays = [0.1, 0.2, 0.3],
       feedbacks = [0.7, 0.6, 0.5],
@@ -741,7 +750,7 @@ export class MidyGM2 {
     };
   }
 
-  createDelayLineReverb(audioContext, options = {}) {
+  static createDelayLineReverb(audioContext, options = {}) {
     const {
       delayTime = 0.01,
       feedback = 0.5,
