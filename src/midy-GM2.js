@@ -141,6 +141,7 @@ export class MidyGM2 {
     gainR.connect(merger, 0, 1);
     // const reverbEffect = this.createConvolutionReverb(audioContext);
     const reverbEffect = this.createFDNReverb(audioContext);
+    // const reverbEffect = this.createSchroederReverb(audioContext);
     const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
@@ -613,6 +614,52 @@ export class MidyGM2 {
       output,
       delayNodes,
       feedbackGains,
+      dryGain,
+      wetGain,
+    };
+  }
+
+  createSchroederReverb(audioContext, options = {}) {
+    const {
+      combDelays = [0.015, 0.025, 0.03],
+      combFeedbacks = [0.7, 0.5, 0.3],
+      allpassFrequencies = [800, 1000, 1200],
+      mix = 0.5,
+    } = options;
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
+    const wetGain = new GainNode(audioContext, { gain: mix });
+    let combInput = input;
+    combDelays.forEach((delayTime, i) => {
+      const delay = new DelayNode(audioContext, {
+        maxDelayTime: delayTime,
+        delayTime,
+      });
+      const feedback = new GainNode(audioContext, { gain: combFeedbacks[i] });
+      combInput.connect(delay);
+      delay.connect(feedback);
+      feedback.connect(delay);
+      delay.connect(wetGain);
+      combInput = delay;
+    });
+    let allpassInput = wetGain;
+    allpassFrequencies.forEach((freq) => {
+      const allpass = new BiquadFilterNode(audioContext, {
+        type: "allpass",
+        frequency: freq,
+        Q: 0.7,
+      });
+      allpassInput.connect(allpass);
+      allpass.connect(wetGain);
+      allpassInput = allpass;
+    });
+    input.connect(dryGain);
+    dryGain.connect(output);
+    wetGain.connect(output);
+    return {
+      input,
+      output,
       dryGain,
       wetGain,
     };
