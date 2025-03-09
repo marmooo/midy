@@ -96,7 +96,7 @@ export class MidyGM2 {
   };
 
   static defaultOptions = {
-    reverbAlgorithm: MidyGM2.reverbAlgorithms.FDNReverb,
+    reverbAlgorithm: MidyGM2.reverbAlgorithms.CombFilterReverb,
   };
 
   constructor(audioContext, options = MidyGM2.defaultOptions) {
@@ -673,30 +673,47 @@ export class MidyGM2 {
 
   static createCombFilterReverb(audioContext, options = {}) {
     const {
-      delayTime = 0.03,
-      feedback = 0.7,
+      delays = [0.1, 0.2, 0.3],
+      feedbacks = [0.7, 0.6, 0.5],
       mix = 0.5,
     } = options;
-    const input = new GainNode(audioContext, { gain: 1 - mix });
+    const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
     const wetGain = new GainNode(audioContext, { gain: mix });
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delayTime,
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    delayNode.connect(wetGain);
-    input.connect(output);
+    const delayNodes = [];
+    const feedbackGains = [];
+    const passGains = [];
+    for (let i = 0; i < delays.length; i++) {
+      const delayNode = new DelayNode(audioContext, {
+        maxDelayTime: delays[i],
+        delayTime: delays[i],
+      });
+      const feedbackGain = new GainNode(audioContext, { gain: feedbacks[i] });
+      const passGain = new GainNode(audioContext, { gain: 1 - feedbacks[i] });
+      delayNodes.push(delayNode);
+      feedbackGains.push(feedbackGain);
+      passGains.push(passGain);
+      if (i === 0) {
+        input.connect(delayNode);
+      } else {
+        passGains[i - 1].connect(delayNode);
+      }
+      delayNode.connect(feedbackGain);
+      feedbackGain.connect(delayNode);
+      delayNode.connect(passGain);
+    }
+    passGains.at(-1).connect(wetGain);
+    input.connect(dryGain);
+    dryGain.connect(output);
     wetGain.connect(output);
     return {
       input,
       output,
-      delayNode,
-      feedbackGain,
+      delayNodes,
+      feedbackGains,
+      dryGain,
       wetGain,
-      dryGain: input,
     };
   }
 
