@@ -96,12 +96,12 @@ export class MidyGM2 {
   };
 
   static defaultOptions = {
-    reverbAlgorithm: MidyGM2.reverbAlgorithms.CombFilterReverb,
+    reverbAlgorithm: this.reverbAlgorithms.CombFilterReverb,
   };
 
-  constructor(audioContext, options = MidyGM2.defaultOptions) {
+  constructor(audioContext, options = this.constructor.defaultOptions) {
     this.audioContext = audioContext;
-    this.options = { ...MidyGM2.defaultOptions, ...options };
+    this.options = { ...this.constructor.defaultOptions, ...options };
     this.masterGain = new GainNode(audioContext);
     this.masterGain.connect(audioContext.destination);
     this.channels = this.createChannels(audioContext);
@@ -147,7 +147,9 @@ export class MidyGM2 {
   }
 
   setChannelAudioNodes(audioContext) {
-    const { gainLeft, gainRight } = this.panToGain(MidyGM2.channelSettings.pan);
+    const { gainLeft, gainRight } = this.panToGain(
+      this.constructor.channelSettings.pan,
+    );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
@@ -167,13 +169,13 @@ export class MidyGM2 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
-        ...MidyGM2.channelSettings,
-        ...MidyGM2.effectSettings,
+        ...this.constructor.channelSettings,
+        ...this.constructor.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
         sostenutoNotes: new Map(),
         channelPressure: {
-          ...MidyGM2.controllerDestinationSettings,
+          ...this.constructor.controllerDestinationSettings,
         },
       };
     });

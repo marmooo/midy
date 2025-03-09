@@ -106,7 +106,7 @@ export class MidyGMLite {
 
   setChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      MidyGMLite.channelSettings.pan,
+      this.constructor.channelSettings.pan,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -123,8 +123,8 @@ export class MidyGMLite {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
-        ...MidyGMLite.channelSettings,
-        ...MidyGMLite.effectSettings,
+        ...this.constructor.channelSettings,
+        ...this.constructor.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
       };

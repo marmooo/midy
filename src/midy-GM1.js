@@ -107,7 +107,9 @@ export class MidyGM1 {
   }
 
   setChannelAudioNodes(audioContext) {
-    const { gainLeft, gainRight } = this.panToGain(MidyGM1.channelSettings.pan);
+    const { gainLeft, gainRight } = this.panToGain(
+      this.constructor.channelSettings.pan,
+    );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
@@ -127,8 +129,8 @@ export class MidyGM1 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
-        ...MidyGM1.channelSettings,
-        ...MidyGM1.effectSettings,
+        ...this.constructor.channelSettings,
+        ...this.constructor.effectSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
       };
