@@ -86,22 +86,20 @@ export class MidyGM2 {
     lfoAmplitudeDepth: 0,
   };
 
-  static reverbAlgorithms = {
-    ConvolutionReverb: this.createConvolutionReverb,
-    FDNReverb: this.createFDNReverb,
-    SchroederReverb: this.createSchroederReverb,
-    CombFilterReverb: this.createCombFilterReverb,
-    AllpassFilterReverb: this.createAllpassFilterReverb,
-    DelayLineReverb: this.createDelayLineReverb,
+  defaultOptions = {
+    reverbAlgorithm: (audioContext) => {
+      // return this.createConvolutionReverb(audioContext);
+      // return this.createFDNReverb(audioContext);
+      // return this.createSchroederReverb(audioContext),
+      return this.createCombFilterReverb(audioContext);
+      // return this.createAllpassFilterReverb(audioContext);
+      // return this.createDelayLineReverb(audioContext);
+    },
   };
 
-  static defaultOptions = {
-    reverbAlgorithm: this.reverbAlgorithms.CombFilterReverb,
-  };
-
-  constructor(audioContext, options = this.constructor.defaultOptions) {
+  constructor(audioContext, options = this.defaultOptions) {
     this.audioContext = audioContext;
-    this.options = { ...this.constructor.defaultOptions, ...options };
+    this.options = { ...this.defaultOptions, ...options };
     this.masterGain = new GainNode(audioContext);
     this.masterGain.connect(audioContext.destination);
     this.channels = this.createChannels(audioContext);
@@ -627,7 +625,7 @@ export class MidyGM2 {
     };
   }
 
-  static createSchroederReverb(audioContext, options = {}) {
+  createSchroederReverb(audioContext, options = {}) {
     const {
       combDelays = [0.015, 0.025, 0.03],
       combFeedbacks = [0.7, 0.5, 0.3],
@@ -673,7 +671,33 @@ export class MidyGM2 {
     };
   }
 
-  static createCombFilterReverb(audioContext, options = {}) {
+  createCombFilter(audioContext, input, delay, feedback) {
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: delay,
+      delayTime: delay,
+    });
+    const feedbackGain = new GainNode(audioContext, { gain: feedback });
+    input.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode);
+    return delayNode;
+  }
+
+  createAllpassFilter(audioContext, input, delay, feedback) {
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: delay,
+      delayTime: delay,
+    });
+    const feedbackGain = new GainNode(audioContext, { gain: feedback });
+    const passGain = new GainNode(audioContext, { gain: 1 - feedback });
+    input.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode);
+    delayNode.connect(passGain);
+    return passGain;
+  }
+
+  createCombFilterReverb(audioContext, options = {}) {
     const {
       delays = [0.1, 0.2, 0.3],
       feedbacks = [0.7, 0.6, 0.5],
@@ -683,43 +707,25 @@ export class MidyGM2 {
     const output = new GainNode(audioContext);
     const dryGain = new GainNode(audioContext, { gain: 1 - mix });
     const wetGain = new GainNode(audioContext, { gain: mix });
-    const delayNodes = [];
-    const feedbackGains = [];
-    const passGains = [];
+    const combs = [];
     for (let i = 0; i < delays.length; i++) {
-      const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: delays[i],
-        delayTime: delays[i],
-      });
-      const feedbackGain = new GainNode(audioContext, { gain: feedbacks[i] });
-      const passGain = new GainNode(audioContext, { gain: 1 - feedbacks[i] });
-      delayNodes.push(delayNode);
-      feedbackGains.push(feedbackGain);
-      passGains.push(passGain);
-      if (i === 0) {
-        input.connect(delayNode);
-      } else {
-        passGains[i - 1].connect(delayNode);
-      }
-      delayNode.connect(feedbackGain);
-      feedbackGain.connect(delayNode);
-      delayNode.connect(passGain);
+      const comb = this.createCombFilter(
+        audioContext,
+        input,
+        delays[i],
+        feedbacks[i],
+      );
+      combs.push(comb);
+      if (i !== 0) comb.connect(combs[i - 1]);
     }
-    passGains.at(-1).connect(wetGain);
+    combs.at(-1).connect(wetGain);
     input.connect(dryGain);
     dryGain.connect(output);
     wetGain.connect(output);
-    return {
-      input,
-      output,
-      delayNodes,
-      feedbackGains,
-      dryGain,
-      wetGain,
-    };
+    return { input, output, dryGain, wetGain };
   }
 
-  static createAllpassFilterReverb(audioContext, options = {}) {
+  createAllpassFilterReverb(audioContext, options = {}) {
     const {
       delays = [0.1, 0.2, 0.3],
       feedbacks = [0.7, 0.6, 0.5],
@@ -761,7 +767,7 @@ export class MidyGM2 {
     };
   }
 
-  static createDelayLineReverb(audioContext, options = {}) {
+  createDelayLineReverb(audioContext, options = {}) {
     const {
       delayTime = 0.01,
       feedback = 0.5,
