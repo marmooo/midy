@@ -627,7 +627,9 @@ export class Midy {
     } = options;
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
-    const mergerGain = new GainNode(audioContext, { gain: 1 / 8 });
+    const mergerGain = new GainNode(audioContext, {
+      gain: 1 / (combDelays.length * 2),
+    });
     const dryGain = new GainNode(audioContext, { gain: 1 - mix });
     const wetGain = new GainNode(audioContext, { gain: mix });
     for (let i = 0; i < combDelays.length; i++) {
