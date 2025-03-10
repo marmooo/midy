@@ -591,6 +591,32 @@ export class Midy {
     };
   }
 
+  createCombFilter(audioContext, input, delay, feedback) {
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: delay,
+      delayTime: delay,
+    });
+    const feedbackGain = new GainNode(audioContext, { gain: feedback });
+    input.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode);
+    return delayNode;
+  }
+
+  createAllpassFilter(audioContext, input, delay, feedback) {
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: delay,
+      delayTime: delay,
+    });
+    const feedbackGain = new GainNode(audioContext, { gain: feedback });
+    const passGain = new GainNode(audioContext, { gain: 1 - feedback });
+    input.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode);
+    delayNode.connect(passGain);
+    return passGain;
+  }
+
   createSchroederReverb(audioContext, options = {}) {
     const {
       combDelays = [0.31, 0.34, 0.37, 0.40],
@@ -628,32 +654,6 @@ export class Midy {
     dryGain.connect(output);
     wetGain.connect(output);
     return { input, output, dryGain, wetGain };
-  }
-
-  createCombFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay,
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    return delayNode;
-  }
-
-  createAllpassFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay,
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    const passGain = new GainNode(audioContext, { gain: 1 - feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    delayNode.connect(passGain);
-    return passGain;
   }
 
   createChorusEffect(audioContext, options = {}) {
