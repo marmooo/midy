@@ -585,9 +585,9 @@ export class Midy {
     return {
       input,
       output,
-      convolverNode,
       dryGain,
       wetGain,
+      convolverNode,
     };
   }
 

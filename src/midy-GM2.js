@@ -572,9 +572,9 @@ export class MidyGM2 {
     return {
       input,
       output,
-      convolverNode,
       dryGain,
       wetGain,
+      convolverNode,
     };
   }
 
