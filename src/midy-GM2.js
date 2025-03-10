@@ -89,9 +89,7 @@ export class MidyGM2 {
   defaultOptions = {
     reverbAlgorithm: (audioContext) => {
       // return this.createConvolutionReverb(audioContext);
-      // return this.createSchroederReverb(audioContext);
-      return this.createCombFilterReverb(audioContext);
-      // return this.createAllpassFilterReverb(audioContext);
+      return this.createSchroederReverb(audioContext);
     },
   };
 
@@ -602,7 +600,6 @@ export class MidyGM2 {
       );
       comb.connect(mergerGain);
     }
-
     const allpasses = [];
     for (let i = 0; i < allpassDelays.length; i++) {
       const allpass = this.createAllpassFilter(
@@ -644,76 +641,6 @@ export class MidyGM2 {
     feedbackGain.connect(delayNode);
     delayNode.connect(passGain);
     return passGain;
-  }
-
-  createCombFilterReverb(audioContext, options = {}) {
-    const {
-      delays = [0.1, 0.2, 0.3],
-      feedbacks = [0.7, 0.6, 0.5],
-      mix = 0.5,
-    } = options;
-    const input = new GainNode(audioContext);
-    const output = new GainNode(audioContext);
-    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
-    const wetGain = new GainNode(audioContext, { gain: mix });
-    const combs = [];
-    for (let i = 0; i < delays.length; i++) {
-      const comb = this.createCombFilter(
-        audioContext,
-        input,
-        delays[i],
-        feedbacks[i],
-      );
-      combs.push(comb);
-      if (i !== 0) comb.connect(combs[i - 1]);
-    }
-    combs.at(-1).connect(wetGain);
-    input.connect(dryGain);
-    dryGain.connect(output);
-    wetGain.connect(output);
-    return { input, output, dryGain, wetGain };
-  }
-
-  createAllpassFilterReverb(audioContext, options = {}) {
-    const {
-      delays = [0.1, 0.2, 0.3],
-      feedbacks = [0.7, 0.6, 0.5],
-      mix = 0.5,
-    } = options;
-    const input = new GainNode(audioContext);
-    const output = new GainNode(audioContext);
-    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
-    const wetGain = new GainNode(audioContext, { gain: mix });
-    const delayNodes = [];
-    const feedbackGains = [];
-    for (let i = 0; i < delays.length; i++) {
-      const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: delays[i],
-        delayTime: delays[i],
-      });
-      const feedbackGain = new GainNode(audioContext, { gain: feedbacks[i] });
-      delayNodes.push(delayNode);
-      feedbackGains.push(feedbackGain);
-      if (i === 0) {
-        input.connect(delayNode);
-      } else {
-        delayNodes[i - 1].connect(delayNode);
-      }
-      delayNode.connect(feedbackGain);
-      feedbackGain.connect(delayNode);
-    }
-    delayNodes.at(-1).connect(wetGain);
-    input.connect(dryGain);
-    dryGain.connect(output);
-    wetGain.connect(output);
-    return {
-      input,
-      output,
-      delayNodes,
-      feedbackGains,
-      dryGain,
-      wetGain,
-    };
   }
 
   createChorusEffect(audioContext, options = {}) {
