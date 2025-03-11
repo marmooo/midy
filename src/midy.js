@@ -617,6 +617,8 @@ export class Midy {
     return passGain;
   }
 
+  // https://hajim.rochester.edu/ece/sites/zduan/teaching/ece472/reading/Schroeder_1962.pdf
+  //   M.R.Schroeder, "Natural Sounding Artificial Reverberation", J.Audio Eng. Soc., vol.10, p.219, 1962
   createSchroederReverb(audioContext, options = {}) {
     const {
       combDelays = [0.31, 0.34, 0.37, 0.40],
