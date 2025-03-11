@@ -550,8 +550,8 @@ export class Midy {
       decay = 0.8,
       preDecay = 0,
     } = options;
-    const input = new GainNode();
-    const output = new GainNode();
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
     const dryGain = new GainNode(audioContext);
     const wetGain = new GainNode(audioContext);
     const sampleRate = audioContext.sampleRate;
