@@ -24,7 +24,6 @@ class Note {
 export class Midy {
   ticksPerBeat = 120;
   totalTime = 0;
-  reverbFactor = 0.1;
   masterFineTuning = 0; // cb
   masterCoarseTuning = 0; // cb
   mono = false; // CC#124, CC#125
@@ -91,7 +90,8 @@ export class Midy {
 
   defaultOptions = {
     reverbAlgorithm: (audioContext) => {
-      // return this.createConvolutionReverb(audioContext);
+      // const impulse = this.createConvolutionReverbImpulse(audioContext, 0.8, 0);
+      // return this.createConvolutionReverb(audioContext, impulse);
       return this.createSchroederReverb(audioContext);
     },
   };
@@ -545,15 +545,7 @@ export class Midy {
     return noteList[0];
   }
 
-  createConvolutionReverb(audioContext, options = {}) {
-    const {
-      decay = 0.8,
-      preDecay = 0,
-    } = options;
-    const input = new GainNode(audioContext);
-    const output = new GainNode(audioContext);
-    const dryGain = new GainNode(audioContext);
-    const wetGain = new GainNode(audioContext);
+  createConvolutionReverbImpulse(audioContext, decay, preDecay) {
     const sampleRate = audioContext.sampleRate;
     const length = sampleRate * decay;
     const impulse = new AudioBuffer({
@@ -575,6 +567,14 @@ export class Midy {
         channelData[i] = (Math.random() * 2 - 1) * attenuation;
       }
     }
+    return impulse;
+  }
+
+  createConvolutionReverb(audioContext, impulse) {
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const dryGain = new GainNode(audioContext);
+    const wetGain = new GainNode(audioContext);
     const convolverNode = new ConvolverNode(audioContext, {
       buffer: impulse,
     });
@@ -1245,7 +1245,7 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const reverbEffect = channel.reverbEffect;
-    channel.reverb = reverb / 127 * this.reverbFactor;
+    channel.reverb = reverb / 127;
     reverbEffect.dryGain.gain.cancelScheduledValues(now);
     reverbEffect.dryGain.gain.setValueAtTime(1 - channel.reverb, now);
     reverbEffect.wetGain.gain.cancelScheduledValues(now);
