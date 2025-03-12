@@ -1462,7 +1462,8 @@ export class MidyGM2 {
             return this.handleMasterFineTuningSysEx(data);
           case 4: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
             return this.handleMasterCoarseTuningSysEx(data);
-          // case 5: // TODO: Global Parameter Control
+          case 5:
+            return this.handleGlobalParameterControl(data);
           default:
             console.warn(`Unsupported Exclusive Message ${data}`);
         }
@@ -1541,6 +1542,75 @@ export class MidyGM2 {
     } else {
       this.masterCoarseTuning = coarseTuning - 64;
     }
+  }
+
+  handleGlobalParameterControl(data) {
+    if (data[5] === 1) {
+      switch (data[6]) {
+        case 1:
+          return this.handleReverbParameter(data);
+        case 2:
+          return this.handleChorusParameter(data);
+        default:
+          console.error(
+            `Unsupported Global Parameter Control Message: ${data}`,
+          );
+      }
+    } else {
+      console.error(`Unsupported Global Parameter Control Message: ${data}`);
+    }
+  }
+
+  handleReverbParameter(data) {
+    switch (data[7]) {
+      case 0:
+        return this.setReverbType(data[8]);
+      case 1:
+        return this.setReverbTime(data[8]);
+    }
+  }
+
+  setReverbType(type) {
+    // TODO
+  }
+
+  setReverbTime(value) {
+    // TODO
+  }
+
+  handleChorusParameter(data) {
+    switch (data[7]) {
+      case 0:
+        return this.setChorusType(data[8]);
+      case 1:
+        return this.setChorusModRate(data[8]);
+      case 2:
+        return this.setChorusModDepth(data[8]);
+      case 3:
+        return this.setChorusFeedback(data[8]);
+      case 4:
+        return this.setChorusSendToReverb(data[8]);
+    }
+  }
+
+  setChorusType(type) {
+    // TODO
+  }
+
+  setChorusModRate(value) {
+    // TODO
+  }
+
+  setChorusModDepth(value) {
+    // TODO
+  }
+
+  setChorusFeedback(value) {
+    // TODO
+  }
+
+  setChorusSendToReverb(value) {
+    // TODO
   }
 
   handleExclusiveMessage(data) {
