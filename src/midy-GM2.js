@@ -1618,6 +1618,31 @@ export class MidyGM2 {
     return Math.pow(Math.E, (value - 40) * 0.025);
   }
 
+  // mean free path equation
+  //   https://repository.dl.itc.u-tokyo.ac.jp/record/8550/files/A31912.pdf
+  //     江田和司, 拡散性制御に基づく室内音響設計に向けた音場解析に関する研究, 2015
+  //   V: room size (m^3)
+  //   S: room surface area (m^2)
+  //   meanFreePath = 4V / S (m)
+  // delay estimation using mean free path
+  //   t: degree Celsius, generally used 20
+  //   c: speed of sound = 331.5 + 0.61t = 331.5 * 0.61 * 20 = 343.7 (m/s)
+  //   delay = meanFreePath / c (s)
+  // feedback equation
+  //   RT60 means that the energy is reduced to Math.pow(10, -6).
+  //   Since energy is proportional to the square of the amplitude,
+  //   the amplitude is reduced to Math.pow(10, -3).
+  //   When this is done through n feedbacks,
+  //   Math.pow(feedback, n) = Math.pow(10, -3)
+  //   Math.pow(feedback, RT60 / delay) = Math.pow(10, -3)
+  //   RT60 / delay * Math.log10(feedback) = -3
+  //   RT60 = -3 * delay / Math.log10(feedback)
+  //   feedback = Math.pow(10, -3 * delay / RT60)
+  // delay estimation using ideal feedback
+  //   A suitable average sound absorption coefficient is 0.18-0.28.
+  //   Since the structure of the hall is complex,
+  //   It would be easier to determine the delay based on the ideal feedback.
+  //   delay = -RT60 * Math.log10(feedback) / 3
   calcDelay(rt60, feedback) {
     return -rt60 * Math.log10(feedback) / 3;
   }
