@@ -115,14 +115,10 @@ export class MidyGM1 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    const reverbEffect = this.createConvolutionReverb(audioContext);
-    const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
       gainR,
       merger,
-      reverbEffect,
-      chorusEffect,
     };
   }
 
