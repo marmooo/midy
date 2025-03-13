@@ -26,6 +26,16 @@ export class Midy {
   totalTime = 0;
   masterFineTuning = 0; // cb
   masterCoarseTuning = 0; // cb
+  reverb = {
+    time: this.getReverbTime(64),
+    feedback: 0.2,
+  };
+  chorus = {
+    modRate: 3 * 0.122,
+    modDepth: (3 + 1) / 3.2,
+    feedback: 8 * 0.763,
+    sendToReverb: 0 * 0.787,
+  };
   mono = false; // CC#124, CC#125
   omni = false; // CC#126, CC#127
   noteCheckInterval = 0.1;
@@ -1666,11 +1676,31 @@ export class Midy {
   }
 
   setReverbType(type) {
-    // TODO
+    this.reverb.time = this.getReverbTime(type);
+    this.reverb.feedback = (type === 8) ? 0.1 : 0.2;
+  }
+
+  getReverbTime(type) {
+    switch (type) {
+      case 0:
+        return 1.1;
+      case 1:
+        return 1.3;
+      case 2:
+        return 1.5;
+      case 3:
+        return 1.8;
+      case 4:
+        return 1.8;
+      case 8:
+        return 1.3;
+      default:
+        console.warn(`Unsupported Reverb Time: ${type}`);
+    }
   }
 
   setReverbTime(value) {
-    // TODO
+    this.reverb.time = Math.pow(Math.E, (value - 40) * 0.025);
   }
 
   handleChorusParameter(data) {
