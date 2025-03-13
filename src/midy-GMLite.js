@@ -941,11 +941,11 @@ export class MidyGMLite {
           case 2: // GM System Off
             break;
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -966,11 +966,11 @@ export class MidyGMLite {
           case 1:
             return this.handleMasterVolumeSysEx(data);
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -990,7 +990,7 @@ export class MidyGMLite {
   }
 
   handleExclusiveMessage(data) {
-    console.warn(`Unsupported Exclusive Message ${data}`);
+    console.warn(`Unsupported Exclusive Message: ${data}`);
   }
 
   handleSysEx(data) {

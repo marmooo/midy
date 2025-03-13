@@ -1529,11 +1529,11 @@ export class Midy {
             this.GM2SystemOn();
             break;
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -1570,7 +1570,7 @@ export class Midy {
           case 5:
             return this.handleGlobalParameterControl(data);
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 8:
@@ -1579,7 +1579,7 @@ export class Midy {
           //   // TODO
           //   return this.handleScaleOctaveTuning1ByteFormat();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 9:
@@ -1591,7 +1591,7 @@ export class Midy {
           //   // TODO
           //   return this.setControlChange();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 10:
@@ -1600,11 +1600,11 @@ export class Midy {
           //   // TODO
           //   return this.handleKeyBasedInstrumentControl();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -1657,12 +1657,12 @@ export class Midy {
         case 2:
           return this.handleChorusParameter(data);
         default:
-          console.error(
+          console.warn(
             `Unsupported Global Parameter Control Message: ${data}`,
           );
       }
     } else {
-      console.error(`Unsupported Global Parameter Control Message: ${data}`);
+      console.warn(`Unsupported Global Parameter Control Message: ${data}`);
     }
   }
 
@@ -1739,7 +1739,7 @@ export class Midy {
   }
 
   handleExclusiveMessage(data) {
-    console.warn(`Unsupported Exclusive Message ${data}`);
+    console.warn(`Unsupported Exclusive Message: ${data}`);
   }
 
   handleSysEx(data) {

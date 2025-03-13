@@ -1434,11 +1434,11 @@ export class MidyGM2 {
             this.GM2SystemOn();
             break;
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -1475,7 +1475,7 @@ export class MidyGM2 {
           case 5:
             return this.handleGlobalParameterControl(data);
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 8:
@@ -1484,7 +1484,7 @@ export class MidyGM2 {
           //   // TODO
           //   return this.handleScaleOctaveTuning1ByteFormat();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 9:
@@ -1496,7 +1496,7 @@ export class MidyGM2 {
           //   // TODO
           //   return this.setControlChange();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       case 10:
@@ -1505,11 +1505,11 @@ export class MidyGM2 {
           //   // TODO
           //   return this.handleKeyBasedInstrumentControl();
           default:
-            console.warn(`Unsupported Exclusive Message ${data}`);
+            console.warn(`Unsupported Exclusive Message: ${data}`);
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message ${data}`);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -1562,12 +1562,12 @@ export class MidyGM2 {
         case 2:
           return this.handleChorusParameter(data);
         default:
-          console.error(
+          console.warn(
             `Unsupported Global Parameter Control Message: ${data}`,
           );
       }
     } else {
-      console.error(`Unsupported Global Parameter Control Message: ${data}`);
+      console.warn(`Unsupported Global Parameter Control Message: ${data}`);
     }
   }
 
