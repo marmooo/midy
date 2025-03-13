@@ -100,7 +100,8 @@ export class Midy {
 
   defaultOptions = {
     reverbAlgorithm: (audioContext) => {
-      // const { time: rt60, feedback } = this.reverb;
+      const { time: rt60, feedback } = this.reverb;
+
       // const delay = this.calcDelay(rt60, feedback);
       // const impulse = this.createConvolutionReverbImpulse(
       //   audioContext,
@@ -108,7 +109,22 @@ export class Midy {
       //   delay,
       // );
       // return this.createConvolutionReverb(audioContext, impulse);
-      return this.createSchroederReverb(audioContext);
+
+      const combFeedbacks = this.generateDistributedArray(feedback, 4);
+      const combDelays = combFeedbacks.map((feedback) =>
+        this.calcDelay(rt60, feedback)
+      );
+      const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
+      const allpassDelays = allpassFeedbacks.map((feedback) =>
+        this.calcDelay(rt60, feedback)
+      );
+      return this.createSchroederReverb(
+        audioContext,
+        combFeedbacks,
+        combDelays,
+        allpassFeedbacks,
+        allpassDelays,
+      );
     },
   };
 
@@ -633,23 +649,38 @@ export class Midy {
     return passGain;
   }
 
+  generateDistributedArray(
+    center,
+    count,
+    varianceRatio = 0.1,
+    randomness = 0.05,
+  ) {
+    const variance = center * varianceRatio;
+    const array = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const fraction = i / (count - 1 || 1);
+      const value = center - variance + fraction * 2 * variance;
+      array[i] = value * (1 - (Math.random() * 2 - 1) * randomness);
+    }
+    return array;
+  }
+
   // https://hajim.rochester.edu/ece/sites/zduan/teaching/ece472/reading/Schroeder_1962.pdf
   //   M.R.Schroeder, "Natural Sounding Artificial Reverberation", J.Audio Eng. Soc., vol.10, p.219, 1962
-  createSchroederReverb(audioContext, options = {}) {
-    const {
-      combDelays = [0.31, 0.34, 0.37, 0.40],
-      combFeedbacks = [0.86, 0.87, 0.88, 0.89],
-      allpassDelays = [0.02, 0.05],
-      allpassFeedbacks = [0.7, 0.7],
-      mix = 0.5,
-    } = options;
+  createSchroederReverb(
+    audioContext,
+    combDelays,
+    combFeedbacks,
+    allpassDelays,
+    allpassFeedbacks,
+  ) {
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
     const mergerGain = new GainNode(audioContext, {
       gain: 1 / (combDelays.length * 2),
     });
-    const dryGain = new GainNode(audioContext, { gain: 1 - mix });
-    const wetGain = new GainNode(audioContext, { gain: mix });
+    const dryGain = new GainNode(audioContext);
+    const wetGain = new GainNode(audioContext);
     for (let i = 0; i < combDelays.length; i++) {
       const comb = this.createCombFilter(
         audioContext,
