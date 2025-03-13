@@ -1676,31 +1676,35 @@ export class Midy {
   }
 
   setReverbType(type) {
-    this.reverb.time = this.getReverbTime(type);
+    this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = (type === 8) ? 0.1 : 0.2;
   }
 
-  getReverbTime(type) {
+  getReverbTimeFromType(type) {
     switch (type) {
       case 0:
-        return 1.1;
+        return this.getReverbTime(44);
       case 1:
-        return 1.3;
+        return this.getReverbTime(50);
       case 2:
-        return 1.5;
+        return this.getReverbTime(56);
       case 3:
-        return 1.8;
+        return this.getReverbTime(64);
       case 4:
-        return 1.8;
+        return this.getReverbTime(64);
       case 8:
-        return 1.3;
+        return this.getReverbTime(50);
       default:
         console.warn(`Unsupported Reverb Time: ${type}`);
     }
   }
 
   setReverbTime(value) {
-    this.reverb.time = Math.pow(Math.E, (value - 40) * 0.025);
+    this.reverb.time = this.getReverbTime(value);
+  }
+
+  getReverbTime(value) {
+    return Math.pow(Math.E, (value - 40) * 0.025);
   }
 
   handleChorusParameter(data) {
