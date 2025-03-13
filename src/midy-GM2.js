@@ -97,7 +97,13 @@ export class MidyGM2 {
 
   defaultOptions = {
     reverbAlgorithm: (audioContext) => {
-      // const impulse = this.createConvolutionReverbImpulse(audioContext, 0.8, 0);
+      // const { time: rt60, feedback } = this.reverb;
+      // const delay = this.calcDelay(rt60, feedback);
+      // const impulse = this.createConvolutionReverbImpulse(
+      //   audioContext,
+      //   rt60,
+      //   delay,
+      // );
       // return this.createConvolutionReverb(audioContext, impulse);
       return this.createSchroederReverb(audioContext);
     },
@@ -1610,6 +1616,10 @@ export class MidyGM2 {
 
   getReverbTime(value) {
     return Math.pow(Math.E, (value - 40) * 0.025);
+  }
+
+  calcDelay(rt60, feedback) {
+    return -rt60 * Math.log10(feedback) / 3;
   }
 
   handleChorusParameter(data) {
