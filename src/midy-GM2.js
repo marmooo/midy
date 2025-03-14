@@ -1222,6 +1222,7 @@ export class MidyGM2 {
     }
   }
 
+  // TODO
   setPortamento(channelNumber, value) {
     this.channels[channelNumber].portamento = value >= 64;
   }
