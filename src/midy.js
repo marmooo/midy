@@ -603,22 +603,14 @@ export class Midy {
   }
 
   createConvolutionReverb(audioContext, impulse) {
-    const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
-    const dryGain = new GainNode(audioContext);
-    const wetGain = new GainNode(audioContext);
     const convolverNode = new ConvolverNode(audioContext, {
       buffer: impulse,
     });
-    input.connect(convolverNode);
-    convolverNode.connect(wetGain);
-    wetGain.connect(output);
-    dryGain.connect(output);
+    convolverNode.connect(output);
     return {
-      input,
+      input: convolverNode,
       output,
-      dryGain,
-      wetGain,
       convolverNode,
     };
   }
@@ -679,8 +671,6 @@ export class Midy {
     const mergerGain = new GainNode(audioContext, {
       gain: 1 / (combDelays.length * 2),
     });
-    const dryGain = new GainNode(audioContext);
-    const wetGain = new GainNode(audioContext);
     for (let i = 0; i < combDelays.length; i++) {
       const comb = this.createCombFilter(
         audioContext,
@@ -700,11 +690,8 @@ export class Midy {
       );
       allpasses.push(allpass);
     }
-    allpasses.at(-1).connect(wetGain);
-    input.connect(dryGain);
-    dryGain.connect(output);
-    wetGain.connect(output);
-    return { input, output, dryGain, wetGain };
+    allpasses.at(-1).connect(output);
+    return { input, output };
   }
 
   createChorusEffect(audioContext, options = {}) {
@@ -747,10 +734,9 @@ export class Midy {
 
   connectEffects(channel, gainNode) {
     gainNode.connect(channel.merger);
+    channel.merger.connect(this.masterGain);
     if (channel.reverb === 0) {
-      if (channel.chorus === 0) { // no effect
-        channel.merger.connect(this.masterGain);
-      } else { // chorus
+      if (channel.chorus !== 0) { // chorus
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
           channel.merger.connect(delayNode);
         });
@@ -1294,10 +1280,8 @@ export class Midy {
     const channel = this.channels[channelNumber];
     const reverbEffect = channel.reverbEffect;
     channel.reverb = reverb / 127;
-    reverbEffect.dryGain.gain.cancelScheduledValues(now);
-    reverbEffect.dryGain.gain.setValueAtTime(1 - channel.reverb, now);
-    reverbEffect.wetGain.gain.cancelScheduledValues(now);
-    reverbEffect.wetGain.gain.setValueAtTime(channel.reverb, now);
+    reverbEffect.output.gain.cancelScheduledValues(now);
+    reverbEffect.output.gain.setValueAtTime(channel.reverb, now);
   }
 
   setChorusSendLevel(channelNumber, chorus) {
