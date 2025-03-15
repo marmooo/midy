@@ -59,8 +59,8 @@ export class Midy {
     volume: 100 / 127,
     pan: 64,
     portamentoTime: 0,
-    reverb: 0,
-    chorus: 0,
+    reverbSendLevel: 0,
+    chorusSendLevel: 0,
     vibratoRate: 5,
     vibratoDepth: 0.5,
     vibratoDelay: 2.5,
@@ -735,15 +735,15 @@ export class Midy {
   connectEffects(channel, gainNode) {
     gainNode.connect(channel.merger);
     channel.merger.connect(this.masterGain);
-    if (channel.reverb === 0) {
-      if (channel.chorus !== 0) { // chorus
+    if (channel.reverbSendLevel === 0) {
+      if (channel.chorusSendLevel !== 0) { // chorus
         channel.chorusEffect.delayNodes.forEach((delayNode) => {
           channel.merger.connect(delayNode);
         });
         channel.chorusEffect.output.connect(this.masterGain);
       }
     } else {
-      if (channel.chorus === 0) { // reverb
+      if (channel.chorusSendLevel === 0) { // reverb
         channel.merger.connect(channel.reverbEffect.input);
         channel.reverbEffect.output.connect(this.masterGain);
       } else { // reverb + chorus
@@ -1275,19 +1275,19 @@ export class Midy {
     this.channels[channelNumber].portamento = value >= 64;
   }
 
-  setReverbSendLevel(channelNumber, reverb) {
+  setReverbSendLevel(channelNumber, reverbSendLevel) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const reverbEffect = channel.reverbEffect;
-    channel.reverb = reverb / 127;
+    channel.reverbSendLevel = reverbSendLevel / 127;
     reverbEffect.output.gain.cancelScheduledValues(now);
-    reverbEffect.output.gain.setValueAtTime(channel.reverb, now);
+    reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
   }
 
-  setChorusSendLevel(channelNumber, chorus) {
+  setChorusSendLevel(channelNumber, chorusSendLevel) {
     const channel = this.channels[channelNumber];
-    channel.chorus = chorus / 127;
-    channel.chorusEffect.lfoGain = channel.chorus;
+    channel.chorusSendLevel = chorusSendLevel / 127;
+    channel.chorusEffect.lfoGain = channel.chorusSendLevel;
   }
 
   setSostenutoPedal(channelNumber, value) {
