@@ -1700,6 +1700,10 @@ export class Midy {
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = (type === 8) ? 0.1 : 0.2;
+    const { audioContext, channels, options } = this;
+    for (let i = 0; i < channels.length; i++) {
+      channels[i].reverbEffect = options.reverbAlgorithm(audioContext);
+    }
   }
 
   getReverbTimeFromType(type) {
