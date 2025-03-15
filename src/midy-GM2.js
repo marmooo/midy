@@ -1632,6 +1632,10 @@ export class MidyGM2 {
 
   setReverbTime(value) {
     this.reverb.time = this.getReverbTime(value);
+    const { audioContext, channels, options } = this;
+    for (let i = 0; i < channels.length; i++) {
+      channels[i].reverbEffect = options.reverbAlgorithm(audioContext);
+    }
   }
 
   getReverbTime(value) {
