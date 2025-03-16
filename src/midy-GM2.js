@@ -1577,8 +1577,8 @@ export class MidyGM2 {
   }
 
   handleGlobalParameterControl(data) {
-    if (data[5] === 1) {
-      switch (data[6]) {
+    if (data[7] === 1) {
+      switch (data[8]) {
         case 1:
           return this.handleReverbParameter(data);
         case 2:
@@ -1594,11 +1594,11 @@ export class MidyGM2 {
   }
 
   handleReverbParameter(data) {
-    switch (data[7]) {
+    switch (data[9]) {
       case 0:
-        return this.setReverbType(data[8]);
+        return this.setReverbType(data[10]);
       case 1:
-        return this.setReverbTime(data[8]);
+        return this.setReverbTime(data[10]);
     }
   }
 
@@ -1672,17 +1672,17 @@ export class MidyGM2 {
   }
 
   handleChorusParameter(data) {
-    switch (data[7]) {
+    switch (data[9]) {
       case 0:
-        return this.setChorusType(data[8]);
+        return this.setChorusType(data[10]);
       case 1:
-        return this.setChorusModRate(data[8]);
+        return this.setChorusModRate(data[10]);
       case 2:
-        return this.setChorusModDepth(data[8]);
+        return this.setChorusModDepth(data[10]);
       case 3:
-        return this.setChorusFeedback(data[8]);
+        return this.setChorusFeedback(data[10]);
       case 4:
-        return this.setChorusSendToReverb(data[8]);
+        return this.setChorusSendToReverb(data[10]);
     }
   }
 
