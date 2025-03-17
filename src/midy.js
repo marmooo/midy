@@ -31,10 +31,10 @@ export class Midy {
     feedback: 0.2,
   };
   chorus = {
-    modRate: 3 * 0.122,
-    modDepth: (3 + 1) / 3.2,
-    feedback: 8 * 0.763,
-    sendToReverb: 0 * 0.787,
+    modRate: this.getChorusModRate(3),
+    modDepth: this.getChorusModDepth(19),
+    feedback: this.getChorusFeedback(8),
+    sendToReverb: this.getChorusSendToReverb(0),
   };
   mono = false; // CC#124, CC#125
   omni = false; // CC#126, CC#127
@@ -1782,23 +1782,61 @@ export class Midy {
   }
 
   setChorusType(type) {
-    // TODO
+    switch (type) {
+      case 0:
+        return this.setChorusParameter(3, 5, 0, 0);
+      case 1:
+        return this.setChorusParameter(9, 19, 5, 0);
+      case 2:
+        return this.setChorusParameter(3, 19, 8, 0);
+      case 3:
+        return this.setChorusParameter(9, 16, 16, 0);
+      case 4:
+        return this.setChorusParameter(2, 24, 64, 0);
+      case 5:
+        return this.setChorusParameter(1, 5, 112, 0);
+      default:
+        console.warn(`Unsupported Chorus Type: ${type}`);
+    }
+  }
+
+  setChorusParameter(modRate, modDepth, feedback, sendToReverb) {
+    this.setChorusModRate(modRate);
+    this.setChorusModDepth(modDepth);
+    this.setChorusFeedback(feedback);
+    this.setChorusSendToReverb(sendToReverb);
   }
 
   setChorusModRate(value) {
-    // TODO
+    this.chorus.modRate = this.getChorusModRate(value);
+  }
+
+  getChorusModRate(value) {
+    return value * 0.122; // Hz
   }
 
   setChorusModDepth(value) {
-    // TODO
+    this.chorus.modDepth = this.getChorusModDepth(value);
+  }
+
+  getChorusModDepth(value) {
+    return (value + 1) / 3200; // second
   }
 
   setChorusFeedback(value) {
-    // TODO
+    this.chorus.feedback = this.getChorusFeedback(value);
+  }
+
+  getChorusFeedback(value) {
+    return value * 0.00763;
   }
 
   setChorusSendToReverb(value) {
-    // TODO
+    this.chorus.sendToReverb = this.getChorusSendToReverb(value);
+  }
+
+  getChorusSendToReverb(value) {
+    return value * 0.00787;
   }
 
   handleExclusiveMessage(data) {
