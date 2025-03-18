@@ -697,38 +697,51 @@ export class Midy {
   createChorusEffect(audioContext, options = {}) {
     const {
       chorusCount = 2,
-      chorusRate = 0.6,
-      chorusDepth = 0.15,
-      delay = 0.01,
-      variance = delay * 0.1,
+      varianceRatio = 0.1,
+      randomness = 0.05,
     } = options;
-    const lfo = new OscillatorNode(audioContext, { frequency: chorusRate });
-    const lfoGain = new GainNode(audioContext, { gain: chorusDepth });
+    const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
-    const chorusGains = [];
+    const delayTimes = this.generateDistributedArray(
+      this.chorus.modDepth,
+      chorusCount,
+      varianceRatio,
+      randomness,
+    );
+    const lfo = new OscillatorNode(audioContext, {
+      frequency: this.chorus.modRate,
+    });
+    const lfoGain = new GainNode(audioContext, {
+      gain: this.chorus.modDepth / 2,
+    });
     const delayNodes = [];
-    const baseGain = 1 / chorusCount;
+    const feedbackGains = [];
     for (let i = 0; i < chorusCount; i++) {
-      const randomDelayFactor = (Math.random() - 0.5) * variance;
-      const delayTime = (i + 1) * delay + randomDelayFactor;
+      const delayTime = delayTimes[i];
       const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: delayTime,
+        maxDelayTime: delayTime + this.chorus.modDepth / 2,
+        delayTime,
       });
-      const chorusGain = new GainNode(audioContext, { gain: baseGain });
+      const feedbackGain = new GainNode(audioContext, {
+        gain: this.chorus.feedback,
+      });
       delayNodes.push(delayNode);
-      chorusGains.push(chorusGain);
+      feedbackGains.push(feedbackGain);
+      input.connect(delayNode);
       lfoGain.connect(delayNode.delayTime);
-      delayNode.connect(chorusGain);
-      chorusGain.connect(output);
+      delayNode.connect(feedbackGain);
+      feedbackGain.connect(delayNode);
+      delayNode.connect(output);
     }
     lfo.connect(lfoGain);
     lfo.start();
     return {
+      input,
+      output,
       lfo,
       lfoGain,
       delayNodes,
-      chorusGains,
-      output,
+      feedbackGains,
     };
   }
 
@@ -737,21 +750,19 @@ export class Midy {
     channel.merger.connect(this.masterGain);
     if (channel.reverbSendLevel === 0) {
       if (channel.chorusSendLevel !== 0) { // chorus
-        channel.chorusEffect.delayNodes.forEach((delayNode) => {
-          channel.merger.connect(delayNode);
-        });
-        channel.chorusEffect.output.connect(this.masterGain);
+        channel.merger.connect(channel.chorusEffect.input);
       }
     } else {
       if (channel.chorusSendLevel === 0) { // reverb
         channel.merger.connect(channel.reverbEffect.input);
         channel.reverbEffect.output.connect(this.masterGain);
       } else { // reverb + chorus
-        channel.chorusEffect.delayNodes.forEach((delayNode) => {
-          channel.merger.connect(delayNode);
-        });
+        if (this.chorus.sendToReverb !== 0) {
+          channel.chorusEffect.output.connect(channel.reverbEffect.input);
+        }
         channel.merger.connect(channel.reverbEffect.input);
-        channel.reverbEffect.output.connect(this.masterGain);
+        channel.reverbEffect.output.connect(channel.chorusEffect.input);
+        channel.chorusEffect.output.connect(this.masterGain);
       }
     }
   }
@@ -1285,9 +1296,13 @@ export class Midy {
   }
 
   setChorusSendLevel(channelNumber, chorusSendLevel) {
+    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.chorusSendLevel = chorusSendLevel / 127;
-    channel.chorusEffect.lfoGain = channel.chorusSendLevel;
+    channel.chorusEffect.input.gain.setValueAtTime(
+      channel.chorusSendLevel,
+      now,
+    );
   }
 
   setSostenutoPedal(channelNumber, value) {
