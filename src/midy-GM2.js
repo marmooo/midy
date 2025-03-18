@@ -1236,11 +1236,10 @@ export class MidyGM2 {
   setChorusSendLevel(channelNumber, chorusSendLevel) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    const chorusEffect = channel.chorusEffect;
     channel.chorusSendLevel = chorusSendLevel / 127;
-    channel.chorusEffect.input.gain.setValueAtTime(
-      channel.chorusSendLevel,
-      now,
-    );
+    chorusEffect.output.gain.cancelScheduledValues(now);
+    chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
   }
 
   setSostenutoPedal(channelNumber, value) {
