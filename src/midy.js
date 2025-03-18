@@ -1822,7 +1822,13 @@ export class Midy {
   }
 
   setChorusModRate(value) {
-    this.chorus.modRate = this.getChorusModRate(value);
+    const now = this.audioContext.currentTime;
+    const modRate = this.getChorusModRate(value);
+    this.chorus.modRate = modRate;
+    for (let i = 0; i < this.channels.length; i++) {
+      const lfo = this.channels[i].chorusEffect.lfo;
+      lfo.frequency.setValueAtTime(modRate, now);
+    }
   }
 
   getChorusModRate(value) {
