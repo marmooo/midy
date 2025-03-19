@@ -35,6 +35,7 @@ export class MidyGM2 {
     modDepth: this.getChorusModDepth(19),
     feedback: this.getChorusFeedback(8),
     sendToReverb: this.getChorusSendToReverb(0),
+    delayTimes: this.getChorusDelayTimes(0.02, 2, 0.5),
   };
   mono = false; // CC#124, CC#125
   omni = false; // CC#126, CC#127
@@ -681,32 +682,22 @@ export class MidyGM2 {
     return { input, output };
   }
 
-  createChorusEffect(audioContext, options = {}) {
-    const {
-      chorusCount = 2,
-      varianceRatio = 0.1,
-      randomness = 0.05,
-    } = options;
+  createChorusEffect(audioContext) {
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
-    const delayTimes = this.generateDistributedArray(
-      this.chorus.modDepth,
-      chorusCount,
-      varianceRatio,
-      randomness,
-    );
     const lfo = new OscillatorNode(audioContext, {
       frequency: this.chorus.modRate,
     });
     const lfoGain = new GainNode(audioContext, {
       gain: this.chorus.modDepth / 2,
     });
+    const delayTimes = this.chorus.delayTimes;
     const delayNodes = [];
     const feedbackGains = [];
-    for (let i = 0; i < chorusCount; i++) {
+    for (let i = 0; i < delayTimes.length; i++) {
       const delayTime = delayTimes[i];
       const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: delayTime + this.chorus.modDepth / 2,
+        maxDelayTime: 0.1, // generally, 0ms < delayTime < 50ms
         delayTime,
       });
       const feedbackGain = new GainNode(audioContext, {
@@ -1762,6 +1753,15 @@ export class MidyGM2 {
 
   getChorusSendToReverb(value) {
     return value * 0.00787;
+  }
+
+  getChorusDelayTimes(center, chorusCount, varianceRatio, randomness) {
+    return this.generateDistributedArray(
+      center,
+      chorusCount,
+      varianceRatio,
+      randomness,
+    );
   }
 
   handleExclusiveMessage(data) {
