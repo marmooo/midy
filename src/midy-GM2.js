@@ -35,7 +35,7 @@ export class MidyGM2 {
     modDepth: this.getChorusModDepth(19),
     feedback: this.getChorusFeedback(8),
     sendToReverb: this.getChorusSendToReverb(0),
-    delayTimes: this.getChorusDelayTimes(0.02, 2, 0.5),
+    delayTimes: this.generateDistributedArray(0.02, 2, 0.5),
   };
   mono = false; // CC#124, CC#125
   omni = false; // CC#126, CC#127
@@ -1753,15 +1753,6 @@ export class MidyGM2 {
 
   getChorusSendToReverb(value) {
     return value * 0.00787;
-  }
-
-  getChorusDelayTimes(center, chorusCount, varianceRatio, randomness) {
-    return this.generateDistributedArray(
-      center,
-      chorusCount,
-      varianceRatio,
-      randomness,
-    );
   }
 
   handleExclusiveMessage(data) {
