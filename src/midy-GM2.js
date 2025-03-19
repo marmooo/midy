@@ -28,7 +28,7 @@ export class MidyGM2 {
   masterCoarseTuning = 0; // cb
   reverb = {
     time: this.getReverbTime(64),
-    feedback: 0.2,
+    feedback: 0.25,
   };
   chorus = {
     modRate: this.getChorusModRate(3),
@@ -697,7 +697,7 @@ export class MidyGM2 {
     for (let i = 0; i < delayTimes.length; i++) {
       const delayTime = delayTimes[i];
       const delayNode = new DelayNode(audioContext, {
-        maxDelayTime: 0.1, // generally, 0ms < delayTime < 50ms
+        maxDelayTime: 0.1, // generally, 5ms < delayTime < 50ms
         delayTime,
       });
       const feedbackGain = new GainNode(audioContext, {
