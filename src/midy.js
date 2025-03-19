@@ -1843,7 +1843,18 @@ export class Midy {
   }
 
   setChorusFeedback(value) {
-    this.chorus.feedback = this.getChorusFeedback(value);
+    const now = this.audioContext.currentTime;
+    const feedback = this.getChorusFeedback(value);
+    this.chorus.feedback = feedback;
+    for (let i = 0; i < this.channels.length; i++) {
+      const chorusEffect = this.channels[i].chorusEffect;
+      for (let j = 0; j < chorusEffect.feedbackGains.length; j++) {
+        const feedbackGain = chorusEffect.feedbackGains[j];
+        feedbackGain.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(feedback, now);
+      }
+    }
   }
 
   getChorusFeedback(value) {
