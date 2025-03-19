@@ -1732,7 +1732,15 @@ export class MidyGM2 {
   }
 
   setChorusModDepth(value) {
-    this.chorus.modDepth = this.getChorusModDepth(value);
+    const now = this.audioContext.currentTime;
+    const modDepth = this.getChorusModDepth(value);
+    this.chorus.modDepth = modDepth;
+    for (let i = 0; i < this.channels.length; i++) {
+      const chorusEffect = this.channels[i].chorusEffect;
+      chorusEffect.lfoGain.gain
+        .cancelScheduledValues(now)
+        .setValueAtTime(modDepth / 2, now);
+    }
   }
 
   getChorusModDepth(value) {
