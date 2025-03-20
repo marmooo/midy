@@ -656,9 +656,16 @@ export class MidyGM2 {
   ) {
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
-    const mergerGain = new GainNode(audioContext, {
-      gain: 1 / (combDelays.length * 2),
-    });
+    const allpasses = [];
+    for (let i = 0; i < allpassDelays.length; i++) {
+      const allpass = this.createAllpassFilter(
+        audioContext,
+        (i === 0) ? input : allpasses.at(-1),
+        allpassDelays[i],
+        allpassFeedbacks[i],
+      );
+      allpasses.push(allpass);
+    }
     for (let i = 0; i < combDelays.length; i++) {
       const comb = this.createCombFilter(
         audioContext,
@@ -666,17 +673,7 @@ export class MidyGM2 {
         combDelays[i],
         combFeedbacks[i],
       );
-      comb.connect(mergerGain);
-    }
-    const allpasses = [];
-    for (let i = 0; i < allpassDelays.length; i++) {
-      const allpass = this.createAllpassFilter(
-        audioContext,
-        (i === 0) ? mergerGain : allpasses.at(-1),
-        allpassDelays[i],
-        allpassFeedbacks[i],
-      );
-      allpasses.push(allpass);
+      comb.connect(allpasses[0]);
     }
     allpasses.at(-1).connect(output);
     return { input, output };
