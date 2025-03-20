@@ -1498,7 +1498,7 @@ export class MidyGM2 {
           case 4: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
             return this.handleMasterCoarseTuningSysEx(data);
           case 5:
-            return this.handleGlobalParameterControl(data);
+            return this.handleGlobalParameterControlSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -1579,13 +1579,13 @@ export class MidyGM2 {
     }
   }
 
-  handleGlobalParameterControl(data) {
+  handleGlobalParameterControlSysEx(data) {
     if (data[7] === 1) {
       switch (data[8]) {
         case 1:
-          return this.handleReverbParameter(data);
+          return this.handleReverbParameterSysEx(data);
         case 2:
-          return this.handleChorusParameter(data);
+          return this.handleChorusParameterSysEx(data);
         default:
           console.warn(
             `Unsupported Global Parameter Control Message: ${data}`,
@@ -1596,7 +1596,7 @@ export class MidyGM2 {
     }
   }
 
-  handleReverbParameter(data) {
+  handleReverbParameterSysEx(data) {
     switch (data[9]) {
       case 0:
         return this.setReverbType(data[10]);
@@ -1676,7 +1676,7 @@ export class MidyGM2 {
     return -rt60 * Math.log10(feedback) / 3;
   }
 
-  handleChorusParameter(data) {
+  handleChorusParameterSysEx(data) {
     switch (data[9]) {
       case 0:
         return this.setChorusType(data[10]);
