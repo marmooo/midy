@@ -1761,9 +1761,11 @@ export class Midy {
   //   RT60 = -3 * delay / Math.log10(feedback)
   //   feedback = Math.pow(10, -3 * delay / RT60)
   // delay estimation using ideal feedback
-  //   A suitable average sound absorption coefficient is 0.18-0.28.
-  //   Since the structure of the hall is complex,
-  //   It would be easier to determine the delay based on the ideal feedback.
+  //   The structure of a concert hall is complex,
+  //   so estimates based on mean free path are unstable.
+  //   It is easier to determine the delay based on ideal feedback.
+  //   The average sound absorption coefficient
+  //   suitable for playing musical instruments is 0.18 to 0.28.
   //   delay = -RT60 * Math.log10(feedback) / 3
   calcDelay(rt60, feedback) {
     return -rt60 * Math.log10(feedback) / 3;
