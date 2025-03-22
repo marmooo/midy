@@ -1416,7 +1416,7 @@ export class MidyGM2 {
       if (activeNote) {
         const notePromise = this.scheduleNoteRelease(
           channelNumber,
-          noteNumber,
+          activeNote.noteNumber,
           velocity,
           now,
           stopPedal,
