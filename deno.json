@@ -2,7 +2,7 @@
   "imports": {
     "@deno/dnt": "jsr:@deno/dnt@^0.41.3",
     "@deno/emit": "jsr:@deno/emit@^0.46.0",
-    "@swc/core": "npm:@swc/core@^1.11.9"
+    "@swc/core": "npm:@swc/core@^1.11.11"
   },
   "tasks": {
     "build": "deno run -RWE --allow-ffi build.js"
