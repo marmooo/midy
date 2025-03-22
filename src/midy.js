@@ -28,7 +28,7 @@ export class Midy {
   masterCoarseTuning = 0; // cb
   reverb = {
     time: this.getReverbTime(64),
-    feedback: 0.25,
+    feedback: 0.8,
   };
   chorus = {
     modRate: this.getChorusModRate(3),
@@ -662,10 +662,10 @@ export class Midy {
   //   M.R.Schroeder, "Natural Sounding Artificial Reverberation", J.Audio Eng. Soc., vol.10, p.219, 1962
   createSchroederReverb(
     audioContext,
-    combDelays,
     combFeedbacks,
-    allpassDelays,
+    combDelays,
     allpassFeedbacks,
+    allpassDelays,
   ) {
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
@@ -1699,7 +1699,7 @@ export class Midy {
 
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
-    this.reverb.feedback = (type === 8) ? 0.1 : 0.2;
+    this.reverb.feedback = (type === 8) ? 0.9 : 0.8;
     const { audioContext, channels, options } = this;
     for (let i = 0; i < channels.length; i++) {
       channels[i].reverbEffect = options.reverbAlgorithm(audioContext);
