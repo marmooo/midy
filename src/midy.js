@@ -696,6 +696,7 @@ export class Midy {
   createChorusEffect(audioContext) {
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
+    const sendGain = new GainNode(audioContext);
     const lfo = new OscillatorNode(audioContext, {
       frequency: this.chorus.modRate,
     });
@@ -722,11 +723,13 @@ export class Midy {
       feedbackGain.connect(delayNode);
       delayNode.connect(output);
     }
+    output.connect(sendGain);
     lfo.connect(lfoGain);
     lfo.start();
     return {
       input,
       output,
+      sendGain,
       lfo,
       lfoGain,
       delayNodes,
@@ -737,22 +740,16 @@ export class Midy {
   connectEffects(channel, gainNode) {
     gainNode.connect(channel.merger);
     channel.merger.connect(this.masterGain);
-    if (channel.reverbSendLevel === 0) {
-      if (channel.chorusSendLevel !== 0) { // chorus
-        channel.merger.connect(channel.chorusEffect.input);
-      }
-    } else {
-      if (channel.chorusSendLevel === 0) { // reverb
-        channel.merger.connect(channel.reverbEffect.input);
-        channel.reverbEffect.output.connect(this.masterGain);
-      } else { // reverb + chorus
-        if (this.chorus.sendToReverb !== 0) {
-          channel.chorusEffect.output.connect(channel.reverbEffect.input);
-        }
-        channel.merger.connect(channel.reverbEffect.input);
-        channel.reverbEffect.output.connect(channel.chorusEffect.input);
-        channel.chorusEffect.output.connect(this.masterGain);
-      }
+    if (0 < channel.reverbSendLevel) {
+      channel.merger.connect(channel.reverbEffect.input);
+      channel.reverbEffect.output.connect(this.masterGain);
+    }
+    if (0 < channel.chorusSendLevel) {
+      channel.merger.connect(channel.chorusEffect.input);
+      channel.reverbEffect.output.connect(this.masterGain);
+    }
+    if (0 < this.chorus.sendToReverb) {
+      channel.chorusEffect.sendGain.connect(channel.reverbEffect.input);
     }
   }
 
@@ -1862,7 +1859,15 @@ export class Midy {
   }
 
   setChorusSendToReverb(value) {
-    this.chorus.sendToReverb = this.getChorusSendToReverb(value);
+    const now = this.audioContext.currentTime;
+    const sendToReverb = this.getChorusSendToReverb(value);
+    this.chorus.sendToReverb = sendToReverb;
+    for (let i = 0; i < this.channels.length; i++) {
+      const chorusEffect = this.channels[i].chorusEffect;
+      chorusEffect.sendGain.gain
+        .cancelScheduledValues(now)
+        .setValueAtTime(sendToReverb, now);
+    }
   }
 
   getChorusSendToReverb(value) {
