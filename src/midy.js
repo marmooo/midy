@@ -1101,14 +1101,14 @@ export class Midy {
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
-    const pitchBend = msb * 128 + lsb;
+    const pitchBend = msb * 128 + lsb - 8192;
     this.setPitchBend(channelNumber, pitchBend);
   }
 
   setPitchBend(channelNumber, pitchBend) {
     const channel = this.channels[channelNumber];
     const prevPitchBend = channel.pitchBend;
-    channel.pitchBend = (pitchBend - 8192) / 8192;
+    channel.pitchBend = pitchBend / 8192;
     const detuneChange = (channel.pitchBend - prevPitchBend) *
       channel.pitchBendRange * 100;
     this.updateDetune(channel, detuneChange);
