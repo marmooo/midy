@@ -62,9 +62,9 @@ export class MidyGM1 {
 
   constructor(audioContext) {
     this.audioContext = audioContext;
+    this.channels = this.createChannels(audioContext);
     this.masterGain = new GainNode(audioContext);
     this.masterGain.connect(audioContext.destination);
-    this.channels = this.createChannels(audioContext);
     this.GM1SystemOn();
   }
 

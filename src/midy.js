@@ -132,9 +132,13 @@ export class Midy {
   constructor(audioContext, options = this.defaultOptions) {
     this.audioContext = audioContext;
     this.options = { ...this.defaultOptions, ...options };
-    this.masterGain = new GainNode(audioContext);
-    this.masterGain.connect(audioContext.destination);
     this.channels = this.createChannels(audioContext);
+    this.reverbEffect = this.options.reverbAlgorithm(audioContext);
+    this.chorusEffect = this.createChorusEffect(audioContext);
+    this.masterGain = new GainNode(audioContext);
+    this.chorusEffect.output.connect(this.masterGain);
+    this.reverbEffect.output.connect(this.masterGain);
+    this.masterGain.connect(audioContext.destination);
     this.GM2SystemOn();
   }
 
@@ -185,14 +189,10 @@ export class Midy {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    const reverbEffect = this.options.reverbAlgorithm(audioContext);
-    const chorusEffect = this.createChorusEffect(audioContext);
     return {
       gainL,
       gainR,
       merger,
-      reverbEffect,
-      chorusEffect,
     };
   }
 
@@ -514,6 +514,12 @@ export class Midy {
   async start() {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
+    // this.scheduleTask(() => {
+    //   for (let i = 0; i < 16; i++) {
+    //     this.setReverbSendLevel(i, 0);
+    //     this.setChorusSendLevel(i, 0);
+    //   }
+    // }, 2);
     await this.playNotes();
     this.isPlaying = false;
   }
@@ -741,15 +747,13 @@ export class Midy {
     gainNode.connect(channel.merger);
     channel.merger.connect(this.masterGain);
     if (0 < channel.reverbSendLevel) {
-      channel.merger.connect(channel.reverbEffect.input);
-      channel.reverbEffect.output.connect(this.masterGain);
+      channel.merger.connect(this.reverbEffect.input);
     }
     if (0 < channel.chorusSendLevel) {
-      channel.merger.connect(channel.chorusEffect.input);
-      channel.reverbEffect.output.connect(this.masterGain);
+      channel.merger.connect(this.chorusEffect.input);
     }
     if (0 < this.chorus.sendToReverb) {
-      channel.chorusEffect.sendGain.connect(channel.reverbEffect.input);
+      this.chorusEffect.sendGain.connect(this.reverbEffect.input);
     }
   }
 
@@ -1275,7 +1279,7 @@ export class Midy {
   setReverbSendLevel(channelNumber, reverbSendLevel) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    const reverbEffect = channel.reverbEffect;
+    const reverbEffect = this.reverbEffect;
     channel.reverbSendLevel = reverbSendLevel / 127;
     reverbEffect.output.gain.cancelScheduledValues(now);
     reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
@@ -1284,7 +1288,7 @@ export class Midy {
   setChorusSendLevel(channelNumber, chorusSendLevel) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    const chorusEffect = channel.chorusEffect;
+    const chorusEffect = this.chorusEffect;
     channel.chorusSendLevel = chorusSendLevel / 127;
     chorusEffect.output.gain.cancelScheduledValues(now);
     chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
@@ -1700,10 +1704,8 @@ export class Midy {
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = (type === 8) ? 0.9 : 0.8;
-    const { audioContext, channels, options } = this;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].reverbEffect = options.reverbAlgorithm(audioContext);
-    }
+    const { audioContext, options } = this;
+    this.reverbEffect = options.reverbAlgorithm(audioContext);
   }
 
   getReverbTimeFromType(type) {
