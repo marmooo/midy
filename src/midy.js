@@ -1864,12 +1864,10 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const sendToReverb = this.getChorusSendToReverb(value);
     this.chorus.sendToReverb = sendToReverb;
-    for (let i = 0; i < this.channels.length; i++) {
-      const chorusEffect = this.channels[i].chorusEffect;
-      chorusEffect.sendGain.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(sendToReverb, now);
-    }
+    const chorusEffect = this.chorusEffect;
+    chorusEffect.sendGain.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(sendToReverb, now);
   }
 
   getChorusSendToReverb(value) {
