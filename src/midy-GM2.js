@@ -727,15 +727,6 @@ export class MidyGM2 {
   connectEffects(channel, gainNode) {
     gainNode.connect(channel.merger);
     channel.merger.connect(this.masterGain);
-    if (0 < channel.reverbSendLevel) {
-      channel.merger.connect(this.reverbEffect.input);
-    }
-    if (0 < channel.chorusSendLevel) {
-      channel.merger.connect(this.chorusEffect.input);
-    }
-    if (0 < this.chorus.sendToReverb) {
-      this.chorusEffect.sendGain.connect(this.reverbEffect.input);
-    }
   }
 
   cbToRatio(cb) {
@@ -1209,21 +1200,29 @@ export class MidyGM2 {
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const reverbEffect = this.reverbEffect;
-    channel.reverbSendLevel = reverbSendLevel / 127;
-    reverbEffect.output.gain.cancelScheduledValues(now);
-    reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+    if (0 < reverbSendLevel) {
+      const now = this.audioContext.currentTime;
+      channel.reverbSendLevel = reverbSendLevel / 127;
+      reverbEffect.output.gain.cancelScheduledValues(now);
+      reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+    } else if (channel.reverbSendLevel !== 0) {
+      channel.merger.disconnect(reverbEffect.input);
+    }
   }
 
   setChorusSendLevel(channelNumber, chorusSendLevel) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const chorusEffect = this.chorusEffect;
-    channel.chorusSendLevel = chorusSendLevel / 127;
-    chorusEffect.output.gain.cancelScheduledValues(now);
-    chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+    if (0 < chorusSendLevel) {
+      const now = this.audioContext.currentTime;
+      channel.chorusSendLevel = chorusSendLevel / 127;
+      chorusEffect.output.gain.cancelScheduledValues(now);
+      chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+    } else if (channel.chorusSendLevel !== 0){
+      channel.merger.disconnect(chorusEffect.input);
+    }
   }
 
   setSostenutoPedal(channelNumber, value) {
@@ -1760,13 +1759,16 @@ export class MidyGM2 {
   }
 
   setChorusSendToReverb(value) {
-    const now = this.audioContext.currentTime;
     const sendToReverb = this.getChorusSendToReverb(value);
-    this.chorus.sendToReverb = sendToReverb;
-    const chorusEffect = this.chorusEffect;
-    chorusEffect.sendGain.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(sendToReverb, now);
+    if (0 < sendToReverb) {
+      const now = this.audioContext.currentTime;
+      this.chorus.sendToReverb = sendToReverb;
+      this.chorusEffect.sendGain.gain
+        .cancelScheduledValues(now)
+        .setValueAtTime(sendToReverb, now);
+    } else if (this.chorus.sendToReverb !== 0) {
+      this.chorusEffect.sendGain.disconnect(this.reverbEffect.input);
+    }
   }
 
   getChorusSendToReverb(value) {
