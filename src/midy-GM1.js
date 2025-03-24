@@ -453,11 +453,6 @@ export class MidyGM1 {
     return noteList[0];
   }
 
-  connectEffects(channel, gainNode) {
-    gainNode.connect(channel.merger);
-    merger.connect(this.masterGain);
-  }
-
   cbToRatio(cb) {
     return Math.pow(10, cb / 200);
   }
@@ -603,7 +598,8 @@ export class MidyGM1 {
       startTime,
       isSF3,
     );
-    this.connectEffects(channel, note.gainNode);
+    note.gainNode.connect(channel.merger);
+    channel.merger.connect(this.masterGain);
 
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {

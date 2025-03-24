@@ -724,11 +724,6 @@ export class MidyGM2 {
     };
   }
 
-  connectEffects(channel, gainNode) {
-    gainNode.connect(channel.merger);
-    channel.merger.connect(this.masterGain);
-  }
-
   cbToRatio(cb) {
     return Math.pow(10, cb / 200);
   }
@@ -890,7 +885,8 @@ export class MidyGM2 {
       startTime,
       isSF3,
     );
-    this.connectEffects(channel, note.gainNode);
+    note.gainNode.connect(channel.merger);
+    channel.merger.connect(this.masterGain);
 
     if (channel.sostenutoPedal) {
       channel.sostenutoNotes.set(noteNumber, note);
@@ -1220,7 +1216,7 @@ export class MidyGM2 {
       channel.chorusSendLevel = chorusSendLevel / 127;
       chorusEffect.output.gain.cancelScheduledValues(now);
       chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
-    } else if (channel.chorusSendLevel !== 0){
+    } else if (channel.chorusSendLevel !== 0) {
       channel.merger.disconnect(chorusEffect.input);
     }
   }
