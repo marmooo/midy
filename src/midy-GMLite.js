@@ -60,8 +60,8 @@ export class MidyGMLite {
 
   constructor(audioContext) {
     this.audioContext = audioContext;
-    this.channels = this.createChannels(audioContext);
     this.masterGain = new GainNode(audioContext);
+    this.channels = this.createChannels(audioContext);
     this.masterGain.connect(audioContext.destination);
     this.GM1SystemOn();
   }
@@ -113,6 +113,7 @@ export class MidyGMLite {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
+    merger.connect(this.masterGain);
     return {
       gainL,
       gainR,
@@ -597,8 +598,6 @@ export class MidyGMLite {
     );
     note.gainNode.connect(channel.gainL);
     note.gainNode.connect(channel.gainR);
-    channel.merger.connect(this.masterGain);
-
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {
       scheduledNotes.get(noteNumber).push(note);

@@ -132,10 +132,10 @@ export class Midy {
   constructor(audioContext, options = this.defaultOptions) {
     this.audioContext = audioContext;
     this.options = { ...this.defaultOptions, ...options };
+    this.masterGain = new GainNode(audioContext);
     this.channels = this.createChannels(audioContext);
     this.reverbEffect = this.options.reverbAlgorithm(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
-    this.masterGain = new GainNode(audioContext);
     this.chorusEffect.output.connect(this.masterGain);
     this.reverbEffect.output.connect(this.masterGain);
     this.masterGain.connect(audioContext.destination);
@@ -189,6 +189,7 @@ export class Midy {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
+    merger.connect(this.masterGain);
     return {
       gainL,
       gainR,
@@ -920,8 +921,6 @@ export class Midy {
     );
     note.gainNode.connect(channel.gainL);
     note.gainNode.connect(channel.gainR);
-    channel.merger.connect(this.masterGain);
-
     if (channel.sostenutoPedal) {
       channel.sostenutoNotes.set(noteNumber, note);
     }
