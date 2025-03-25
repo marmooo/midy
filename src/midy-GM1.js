@@ -598,7 +598,8 @@ export class MidyGM1 {
       startTime,
       isSF3,
     );
-    note.gainNode.connect(channel.merger);
+    note.gainNode.connect(channel.gainL);
+    note.gainNode.connect(channel.gainR);
     channel.merger.connect(this.masterGain);
 
     const scheduledNotes = channel.scheduledNotes;
