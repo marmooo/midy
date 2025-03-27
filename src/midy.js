@@ -758,13 +758,10 @@ export class Midy {
       Math.pow(2, semitoneOffset / 12);
   }
 
-  setVolumeEnvelope(channel, note) {
-    const { instrumentKey, startTime, velocity } = note;
+  setVolumeEnvelope(note) {
+    const { instrumentKey, startTime } = note;
     note.gainNode = new GainNode(this.audioContext, { gain: 0 });
-    let volume = (velocity / 127) * channel.volume * channel.expression;
-    if (volume === 0) volume = 1e-6; // exponentialRampToValueAtTime() requires a non-zero value
-    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation) *
-      volume;
+    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
     const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
     const volDelay = startTime + instrumentKey.volDelay;
     const volAttack = volDelay + instrumentKey.volAttack;
@@ -865,7 +862,7 @@ export class Midy {
       noteNumber,
       semitoneOffset,
     );
-    this.setVolumeEnvelope(channel, note);
+    this.setVolumeEnvelope(note);
     this.setFilterEnvelope(channel, note);
     if (channel.modulation > 0) {
       const delayModLFO = startTime + instrumentKey.delayModLFO;
