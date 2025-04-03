@@ -1,5 +1,5 @@
-import { bundle } from "jsr:@deno/emit";
-import { minify } from "npm:@swc/core";
+import { bundle } from "@deno/emit";
+import { minify } from "@swc/core";
 
 async function buildScript(inPath, outPath) {
   const url = new URL(import.meta.resolve(inPath));
