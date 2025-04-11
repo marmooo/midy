@@ -80,7 +80,7 @@ export class MidyGM2 {
 
   static effectSettings = {
     expression: 1,
-    modulation: 0,
+    modulationDepth: 0,
     sustainPedal: false,
     portamento: false,
     sostenutoPedal: false,
@@ -885,7 +885,7 @@ export class MidyGM2 {
     if (0 < channel.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
-    if (0 < channel.modulation) {
+    if (0 < channel.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);
     } else {
@@ -1104,7 +1104,7 @@ export class MidyGM2 {
       case 0:
         return this.setBankMSB(channelNumber, value);
       case 1:
-        return this.setModulation(channelNumber, value);
+        return this.setModulationDepth(channelNumber, value);
       case 5:
         return this.setPortamentoTime(channelNumber, value);
       case 6:
@@ -1166,7 +1166,7 @@ export class MidyGM2 {
     activeNotes.forEach((activeNote) => {
       if (activeNote.modulationDepth) {
         activeNote.modulationDepth.gain.setValueAtTime(
-          channel.modulation,
+          channel.modulationDepth,
           now,
         );
       } else {
@@ -1177,9 +1177,9 @@ export class MidyGM2 {
     });
   }
 
-  setModulation(channelNumber, modulation) {
+  setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
+    channel.modulationDepth = (modulation / 127) * channel.modulationDepthRange;
     this.updateModulation(channel);
   }
 
@@ -1420,7 +1420,7 @@ export class MidyGM2 {
   setModulationDepthRange(channelNumber, modulationDepthRange) {
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
-    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
+    channel.modulationDepth = (modulation / 127) * modulationDepthRange;
     this.updateModulation(channel);
   }
 

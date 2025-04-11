@@ -56,7 +56,7 @@ export class MidyGM1 {
 
   static effectSettings = {
     expression: 1,
-    modulation: 0,
+    modulationDepth: 0,
     sustainPedal: false,
     rpnMSB: 127,
     rpnLSB: 127,
@@ -557,7 +557,7 @@ export class MidyGM1 {
     note.filterDepth = new GainNode(this.audioContext, {
       gain: instrumentKey.modLfoToFilterFc,
     });
-    const modulationDepth = Math.abs(modLfoToPitch) + channel.modulation;
+    const modulationDepth = Math.abs(modLfoToPitch) + channel.modulationDepth;
     const modulationDepthSign = (0 < modLfoToPitch) ? 1 : -1;
     note.modulationDepth = new GainNode(this.audioContext, {
       gain: modulationDepth * modulationDepthSign,
@@ -589,7 +589,7 @@ export class MidyGM1 {
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
     this.setFilterNode(channel, note);
     this.setVolumeEnvelope(note);
-    if (0 < channel.modulation) {
+    if (0 < channel.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);
     } else {
@@ -753,7 +753,7 @@ export class MidyGM1 {
   handleControlChange(channelNumber, controller, value) {
     switch (controller) {
       case 1:
-        return this.setModulation(channelNumber, value);
+        return this.setModulationDepth(channelNumber, value);
       case 6:
         return this.dataEntryMSB(channelNumber, value);
       case 7:
@@ -789,7 +789,7 @@ export class MidyGM1 {
     activeNotes.forEach((activeNote) => {
       if (activeNote.modulationDepth) {
         activeNote.modulationDepth.gain.setValueAtTime(
-          channel.modulation,
+          channel.modulationDepth,
           now,
         );
       } else {
@@ -800,9 +800,9 @@ export class MidyGM1 {
     });
   }
 
-  setModulation(channelNumber, modulation) {
+  setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
+    channel.modulationDepth = (modulation / 127) * channel.modulationDepthRange;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {

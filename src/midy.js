@@ -80,7 +80,7 @@ export class Midy {
 
   static effectSettings = {
     expression: 1,
-    modulation: 0,
+    modulationDepth: 0,
     sustainPedal: false,
     portamento: false,
     sostenutoPedal: false,
@@ -841,7 +841,7 @@ export class Midy {
     note.filterDepth = new GainNode(this.audioContext, {
       gain: instrumentKey.modLfoToFilterFc,
     });
-    const modulationDepth = Math.abs(modLfoToPitch) + channel.modulation;
+    const modulationDepth = Math.abs(modLfoToPitch) + channel.modulationDepth;
     const modulationDepthSign = (0 < modLfoToPitch) ? 1 : -1;
     note.modulationDepth = new GainNode(this.audioContext, {
       gain: modulationDepth * modulationDepthSign,
@@ -895,7 +895,7 @@ export class Midy {
     if (0 < channel.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
-    if (0 < channel.modulation) {
+    if (0 < channel.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);
     } else {
@@ -1132,7 +1132,7 @@ export class Midy {
       case 0:
         return this.setBankMSB(channelNumber, value);
       case 1:
-        return this.setModulation(channelNumber, value);
+        return this.setModulationDepth(channelNumber, value);
       case 5:
         return this.setPortamentoTime(channelNumber, value);
       case 6:
@@ -1205,7 +1205,7 @@ export class Midy {
     activeNotes.forEach((activeNote) => {
       if (activeNote.modulationDepth) {
         activeNote.modulationDepth.gain.setValueAtTime(
-          channel.modulation,
+          channel.modulationDepth,
           now,
         );
       } else {
@@ -1216,9 +1216,9 @@ export class Midy {
     });
   }
 
-  setModulation(channelNumber, modulation) {
+  setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
+    channel.modulationDepth = (modulation / 127) * channel.modulationDepthRange;
     this.updateModulation(channel);
   }
 
@@ -1486,7 +1486,7 @@ export class Midy {
   setModulationDepthRange(channelNumber, modulationDepthRange) {
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
-    channel.modulation = (modulation / 127) * channel.modulationDepthRange;
+    channel.modulationDepth = (modulation / 127) * modulationDepthRange;
     this.updateModulation(channel);
   }
 
