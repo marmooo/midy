@@ -352,21 +352,21 @@ export class Midy {
         const t = this.audioContext.currentTime + offset;
         queueIndex = await this.scheduleTimelineEvents(t, offset, queueIndex);
         if (this.isPausing) {
-          await this.stopNotes();
+          await this.stopNotes(0, true);
           this.notePromises = [];
           resolve();
           this.isPausing = false;
           this.isPaused = true;
           return;
         } else if (this.isStopping) {
-          await this.stopNotes();
+          await this.stopNotes(0, true);
           this.notePromises = [];
           resolve();
           this.isStopping = false;
           this.isPaused = false;
           return;
         } else if (this.isSeeking) {
-          this.stopNotes();
+          this.stopNotes(0, true);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -489,27 +489,31 @@ export class Midy {
     return { instruments, timeline };
   }
 
-  stopNotes() {
+  async stopChannelNotes(channelNumber, velocity, stopPedal) {
     const now = this.audioContext.currentTime;
-    const velocity = 0;
-    const stopPedal = true;
-    this.channels.forEach((channel, channelNumber) => {
-      channel.scheduledNotes.forEach((scheduledNotes) => {
-        scheduledNotes.forEach((scheduledNote) => {
-          if (scheduledNote) {
-            const promise = this.scheduleNoteRelease(
-              channelNumber,
-              scheduledNote.noteNumber,
-              velocity,
-              now,
-              stopPedal,
-            );
-            this.notePromises.push(promise);
-          }
-        });
+    const channel = this.channels[channelNumber];
+    channel.scheduledNotes.forEach((noteList) => {
+      noteList.forEach((note) => {
+        if (note) {
+          const promise = this.scheduleNoteRelease(
+            channelNumber,
+            note.noteNumber,
+            velocity,
+            now,
+            stopPedal,
+          );
+          this.notePromises.push(promise);
+        }
       });
-      channel.scheduledNotes.clear();
     });
+    channel.scheduledNotes.clear();
+    await Promise.all(this.notePromises);
+  }
+
+  stopNotes(velocity, stopPedal) {
+    for (let i = 0; i < this.channels.length; i++) {
+      this.stopChannelNotes(i, velocity, stopPedal);
+    }
     return Promise.all(this.notePromises);
   }
 
@@ -1491,26 +1495,7 @@ export class Midy {
   }
 
   allSoundOff(channelNumber) {
-    const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    const velocity = 0;
-    const stopPedal = true;
-    const promises = [];
-    channel.scheduledNotes.forEach((noteList) => {
-      noteList.forEach((note) => {
-        if (note) {
-          const notePromise = this.scheduleNoteRelease(
-            channelNumber,
-            note.noteNumber,
-            velocity,
-            now,
-            stopPedal,
-          );
-          promises.push(notePromise);
-        }
-      });
-    });
-    return promises;
+    return this.stopChannelNotes(channelNumber, 0, true);
   }
 
   resetAllControllers(channelNumber) {
@@ -1518,26 +1503,7 @@ export class Midy {
   }
 
   allNotesOff(channelNumber) {
-    const now = this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    const velocity = 0;
-    const stopPedal = false;
-    const promises = [];
-    channel.scheduledNotes.forEach((noteList) => {
-      noteList.forEach((note) => {
-        if (note) {
-          const notePromise = this.scheduleNoteRelease(
-            channelNumber,
-            note.noteNumber,
-            velocity,
-            now,
-            stopPedal,
-          );
-          promises.push(notePromise);
-        }
-      });
-    });
-    return promises;
+    return this.stopChannelNotes(channelNumber, 0, false);
   }
 
   omniOff() {
