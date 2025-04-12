@@ -913,17 +913,18 @@ export class MidyGMLite {
     const stopPedal = true;
     const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList, now);
-      if (activeNote) {
-        const notePromise = this.scheduleNoteRelease(
-          channelNumber,
-          noteNumber,
-          velocity,
-          now,
-          stopPedal,
-        );
-        promises.push(notePromise);
-      }
+      noteList.forEach((note) => {
+        if (note) {
+          const notePromise = this.scheduleNoteRelease(
+            channelNumber,
+            note.noteNumber,
+            velocity,
+            now,
+            stopPedal,
+          );
+          promises.push(notePromise);
+        }
+      });
     });
     return promises;
   }
@@ -939,17 +940,18 @@ export class MidyGMLite {
     const stopPedal = false;
     const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList, now);
-      if (activeNote) {
-        const notePromise = this.scheduleNoteRelease(
-          channelNumber,
-          activeNote.noteNumber,
-          velocity,
-          now,
-          stopPedal,
-        );
-        promises.push(notePromise);
-      }
+      noteList.forEach((note) => {
+        if (note) {
+          const notePromise = this.scheduleNoteRelease(
+            channelNumber,
+            note.noteNumber,
+            velocity,
+            now,
+            stopPedal,
+          );
+          promises.push(notePromise);
+        }
+      });
     });
     return promises;
   }
