@@ -704,10 +704,10 @@ export class MidyGM1 {
     const channel = this.channels[channelNumber];
     const promises = [];
     channel.sustainPedal = false;
-    channel.scheduledNotes.forEach((scheduledNotes) => {
-      scheduledNotes.forEach((scheduledNote) => {
-        if (scheduledNote) {
-          const { noteNumber } = scheduledNote;
+    channel.scheduledNotes.forEach((noteList) => {
+      noteList.forEach((note) => {
+        if (note) {
+          const { noteNumber } = note;
           const promise = this.releaseNote(channelNumber, noteNumber, velocity);
           promises.push(promise);
         }
