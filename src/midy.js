@@ -62,6 +62,7 @@ export class Midy {
     pan: 64,
     portamentoTime: 0,
     filterResonance: 1,
+    releaseTime: 1,
     reverbSendLevel: 0,
     chorusSendLevel: 0,
     vibratoRate: 1,
@@ -975,7 +976,7 @@ export class Midy {
   scheduleNoteRelease(
     channelNumber,
     noteNumber,
-    velocity,
+    _velocity,
     stopTime,
     stopPedal = false,
   ) {
@@ -988,14 +989,12 @@ export class Midy {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const velocityRate = (velocity + 127) / 127;
       const volEndTime = stopTime +
-        note.instrumentKey.volRelease * velocityRate;
+        note.instrumentKey.volRelease * channel.releaseTime;
       note.volumeNode.gain
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(0, volEndTime);
-      const modRelease = stopTime +
-        note.instrumentKey.modRelease * velocityRate;
+      const modRelease = stopTime + note.instrumentKey.modRelease;
       note.filterNode.frequency
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(0, modRelease);
@@ -1162,7 +1161,9 @@ export class Midy {
         return this.setSoftPedal(channelNumber, value);
       case 71:
         return this.setFilterResonance(channelNumber, value);
-      // TODO: 72-75
+      case 72:
+        return this.setRelaseTime(channelNumber, value);
+      // TODO: 73-75
       case 76:
         return this.setVibratoRate(channelNumber, value);
       case 77:
@@ -1353,6 +1354,11 @@ export class Midy {
         note.filterNode.Q.setValueAtTime(Q, now);
       }
     });
+  }
+
+  setReleaseTime(channelNumber, releaseTime) {
+    const channel = this.channels[channelNumber];
+    channel.releaseTime = releaseTime / 64;
   }
 
   setVibratoRate(channelNumber, vibratoRate) {

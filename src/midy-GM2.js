@@ -964,7 +964,7 @@ export class MidyGM2 {
   scheduleNoteRelease(
     channelNumber,
     noteNumber,
-    velocity,
+    _velocity,
     stopTime,
     stopPedal = false,
   ) {
@@ -977,14 +977,11 @@ export class MidyGM2 {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const velocityRate = (velocity + 127) / 127;
-      const volEndTime = stopTime +
-        note.instrumentKey.volRelease * velocityRate;
+      const volEndTime = stopTime + note.instrumentKey.volRelease;
       note.volumeNode.gain
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(0, volEndTime);
-      const modRelease = stopTime +
-        note.instrumentKey.modRelease * velocityRate;
+      const modRelease = stopTime + note.instrumentKey.modRelease;
       note.filterNode.frequency
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(0, modRelease);
