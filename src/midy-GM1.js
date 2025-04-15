@@ -923,13 +923,16 @@ export class MidyGM1 {
 
   updateDetune(channel, detuneChange) {
     const now = this.audioContext.currentTime;
-    const activeNotes = this.getActiveNotes(channel, now);
-    activeNotes.forEach((activeNote) => {
-      const { bufferSource } = activeNote;
-      const detune = bufferSource.detune.value + detuneChange;
-      bufferSource.detune
-        .cancelScheduledValues(now)
-        .setValueAtTime(detune, now);
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const { bufferSource } = note;
+        const detune = bufferSource.detune.value + detuneChange;
+        bufferSource.detune
+          .cancelScheduledValues(now)
+          .setValueAtTime(detune, now);
+      }
     });
   }
 
