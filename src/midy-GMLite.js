@@ -366,18 +366,18 @@ export class MidyGMLite {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.scheduledNotes.forEach((noteList) => {
-      noteList.forEach((note) => {
-        if (note) {
-          const promise = this.scheduleNoteRelease(
-            channelNumber,
-            note.noteNumber,
-            velocity,
-            now,
-            stopPedal,
-          );
-          this.notePromises.push(promise);
-        }
-      });
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const promise = this.scheduleNoteRelease(
+          channelNumber,
+          note.noteNumber,
+          velocity,
+          now,
+          stopPedal,
+        );
+        this.notePromises.push(promise);
+      }
     });
     channel.scheduledNotes.clear();
     await Promise.all(this.notePromises);
@@ -700,13 +700,13 @@ export class MidyGMLite {
     const promises = [];
     channel.sustainPedal = false;
     channel.scheduledNotes.forEach((noteList) => {
-      noteList.forEach((note) => {
-        if (note) {
-          const { noteNumber } = note;
-          const promise = this.releaseNote(channelNumber, noteNumber, velocity);
-          promises.push(promise);
-        }
-      });
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const { noteNumber } = note;
+        const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+        promises.push(promise);
+      }
     });
     return promises;
   }
