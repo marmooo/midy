@@ -789,17 +789,20 @@ export class MidyGM1 {
 
   updateModulation(channel) {
     const now = this.audioContext.currentTime;
-    const activeNotes = this.getActiveNotes(channel, now);
-    activeNotes.forEach((activeNote) => {
-      if (activeNote.modulationDepth) {
-        activeNote.modulationDepth.gain.setValueAtTime(
-          channel.modulationDepth,
-          now,
-        );
-      } else {
-        const semitoneOffset = this.calcSemitoneOffset(channel);
-        this.setPitch(activeNote, semitoneOffset);
-        this.startModulation(channel, activeNote, now);
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        if (note.modulationDepth) {
+          note.modulationDepth.gain.setValueAtTime(
+            channel.modulationDepth,
+            now,
+          );
+        } else {
+          const semitoneOffset = this.calcSemitoneOffset(channel);
+          this.setPitch(note, semitoneOffset);
+          this.startModulation(channel, note, now);
+        }
       }
     });
   }
