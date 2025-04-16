@@ -1162,7 +1162,7 @@ export class Midy {
       case 71:
         return this.setFilterResonance(channelNumber, value);
       case 72:
-        return this.setRelaseTime(channelNumber, value);
+        return this.setReleaseTime(channelNumber, value);
       // TODO: 73-75
       case 76:
         return this.setVibratoRate(channelNumber, value);
