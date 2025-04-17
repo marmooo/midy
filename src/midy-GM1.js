@@ -481,7 +481,6 @@ export class MidyGM1 {
 
   setVolumeEnvelope(note) {
     const { instrumentKey, startTime } = note;
-    note.volumeNode = new GainNode(this.audioContext, { gain: 0 });
     const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
     const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
     const volDelay = startTime + instrumentKey.volDelay;
@@ -489,6 +488,8 @@ export class MidyGM1 {
     const volHold = volAttack + instrumentKey.volHold;
     const volDecay = volHold + instrumentKey.volDecay;
     note.volumeNode.gain
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
@@ -591,6 +592,7 @@ export class MidyGM1 {
     const semitoneOffset = this.calcSemitoneOffset(channel);
     const note = new Note(noteNumber, velocity, startTime, instrumentKey);
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
+    note.volumeNode = new GainNode(this.audioContext);
     this.setFilterNode(channel, note);
     this.setVolumeEnvelope(note);
     if (0 < channel.modulationDepth) {

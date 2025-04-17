@@ -63,6 +63,7 @@ export class Midy {
     portamentoTime: 0,
     filterResonance: 1,
     releaseTime: 1,
+    attackTime: 1,
     reverbSendLevel: 0,
     chorusSendLevel: 0,
     vibratoRate: 1,
@@ -765,16 +766,17 @@ export class Midy {
       Math.pow(2, semitoneOffset / 12);
   }
 
-  setVolumeEnvelope(note) {
+  setVolumeEnvelope(channel, note) {
     const { instrumentKey, startTime } = note;
-    note.volumeNode = new GainNode(this.audioContext, { gain: 0 });
     const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
     const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
     const volDelay = startTime + instrumentKey.volDelay;
-    const volAttack = volDelay + instrumentKey.volAttack;
+    const volAttack = volDelay + instrumentKey.volAttack * channel.attackTime;
     const volHold = volAttack + instrumentKey.volHold;
     const volDecay = volHold + instrumentKey.volDecay;
     note.volumeNode.gain
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
@@ -896,8 +898,9 @@ export class Midy {
     const semitoneOffset = this.calcSemitoneOffset(channel);
     const note = new Note(noteNumber, velocity, startTime, instrumentKey);
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
+    note.volumeNode = new GainNode(this.audioContext);
     this.setFilterNode(channel, note);
-    this.setVolumeEnvelope(note);
+    this.setVolumeEnvelope(channel, note);
     if (0 < channel.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
@@ -1163,7 +1166,9 @@ export class Midy {
         return this.setFilterResonance(channelNumber, value);
       case 72:
         return this.setReleaseTime(channelNumber, value);
-      // TODO: 73-75
+      case 73:
+        return this.setAttackTime(channelNumber, value);
+      // TODO: 74-75
       case 76:
         return this.setVibratoRate(channelNumber, value);
       case 77:
@@ -1359,6 +1364,20 @@ export class Midy {
   setReleaseTime(channelNumber, releaseTime) {
     const channel = this.channels[channelNumber];
     channel.releaseTime = releaseTime / 64;
+  }
+
+  setAttackTime(channelNumber, attackTime) {
+    const now = this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    channel.attackTime = attackTime / 64;
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        if (note.startTime < now) continue;
+        this.setVolumeEnvelope(channel, note);
+      }
+    });
   }
 
   setVibratoRate(channelNumber, vibratoRate) {
