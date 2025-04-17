@@ -809,11 +809,16 @@ export class Midy {
       .linearRampToValueAtTime(basePitch, modDecay);
   }
 
+  clampCutoffFrequency(frequency) {
+    const minFrequency = 20; // min Hz of initialFilterFc
+    const maxFrequency = 20000; // max Hz of initialFilterFc
+    return Math.max(minFrequency, Math.min(frequency, maxFrequency));
+  }
+
   setFilterNode(channel, note) {
     const { instrumentKey, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
-    const maxFreq = this.audioContext.sampleRate / 2;
     const baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
       softPedalFactor;
     const peekFreq = this.centToHz(
@@ -821,9 +826,9 @@ export class Midy {
     ) * softPedalFactor;
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
-    const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
-    const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
-    const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
+    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
+    const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
+    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
     const modDelay = startTime + instrumentKey.modDelay;
     const modAttack = modDelay + instrumentKey.modAttack;
     const modHold = modAttack + instrumentKey.modHold;

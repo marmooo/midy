@@ -522,18 +522,23 @@ export class MidyGM1 {
       .linearRampToValueAtTime(basePitch, modDecay);
   }
 
+  clampCutoffFrequency(frequency) {
+    const minFrequency = 20; // min Hz of initialFilterFc
+    const maxFrequency = 20000; // max Hz of initialFilterFc
+    return Math.max(minFrequency, Math.min(frequency, maxFrequency));
+  }
+
   setFilterNode(note) {
     const { instrumentKey, startTime } = note;
-    const maxFreq = this.audioContext.sampleRate / 2;
     const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
     const peekFreq = this.centToHz(
       instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
     );
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
-    const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
-    const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
-    const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
+    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
+    const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
+    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
     const modDelay = startTime + instrumentKey.modDelay;
     const modAttack = modDelay + instrumentKey.modAttack;
     const modHold = modAttack + instrumentKey.modHold;
