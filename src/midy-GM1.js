@@ -522,18 +522,15 @@ export class MidyGM1 {
       .linearRampToValueAtTime(basePitch, modDecay);
   }
 
-  setFilterNode(channel, note) {
-    const { instrumentKey, noteNumber, startTime } = note;
-    const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
+  setFilterNode(note) {
+    const { instrumentKey, startTime } = note;
     const maxFreq = this.audioContext.sampleRate / 2;
-    const baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
-      softPedalFactor;
+    const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
     const peekFreq = this.centToHz(
       instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
-    ) * softPedalFactor;
-    const sustainFreq = (baseFreq +
-      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain)) * softPedalFactor;
+    );
+    const sustainFreq = baseFreq +
+      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
     const adjustedBaseFreq = Math.min(maxFreq, baseFreq);
     const adjustedPeekFreq = Math.min(maxFreq, peekFreq);
     const adjustedSustainFreq = Math.min(maxFreq, sustainFreq);
@@ -593,7 +590,7 @@ export class MidyGM1 {
     const note = new Note(noteNumber, velocity, startTime, instrumentKey);
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
-    this.setFilterNode(channel, note);
+    this.setFilterNode(note);
     this.setVolumeEnvelope(note);
     if (0 < channel.modulationDepth) {
       this.setPitch(note, semitoneOffset);
