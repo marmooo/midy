@@ -523,7 +523,7 @@ export class MidyGMLite {
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
 
-  setFilterNode(note) {
+  setFilterEnvelope(note) {
     const { instrumentKey, startTime } = note;
     const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
     const peekFreq = this.centToHz(
@@ -538,12 +538,9 @@ export class MidyGMLite {
     const modAttack = modDelay + instrumentKey.modAttack;
     const modHold = modAttack + instrumentKey.modHold;
     const modDecay = modHold + instrumentKey.modDecay;
-    note.filterNode = new BiquadFilterNode(this.audioContext, {
-      type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10, // dB
-      frequency: adjustedBaseFreq,
-    });
     note.filterNode.frequency
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
@@ -590,8 +587,12 @@ export class MidyGMLite {
     const note = new Note(noteNumber, velocity, startTime, instrumentKey);
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
-    this.setFilterNode(note);
+    note.filterNode = new BiquadFilterNode(this.audioContext, {
+      type: "lowpass",
+      Q: instrumentKey.initialFilterQ / 10 * channel.filterResonance, // dB
+    });
     this.setVolumeEnvelope(note);
+    this.setFilterEnvelope(note);
     if (0 < channel.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);

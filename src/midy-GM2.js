@@ -802,7 +802,7 @@ export class MidyGM2 {
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
 
-  setFilterNode(channel, note) {
+  setFilterEnvelope(channel, note) {
     const { instrumentKey, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
@@ -820,12 +820,9 @@ export class MidyGM2 {
     const modAttack = modDelay + instrumentKey.modAttack;
     const modHold = modAttack + instrumentKey.modHold;
     const modDecay = modHold + instrumentKey.modDecay;
-    note.filterNode = new BiquadFilterNode(this.audioContext, {
-      type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10, // dB
-      frequency: adjustedBaseFreq,
-    });
     note.filterNode.frequency
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
@@ -891,8 +888,12 @@ export class MidyGM2 {
     const note = new Note(noteNumber, velocity, startTime, instrumentKey);
     note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
-    this.setFilterNode(channel, note);
+    note.filterNode = new BiquadFilterNode(this.audioContext, {
+      type: "lowpass",
+      Q: instrumentKey.initialFilterQ / 10 * channel.filterResonance, // dB
+    });
     this.setVolumeEnvelope(note);
+    this.setFilterEnvelope(channel, note);
     if (0 < channel.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
