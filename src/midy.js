@@ -65,6 +65,7 @@ export class Midy {
     releaseTime: 1,
     attackTime: 1,
     brightness: 1,
+    decayTime: 1,
     reverbSendLevel: 0,
     chorusSendLevel: 0,
     vibratoRate: 1,
@@ -774,7 +775,7 @@ export class Midy {
     const volDelay = startTime + instrumentKey.volDelay;
     const volAttack = volDelay + instrumentKey.volAttack * channel.attackTime;
     const volHold = volAttack + instrumentKey.volHold;
-    const volDecay = volHold + instrumentKey.volDecay;
+    const volDecay = volHold + instrumentKey.volDecay * channel.decayTime;
     note.volumeNode.gain
       .cancelScheduledValues(startTime)
       .setValueAtTime(0, startTime)
@@ -1177,7 +1178,8 @@ export class Midy {
         return this.setAttackTime(channelNumber, value);
       case 74:
         return this.setBrightness(channelNumber, value);
-      // TODO: 75
+      case 75:
+        return this.setDecayTime(channelNumber, value);
       case 76:
         return this.setVibratoRate(channelNumber, value);
       case 77:
@@ -1397,6 +1399,18 @@ export class Midy {
         const note = noteList[i];
         if (!note) continue;
         this.setFilterEnvelope(channel, note);
+      }
+    });
+  }
+
+  setDecayTime(channelNumber, dacayTime) {
+    const channel = this.channels[channelNumber];
+    channel.decayTime = dacayTime / 64;
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        this.setVolumeEnvelope(channel, note);
       }
     });
   }
