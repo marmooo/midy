@@ -139,6 +139,7 @@ export class Midy {
     this.audioContext = audioContext;
     this.options = { ...this.defaultOptions, ...options };
     this.masterGain = new GainNode(audioContext);
+    this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
     this.reverbEffect = this.options.reverbAlgorithm(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
@@ -1142,80 +1143,53 @@ export class Midy {
     this.updateDetune(channel, detuneChange);
   }
 
+  createControlChangeHandlers() {
+    return {
+      0: this.setBankMSB,
+      1: this.setModulationDepth,
+      5: this.setPortamentoTime,
+      6: this.dataEntryMSB,
+      7: this.setVolume,
+      10: this.setPan,
+      11: this.setExpression,
+      32: this.setBankLSB,
+      38: this.dataEntryLSB,
+      64: this.setSustainPedal,
+      65: this.setPortamento,
+      66: this.setSostenutoPedal,
+      67: this.setSoftPedal,
+      71: this.setFilterResonance,
+      72: this.setReleaseTime,
+      73: this.setAttackTime,
+      74: this.setBrightness,
+      75: this.setDecayTime,
+      76: this.setVibratoRate,
+      77: this.setVibratoDepth,
+      78: this.setVibratoDelay,
+      91: this.setReverbSendLevel,
+      93: this.setChorusSendLevel,
+      96: this.dataIncrement,
+      97: this.dataDecrement,
+      100: this.setRPNLSB,
+      101: this.setRPNMSB,
+      120: this.allSoundOff,
+      121: this.resetAllControllers,
+      123: this.allNotesOff,
+      124: this.omniOff,
+      125: this.omniOn,
+      126: this.monoOn,
+      127: this.polyOn,
+    };
+  }
+
   handleControlChange(channelNumber, controller, value) {
-    switch (controller) {
-      case 0:
-        return this.setBankMSB(channelNumber, value);
-      case 1:
-        return this.setModulationDepth(channelNumber, value);
-      case 5:
-        return this.setPortamentoTime(channelNumber, value);
-      case 6:
-        return this.dataEntryMSB(channelNumber, value);
-      case 7:
-        return this.setVolume(channelNumber, value);
-      case 10:
-        return this.setPan(channelNumber, value);
-      case 11:
-        return this.setExpression(channelNumber, value);
-      case 32:
-        return this.setBankLSB(channelNumber, value);
-      case 38:
-        return this.dataEntryLSB(channelNumber, value);
-      case 64:
-        return this.setSustainPedal(channelNumber, value);
-      case 65:
-        return this.setPortamento(channelNumber, value);
-      case 66:
-        return this.setSostenutoPedal(channelNumber, value);
-      case 67:
-        return this.setSoftPedal(channelNumber, value);
-      case 71:
-        return this.setFilterResonance(channelNumber, value);
-      case 72:
-        return this.setReleaseTime(channelNumber, value);
-      case 73:
-        return this.setAttackTime(channelNumber, value);
-      case 74:
-        return this.setBrightness(channelNumber, value);
-      case 75:
-        return this.setDecayTime(channelNumber, value);
-      case 76:
-        return this.setVibratoRate(channelNumber, value);
-      case 77:
-        return this.setVibratoDepth(channelNumber, value);
-      case 78:
-        return this.setVibratoDelay(channelNumber, value);
-      case 91:
-        return this.setReverbSendLevel(channelNumber, value);
-      case 93:
-        return this.setChorusSendLevel(channelNumber, value);
-      case 96: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-        return this.dataIncrement(channelNumber);
-      case 97: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-        return this.dataDecrement(channelNumber);
-      case 100:
-        return this.setRPNLSB(channelNumber, value);
-      case 101:
-        return this.setRPNMSB(channelNumber, value);
-      case 120:
-        return this.allSoundOff(channelNumber);
-      case 121:
-        return this.resetAllControllers(channelNumber);
-      case 123:
-        return this.allNotesOff(channelNumber);
-      case 124:
-        return this.omniOff();
-      case 125:
-        return this.omniOn();
-      case 126:
-        return this.monoOn();
-      case 127:
-        return this.polyOn();
-      default:
-        console.warn(
-          `Unsupported Control change: controller=${controller} value=${value}`,
-        );
+    const handler = this.controlChangeHandlers[controller];
+    if (handler) {
+      handler.call(this, channelNumber, value);
+    } else {
+      console.warn(
+        `Unsupported Control change: controller=${controller} value=${value}`,
+      );
     }
   }
 
@@ -1482,10 +1456,12 @@ export class Midy {
     }
   }
 
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
   dataIncrement(channelNumber) {
     this.handleRPN(channelNumber, 1);
   }
 
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
   dataDecrement(channelNumber) {
     this.handleRPN(channelNumber, -1);
   }

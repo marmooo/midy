@@ -66,6 +66,7 @@ export class MidyGM1 {
   constructor(audioContext) {
     this.audioContext = audioContext;
     this.masterGain = new GainNode(audioContext);
+    this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterGain.connect(audioContext.destination);
     this.GM1SystemOn();
@@ -756,36 +757,31 @@ export class MidyGM1 {
     this.updateDetune(channel, detuneChange);
   }
 
+  createControlChangeHandlers() {
+    return {
+      1: this.setModulationDepth,
+      6: this.dataEntryMSB,
+      7: this.setVolume,
+      10: this.setPan,
+      11: this.setExpression,
+      38: this.dataEntryLSB,
+      64: this.setSustainPedal,
+      100: this.setRPNLSB,
+      101: this.setRPNMSB,
+      120: this.allSoundOff,
+      121: this.resetAllControllers,
+      123: this.allNotesOff,
+    };
+  }
+
   handleControlChange(channelNumber, controller, value) {
-    switch (controller) {
-      case 1:
-        return this.setModulationDepth(channelNumber, value);
-      case 6:
-        return this.dataEntryMSB(channelNumber, value);
-      case 7:
-        return this.setVolume(channelNumber, value);
-      case 10:
-        return this.setPan(channelNumber, value);
-      case 11:
-        return this.setExpression(channelNumber, value);
-      case 38:
-        return this.dataEntryLSB(channelNumber, value);
-      case 64:
-        return this.setSustainPedal(channelNumber, value);
-      case 100:
-        return this.setRPNLSB(channelNumber, value);
-      case 101:
-        return this.setRPNMSB(channelNumber, value);
-      case 120:
-        return this.allSoundOff(channelNumber);
-      case 121:
-        return this.resetAllControllers(channelNumber);
-      case 123:
-        return this.allNotesOff(channelNumber);
-      default:
-        console.warn(
-          `Unsupported Control change: controller=${controller} value=${value}`,
-        );
+    const handler = this.controlChangeHandlers[controller];
+    if (handler) {
+      handler.call(this, channelNumber, value);
+    } else {
+      console.warn(
+        `Unsupported Control change: controller=${controller} value=${value}`,
+      );
     }
   }
 
