@@ -629,6 +629,7 @@ export class MidyGM1 {
       bankNumber,
       channel.program,
       noteNumber,
+      velocity,
     );
     if (!instrumentKey) return;
     const note = await this.createNote(

@@ -2,7 +2,8 @@ import { parseMidi } from "https://cdn.jsdelivr.net/npm/midi-file@1.2.4/+esm";
 import {
   parse,
   SoundFont,
-} from "https://cdn.jsdelivr.net/npm/@marmooo/soundfont-parser@0.0.4/+esm";
+// } from "https://cdn.jsdelivr.net/npm/@marmooo/soundfont-parser@0.0.4/+esm";
+} from "../soundfont-parser.js";
 
 class Note {
   bufferSource;
@@ -957,6 +958,7 @@ export class Midy {
       bankNumber,
       channel.program,
       noteNumber,
+      velocity,
     );
     if (!instrumentKey) return;
     const note = await this.createNote(
