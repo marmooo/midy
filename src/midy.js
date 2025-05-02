@@ -1397,22 +1397,16 @@ export class Midy {
   }
 
   setVibratoRate(channelNumber, vibratoRate) {
-    const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.vibratoRate = vibratoRate / 64;
+    if (channel.vibratoDepth <= 0) return;
+    const now = this.audioContext.currentTime;
     const activeNotes = this.getActiveNotes(channel, now);
-    if (0 < channel.vibratoDepth) {
-      activeNotes.forEach((activeNote) => {
-        activeNote.vibratoLFO.frequency
-          .cancelScheduledValues(now)
-          .setValueAtTime(channel.vibratoRate, now);
-      });
-    } else {
-      activeNotes.forEach((activeNote) => {
-        const { startTime } = activeNote;
-        this.startVibrato(channel, activeNote, startTime);
-      });
-    }
+    activeNotes.forEach((activeNote) => {
+      activeNote.vibratoLFO.frequency
+        .cancelScheduledValues(now)
+        .setValueAtTime(channel.vibratoRate, now);
+    });
   }
 
   setVibratoDepth(channelNumber, vibratoDepth) {
