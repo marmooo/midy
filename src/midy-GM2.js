@@ -1252,7 +1252,7 @@ export class MidyGM2 {
       channel.reverbSendLevel = reverbSendLevel / 127;
       reverbEffect.output.gain.cancelScheduledValues(now);
       reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
-    } else if (channel.reverbSendLevel !== 0) {
+    } else {
       channel.merger.disconnect(reverbEffect.input);
     }
   }
@@ -1265,7 +1265,7 @@ export class MidyGM2 {
       channel.chorusSendLevel = chorusSendLevel / 127;
       chorusEffect.output.gain.cancelScheduledValues(now);
       chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
-    } else if (channel.chorusSendLevel !== 0) {
+    } else {
       channel.merger.disconnect(chorusEffect.input);
     }
   }
