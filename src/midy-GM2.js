@@ -979,8 +979,10 @@ export class MidyGM2 {
     stopPedal = false,
   ) {
     const channel = this.channels[channelNumber];
-    if (stopPedal && channel.sustainPedal) return;
-    if (stopPedal && channel.sostenutoNotes.has(noteNumber)) return;
+    if (stopPedal) {
+      if (channel.sustainPedal) return;
+      if (channel.sostenutoNotes.has(noteNumber)) return;
+    }
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {

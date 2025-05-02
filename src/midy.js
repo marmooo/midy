@@ -994,8 +994,10 @@ export class Midy {
     stopPedal = false,
   ) {
     const channel = this.channels[channelNumber];
-    if (stopPedal && channel.sustainPedal) return;
-    if (stopPedal && channel.sostenutoNotes.has(noteNumber)) return;
+    if (stopPedal) {
+      if (channel.sustainPedal) return;
+      if (channel.sostenutoNotes.has(noteNumber)) return;
+    }
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {
@@ -1300,7 +1302,7 @@ export class Midy {
       channel.reverbSendLevel = reverbSendLevel / 127;
       reverbEffect.output.gain.cancelScheduledValues(now);
       reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
-    } else if (channel.reverbSendLevel !== 0){
+    } else if (channel.reverbSendLevel !== 0) {
       channel.merger.disconnect(reverbEffect.input);
     }
   }
