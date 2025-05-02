@@ -688,9 +688,11 @@ export class MidyGM1 {
           note.bufferSource.disconnect();
           note.volumeNode.disconnect();
           note.filterNode.disconnect();
-          if (note.volumeDepth) note.volumeDepth.disconnect();
-          if (note.modulationDepth) note.modulationDepth.disconnect();
-          if (note.modulationLFO) note.modulationLFO.stop();
+          if (note.modulationDepth) {
+            note.volumeDepth.disconnect();
+            note.modulationDepth.disconnect();
+            note.modulationLFO.stop();
+          }
           resolve();
         };
         note.bufferSource.stop(volEndTime);
