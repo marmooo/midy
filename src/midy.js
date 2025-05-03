@@ -226,15 +226,16 @@ export class Midy {
   }
 
   async createNoteBuffer(instrumentKey, isSF3) {
+    const sampleStart = instrumentKey.start;
     const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
     if (isSF3) {
-      const sample = instrumentKey.sample.slice(0, sampleEnd);
+      const sample = instrumentKey.sample.slice(sampleStart, sampleEnd);
       const audioBuffer = await this.audioContext.decodeAudioData(
         sample.buffer,
       );
       return audioBuffer;
     } else {
-      const sample = instrumentKey.sample.subarray(0, sampleEnd);
+      const sample = instrumentKey.sample.subarray(sampleStart, sampleEnd);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
@@ -921,10 +922,7 @@ export class Midy {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeNode);
-    note.bufferSource.start(
-      startTime,
-      instrumentKey.start / instrumentKey.sampleRate,
-    );
+    note.bufferSource.start(startTime);
     return note;
   }
 
