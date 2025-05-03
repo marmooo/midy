@@ -1296,6 +1296,7 @@ export class Midy {
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {
     const channel = this.channels[channelNumber];
+    const reverbEffect = this.reverbEffect;
     if (0 < channel.reverbSendLevel) {
       if (0 < reverbSendLevel) {
         const now = this.audioContext.currentTime;
