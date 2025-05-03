@@ -1319,13 +1319,23 @@ export class Midy {
   setChorusSendLevel(channelNumber, chorusSendLevel) {
     const channel = this.channels[channelNumber];
     const chorusEffect = this.chorusEffect;
-    if (0 < chorusSendLevel) {
-      const now = this.audioContext.currentTime;
-      channel.chorusSendLevel = chorusSendLevel / 127;
-      chorusEffect.output.gain.cancelScheduledValues(now);
-      chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
-    } else if (channel.chorusSendLevel !== 0) {
-      channel.merger.disconnect(chorusEffect.input);
+    if (0 < channel.chorusSendLevel) {
+      if (0 < chorusSendLevel) {
+        const now = this.audioContext.currentTime;
+        channel.chorusSendLevel = chorusSendLevel / 127;
+        chorusEffect.output.gain.cancelScheduledValues(now);
+        chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+      } else {
+        channel.merger.disconnect(chorusEffect.input);
+      }
+    } else {
+      if (0 < chorusSendLevel) {
+        channel.merger.connect(chorusEffect.input);
+        const now = this.audioContext.currentTime;
+        channel.chorusSendLevel = chorusSendLevel / 127;
+        chorusEffect.output.gain.cancelScheduledValues(now);
+        chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+      }
     }
   }
 
