@@ -220,26 +220,21 @@ export class MidyGM2 {
   async createNoteBuffer(instrumentKey, isSF3) {
     const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
     if (isSF3) {
-      const sample = new Uint8Array(instrumentKey.sample.length);
-      sample.set(instrumentKey.sample);
-      const audioBuffer = await this.audioContext.decodeAudioData(
-        sample.buffer,
-      );
-      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
-        const channelData = audioBuffer.getChannelData(channel);
-        channelData.set(channelData.subarray(0, sampleEnd));
-      }
+      const sample = instrumentKey.sample.slice(0, sampleEnd);
+      audioBuffer = await this.audioContext.decodeAudioData(sample.buffer);
       return audioBuffer;
     } else {
       const sample = instrumentKey.sample.subarray(0, sampleEnd);
-      const floatSample = this.convertToFloat32Array(sample);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
         sampleRate: instrumentKey.sampleRate,
       });
       const channelData = audioBuffer.getChannelData(0);
-      channelData.set(floatSample);
+      const int16Array = new Int16Array(sample.buffer);
+      for (let i = 0; i < int16Array.length; i++) {
+        channelData[i] = int16Array[i] / 32768;
+      }
       return audioBuffer;
     }
   }
@@ -255,15 +250,6 @@ export class MidyGM2 {
       bufferSource.loopEnd = instrumentKey.loopEnd / instrumentKey.sampleRate;
     }
     return bufferSource;
-  }
-
-  convertToFloat32Array(uint8Array) {
-    const int16Array = new Int16Array(uint8Array.buffer);
-    const float32Array = new Float32Array(int16Array.length);
-    for (let i = 0; i < int16Array.length; i++) {
-      float32Array[i] = int16Array[i] / 32768;
-    }
-    return float32Array;
   }
 
   async scheduleTimelineEvents(t, offset, queueIndex) {
