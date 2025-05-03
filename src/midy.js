@@ -1296,14 +1296,23 @@ export class Midy {
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {
     const channel = this.channels[channelNumber];
-    const reverbEffect = this.reverbEffect;
-    if (0 < reverbSendLevel) {
-      const now = this.audioContext.currentTime;
-      channel.reverbSendLevel = reverbSendLevel / 127;
-      reverbEffect.output.gain.cancelScheduledValues(now);
-      reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
-    } else if (channel.reverbSendLevel !== 0) {
-      channel.merger.disconnect(reverbEffect.input);
+    if (0 < channel.reverbSendLevel) {
+      if (0 < reverbSendLevel) {
+        const now = this.audioContext.currentTime;
+        channel.reverbSendLevel = reverbSendLevel / 127;
+        reverbEffect.output.gain.cancelScheduledValues(now);
+        reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+      } else {
+        channel.merger.disconnect(reverbEffect.input);
+      }
+    } else {
+      if (0 < reverbSendLevel) {
+        channel.merger.connect(reverbEffect.input);
+        const now = this.audioContext.currentTime;
+        channel.reverbSendLevel = reverbSendLevel / 127;
+        reverbEffect.output.gain.cancelScheduledValues(now);
+        reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+      }
     }
   }
 
