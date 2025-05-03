@@ -221,7 +221,9 @@ export class MidyGM2 {
     const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
     if (isSF3) {
       const sample = instrumentKey.sample.slice(0, sampleEnd);
-      audioBuffer = await this.audioContext.decodeAudioData(sample.buffer);
+      const audioBuffer = await this.audioContext.decodeAudioData(
+        sample.buffer,
+      );
       return audioBuffer;
     } else {
       const sample = instrumentKey.sample.subarray(0, sampleEnd);
@@ -385,7 +387,7 @@ export class MidyGM2 {
       const track = midi.tracks[i];
       let currentTicks = 0;
       for (let j = 0; j < track.length; j++) {
-        const event = tracks[j];
+        const event = track[j];
         currentTicks += event.deltaTime;
         event.ticks = currentTicks;
         switch (event.type) {
@@ -1487,7 +1489,7 @@ export class MidyGM2 {
 
   GM1SystemOn() {
     for (let i = 0; i < this.channels.length; i++) {
-      const channel = channels[i];
+      const channel = this.channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
       channel.bank = 0;
@@ -1498,7 +1500,7 @@ export class MidyGM2 {
 
   GM2SystemOn() {
     for (let i = 0; i < this.channels.length; i++) {
-      const channel = channels[i];
+      const channel = this.channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
       channel.bank = 121 * 128;
