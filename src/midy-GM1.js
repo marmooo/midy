@@ -806,7 +806,7 @@ export class MidyGM1 {
   setVolume(channelNumber, volume) {
     const channel = this.channels[channelNumber];
     channel.volume = volume / 127;
-    this.updateChannelGain(channel);
+    this.updateChannelVolume(channel);
   }
 
   panToGain(pan) {
@@ -820,13 +820,13 @@ export class MidyGM1 {
   setPan(channelNumber, pan) {
     const channel = this.channels[channelNumber];
     channel.pan = pan;
-    this.updateChannelGain(channel);
+    this.updateChannelVolume(channel);
   }
 
   setExpression(channelNumber, expression) {
     const channel = this.channels[channelNumber];
     channel.expression = expression / 127;
-    this.updateChannelGain(channel);
+    this.updateChannelVolume(channel);
   }
 
   dataEntryLSB(channelNumber, value) {
@@ -834,7 +834,7 @@ export class MidyGM1 {
     this.handleRPN(channelNumber, 0);
   }
 
-  updateChannelGain(channel) {
+  updateChannelVolume(channel) {
     const now = this.audioContext.currentTime;
     const volume = channel.volume * channel.expression;
     const { gainLeft, gainRight } = this.panToGain(channel.pan);
