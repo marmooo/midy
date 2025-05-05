@@ -1403,7 +1403,6 @@ export class Midy {
     }
   }
 
-  // TODO
   setPortamento(channelNumber, value) {
     this.channels[channelNumber].portamento = value >= 64;
   }
