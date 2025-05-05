@@ -1087,7 +1087,6 @@ export class MidyGM2 {
         });
       } else {
         const portamentoTime = stopTime + channel.portamentoTime;
-        const volEndTime = stopTime + note.instrumentKey.volRelease;
         note.volumeNode.gain
           .cancelScheduledValues(stopTime)
           .linearRampToValueAtTime(0, portamentoTime);
@@ -1113,7 +1112,7 @@ export class MidyGM2 {
             }
             resolve();
           };
-          note.bufferSource.stop(volEndTime);
+          note.bufferSource.stop(portamentoTime);
         });
       }
     }
