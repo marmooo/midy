@@ -1069,7 +1069,7 @@ export class MidyGM2 {
         note.ending = true;
         this.scheduleTask(() => {
           note.bufferSource.loop = false;
-        }, stopTime);
+        }, volEndTime);
         return new Promise((resolve) => {
           note.bufferSource.onended = () => {
             scheduledNotes[i] = null;
@@ -1098,7 +1098,7 @@ export class MidyGM2 {
         note.ending = true;
         this.scheduleTask(() => {
           note.bufferSource.loop = false;
-        }, stopTime);
+        }, portamentoTime);
         return new Promise((resolve) => {
           note.bufferSource.onended = () => {
             scheduledNotes[i] = null;
