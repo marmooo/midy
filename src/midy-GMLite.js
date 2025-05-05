@@ -583,7 +583,7 @@ export class MidyGMLite {
     note.volumeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10 * channel.filterResonance, // dB
+      Q: instrumentKey.initialFilterQ / 10, // dB
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
