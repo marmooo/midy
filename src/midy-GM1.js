@@ -645,12 +645,42 @@ export class MidyGM1 {
     return this.scheduleNoteOn(channelNumber, noteNumber, velocity, now);
   }
 
+  stopNote(stopTime, endTime, scheduledNotes, index) {
+    const note = scheduledNotes[index];
+    note.volumeNode.gain
+      .cancelScheduledValues(stopTime)
+      .linearRampToValueAtTime(0, endTime);
+    note.ending = true;
+    this.scheduleTask(() => {
+      note.bufferSource.loop = false;
+    }, endTime);
+    return new Promise((resolve) => {
+      note.bufferSource.onended = () => {
+        scheduledNotes[index] = null;
+        note.bufferSource.disconnect();
+        note.volumeNode.disconnect();
+        note.filterNode.disconnect();
+        if (note.modulationDepth) {
+          note.volumeDepth.disconnect();
+          note.modulationDepth.disconnect();
+          note.modulationLFO.stop();
+        }
+        if (note.vibratoDepth) {
+          note.vibratoDepth.disconnect();
+          note.vibratoLFO.stop();
+        }
+        resolve();
+      };
+      note.bufferSource.stop(endTime);
+    });
+  }
+
   scheduleNoteRelease(
     channelNumber,
     noteNumber,
     _velocity,
     stopTime,
-    stopPedal = false,
+    stopPedal,
   ) {
     const channel = this.channels[channelNumber];
     if (stopPedal && channel.sustainPedal) return;
@@ -661,32 +691,11 @@ export class MidyGM1 {
       if (!note) continue;
       if (note.ending) continue;
       const volEndTime = stopTime + note.instrumentKey.volRelease;
-      note.volumeNode.gain
-        .cancelScheduledValues(stopTime)
-        .linearRampToValueAtTime(0, volEndTime);
       const modRelease = stopTime + note.instrumentKey.modRelease;
       note.filterNode.frequency
         .cancelScheduledValues(stopTime)
         .linearRampToValueAtTime(0, modRelease);
-      note.ending = true;
-      this.scheduleTask(() => {
-        note.bufferSource.loop = false;
-      }, volEndTime);
-      return new Promise((resolve) => {
-        note.bufferSource.onended = () => {
-          scheduledNotes[i] = null;
-          note.bufferSource.disconnect();
-          note.volumeNode.disconnect();
-          note.filterNode.disconnect();
-          if (note.modulationDepth) {
-            note.volumeDepth.disconnect();
-            note.modulationDepth.disconnect();
-            note.modulationLFO.stop();
-          }
-          resolve();
-        };
-        note.bufferSource.stop(volEndTime);
-      });
+      this.stopNote(stopTime, volEndTime, scheduledNotes, i);
     }
   }
 

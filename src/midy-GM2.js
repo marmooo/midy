@@ -1038,6 +1038,36 @@ export class MidyGM2 {
     );
   }
 
+  stopNote(stopTime, endTime, scheduledNotes, index) {
+    const note = scheduledNotes[index];
+    note.volumeNode.gain
+      .cancelScheduledValues(stopTime)
+      .linearRampToValueAtTime(0, endTime);
+    note.ending = true;
+    this.scheduleTask(() => {
+      note.bufferSource.loop = false;
+    }, endTime);
+    return new Promise((resolve) => {
+      note.bufferSource.onended = () => {
+        scheduledNotes[index] = null;
+        note.bufferSource.disconnect();
+        note.volumeNode.disconnect();
+        note.filterNode.disconnect();
+        if (note.modulationDepth) {
+          note.volumeDepth.disconnect();
+          note.modulationDepth.disconnect();
+          note.modulationLFO.stop();
+        }
+        if (note.vibratoDepth) {
+          note.vibratoDepth.disconnect();
+          note.vibratoLFO.stop();
+        }
+        resolve();
+      };
+      note.bufferSource.stop(endTime);
+    });
+  }
+
   scheduleNoteRelease(
     channelNumber,
     noteNumber,
@@ -1059,61 +1089,19 @@ export class MidyGM2 {
       if (note.ending) continue;
       if (portamentoNoteNumber === undefined) {
         const volEndTime = stopTime + note.instrumentKey.volRelease;
-        note.volumeNode.gain
-          .cancelScheduledValues(stopTime)
-          .linearRampToValueAtTime(0, volEndTime);
         const modRelease = stopTime + note.instrumentKey.modRelease;
         note.filterNode.frequency
           .cancelScheduledValues(stopTime)
           .linearRampToValueAtTime(0, modRelease);
-        note.ending = true;
-        this.scheduleTask(() => {
-          note.bufferSource.loop = false;
-        }, volEndTime);
-        return new Promise((resolve) => {
-          note.bufferSource.onended = () => {
-            scheduledNotes[i] = null;
-            note.bufferSource.disconnect();
-            note.volumeNode.disconnect();
-            note.filterNode.disconnect();
-            if (note.modulationDepth) {
-              note.volumeDepth.disconnect();
-              note.modulationDepth.disconnect();
-              note.modulationLFO.stop();
-            }
-            resolve();
-          };
-          note.bufferSource.stop(volEndTime);
-        });
+        return this.stopNote(stopTime, volEndTime, scheduledNotes, i);
       } else {
         const portamentoTime = stopTime + channel.portamentoTime;
-        note.volumeNode.gain
-          .cancelScheduledValues(stopTime)
-          .linearRampToValueAtTime(0, portamentoTime);
         const detuneChange = (portamentoNoteNumber - noteNumber) * 100;
         const detune = note.bufferSource.detune.value + detuneChange;
         note.bufferSource.detune
           .cancelScheduledValues(stopTime)
           .linearRampToValueAtTime(detune, portamentoTime);
-        note.ending = true;
-        this.scheduleTask(() => {
-          note.bufferSource.loop = false;
-        }, portamentoTime);
-        return new Promise((resolve) => {
-          note.bufferSource.onended = () => {
-            scheduledNotes[i] = null;
-            note.bufferSource.disconnect();
-            note.volumeNode.disconnect();
-            note.filterNode.disconnect();
-            if (note.modulationDepth) {
-              note.volumeDepth.disconnect();
-              note.modulationDepth.disconnect();
-              note.modulationLFO.stop();
-            }
-            resolve();
-          };
-          note.bufferSource.stop(portamentoTime);
-        });
+        return this.stopNote(stopTime, portamentoTime, scheduledNotes, i);
       }
     }
   }
