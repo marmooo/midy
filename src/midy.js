@@ -60,7 +60,7 @@ export class Midy {
     currentBufferSource: null,
     volume: 100 / 127,
     pan: 64,
-    portamentoTime: 0,
+    portamentoTime: 1, // sec
     filterResonance: 1,
     releaseTime: 1,
     attackTime: 1,
@@ -263,6 +263,22 @@ export class Midy {
     return bufferSource;
   }
 
+  findPortamentoTarget(queueIndex) {
+    const endEvent = this.timeline[queueIndex];
+    if (!this.channels[endEvent.channel].portamento) return;
+    const endTime = endEvent.startTime;
+    let target;
+    while (++queueIndex < this.timeline.length) {
+      const event = this.timeline[queueIndex];
+      if (endTime !== event.startTime) break;
+      if (event.type !== "noteOn") continue;
+      if (!target || event.noteNumber < target.noteNumber) {
+        target = event;
+      }
+    }
+    return target;
+  }
+
   async scheduleTimelineEvents(t, offset, queueIndex) {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
@@ -275,16 +291,21 @@ export class Midy {
               event.noteNumber,
               event.velocity,
               event.startTime + this.startDelay - offset,
+              event.portamento,
             );
             break;
           }
           /* falls through */
         case "noteOff": {
+          const portamentoTarget = this.findPortamentoTarget(queueIndex);
+          if (portamentoTarget) portamentoTarget.portamento = true;
           const notePromise = this.scheduleNoteRelease(
             this.omni ? 0 : event.channel,
             event.noteNumber,
             event.velocity,
             event.startTime + this.startDelay - offset,
+            portamentoTarget?.noteNumber,
+            false, // stopPedal
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -461,10 +482,12 @@ export class Midy {
     const priority = {
       controller: 0,
       sysEx: 1,
+      noteOff: 2, // for portamento
+      noteOn: 3,
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] || 2) - (priority[b.type] || 2);
+      return (priority[a.type] || 4) - (priority[b.type] || 4);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
@@ -500,6 +523,7 @@ export class Midy {
           note.noteNumber,
           velocity,
           now,
+          undefined, // portamentoNoteNumber
           stopPedal,
         );
         this.notePromises.push(promise);
@@ -762,6 +786,18 @@ export class Midy {
       Math.pow(2, semitoneOffset / 12);
   }
 
+  setPortamentoStartVolumeEnvelope(channel, note) {
+    const { instrumentKey, startTime } = note;
+    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
+    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
+    const volDelay = startTime + instrumentKey.volDelay;
+    const portamentoTime = volDelay + channel.portamentoTime;
+    note.volumeNode.gain
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(0, volDelay)
+      .linearRampToValueAtTime(sustainVolume, portamentoTime);
+  }
+
   setVolumeEnvelope(channel, note) {
     const { instrumentKey, startTime } = note;
     const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
@@ -809,6 +845,28 @@ export class Midy {
     const minFrequency = 20; // min Hz of initialFilterFc
     const maxFrequency = 20000; // max Hz of initialFilterFc
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
+  }
+
+  setPortamentoStartFilterEnvelope(channel, note) {
+    const { instrumentKey, noteNumber, startTime } = note;
+    const softPedalFactor = 1 -
+      (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
+    const baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
+      softPedalFactor * channel.brightness;
+    const peekFreq = this.centToHz(
+      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
+    ) * softPedalFactor * channel.brightness;
+    const sustainFreq = baseFreq +
+      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
+    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
+    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
+    const portamentoTime = startTime + channel.portamentoTime;
+    const modDelay = startTime + instrumentKey.modDelay;
+    note.filterNode.frequency
+      .cancelScheduledValues(startTime)
+      .setValueAtTime(adjustedBaseFreq, startTime)
+      .setValueAtTime(adjustedBaseFreq, modDelay)
+      .linearRampToValueAtTime(adjustedSustainFreq, portamentoTime);
   }
 
   setFilterEnvelope(channel, note) {
@@ -891,6 +949,7 @@ export class Midy {
     noteNumber,
     velocity,
     startTime,
+    portamento,
     isSF3,
   ) {
     const semitoneOffset = this.calcSemitoneOffset(channel);
@@ -901,8 +960,13 @@ export class Midy {
       type: "lowpass",
       Q: instrumentKey.initialFilterQ / 10 * channel.filterResonance, // dB
     });
-    this.setVolumeEnvelope(channel, note);
-    this.setFilterEnvelope(channel, note);
+    if (portamento) {
+      this.setPortamentoStartVolumeEnvelope(channel, note);
+      this.setPortamentoStartFilterEnvelope(channel, note);
+    } else {
+      this.setVolumeEnvelope(channel, note);
+      this.setFilterEnvelope(channel, note);
+    }
     if (0 < channel.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
@@ -936,7 +1000,13 @@ export class Midy {
     return channel.bank;
   }
 
-  async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
+  async scheduleNoteOn(
+    channelNumber,
+    noteNumber,
+    velocity,
+    startTime,
+    portamento,
+  ) {
     const channel = this.channels[channelNumber];
     const bankNumber = this.calcBank(channel, channelNumber);
     const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
@@ -956,6 +1026,7 @@ export class Midy {
       noteNumber,
       velocity,
       startTime,
+      portamento,
       isSF3,
     );
     note.volumeNode.connect(channel.gainL);
@@ -971,9 +1042,15 @@ export class Midy {
     }
   }
 
-  noteOn(channelNumber, noteNumber, velocity) {
+  noteOn(channelNumber, noteNumber, velocity, portamento) {
     const now = this.audioContext.currentTime;
-    return this.scheduleNoteOn(channelNumber, noteNumber, velocity, now);
+    return this.scheduleNoteOn(
+      channelNumber,
+      noteNumber,
+      velocity,
+      now,
+      portamento,
+    );
   }
 
   scheduleNoteRelease(
@@ -981,7 +1058,8 @@ export class Midy {
     noteNumber,
     _velocity,
     stopTime,
-    stopPedal = false,
+    portamentoNoteNumber,
+    stopPedal,
   ) {
     const channel = this.channels[channelNumber];
     if (stopPedal) {
@@ -994,44 +1072,88 @@ export class Midy {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const volEndTime = stopTime +
-        note.instrumentKey.volRelease * channel.releaseTime;
-      note.volumeNode.gain
-        .cancelScheduledValues(stopTime)
-        .linearRampToValueAtTime(0, volEndTime);
-      const modRelease = stopTime + note.instrumentKey.modRelease;
-      note.filterNode.frequency
-        .cancelScheduledValues(stopTime)
-        .linearRampToValueAtTime(0, modRelease);
-      note.ending = true;
-      this.scheduleTask(() => {
-        note.bufferSource.loop = false;
-      }, stopTime);
-      return new Promise((resolve) => {
-        note.bufferSource.onended = () => {
-          scheduledNotes[i] = null;
-          note.bufferSource.disconnect();
-          note.volumeNode.disconnect();
-          note.filterNode.disconnect();
-          if (note.modulationDepth) {
-            note.volumeDepth.disconnect();
-            note.modulationDepth.disconnect();
-            note.modulationLFO.stop();
-          }
-          if (note.vibratoDepth) {
-            note.vibratoDepth.disconnect();
-            note.vibratoLFO.stop();
-          }
-          resolve();
-        };
-        note.bufferSource.stop(volEndTime);
-      });
+      if (portamentoNoteNumber === undefined) {
+        const volEndTime = stopTime +
+          note.instrumentKey.volRelease * channel.releaseTime;
+        note.volumeNode.gain
+          .cancelScheduledValues(stopTime)
+          .linearRampToValueAtTime(0, volEndTime);
+        const modRelease = stopTime + note.instrumentKey.modRelease;
+        note.filterNode.frequency
+          .cancelScheduledValues(stopTime)
+          .linearRampToValueAtTime(0, modRelease);
+        note.ending = true;
+        this.scheduleTask(() => {
+          note.bufferSource.loop = false;
+        }, stopTime);
+        return new Promise((resolve) => {
+          note.bufferSource.onended = () => {
+            scheduledNotes[i] = null;
+            note.bufferSource.disconnect();
+            note.volumeNode.disconnect();
+            note.filterNode.disconnect();
+            if (note.modulationDepth) {
+              note.volumeDepth.disconnect();
+              note.modulationDepth.disconnect();
+              note.modulationLFO.stop();
+            }
+            if (note.vibratoDepth) {
+              note.vibratoDepth.disconnect();
+              note.vibratoLFO.stop();
+            }
+            resolve();
+          };
+          note.bufferSource.stop(volEndTime);
+        });
+      } else {
+        const portamentoTime = stopTime + channel.portamentoTime;
+        const volEndTime = stopTime +
+          note.instrumentKey.volRelease * channel.releaseTime;
+        note.volumeNode.gain
+          .cancelScheduledValues(stopTime)
+          .linearRampToValueAtTime(0, portamentoTime);
+        const detuneChange = (portamentoNoteNumber - noteNumber) * 100;
+        const detune = note.bufferSource.detune.value + detuneChange;
+        note.bufferSource.detune
+          .cancelScheduledValues(stopTime)
+          .linearRampToValueAtTime(detune, portamentoTime);
+        note.ending = true;
+        this.scheduleTask(() => {
+          note.bufferSource.loop = false;
+        }, stopTime);
+        return new Promise((resolve) => {
+          note.bufferSource.onended = () => {
+            scheduledNotes[i] = null;
+            note.bufferSource.disconnect();
+            note.volumeNode.disconnect();
+            note.filterNode.disconnect();
+            if (note.modulationDepth) {
+              note.volumeDepth.disconnect();
+              note.modulationDepth.disconnect();
+              note.modulationLFO.stop();
+            }
+            if (note.vibratoDepth) {
+              note.vibratoDepth.disconnect();
+              note.vibratoLFO.stop();
+            }
+            resolve();
+          };
+          note.bufferSource.stop(volEndTime);
+        });
+      }
     }
   }
 
-  releaseNote(channelNumber, noteNumber, velocity) {
+  releaseNote(channelNumber, noteNumber, velocity, portamentoNoteNumber) {
     const now = this.audioContext.currentTime;
-    return this.scheduleNoteRelease(channelNumber, noteNumber, velocity, now);
+    return this.scheduleNoteRelease(
+      channelNumber,
+      noteNumber,
+      velocity,
+      now,
+      portamentoNoteNumber,
+      false,
+    );
   }
 
   releaseSustainPedal(channelNumber, halfVelocity) {
@@ -1221,7 +1343,9 @@ export class Midy {
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
-    this.channels[channelNumber].portamentoTime = portamentoTime / 127;
+    const channel = this.channels[channelNumber];
+    const factor = 5 * Math.log(10) / 127;
+    channel.portamentoTime = Math.exp(factor * portamentoTime);
   }
 
   setVolume(channelNumber, volume) {
