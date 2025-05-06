@@ -360,7 +360,7 @@ export class MidyGM1 {
     return { instruments, timeline };
   }
 
-  async stopChannelNotes(channelNumber, velocity, stopPedal) {
+  async stopChannelNotes(channelNumber, velocity, force) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.scheduledNotes.forEach((noteList) => {
@@ -372,7 +372,7 @@ export class MidyGM1 {
           note.noteNumber,
           velocity,
           now,
-          stopPedal,
+          force,
         );
         this.notePromises.push(promise);
       }
@@ -381,9 +381,9 @@ export class MidyGM1 {
     await Promise.all(this.notePromises);
   }
 
-  stopNotes(velocity, stopPedal) {
+  stopNotes(velocity, force) {
     for (let i = 0; i < this.channels.length; i++) {
-      this.stopChannelNotes(i, velocity, stopPedal);
+      this.stopChannelNotes(i, velocity, force);
     }
     return Promise.all(this.notePromises);
   }
@@ -680,10 +680,10 @@ export class MidyGM1 {
     noteNumber,
     _velocity,
     stopTime,
-    stopPedal,
+    force,
   ) {
     const channel = this.channels[channelNumber];
-    if (stopPedal && channel.sustainPedal) return;
+    if (force && channel.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {

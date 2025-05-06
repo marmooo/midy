@@ -305,7 +305,7 @@ export class Midy {
             event.velocity,
             event.startTime + this.startDelay - offset,
             portamentoTarget?.noteNumber,
-            false, // stopPedal
+            false, // force
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -511,7 +511,7 @@ export class Midy {
     return { instruments, timeline };
   }
 
-  async stopChannelNotes(channelNumber, velocity, stopPedal) {
+  async stopChannelNotes(channelNumber, velocity, force) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.scheduledNotes.forEach((noteList) => {
@@ -524,7 +524,7 @@ export class Midy {
           velocity,
           now,
           undefined, // portamentoNoteNumber
-          stopPedal,
+          force,
         );
         this.notePromises.push(promise);
       }
@@ -533,9 +533,9 @@ export class Midy {
     await Promise.all(this.notePromises);
   }
 
-  stopNotes(velocity, stopPedal) {
+  stopNotes(velocity, force) {
     for (let i = 0; i < this.channels.length; i++) {
-      this.stopChannelNotes(i, velocity, stopPedal);
+      this.stopChannelNotes(i, velocity, force);
     }
     return Promise.all(this.notePromises);
   }
@@ -1089,10 +1089,10 @@ export class Midy {
     _velocity,
     stopTime,
     portamentoNoteNumber,
-    stopPedal,
+    force,
   ) {
     const channel = this.channels[channelNumber];
-    if (stopPedal) {
+    if (force) {
       if (channel.sustainPedal) return;
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
