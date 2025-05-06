@@ -678,7 +678,7 @@ export class MidyGMLite {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (force && channel.sustainPedal) return;
+    if (!force && channel.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {

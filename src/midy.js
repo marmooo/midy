@@ -1092,7 +1092,7 @@ export class Midy {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (force) {
+    if (!force) {
       if (channel.sustainPedal) return;
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
