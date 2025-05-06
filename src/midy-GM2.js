@@ -1038,15 +1038,15 @@ export class MidyGM2 {
     );
   }
 
-  stopNote(stopTime, endTime, scheduledNotes, index) {
+  stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeNode.gain
-      .cancelScheduledValues(stopTime)
-      .linearRampToValueAtTime(0, endTime);
+      .cancelScheduledValues(endTime)
+      .linearRampToValueAtTime(0, stopTime);
     note.ending = true;
     this.scheduleTask(() => {
       note.bufferSource.loop = false;
-    }, endTime - stopTime);
+    }, stopTime - endTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
@@ -1064,7 +1064,7 @@ export class MidyGM2 {
         }
         resolve();
       };
-      note.bufferSource.stop(endTime);
+      note.bufferSource.stop(stopTime);
     });
   }
 
@@ -1072,7 +1072,7 @@ export class MidyGM2 {
     channelNumber,
     noteNumber,
     _velocity,
-    stopTime,
+    endTime,
     portamentoNoteNumber,
     force,
   ) {
@@ -1088,20 +1088,20 @@ export class MidyGM2 {
       if (!note) continue;
       if (note.ending) continue;
       if (portamentoNoteNumber === undefined) {
-        const volEndTime = stopTime + note.instrumentKey.volRelease;
-        const modRelease = stopTime + note.instrumentKey.modRelease;
+        const volEndTime = endTime + note.instrumentKey.volRelease;
+        const modRelease = endTime + note.instrumentKey.modRelease;
         note.filterNode.frequency
-          .cancelScheduledValues(stopTime)
+          .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(0, modRelease);
-        return this.stopNote(stopTime, volEndTime, scheduledNotes, i);
+        return this.stopNote(endTime, volEndTime, scheduledNotes, i);
       } else {
-        const portamentoTime = stopTime + channel.portamentoTime;
+        const portamentoTime = endTime + channel.portamentoTime;
         const detuneChange = (portamentoNoteNumber - noteNumber) * 100;
         const detune = note.bufferSource.detune.value + detuneChange;
         note.bufferSource.detune
-          .cancelScheduledValues(stopTime)
+          .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(detune, portamentoTime);
-        return this.stopNote(stopTime, portamentoTime, scheduledNotes, i);
+        return this.stopNote(endTime, portamentoTime, scheduledNotes, i);
       }
     }
   }

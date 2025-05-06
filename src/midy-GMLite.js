@@ -640,15 +640,15 @@ export class MidyGMLite {
     return this.scheduleNoteOn(channelNumber, noteNumber, velocity, now);
   }
 
-  stopNote(stopTime, endTime, scheduledNotes, index) {
+  stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeNode.gain
-      .cancelScheduledValues(stopTime)
-      .linearRampToValueAtTime(0, endTime);
+      .cancelScheduledValues(endTime)
+      .linearRampToValueAtTime(0, stopTime);
     note.ending = true;
     this.scheduleTask(() => {
       note.bufferSource.loop = false;
-    }, endTime - stopTime);
+    }, stopTime - endTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
@@ -666,7 +666,7 @@ export class MidyGMLite {
         }
         resolve();
       };
-      note.bufferSource.stop(endTime);
+      note.bufferSource.stop(stopTime);
     });
   }
 
@@ -674,7 +674,7 @@ export class MidyGMLite {
     channelNumber,
     noteNumber,
     _velocity,
-    stopTime,
+    endTime,
     force,
   ) {
     const channel = this.channels[channelNumber];
@@ -685,12 +685,12 @@ export class MidyGMLite {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const volEndTime = stopTime + note.instrumentKey.volRelease;
-      const modRelease = stopTime + note.instrumentKey.modRelease;
+      const volEndTime = endTime + note.instrumentKey.volRelease;
+      const modRelease = endTime + note.instrumentKey.modRelease;
       note.filterNode.frequency
-        .cancelScheduledValues(stopTime)
+        .cancelScheduledValues(endTime)
         .linearRampToValueAtTime(0, modRelease);
-      this.stopNote(stopTime, volEndTime, scheduledNotes, i);
+      this.stopNote(endTime, volEndTime, scheduledNotes, i);
     }
   }
 
