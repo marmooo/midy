@@ -1174,7 +1174,7 @@ export class Midy {
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
       case 0xA0:
-        return; // this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
+        return this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
       case 0xB0:
         return this.handleControlChange(channelNumber, data1, data2);
       case 0xC0:
