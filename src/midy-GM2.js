@@ -1046,7 +1046,7 @@ export class MidyGM2 {
     note.ending = true;
     this.scheduleTask(() => {
       note.bufferSource.loop = false;
-    }, stopTime - endTime);
+    }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
