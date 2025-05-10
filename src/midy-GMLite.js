@@ -685,12 +685,13 @@ export class MidyGMLite {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const volEndTime = endTime + note.instrumentKey.volRelease;
+      const volRelease = endTime + note.instrumentKey.volRelease;
       const modRelease = endTime + note.instrumentKey.modRelease;
       note.filterNode.frequency
         .cancelScheduledValues(endTime)
         .linearRampToValueAtTime(0, modRelease);
-      this.stopNote(endTime, volEndTime, scheduledNotes, i);
+      const stopTime = Math.min(volRelease, modRelease);
+      return this.stopNote(endTime, stopTime, scheduledNotes, i);
     }
   }
 

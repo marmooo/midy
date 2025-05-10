@@ -1103,13 +1103,14 @@ export class Midy {
       if (!note) continue;
       if (note.ending) continue;
       if (portamentoNoteNumber === undefined) {
-        const volEndTime = endTime +
+        const volRelease = endTime +
           note.instrumentKey.volRelease * channel.releaseTime;
         const modRelease = endTime + note.instrumentKey.modRelease;
         note.filterNode.frequency
           .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(0, modRelease);
-        return this.stopNote(endTime, volEndTime, scheduledNotes, i);
+        const stopTime = Math.min(volRelease, modRelease);
+        return this.stopNote(endTime, stopTime, scheduledNotes, i);
       } else {
         const portamentoTime = endTime + channel.portamentoTime;
         const detuneChange = (portamentoNoteNumber - noteNumber) * 100;
