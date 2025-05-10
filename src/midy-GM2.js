@@ -1759,10 +1759,8 @@ export class MidyGM2 {
 
   setReverbTime(value) {
     this.reverb.time = this.getReverbTime(value);
-    const { audioContext, channels, options } = this;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].reverbEffect = options.reverbAlgorithm(audioContext);
-    }
+    const { audioContext, options } = this;
+    this.reverbEffect = options.reverbAlgorithm(audioContext);
   }
 
   getReverbTime(value) {
@@ -1846,7 +1844,7 @@ export class MidyGM2 {
     const modRate = this.getChorusModRate(value);
     this.chorus.modRate = modRate;
     for (let i = 0; i < this.channels.length; i++) {
-      const lfo = this.channels[i].chorusEffect.lfo;
+      const lfo = this.chorusEffect.lfo;
       lfo.frequency.setValueAtTime(modRate, now);
     }
   }
@@ -1860,8 +1858,7 @@ export class MidyGM2 {
     const modDepth = this.getChorusModDepth(value);
     this.chorus.modDepth = modDepth;
     for (let i = 0; i < this.channels.length; i++) {
-      const chorusEffect = this.channels[i].chorusEffect;
-      chorusEffect.lfoGain.gain
+      this.chorusEffect.lfoGain.gain
         .cancelScheduledValues(now)
         .setValueAtTime(modDepth / 2, now);
     }
@@ -1876,7 +1873,7 @@ export class MidyGM2 {
     const feedback = this.getChorusFeedback(value);
     this.chorus.feedback = feedback;
     for (let i = 0; i < this.channels.length; i++) {
-      const chorusEffect = this.channels[i].chorusEffect;
+      const chorusEffect = this.chorusEffect;
       for (let j = 0; j < chorusEffect.feedbackGains.length; j++) {
         const feedbackGain = chorusEffect.feedbackGains[j];
         feedbackGain.gain
