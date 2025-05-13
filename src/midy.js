@@ -13,6 +13,8 @@ class Note {
   modulationDepth;
   vibratoLFO;
   vibratoDepth;
+  reverbEffectsSend;
+  chorusEffectsSend;
 
   constructor(noteNumber, velocity, startTime, instrumentKey) {
     this.noteNumber = noteNumber;
@@ -986,6 +988,22 @@ export class Midy {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeNode);
+
+    if (0 < channel.reverbSendLevel && 0 < instrumentKey.reverbEffectsSend) {
+      note.reverbEffectsSend = new GainNode(this.audioContext, {
+        gain: instrumentKey.reverbEffectsSend,
+      });
+      note.volumeNode.connect(note.reverbEffectsSend);
+      note.reverbEffectsSend.connect(this.reverbEffect.input);
+    }
+    if (0 < channel.chorusSendLevel && 0 < instrumentKey.chorusEffectsSend) {
+      note.chorusEffectsSend = new GainNode(this.audioContext, {
+        gain: instrumentKey.chorusEffectsSend,
+      });
+      note.volumeNode.connect(note.chorusEffectsSend);
+      note.chorusEffectsSend.connect(this.chorusEffect.input);
+    }
+
     note.bufferSource.start(startTime);
     return note;
   }
@@ -1076,6 +1094,12 @@ export class Midy {
         if (note.vibratoDepth) {
           note.vibratoDepth.disconnect();
           note.vibratoLFO.stop();
+        }
+        if (note.reverbEffectsSend) {
+          note.reverbEffectsSend.disconnect();
+        }
+        if (note.chorusEffectsSend) {
+          note.chorusEffectsSend.disconnect();
         }
         resolve();
       };
@@ -1396,12 +1420,32 @@ export class Midy {
         reverbEffect.output.gain.cancelScheduledValues(now);
         reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
       } else {
-        channel.merger.disconnect(reverbEffect.input);
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.instrumentKey.reverbEffectsSend <= 0) continue;
+            note.reverbEffectsSend.disconnect();
+          }
+        });
       }
     } else {
       if (0 < reverbSendLevel) {
-        channel.merger.connect(reverbEffect.input);
         const now = this.audioContext.currentTime;
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.instrumentKey.reverbEffectsSend <= 0) continue;
+            if (!note.reverbEffectsSend) {
+              note.reverbEffectsSend = new GainNode(this.audioContext, {
+                gain: note.instrumentKey.reverbEffectsSend,
+              });
+              note.volumeNode.connect(note.reverbEffectsSend);
+            }
+            note.reverbEffectsSend.connect(reverbEffect.input);
+          }
+        });
         channel.reverbSendLevel = reverbSendLevel / 127;
         reverbEffect.output.gain.cancelScheduledValues(now);
         reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
@@ -1419,12 +1463,32 @@ export class Midy {
         chorusEffect.output.gain.cancelScheduledValues(now);
         chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
       } else {
-        channel.merger.disconnect(chorusEffect.input);
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.instrumentKey.chorusEffectsSend <= 0) continue;
+            note.chorusEffectsSend.disconnect();
+          }
+        });
       }
     } else {
       if (0 < chorusSendLevel) {
-        channel.merger.connect(chorusEffect.input);
         const now = this.audioContext.currentTime;
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.instrumentKey.chorusEffectsSend <= 0) continue;
+            if (!note.chorusEffectsSend) {
+              note.chorusEffectsSend = new GainNode(this.audioContext, {
+                gain: note.instrumentKey.chorusEffectsSend,
+              });
+              note.volumeNode.connect(note.chorusEffectsSend);
+            }
+            note.chorusEffectsSend.connect(chorusEffect.input);
+          }
+        });
         channel.chorusSendLevel = chorusSendLevel / 127;
         chorusEffect.output.gain.cancelScheduledValues(now);
         chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
