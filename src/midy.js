@@ -2020,14 +2020,26 @@ export class Midy {
 
   setChorusSendToReverb(value) {
     const sendToReverb = this.getChorusSendToReverb(value);
-    if (0 < sendToReverb) {
-      const now = this.audioContext.currentTime;
+    const sendGain = this.chorusEffect.sendGain;
+    if (0 < this.chorus.sendToReverb) {
       this.chorus.sendToReverb = sendToReverb;
-      this.chorusEffect.sendGain.gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(sendToReverb, now);
-    } else if (this.chorus.sendToReverb !== 0) {
-      this.chorusEffect.sendGain.disconnect(this.reverbEffect.input);
+      if (0 < sendToReverb) {
+        const now = this.audioContext.currentTime;
+        sendGain.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(sendToReverb, now);
+      } else {
+        sendGain.disconnect();
+      }
+    } else {
+      this.chorus.sendToReverb = sendToReverb;
+      if (0 < sendToReverb) {
+        const now = this.audioContext.currentTime;
+        sendGain.connect(this.reverbEffect.input);
+        sendGain.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(sendToReverb, now);
+      }
     }
   }
 
