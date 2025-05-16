@@ -635,14 +635,14 @@ export class Midy {
   }
 
   createConvolutionReverb(audioContext, impulse) {
-    const output = new GainNode(audioContext);
+    const input = new GainNode(audioContext);
     const convolverNode = new ConvolverNode(audioContext, {
       buffer: impulse,
     });
-    convolverNode.connect(output);
+    input.connect(convolverNode);
     return {
-      input: convolverNode,
-      output,
+      input,
+      output: convolverNode,
       convolverNode,
     };
   }
@@ -699,7 +699,6 @@ export class Midy {
     allpassDelays,
   ) {
     const input = new GainNode(audioContext);
-    const output = new GainNode(audioContext);
     const mergerGain = new GainNode(audioContext);
     for (let i = 0; i < combDelays.length; i++) {
       const comb = this.createCombFilter(
@@ -720,7 +719,7 @@ export class Midy {
       );
       allpasses.push(allpass);
     }
-    allpasses.at(-1).connect(output);
+    const output = allpasses.at(-1);
     return { input, output };
   }
 
@@ -1417,8 +1416,8 @@ export class Midy {
       if (0 < reverbSendLevel) {
         const now = this.audioContext.currentTime;
         channel.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.output.gain.cancelScheduledValues(now);
-        reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+        reverbEffect.input.gain.cancelScheduledValues(now);
+        reverbEffect.input.gain.setValueAtTime(channel.reverbSendLevel, now);
       } else {
         channel.scheduledNotes.forEach((noteList) => {
           for (let i = 0; i < noteList.length; i++) {
@@ -1447,8 +1446,8 @@ export class Midy {
           }
         });
         channel.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.output.gain.cancelScheduledValues(now);
-        reverbEffect.output.gain.setValueAtTime(channel.reverbSendLevel, now);
+        reverbEffect.input.gain.cancelScheduledValues(now);
+        reverbEffect.input.gain.setValueAtTime(channel.reverbSendLevel, now);
       }
     }
   }
@@ -1460,8 +1459,8 @@ export class Midy {
       if (0 < chorusSendLevel) {
         const now = this.audioContext.currentTime;
         channel.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.output.gain.cancelScheduledValues(now);
-        chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+        chorusEffect.input.gain.cancelScheduledValues(now);
+        chorusEffect.input.gain.setValueAtTime(channel.chorusSendLevel, now);
       } else {
         channel.scheduledNotes.forEach((noteList) => {
           for (let i = 0; i < noteList.length; i++) {
@@ -1490,8 +1489,8 @@ export class Midy {
           }
         });
         channel.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.output.gain.cancelScheduledValues(now);
-        chorusEffect.output.gain.setValueAtTime(channel.chorusSendLevel, now);
+        chorusEffect.input.gain.cancelScheduledValues(now);
+        chorusEffect.input.gain.setValueAtTime(channel.chorusSendLevel, now);
       }
     }
   }
