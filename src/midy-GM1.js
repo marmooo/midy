@@ -40,6 +40,7 @@ export class MidyGM1 {
   timeline = [];
   instruments = [];
   notePromises = [];
+  exclusiveClassMap = new Map();
 
   static channelSettings = {
     volume: 100 / 127,
@@ -249,6 +250,7 @@ export class MidyGM1 {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
+          this.exclusiveClassMap.clear();
           resolve();
           return;
         }
@@ -263,6 +265,7 @@ export class MidyGM1 {
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true);
+          this.exclusiveClassMap.clear();
           this.notePromises = [];
           resolve();
           this.isStopping = false;
@@ -270,6 +273,7 @@ export class MidyGM1 {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true);
+          this.exclusiveClassMap.clear();
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -632,6 +636,22 @@ export class MidyGM1 {
     );
     note.volumeNode.connect(channel.gainL);
     note.volumeNode.connect(channel.gainR);
+    const exclusiveClass = instrumentKey.exclusiveClass;
+    if (exclusiveClass !== 0) {
+      if (this.exclusiveClassMap.has(exclusiveClass)) {
+        const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
+        const [prevNote, prevChannelNumber] = prevEntry;
+        this.scheduleNoteRelease(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0, // velocity,
+          startTime,
+          undefined, // portamentoNoteNumber
+          true, // force
+        );
+      }
+      this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+    }
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {
       scheduledNotes.get(noteNumber).push(note);
