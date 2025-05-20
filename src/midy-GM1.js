@@ -641,14 +641,16 @@ export class MidyGM1 {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
         const [prevNote, prevChannelNumber] = prevEntry;
-        this.scheduleNoteRelease(
-          prevChannelNumber,
-          prevNote.noteNumber,
-          0, // velocity,
-          startTime,
-          undefined, // portamentoNoteNumber
-          true, // force
-        );
+        if (!prevNote.ending) {
+          this.scheduleNoteRelease(
+            prevChannelNumber,
+            prevNote.noteNumber,
+            0, // velocity,
+            startTime,
+            undefined, // portamentoNoteNumber
+            true, // force
+          );
+        }
       }
       this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
     }
