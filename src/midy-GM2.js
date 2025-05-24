@@ -224,20 +224,24 @@ export class MidyGM2 {
     const sampleStart = instrumentKey.start;
     const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
     if (isSF3) {
-      const sample = instrumentKey.sample.slice(sampleStart, sampleEnd);
-      const audioBuffer = await this.audioContext.decodeAudioData(
-        sample.buffer,
-      );
+      const sample = instrumentKey.sample;
+      const start = sample.byteOffset + sampleStart;
+      const end = sample.byteOffset + sampleEnd;
+      const buffer = sample.buffer.slice(start, end);
+      const audioBuffer = await this.audioContext.decodeAudioData(buffer);
       return audioBuffer;
     } else {
-      const sample = instrumentKey.sample.subarray(sampleStart, sampleEnd);
+      const sample = instrumentKey.sample;
+      const start = sample.byteOffset + sampleStart;
+      const end = sample.byteOffset + sampleEnd;
+      const buffer = sample.buffer.slice(start, end);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
         sampleRate: instrumentKey.sampleRate,
       });
       const channelData = audioBuffer.getChannelData(0);
-      const int16Array = new Int16Array(sample.buffer);
+      const int16Array = new Int16Array(buffer);
       for (let i = 0; i < int16Array.length; i++) {
         channelData[i] = int16Array[i] / 32768;
       }
