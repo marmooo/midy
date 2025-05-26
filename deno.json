@@ -1,8 +1,9 @@
 {
   "imports": {
     "@deno/dnt": "jsr:@deno/dnt@^0.41.3",
-    "@deno/emit": "jsr:@deno/emit@^0.46.0",
-    "@swc/core": "npm:@swc/core@^1.11.29"
+    "@marmooo/soundfont-parser": "npm:@marmooo/soundfont-parser@^0.0.7",
+    "@swc/core": "npm:@swc/core@^1.11.29",
+    "midi-file": "npm:midi-file@^1.2.4"
   },
   "tasks": {
     "build": "deno run -RWE --allow-ffi build.js"

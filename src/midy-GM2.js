@@ -1,8 +1,5 @@
-import { parseMidi } from "https://cdn.jsdelivr.net/npm/midi-file@1.2.4/+esm";
-import {
-  parse,
-  SoundFont,
-} from "https://cdn.jsdelivr.net/npm/@marmooo/soundfont-parser@0.0.7/+esm";
+import { parseMidi } from "midi-file";
+import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
 class Note {
   bufferSource;

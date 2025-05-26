@@ -1,13 +1,15 @@
-import { bundle } from "@deno/emit";
-import { minify } from "@swc/core";
+import { minify, transform } from "@swc/core";
 
 async function buildScript(inPath, outPath) {
-  const url = new URL(import.meta.resolve(inPath));
-  const { code } = await bundle(url);
-  const minified = await minify(code, {
-    module: true,
+  const code = Deno.readTextFileSync(inPath);
+  const transformed = await transform(code, {
+    isModule: true,
+    sourceMaps: false,
+  });
+  const minified = await minify(transformed.code, {
     compress: true,
     mangle: true,
+    module: true,
     sourceMap: false,
   });
   Deno.writeTextFileSync(outPath, minified.code);
