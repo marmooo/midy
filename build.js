@@ -1,22 +1,21 @@
-import { minify, transform } from "@swc/core";
+import * as esbuild from "esbuild";
+import { denoPlugins } from "@luca/esbuild-deno-loader";
+
+const customDenoPlugins = denoPlugins({
+  configPath: await Deno.realPath("./deno.json"),
+});
 
 async function buildScript(inPath, outPath, optimize) {
-  const code = Deno.readTextFileSync(inPath);
-  const transformed = await transform(code, {
-    isModule: true,
-    sourceMaps: false,
+  await esbuild.build({
+    plugins: [...customDenoPlugins],
+    entryPoints: [inPath],
+    outfile: outPath,
+    bundle: true,
+    minify: optimize,
+    platform: "browser",
+    format: "esm",
   });
-  if (optimize) {
-    const minified = await minify(transformed.code, {
-      compress: optimize,
-      mangle: optimize,
-      module: true,
-      sourceMap: false,
-    });
-    Deno.writeTextFileSync(outPath, minified.code);
-  } else {
-    Deno.writeTextFileSync(outPath, transformed.code);
-  }
+  esbuild.stop();
 }
 
 async function build() {
