@@ -1,6 +1,6 @@
 {
   "imports": {
-    "@deno/dnt": "jsr:@deno/dnt@^0.41.3",
+    "@deno/dnt": "jsr:@deno/dnt@^0.42.1",
     "@marmooo/soundfont-parser": "npm:@marmooo/soundfont-parser@^0.0.7",
     "@swc/core": "npm:@swc/core@^1.11.29",
     "midi-file": "npm:midi-file@^1.2.4"
