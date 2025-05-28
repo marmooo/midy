@@ -1,33 +1,45 @@
-import { minify, transform } from "npm:@swc/core";
+import * as esbuild from "esbuild";
+import { denoPlugins } from "@luca/esbuild-deno-loader";
 
-async function bundle(inPath, outPath) {
-  const code = Deno.readTextFileSync(inPath);
-  const transformed = await transform(code, {
-    isModule: true,
-    sourceMaps: false,
+const customDenoPlugins = denoPlugins({
+  configPath: await Deno.realPath("./deno.json"),
+});
+
+async function buildScript(inPath, outPath, optimize) {
+  await esbuild.build({
+    plugins: [...customDenoPlugins],
+    entryPoints: [inPath],
+    outfile: outPath,
+    bundle: true,
+    minify: optimize,
+    platform: "browser",
+    format: "esm",
   });
-  const minified = await minify(transformed.code, {
-    compress: false,
-    mangle: false,
-    module: true,
-    sourceMap: false,
-  });
-  Deno.writeTextFileSync(outPath, minified.code);
+  esbuild.stop();
 }
 
 async function watchAndBundle(inPath, outPath) {
-  const watcher = Deno.watchFs(inPath);
-  for await (const event of watcher) {
-    if (event.kind !== "modify") continue;
-    await bundle(inPath, outPath);
-    for (let i = 0; i < event.paths.length; i++) {
-      console.log(`reloaded: ${event.paths[i]}`);
+  while (true) {
+    const watcher = Deno.watchFs(inPath);
+    for await (const event of watcher) {
+      switch (event.kind) {
+        case "remove":
+          watcher.close();
+          break;
+        case "modify":
+          await buildScript(inPath, outPath, false);
+          for (let i = 0; i < event.paths.length; i++) {
+            console.log(`reloaded: ${event.paths[i]}`);
+          }
+      }
     }
   }
 }
 
 if (Deno.args.length !== 2) {
-  console.log("Usage: deno run -RWE --allow-ffi ./src/midy.js ./dist/midy.js");
+  console.log(
+    "Usage: deno run -RWE --allow-run watch.js ./src/midy.js ./dist/midy.js",
+  );
 } else {
   watchAndBundle(Deno.args[0], Deno.args[1]);
 }
