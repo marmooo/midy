@@ -13,11 +13,73 @@ class Note {
   reverbEffectsSend;
   chorusEffectsSend;
 
-  constructor(noteNumber, velocity, startTime, instrumentKey) {
+  constructor(noteNumber, velocity, startTime, voice, voiceParams) {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
     this.startTime = startTime;
-    this.instrumentKey = instrumentKey;
+    this.voice = voice;
+    this.voiceParams = voiceParams;
+  }
+}
+
+// normalized to 0-1 for use with the SF2 modulator model
+const defaultControllerState = {
+  noteOnVelocity: { type: 2, defaultValue: 0 },
+  noteOnKeyNumber: { type: 3, defaultValue: 0 },
+  polyPressure: { type: 10, defaultValue: 0 },
+  channelPressure: { type: 13, defaultValue: 0 },
+  pitchWheel: { type: 14, defaultValue: 0 },
+  pitchWheelSensitivity: { type: 16, defaultValue: 2 },
+  link: { type: 127, defaultValue: 0 },
+  // bankMSB: { type: 128 + 0, defaultValue: 121, },
+  modulationDepth: { type: 128 + 1, defaultValue: 0 },
+  portamentoTime: { type: 128 + 5, defaultValue: 0 },
+  // dataMSB: { type: 128 + 6, defaultValue: 0, },
+  volume: { type: 128 + 7, defaultValue: 100 / 127 },
+  pan: { type: 128 + 10, defaultValue: 0.5 },
+  expression: { type: 128 + 11, defaultValue: 1 },
+  // bankLSB: { type: 128 + 32, defaultValue: 0, },
+  // dataLSB: { type: 128 + 38, defaultValue: 0, },
+  sustainPedal: { type: 128 + 64, defaultValue: 0 },
+  portamento: { type: 128 + 65, defaultValue: 0 },
+  sostenutoPedal: { type: 128 + 66, defaultValue: 0 },
+  softPedal: { type: 128 + 67, defaultValue: 0 },
+  filterResonance: { type: 128 + 71, defaultValue: 0.5 },
+  releaseTime: { type: 128 + 72, defaultValue: 0.5 },
+  attackTime: { type: 128 + 73, defaultValue: 0.5 },
+  brightness: { type: 128 + 74, defaultValue: 0.5 },
+  decayTime: { type: 128 + 75, defaultValue: 0.5 },
+  vibratoRate: { type: 128 + 76, defaultValue: 0.5 },
+  vibratoDepth: { type: 128 + 77, defaultValue: 0.5 },
+  vibratoDelay: { type: 128 + 78, defaultValue: 0.5 },
+  reverbSendLevel: { type: 128 + 91, defaultValue: 0 },
+  chorusSendLevel: { type: 128 + 93, defaultValue: 0 },
+  dataIncrement: { type: 128 + 96, defaultValue: 0 },
+  dataDecrement: { type: 128 + 97, defaultValue: 0 },
+  // rpnLSB: { type: 128 + 100, defaultValue: 127 },
+  // rpnMSB: { type: 128 + 101, defaultValue: 127 },
+  // allSoundOff: { type: 128 + 120, defaultValue: 0 },
+  // resetAllControllers: { type: 128 + 121, defaultValue: 0 },
+  // allNotesOff: { type: 128 + 123, defaultValue: 0 },
+  // omniOff: { type: 128 + 124, defaultValue: 0 },
+  // omniOn: { type: 128 + 125, defaultValue: 0 },
+  // monoOn: { type: 128 + 126, defaultValue: 0 },
+  // polyOn: { type: 128 + 127, defaultValue: 0 },
+};
+
+class ControllerState {
+  array = new Float32Array(256);
+  constructor() {
+    const entries = Object.entries(defaultControllerState);
+    for (const [name, { type, defaultValue }] of entries) {
+      this.array[type] = defaultValue;
+      Object.defineProperty(this, name, {
+        get: () => this.array[type],
+        set: (value) => this.array[type] = value,
+        enumerable: true,
+        configurable: true,
+      });
+    }
   }
 }
 
@@ -58,37 +120,17 @@ export class MidyGM2 {
 
   static channelSettings = {
     currentBufferSource: null,
-    volume: 100 / 127,
-    pan: 64,
-    portamentoTime: 1, // sec
-    reverbSendLevel: 0,
-    chorusSendLevel: 0,
-    vibratoRate: 1,
-    vibratoDepth: 1,
-    vibratoDelay: 1,
+    program: 0,
     bank: 121 * 128,
     bankMSB: 121,
     bankLSB: 0,
     dataMSB: 0,
     dataLSB: 0,
-    program: 0,
-    pitchBend: 0,
+    rpnMSB: 127,
+    rpnLSB: 127,
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
     modulationDepthRange: 50, // cent
-  };
-
-  static effectSettings = {
-    expression: 1,
-    modulationDepth: 0,
-    sustainPedal: false,
-    portamento: false,
-    sostenutoPedal: false,
-    softPedal: 0,
-    rpnMSB: 127,
-    rpnLSB: 127,
-    channelPressure: 0,
-    pitchBendRange: 2,
   };
 
   static controllerDestinationSettings = {
@@ -186,7 +228,7 @@ export class MidyGM2 {
 
   setChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      this.constructor.channelSettings.pan,
+      defaultControllerState.pan.defaultValue,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -205,7 +247,7 @@ export class MidyGM2 {
     const channels = Array.from({ length: 16 }, () => {
       return {
         ...this.constructor.channelSettings,
-        ...this.constructor.effectSettings,
+        state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
         sostenutoNotes: new Map(),
@@ -217,25 +259,25 @@ export class MidyGM2 {
     return channels;
   }
 
-  async createNoteBuffer(instrumentKey, isSF3) {
-    const sampleStart = instrumentKey.start;
-    const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
+  async createNoteBuffer(voiceParams, isSF3) {
+    const sampleStart = voiceParams.start;
+    const sampleEnd = voiceParams.sample.length + voiceParams.end;
     if (isSF3) {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = await this.audioContext.decodeAudioData(buffer);
       return audioBuffer;
     } else {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
-        sampleRate: instrumentKey.sampleRate,
+        sampleRate: voiceParams.sampleRate,
       });
       const channelData = audioBuffer.getChannelData(0);
       const int16Array = new Int16Array(buffer);
@@ -246,15 +288,14 @@ export class MidyGM2 {
     }
   }
 
-  async createNoteBufferNode(instrumentKey, isSF3) {
+  async createNoteBufferNode(voiceParams, isSF3) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(instrumentKey, isSF3);
+    const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = instrumentKey.sampleModes % 2 !== 0;
+    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
-      bufferSource.loopStart = instrumentKey.loopStart /
-        instrumentKey.sampleRate;
-      bufferSource.loopEnd = instrumentKey.loopEnd / instrumentKey.sampleRate;
+      bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
+      bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
     }
     return bufferSource;
   }
@@ -769,20 +810,20 @@ export class MidyGM2 {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
     const tuning = masterTuning + channelTuning;
-    return channel.pitchBend * channel.pitchBendRange + tuning;
+    const state = channel.state;
+    return state.pitchWheel * state.pitchWheelSensitivity + tuning;
   }
 
-  calcPlaybackRate(instrumentKey, noteNumber, semitoneOffset) {
-    return instrumentKey.playbackRate(noteNumber) *
-      Math.pow(2, semitoneOffset / 12);
+  calcPlaybackRate(voiceParams, semitoneOffset) {
+    return voiceParams.playbackRate * Math.pow(2, semitoneOffset / 12);
   }
 
   setPortamentoStartVolumeEnvelope(channel, note) {
-    const { instrumentKey, startTime } = note;
-    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
-    const volDelay = startTime + instrumentKey.volDelay;
-    const portamentoTime = volDelay + channel.portamentoTime;
+    const { voiceParams, startTime } = note;
+    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const volDelay = startTime + voiceParams.volDelay;
+    const portamentoTime = volDelay + channel.state.portamentoTime;
     note.volumeNode.gain
       .cancelScheduledValues(startTime)
       .setValueAtTime(0, volDelay)
@@ -790,13 +831,13 @@ export class MidyGM2 {
   }
 
   setVolumeEnvelope(note) {
-    const { instrumentKey, startTime } = note;
-    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
-    const volDelay = startTime + instrumentKey.volDelay;
-    const volAttack = volDelay + instrumentKey.volAttack;
-    const volHold = volAttack + instrumentKey.volHold;
-    const volDecay = volHold + instrumentKey.volDecay;
+    const { voiceParams, startTime } = note;
+    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const volDelay = startTime + voiceParams.volDelay;
+    const volAttack = volDelay + voiceParams.volAttack;
+    const volHold = volAttack + voiceParams.volHold;
+    const volDecay = volHold + voiceParams.volDecay;
     note.volumeNode.gain
       .cancelScheduledValues(startTime)
       .setValueAtTime(0, startTime)
@@ -807,24 +848,24 @@ export class MidyGM2 {
   }
 
   setPitch(note, semitoneOffset) {
-    const { instrumentKey, noteNumber, startTime } = note;
-    const modEnvToPitch = instrumentKey.modEnvToPitch / 100;
+    const { voiceParams, noteNumber, startTime } = note;
+    const modEnvToPitch = voiceParams.modEnvToPitch / 100;
     note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-      instrumentKey,
+      voiceParams,
       noteNumber,
       semitoneOffset,
     );
     if (modEnvToPitch === 0) return;
     const basePitch = note.bufferSource.playbackRate.value;
     const peekPitch = this.calcPlaybackRate(
-      instrumentKey,
+      voiceParams,
       noteNumber,
       semitoneOffset + modEnvToPitch,
     );
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
+    const modDelay = startTime + voiceParams.modDelay;
+    const modAttack = modDelay + voiceParams.modAttack;
+    const modHold = modAttack + voiceParams.modHold;
+    const modDecay = modHold + voiceParams.modDecay;
     note.bufferSource.playbackRate.value
       .setValueAtTime(basePitch, modDelay)
       .exponentialRampToValueAtTime(peekPitch, modAttack)
@@ -839,20 +880,20 @@ export class MidyGM2 {
   }
 
   setPortamentoStartFilterEnvelope(channel, note) {
-    const { instrumentKey, noteNumber, startTime } = note;
+    const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
-    const baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
+    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
       softPedalFactor;
     const peekFreq = this.centToHz(
-      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
+      voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
     ) * softPedalFactor;
     const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
+      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const portamentoTime = startTime + channel.portamentoTime;
-    const modDelay = startTime + instrumentKey.modDelay;
+    const portamentoTime = startTime + channel.state.portamentoTime;
+    const modDelay = startTime + voiceParams.modDelay;
     note.filterNode.frequency
       .cancelScheduledValues(startTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -861,23 +902,24 @@ export class MidyGM2 {
   }
 
   setFilterEnvelope(channel, note) {
-    const { instrumentKey, noteNumber, startTime } = note;
+    const state = channel.state;
+    const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
-    const baseFreq = this.centToHz(instrumentKey.initialFilterFc) *
+      (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
+    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
       softPedalFactor;
     const peekFreq = this.centToHz(
-      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
+      voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
     ) * softPedalFactor;
     const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
+      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
+    const modDelay = startTime + voiceParams.modDelay;
+    const modAttack = modDelay + voiceParams.modAttack;
+    const modHold = modAttack + voiceParams.modHold;
+    const modDecay = modHold + voiceParams.modDecay;
     note.filterNode.frequency
       .cancelScheduledValues(startTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -888,13 +930,13 @@ export class MidyGM2 {
   }
 
   startModulation(channel, note, startTime) {
-    const { instrumentKey } = note;
-    const { modLfoToPitch, modLfoToVolume } = instrumentKey;
+    const { voiceParams } = note;
+    const { modLfoToPitch, modLfoToVolume } = voiceParams;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(instrumentKey.freqModLFO),
+      frequency: this.centToHz(voiceParams.freqModLFO),
     });
     note.filterDepth = new GainNode(this.audioContext, {
-      gain: instrumentKey.modLfoToFilterFc,
+      gain: voiceParams.modLfoToFilterFc,
     });
     const modulationDepth = Math.abs(modLfoToPitch) + channel.modulationDepth;
     const modulationDepthSign = (0 < modLfoToPitch) ? 1 : -1;
@@ -906,7 +948,7 @@ export class MidyGM2 {
     note.volumeDepth = new GainNode(this.audioContext, {
       gain: volumeDepth * volumeDepthSign,
     });
-    note.modulationLFO.start(startTime + instrumentKey.delayModLFO);
+    note.modulationLFO.start(startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
     note.filterDepth.connect(note.filterNode.frequency);
     note.modulationLFO.connect(note.modulationDepth);
@@ -916,19 +958,20 @@ export class MidyGM2 {
   }
 
   startVibrato(channel, note, startTime) {
-    const { instrumentKey } = note;
-    const { vibLfoToPitch } = instrumentKey;
+    const { voiceParams } = note;
+    const { vibLfoToPitch } = voiceParams;
+    const state = channel.state;
     note.vibratoLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(instrumentKey.freqVibLFO) *
-        channel.vibratoRate,
+      frequency: this.centToHz(voiceParams.freqVibLFO) *
+        state.vibratoRate,
     });
-    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.vibratoDepth;
+    const vibratoDepth = Math.abs(vibLfoToPitch) * state.vibratoDepth * 2;
     const vibratoDepthSign = 0 < vibLfoToPitch;
     note.vibratoDepth = new GainNode(this.audioContext, {
       gain: vibratoDepth * vibratoDepthSign,
     });
     note.vibratoLFO.start(
-      startTime + instrumentKey.delayVibLFO * channel.vibratoDelay,
+      startTime + voiceParams.delayVibLFO * state.vibratoDelay * 2,
     );
     note.vibratoLFO.connect(note.vibratoDepth);
     note.vibratoDepth.connect(note.bufferSource.detune);
@@ -936,20 +979,22 @@ export class MidyGM2 {
 
   async createNote(
     channel,
-    instrumentKey,
+    voice,
     noteNumber,
     velocity,
     startTime,
     portamento,
     isSF3,
   ) {
+    const state = channel.state;
+    const voiceParams = voice.getAllParams(state.array);
     const semitoneOffset = this.calcSemitoneOffset(channel);
-    const note = new Note(noteNumber, velocity, startTime, instrumentKey);
-    note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
+    const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
+    note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10, // dB
+      Q: voiceParams.initialFilterQ / 10, // dB
     });
     if (portamento) {
       this.setPortamentoStartVolumeEnvelope(channel, note);
@@ -958,16 +1003,15 @@ export class MidyGM2 {
       this.setVolumeEnvelope(note);
       this.setFilterEnvelope(channel, note);
     }
-    if (0 < channel.vibratoDepth) {
+    if (0 < state.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
-    if (0 < channel.modulationDepth) {
+    if (0 < state.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);
     } else {
       note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-        instrumentKey,
-        noteNumber,
+        voiceParams,
         semitoneOffset,
       );
     }
@@ -978,16 +1022,16 @@ export class MidyGM2 {
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeNode);
 
-    if (0 < channel.reverbSendLevel && 0 < instrumentKey.reverbEffectsSend) {
+    if (0 < state.reverbSendLevel && 0 < voiceParams.reverbEffectsSend) {
       note.reverbEffectsSend = new GainNode(this.audioContext, {
-        gain: instrumentKey.reverbEffectsSend,
+        gain: voiceParams.reverbEffectsSend,
       });
       note.volumeNode.connect(note.reverbEffectsSend);
       note.reverbEffectsSend.connect(this.reverbEffect.input);
     }
-    if (0 < channel.chorusSendLevel && 0 < instrumentKey.chorusEffectsSend) {
+    if (0 < state.chorusSendLevel && 0 < voiceParams.chorusEffectsSend) {
       note.chorusEffectsSend = new GainNode(this.audioContext, {
-        gain: instrumentKey.chorusEffectsSend,
+        gain: voiceParams.chorusEffectsSend,
       });
       note.volumeNode.connect(note.chorusEffectsSend);
       note.chorusEffectsSend.connect(this.chorusEffect.input);
@@ -1020,16 +1064,16 @@ export class MidyGM2 {
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const isSF3 = soundFont.parsed.info.version.major === 3;
-    const instrumentKey = soundFont.getInstrumentKey(
+    const voice = soundFont.getVoice(
       bankNumber,
       channel.program,
       noteNumber,
       velocity,
     );
-    if (!instrumentKey) return;
+    if (!voice) return;
     const note = await this.createNote(
       channel,
-      instrumentKey,
+      voice,
       noteNumber,
       velocity,
       startTime,
@@ -1038,10 +1082,10 @@ export class MidyGM2 {
     );
     note.volumeNode.connect(channel.gainL);
     note.volumeNode.connect(channel.gainR);
-    if (channel.sostenutoPedal) {
+    if (channel.state.sostenutoPedal) {
       channel.sostenutoNotes.set(noteNumber, note);
     }
-    const exclusiveClass = instrumentKey.exclusiveClass;
+    const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
@@ -1123,8 +1167,9 @@ export class MidyGM2 {
     force,
   ) {
     const channel = this.channels[channelNumber];
+    const state = channel.state;
     if (!force) {
-      if (channel.sustainPedal) return;
+      if (0.5 < state.sustainPedal) return;
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
     if (!channel.scheduledNotes.has(noteNumber)) return;
@@ -1134,15 +1179,15 @@ export class MidyGM2 {
       if (!note) continue;
       if (note.ending) continue;
       if (portamentoNoteNumber === undefined) {
-        const volRelease = endTime + note.instrumentKey.volRelease;
-        const modRelease = endTime + note.instrumentKey.modRelease;
+        const volRelease = endTime + note.voiceParams.volRelease;
+        const modRelease = endTime + note.voiceParams.modRelease;
         note.filterNode.frequency
           .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(0, modRelease);
         const stopTime = Math.min(volRelease, modRelease);
         return this.stopNote(endTime, stopTime, scheduledNotes, i);
       } else {
-        const portamentoTime = endTime + channel.portamentoTime;
+        const portamentoTime = endTime + state.portamentoTime;
         const detuneChange = (portamentoNoteNumber - noteNumber) * 100;
         const detune = note.bufferSource.detune.value + detuneChange;
         note.bufferSource.detune
@@ -1169,7 +1214,7 @@ export class MidyGM2 {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.sustainPedal = false;
+    channel.state.sustainPedal = halfVelocity;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -1244,12 +1289,13 @@ export class MidyGM2 {
     this.setPitchBend(channelNumber, pitchBend);
   }
 
-  setPitchBend(channelNumber, pitchBend) {
+  setPitchBend(channelNumber, pitchWheel) {
     const channel = this.channels[channelNumber];
-    const prevPitchBend = channel.pitchBend;
-    channel.pitchBend = pitchBend / 8192;
-    const detuneChange = (channel.pitchBend - prevPitchBend) *
-      channel.pitchBendRange * 100;
+    const state = channel.state;
+    const prevPitchWheel = state.pitchWheel;
+    state.pitchWheel = pitchWheel / 8192;
+    const detuneChange = (state.pitchWheel - prevPitchWheel) *
+      state.pitchWheelSensitivity * 100;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -1319,24 +1365,25 @@ export class MidyGM2 {
 
   setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulationDepth = (modulation / 127) * channel.modulationDepthRange;
+    channel.state.modulationDepth = (modulation / 127) *
+      channel.modulationDepthRange;
     this.updateModulation(channel);
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
     const channel = this.channels[channelNumber];
     const factor = 5 * Math.log(10) / 127;
-    channel.portamentoTime = Math.exp(factor * portamentoTime);
+    channel.state.portamentoTime = Math.exp(factor * portamentoTime);
   }
 
   setVolume(channelNumber, volume) {
     const channel = this.channels[channelNumber];
-    channel.volume = volume / 127;
+    channel.state.volume = volume / 127;
     this.updateChannelVolume(channel);
   }
 
   panToGain(pan) {
-    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    const theta = Math.PI / 2 * Math.max(0, pan * 127 - 1) / 126;
     return {
       gainLeft: Math.cos(theta),
       gainRight: Math.sin(theta),
@@ -1345,13 +1392,13 @@ export class MidyGM2 {
 
   setPan(channelNumber, pan) {
     const channel = this.channels[channelNumber];
-    channel.pan = pan;
+    channel.state.pan = pan / 127;
     this.updateChannelVolume(channel);
   }
 
   setExpression(channelNumber, expression) {
     const channel = this.channels[channelNumber];
-    channel.expression = expression / 127;
+    channel.state.expression = expression / 127;
     this.updateChannelVolume(channel);
   }
 
@@ -1366,8 +1413,9 @@ export class MidyGM2 {
 
   updateChannelVolume(channel) {
     const now = this.audioContext.currentTime;
-    const volume = channel.volume * channel.expression;
-    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    const state = channel.state;
+    const volume = state.volume * state.expression;
+    const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
       .setValueAtTime(volume * gainLeft, now);
@@ -1377,32 +1425,32 @@ export class MidyGM2 {
   }
 
   setSustainPedal(channelNumber, value) {
-    const isOn = value >= 64;
-    this.channels[channelNumber].sustainPedal = isOn;
-    if (!isOn) {
+    this.channels[channelNumber].state.sustainPedal = value / 127;
+    if (value < 64) {
       this.releaseSustainPedal(channelNumber, value);
     }
   }
 
   setPortamento(channelNumber, value) {
-    this.channels[channelNumber].portamento = value >= 64;
+    this.channels[channelNumber].portamento = value / 127;
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {
     const channel = this.channels[channelNumber];
+    const state = channel.state;
     const reverbEffect = this.reverbEffect;
-    if (0 < channel.reverbSendLevel) {
+    if (0 < state.reverbSendLevel) {
       if (0 < reverbSendLevel) {
         const now = this.audioContext.currentTime;
-        channel.reverbSendLevel = reverbSendLevel / 127;
+        state.reverbSendLevel = reverbSendLevel / 127;
         reverbEffect.input.gain.cancelScheduledValues(now);
-        reverbEffect.input.gain.setValueAtTime(channel.reverbSendLevel, now);
+        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
       } else {
         channel.scheduledNotes.forEach((noteList) => {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            if (note.instrumentKey.reverbEffectsSend <= 0) continue;
+            if (note.voiceParams.reverbEffectsSend <= 0) continue;
             note.reverbEffectsSend.disconnect();
           }
         });
@@ -1414,38 +1462,39 @@ export class MidyGM2 {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            if (note.instrumentKey.reverbEffectsSend <= 0) continue;
+            if (note.voiceParams.reverbEffectsSend <= 0) continue;
             if (!note.reverbEffectsSend) {
               note.reverbEffectsSend = new GainNode(this.audioContext, {
-                gain: note.instrumentKey.reverbEffectsSend,
+                gain: note.voiceParams.reverbEffectsSend,
               });
               note.volumeNode.connect(note.reverbEffectsSend);
             }
             note.reverbEffectsSend.connect(reverbEffect.input);
           }
         });
-        channel.reverbSendLevel = reverbSendLevel / 127;
+        state.reverbSendLevel = reverbSendLevel / 127;
         reverbEffect.input.gain.cancelScheduledValues(now);
-        reverbEffect.input.gain.setValueAtTime(channel.reverbSendLevel, now);
+        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
       }
     }
   }
 
   setChorusSendLevel(channelNumber, chorusSendLevel) {
     const channel = this.channels[channelNumber];
+    const state = channel.state;
     const chorusEffect = this.chorusEffect;
-    if (0 < channel.chorusSendLevel) {
+    if (0 < state.chorusSendLevel) {
       if (0 < chorusSendLevel) {
         const now = this.audioContext.currentTime;
-        channel.chorusSendLevel = chorusSendLevel / 127;
+        state.chorusSendLevel = chorusSendLevel / 127;
         chorusEffect.input.gain.cancelScheduledValues(now);
-        chorusEffect.input.gain.setValueAtTime(channel.chorusSendLevel, now);
+        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
       } else {
         channel.scheduledNotes.forEach((noteList) => {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            if (note.instrumentKey.chorusEffectsSend <= 0) continue;
+            if (note.voiceParams.chorusEffectsSend <= 0) continue;
             note.chorusEffectsSend.disconnect();
           }
         });
@@ -1457,28 +1506,27 @@ export class MidyGM2 {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            if (note.instrumentKey.chorusEffectsSend <= 0) continue;
+            if (note.voiceParams.chorusEffectsSend <= 0) continue;
             if (!note.chorusEffectsSend) {
               note.chorusEffectsSend = new GainNode(this.audioContext, {
-                gain: note.instrumentKey.chorusEffectsSend,
+                gain: note.voiceParams.chorusEffectsSend,
               });
               note.volumeNode.connect(note.chorusEffectsSend);
             }
             note.chorusEffectsSend.connect(chorusEffect.input);
           }
         });
-        channel.chorusSendLevel = chorusSendLevel / 127;
+        state.chorusSendLevel = chorusSendLevel / 127;
         chorusEffect.input.gain.cancelScheduledValues(now);
-        chorusEffect.input.gain.setValueAtTime(channel.chorusSendLevel, now);
+        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
       }
     }
   }
 
   setSostenutoPedal(channelNumber, value) {
-    const isOn = value >= 64;
     const channel = this.channels[channelNumber];
-    channel.sostenutoPedal = isOn;
-    if (isOn) {
+    channel.state.sostenutoPedal = value / 127;
+    if (64 <= value) {
       const now = this.audioContext.currentTime;
       const activeNotes = this.getActiveNotes(channel, now);
       channel.sostenutoNotes = new Map(activeNotes);
@@ -1489,7 +1537,7 @@ export class MidyGM2 {
 
   setSoftPedal(channelNumber, softPedal) {
     const channel = this.channels[channelNumber];
-    channel.softPedal = softPedal / 127;
+    channel.state.softPedal = softPedal / 127;
   }
 
   limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
@@ -1575,12 +1623,14 @@ export class MidyGM2 {
     this.setPitchBendRange(channelNumber, pitchBendRange);
   }
 
-  setPitchBendRange(channelNumber, pitchBendRange) {
+  setPitchBendRange(channelNumber, pitchWheelSensitivity) {
     const channel = this.channels[channelNumber];
-    const prevPitchBendRange = channel.pitchBendRange;
-    channel.pitchBendRange = pitchBendRange;
-    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) *
-      channel.pitchBend * 100;
+    const state = channel.state;
+    const prevPitchWheelSensitivity = state.pitchWheelSensitivity;
+    channel.pitchWheelSensitivity = pitchWheelSensitivity;
+    const detuneChange =
+      (state.pitchWheelSensitivity - prevPitchWheelSensitivity) *
+      state.pitchWheel * 100;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -1633,7 +1683,30 @@ export class MidyGM2 {
   }
 
   resetAllControllers(channelNumber) {
-    Object.assign(this.channels[channelNumber], this.effectSettings);
+    const stateTypes = [
+      "expression",
+      "modulationDepth",
+      "sustainPedal",
+      "portamento",
+      "sostenutoPedal",
+      "softPedal",
+      "channelPressure",
+      "pitchWheelSensitivity",
+    ];
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    for (let i = 0; i < stateTypes.length; i++) {
+      const type = stateTypes[i];
+      state[type] = defaultControllerState[type];
+    }
+    const settingTypes = [
+      "rpnMSB",
+      "rpnLSB",
+    ];
+    for (let i = 0; i < settingTypes.length; i++) {
+      const type = settingTypes[i];
+      channel[type] = this.constructor.channelSettings[type];
+    }
   }
 
   allNotesOff(channelNumber) {

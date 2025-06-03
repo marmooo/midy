@@ -9,11 +9,52 @@ class Note {
   modulationLFO;
   modulationDepth;
 
-  constructor(noteNumber, velocity, startTime, instrumentKey) {
+  constructor(noteNumber, velocity, startTime, voice, voiceParams) {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
     this.startTime = startTime;
-    this.instrumentKey = instrumentKey;
+    this.voice = voice;
+    this.voiceParams = voiceParams;
+  }
+}
+
+// normalized to 0-1 for use with the SF2 modulator model
+const defaultControllerState = {
+  noteOnVelocity: { type: 2, defaultValue: 0 },
+  noteOnKeyNumber: { type: 3, defaultValue: 0 },
+  pitchWheel: { type: 14, defaultValue: 0 },
+  pitchWheelSensitivity: { type: 16, defaultValue: 2 },
+  link: { type: 127, defaultValue: 0 },
+  // bankMSB: { type: 128 + 0, defaultValue: 121, },
+  modulationDepth: { type: 128 + 1, defaultValue: 0 },
+  portamentoTime: { type: 128 + 5, defaultValue: 0 },
+  // dataMSB: { type: 128 + 6, defaultValue: 0, },
+  volume: { type: 128 + 7, defaultValue: 100 / 127 },
+  pan: { type: 128 + 10, defaultValue: 0.5 },
+  expression: { type: 128 + 11, defaultValue: 1 },
+  // bankLSB: { type: 128 + 32, defaultValue: 0, },
+  // dataLSB: { type: 128 + 38, defaultValue: 0, },
+  sustainPedal: { type: 128 + 64, defaultValue: 0 },
+  // rpnLSB: { type: 128 + 100, defaultValue: 127 },
+  // rpnMSB: { type: 128 + 101, defaultValue: 127 },
+  // allSoundOff: { type: 128 + 120, defaultValue: 0 },
+  // resetAllControllers: { type: 128 + 121, defaultValue: 0 },
+  // allNotesOff: { type: 128 + 123, defaultValue: 0 },
+};
+
+class ControllerState {
+  array = new Float32Array(256);
+  constructor() {
+    const entries = Object.entries(defaultControllerState);
+    for (const [name, { type, defaultValue }] of entries) {
+      this.array[type] = defaultValue;
+      Object.defineProperty(this, name, {
+        get: () => this.array[type],
+        set: (value) => this.array[type] = value,
+        enumerable: true,
+        configurable: true,
+      });
+    }
   }
 }
 
@@ -38,23 +79,13 @@ export class MidyGMLite {
   exclusiveClassMap = new Map();
 
   static channelSettings = {
-    volume: 100 / 127,
-    pan: 64,
+    currentBufferSource: null,
+    program: 0,
     bank: 0,
     dataMSB: 0,
     dataLSB: 0,
-    program: 0,
-    pitchBend: 0,
-    modulationDepthRange: 50, // cent
-  };
-
-  static effectSettings = {
-    expression: 1,
-    modulationDepth: 0,
-    sustainPedal: false,
     rpnMSB: 127,
     rpnLSB: 127,
-    pitchBendRange: 2,
   };
 
   constructor(audioContext) {
@@ -108,7 +139,7 @@ export class MidyGMLite {
 
   setChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      this.constructor.channelSettings.pan,
+      defaultControllerState.pan.defaultValue,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -127,7 +158,7 @@ export class MidyGMLite {
     const channels = Array.from({ length: 16 }, () => {
       return {
         ...this.constructor.channelSettings,
-        ...this.constructor.effectSettings,
+        state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
       };
@@ -135,25 +166,25 @@ export class MidyGMLite {
     return channels;
   }
 
-  async createNoteBuffer(instrumentKey, isSF3) {
-    const sampleStart = instrumentKey.start;
-    const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
+  async createNoteBuffer(voiceParams, isSF3) {
+    const sampleStart = voiceParams.start;
+    const sampleEnd = voiceParams.sample.length + voiceParams.end;
     if (isSF3) {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = await this.audioContext.decodeAudioData(buffer);
       return audioBuffer;
     } else {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
-        sampleRate: instrumentKey.sampleRate,
+        sampleRate: voiceParams.sampleRate,
       });
       const channelData = audioBuffer.getChannelData(0);
       const int16Array = new Int16Array(buffer);
@@ -164,15 +195,14 @@ export class MidyGMLite {
     }
   }
 
-  async createNoteBufferNode(instrumentKey, isSF3) {
+  async createNoteBufferNode(voiceParams, isSF3) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(instrumentKey, isSF3);
+    const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = instrumentKey.sampleModes % 2 !== 0;
+    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
-      bufferSource.loopStart = instrumentKey.loopStart /
-        instrumentKey.sampleRate;
-      bufferSource.loopEnd = instrumentKey.loopEnd / instrumentKey.sampleRate;
+      bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
+      bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
     }
     return bufferSource;
   }
@@ -465,22 +495,22 @@ export class MidyGMLite {
   }
 
   calcSemitoneOffset(channel) {
-    return channel.pitchBend * channel.pitchBendRange;
+    const state = channel.state;
+    return state.pitchWheel * state.pitchWheelSensitivity;
   }
 
-  calcPlaybackRate(instrumentKey, noteNumber, semitoneOffset) {
-    return instrumentKey.playbackRate(noteNumber) *
-      Math.pow(2, semitoneOffset / 12);
+  calcPlaybackRate(voiceParams, semitoneOffset) {
+    return voiceParams.playbackRate * Math.pow(2, semitoneOffset / 12);
   }
 
   setVolumeEnvelope(note) {
-    const { instrumentKey, startTime } = note;
-    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
-    const volDelay = startTime + instrumentKey.volDelay;
-    const volAttack = volDelay + instrumentKey.volAttack;
-    const volHold = volAttack + instrumentKey.volHold;
-    const volDecay = volHold + instrumentKey.volDecay;
+    const { voiceParams, startTime } = note;
+    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const volDelay = startTime + voiceParams.volDelay;
+    const volAttack = volDelay + voiceParams.volAttack;
+    const volHold = volAttack + voiceParams.volHold;
+    const volDecay = volHold + voiceParams.volDecay;
     note.volumeNode.gain
       .cancelScheduledValues(startTime)
       .setValueAtTime(0, startTime)
@@ -491,24 +521,24 @@ export class MidyGMLite {
   }
 
   setPitch(note, semitoneOffset) {
-    const { instrumentKey, noteNumber, startTime } = note;
-    const modEnvToPitch = instrumentKey.modEnvToPitch / 100;
+    const { voiceParams, noteNumber, startTime } = note;
+    const modEnvToPitch = voiceParams.modEnvToPitch / 100;
     note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-      instrumentKey,
+      voiceParams,
       noteNumber,
       semitoneOffset,
     );
     if (modEnvToPitch === 0) return;
     const basePitch = note.bufferSource.playbackRate.value;
     const peekPitch = this.calcPlaybackRate(
-      instrumentKey,
+      voiceParams,
       noteNumber,
       semitoneOffset + modEnvToPitch,
     );
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
+    const modDelay = startTime + voiceParams.modDelay;
+    const modAttack = modDelay + voiceParams.modAttack;
+    const modHold = modAttack + voiceParams.modHold;
+    const modDecay = modHold + voiceParams.modDecay;
     note.bufferSource.playbackRate.value
       .setValueAtTime(basePitch, modDelay)
       .exponentialRampToValueAtTime(peekPitch, modAttack)
@@ -523,20 +553,20 @@ export class MidyGMLite {
   }
 
   setFilterEnvelope(note) {
-    const { instrumentKey, startTime } = note;
-    const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
+    const { voiceParams, startTime } = note;
+    const baseFreq = this.centToHz(voiceParams.initialFilterFc);
     const peekFreq = this.centToHz(
-      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc,
+      voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
     );
     const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
+      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
+    const modDelay = startTime + voiceParams.modDelay;
+    const modAttack = modDelay + voiceParams.modAttack;
+    const modHold = modAttack + voiceParams.modHold;
+    const modDecay = modHold + voiceParams.modDecay;
     note.filterNode.frequency
       .cancelScheduledValues(startTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -547,13 +577,13 @@ export class MidyGMLite {
   }
 
   startModulation(channel, note, startTime) {
-    const { instrumentKey } = note;
-    const { modLfoToPitch, modLfoToVolume } = instrumentKey;
+    const { voiceParams } = note;
+    const { modLfoToPitch, modLfoToVolume } = voiceParams;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(instrumentKey.freqModLFO),
+      frequency: this.centToHz(voiceParams.freqModLFO),
     });
     note.filterDepth = new GainNode(this.audioContext, {
-      gain: instrumentKey.modLfoToFilterFc,
+      gain: voiceParams.modLfoToFilterFc,
     });
     const modulationDepth = Math.abs(modLfoToPitch) + channel.modulationDepth;
     const modulationDepthSign = (0 < modLfoToPitch) ? 1 : -1;
@@ -565,7 +595,7 @@ export class MidyGMLite {
     note.volumeDepth = new GainNode(this.audioContext, {
       gain: volumeDepth * volumeDepthSign,
     });
-    note.modulationLFO.start(startTime + instrumentKey.delayModLFO);
+    note.modulationLFO.start(startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
     note.filterDepth.connect(note.filterNode.frequency);
     note.modulationLFO.connect(note.modulationDepth);
@@ -576,29 +606,30 @@ export class MidyGMLite {
 
   async createNote(
     channel,
-    instrumentKey,
+    voice,
     noteNumber,
     velocity,
     startTime,
     isSF3,
   ) {
+    const state = channel.state;
+    const voiceParams = voice.getAllParams(state.array);
     const semitoneOffset = this.calcSemitoneOffset(channel);
-    const note = new Note(noteNumber, velocity, startTime, instrumentKey);
-    note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
+    const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
+    note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10, // dB
+      Q: voiceParams.initialFilterQ / 10, // dB
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
-    if (0 < channel.modulationDepth) {
+    if (0 < state.modulationDepth) {
       this.setPitch(note, semitoneOffset);
       this.startModulation(channel, note, startTime);
     } else {
       note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-        instrumentKey,
-        noteNumber,
+        voiceParams,
         semitoneOffset,
       );
     }
@@ -615,16 +646,16 @@ export class MidyGMLite {
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const isSF3 = soundFont.parsed.info.version.major === 3;
-    const instrumentKey = soundFont.getInstrumentKey(
+    const voice = soundFont.getVoice(
       bankNumber,
       channel.program,
       noteNumber,
       velocity,
     );
-    if (!instrumentKey) return;
+    if (!voice) return;
     const note = await this.createNote(
       channel,
-      instrumentKey,
+      voice,
       noteNumber,
       velocity,
       startTime,
@@ -632,7 +663,7 @@ export class MidyGMLite {
     );
     note.volumeNode.connect(channel.gainL);
     note.volumeNode.connect(channel.gainR);
-    const exclusiveClass = instrumentKey.exclusiveClass;
+    const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
@@ -701,15 +732,15 @@ export class MidyGMLite {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (!force && channel.sustainPedal) return;
+    if (!force && 0.5 < channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const volRelease = endTime + note.instrumentKey.volRelease;
-      const modRelease = endTime + note.instrumentKey.modRelease;
+      const volRelease = endTime + note.voiceParams.volRelease;
+      const modRelease = endTime + note.voiceParams.modRelease;
       note.filterNode.frequency
         .cancelScheduledValues(endTime)
         .linearRampToValueAtTime(0, modRelease);
@@ -727,7 +758,7 @@ export class MidyGMLite {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.sustainPedal = false;
+    channel.state.sustainPedal = halfVelocity;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -769,12 +800,13 @@ export class MidyGMLite {
     this.setPitchBend(channelNumber, pitchBend);
   }
 
-  setPitchBend(channelNumber, pitchBend) {
+  setPitchBend(channelNumber, pitchWheel) {
     const channel = this.channels[channelNumber];
-    const prevPitchBend = channel.pitchBend;
-    channel.pitchBend = pitchBend / 8192;
-    const detuneChange = (channel.pitchBend - prevPitchBend) *
-      channel.pitchBendRange * 100;
+    const state = channel.state;
+    const prevPitchWheel = state.pitchWheel;
+    state.pitchWheel = pitchWheel / 8192;
+    const detuneChange = (state.pitchWheel - prevPitchWheel) *
+      state.pitchWheelSensitivity * 100;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -828,17 +860,18 @@ export class MidyGMLite {
 
   setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulationDepth = (modulation / 127) * channel.modulationDepthRange;
+    channel.state.modulationDepth = (modulation / 127) *
+      channel.modulationDepthRange;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {
     const channel = this.channels[channelNumber];
-    channel.volume = volume / 127;
+    channel.state.volume = volume / 127;
     this.updateChannelVolume(channel);
   }
 
   panToGain(pan) {
-    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    const theta = Math.PI / 2 * Math.max(0, pan * 127 - 1) / 126;
     return {
       gainLeft: Math.cos(theta),
       gainRight: Math.sin(theta),
@@ -847,13 +880,13 @@ export class MidyGMLite {
 
   setPan(channelNumber, pan) {
     const channel = this.channels[channelNumber];
-    channel.pan = pan;
+    channel.state.pan = pan / 127;
     this.updateChannelVolume(channel);
   }
 
   setExpression(channelNumber, expression) {
     const channel = this.channels[channelNumber];
-    channel.expression = expression / 127;
+    channel.state.expression = expression / 127;
     this.updateChannelVolume(channel);
   }
 
@@ -864,8 +897,9 @@ export class MidyGMLite {
 
   updateChannelVolume(channel) {
     const now = this.audioContext.currentTime;
-    const volume = channel.volume * channel.expression;
-    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    const state = channel.state;
+    const volume = state.volume * state.expression;
+    const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
       .setValueAtTime(volume * gainLeft, now);
@@ -875,10 +909,26 @@ export class MidyGMLite {
   }
 
   setSustainPedal(channelNumber, value) {
-    const isOn = value >= 64;
-    this.channels[channelNumber].sustainPedal = isOn;
-    if (!isOn) {
+    this.channels[channelNumber].state.sustainPedal = value / 127;
+    if (value < 64) {
       this.releaseSustainPedal(channelNumber, value);
+    }
+  }
+
+  limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
+    if (maxLSB < channel.dataLSB) {
+      channel.dataMSB++;
+      channel.dataLSB = minLSB;
+    } else if (channel.dataLSB < 0) {
+      channel.dataMSB--;
+      channel.dataLSB = maxLSB;
+    }
+    if (maxMSB < channel.dataMSB) {
+      channel.dataMSB = maxMSB;
+      channel.dataLSB = maxLSB;
+    } else if (channel.dataMSB < 0) {
+      channel.dataMSB = minMSB;
+      channel.dataLSB = minLSB;
     }
   }
 
@@ -931,12 +981,14 @@ export class MidyGMLite {
     this.setPitchBendRange(channelNumber, pitchBendRange);
   }
 
-  setPitchBendRange(channelNumber, pitchBendRange) {
+  setPitchBendRange(channelNumber, pitchWheelSensitivity) {
     const channel = this.channels[channelNumber];
-    const prevPitchBendRange = channel.pitchBendRange;
-    channel.pitchBendRange = pitchBendRange;
-    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) *
-      channel.pitchBend * 100;
+    const state = channel.state;
+    const prevPitchWheelSensitivity = state.pitchWheelSensitivity;
+    channel.pitchWheelSensitivity = pitchWheelSensitivity;
+    const detuneChange =
+      (state.pitchWheelSensitivity - prevPitchWheelSensitivity) *
+      state.pitchWheel * 100;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -945,7 +997,26 @@ export class MidyGMLite {
   }
 
   resetAllControllers(channelNumber) {
-    Object.assign(this.channels[channelNumber], this.effectSettings);
+    const stateTypes = [
+      "expression",
+      "modulationDepth",
+      "sustainPedal",
+      "pitchWheelSensitivity",
+    ];
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    for (let i = 0; i < stateTypes.length; i++) {
+      const type = stateTypes[i];
+      state[type] = defaultControllerState[type];
+    }
+    const settingTypes = [
+      "rpnMSB",
+      "rpnLSB",
+    ];
+    for (let i = 0; i < settingTypes.length; i++) {
+      const type = settingTypes[i];
+      channel[type] = this.constructor.channelSettings[type];
+    }
   }
 
   allNotesOff(channelNumber) {
@@ -973,11 +1044,8 @@ export class MidyGMLite {
   GM1SystemOn() {
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
-      channel.bankMSB = 0;
-      channel.bankLSB = 0;
       channel.bank = 0;
     }
-    this.channels[9].bankMSB = 1;
     this.channels[9].bank = 128;
   }
 
