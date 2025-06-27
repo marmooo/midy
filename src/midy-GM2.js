@@ -1321,13 +1321,13 @@ export class MidyGM2 {
     };
   }
 
-  handleControlChange(channelNumber, controller, value) {
-    const handler = this.controlChangeHandlers[controller];
+  handleControlChange(channelNumber, controllerType, value) {
+    const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value);
     } else {
       console.warn(
-        `Unsupported Control change: controller=${controller} value=${value}`,
+        `Unsupported Control change: controllerType=${controllerType} value=${value}`,
       );
     }
   }
