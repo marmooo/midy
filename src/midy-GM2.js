@@ -814,10 +814,6 @@ export class MidyGM2 {
     return state.pitchWheel * state.pitchWheelSensitivity + tuning;
   }
 
-  calcPlaybackRate(voiceParams, semitoneOffset) {
-    return voiceParams.playbackRate * Math.pow(2, semitoneOffset / 12);
-  }
-
   setPortamentoStartVolumeEnvelope(channel, note) {
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
@@ -847,26 +843,28 @@ export class MidyGM2 {
       .linearRampToValueAtTime(sustainVolume, volDecay);
   }
 
-  setPitch(note, semitoneOffset) {
-    const { voiceParams, noteNumber, startTime } = note;
-    const modEnvToPitch = voiceParams.modEnvToPitch / 100;
-    note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-      voiceParams,
-      noteNumber,
-      semitoneOffset,
-    );
+  setPlaybackRate(note) {
+    const now = this.audioContext.currentTime;
+    note.bufferSource.playbackRate
+      .cancelScheduledValues(now)
+      .setValueAtTime(note.voiceParams.playbackRate, now);
+  }
+
+  setPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const { startTime } = note;
+    const basePitch = this.calcSemitoneOffset(channel) * 100;
+    note.bufferSource.detune
+      .cancelScheduledValues(now)
+      .setValueAtTime(basePitch, startTime);
+    const modEnvToPitch = note.voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
-    const basePitch = note.bufferSource.playbackRate.value;
-    const peekPitch = this.calcPlaybackRate(
-      voiceParams,
-      noteNumber,
-      semitoneOffset + modEnvToPitch,
-    );
+    const peekPitch = basePitch + modEnvToPitch;
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
-    note.bufferSource.playbackRate.value
+    note.bufferSource.detune
       .setValueAtTime(basePitch, modDelay)
       .exponentialRampToValueAtTime(peekPitch, modAttack)
       .setValueAtTime(peekPitch, modHold)
@@ -988,7 +986,6 @@ export class MidyGM2 {
   ) {
     const state = channel.state;
     const voiceParams = voice.getAllParams(state.array);
-    const semitoneOffset = this.calcSemitoneOffset(channel);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
@@ -1006,14 +1003,10 @@ export class MidyGM2 {
     if (0 < state.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
+    this.setPlaybackRate(note);
     if (0 < state.modulationDepth) {
-      this.setPitch(note, semitoneOffset);
+      this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
-    } else {
-      note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-        voiceParams,
-        semitoneOffset,
-      );
     }
     if (this.mono && channel.currentBufferSource) {
       channel.currentBufferSource.stop(startTime);
@@ -1355,8 +1348,7 @@ export class MidyGM2 {
             now,
           );
         } else {
-          const semitoneOffset = this.calcSemitoneOffset(channel);
-          this.setPitch(note, semitoneOffset);
+          this.setPitch(channel, note);
           this.startModulation(channel, note, now);
         }
       }

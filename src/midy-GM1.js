@@ -526,26 +526,28 @@ export class MidyGM1 {
       .linearRampToValueAtTime(sustainVolume, volDecay);
   }
 
-  setPitch(note, semitoneOffset) {
-    const { voiceParams, noteNumber, startTime } = note;
-    const modEnvToPitch = voiceParams.modEnvToPitch / 100;
-    note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-      voiceParams,
-      noteNumber,
-      semitoneOffset,
-    );
+  setPlaybackRate(note) {
+    const now = this.audioContext.currentTime;
+    note.bufferSource.playbackRate
+      .cancelScheduledValues(now)
+      .setValueAtTime(note.voiceParams.playbackRate, now);
+  }
+
+  setPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const { startTime } = note;
+    const basePitch = this.calcSemitoneOffset(channel) * 100;
+    note.bufferSource.detune
+      .cancelScheduledValues(now)
+      .setValueAtTime(basePitch, startTime);
+    const modEnvToPitch = note.voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
-    const basePitch = note.bufferSource.playbackRate.value;
-    const peekPitch = this.calcPlaybackRate(
-      voiceParams,
-      noteNumber,
-      semitoneOffset + modEnvToPitch,
-    );
+    const peekPitch = basePitch + modEnvToPitch;
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
-    note.bufferSource.playbackRate.value
+    note.bufferSource.detune
       .setValueAtTime(basePitch, modDelay)
       .exponentialRampToValueAtTime(peekPitch, modAttack)
       .setValueAtTime(peekPitch, modHold)
@@ -630,14 +632,10 @@ export class MidyGM1 {
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
+    this.setPlaybackRate(note);
     if (0 < state.modulationDepth) {
-      this.setPitch(note, semitoneOffset);
+      this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
-    } else {
-      note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-        voiceParams,
-        semitoneOffset,
-      );
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeNode);
@@ -856,8 +854,7 @@ export class MidyGM1 {
             now,
           );
         } else {
-          const semitoneOffset = this.calcSemitoneOffset(channel);
-          this.setPitch(note, semitoneOffset);
+          this.setPitch(channel, note);
           this.startModulation(channel, note, now);
         }
       }
