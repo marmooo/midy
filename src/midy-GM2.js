@@ -878,9 +878,10 @@ export class MidyGM2 {
   }
 
   setPortamentoStartFilterEnvelope(channel, note) {
+    const state = channel.state;
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
+      (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
     const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
       softPedalFactor;
     const peekFreq = this.centToHz(

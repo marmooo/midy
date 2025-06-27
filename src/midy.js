@@ -892,7 +892,7 @@ export class Midy {
     const state = channel.state;
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * channel.softPedal;
+      (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
     const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
       softPedalFactor * state.brightness * 2;
     const peekFreq = this.centToHz(
