@@ -616,7 +616,6 @@ export class MidyGMLite {
   ) {
     const state = channel.state;
     const voiceParams = voice.getAllParams(state.array);
-    const semitoneOffset = this.calcSemitoneOffset(channel);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
