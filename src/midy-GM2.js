@@ -1224,7 +1224,7 @@ export class MidyGM2 {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.sostenutoPedal = false;
+    channel.state.sostenutoPedal = 0;
     channel.sostenutoNotes.forEach((activeNote) => {
       const { noteNumber } = activeNote;
       const promise = this.releaseNote(channelNumber, noteNumber, velocity);
@@ -1344,7 +1344,7 @@ export class MidyGM2 {
         if (!note) continue;
         if (note.modulationDepth) {
           note.modulationDepth.gain.setValueAtTime(
-            channel.modulationDepth,
+            channel.state.modulationDepth,
             now,
           );
         } else {
@@ -1424,7 +1424,7 @@ export class MidyGM2 {
   }
 
   setPortamento(channelNumber, value) {
-    this.channels[channelNumber].portamento = value / 127;
+    this.channels[channelNumber].state.portamento = value / 127;
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {

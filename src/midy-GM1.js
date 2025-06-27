@@ -850,7 +850,7 @@ export class MidyGM1 {
         if (!note) continue;
         if (note.modulationDepth) {
           note.modulationDepth.gain.setValueAtTime(
-            channel.modulationDepth,
+            channel.state.modulationDepth,
             now,
           );
         } else {
