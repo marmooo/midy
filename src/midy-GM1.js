@@ -989,14 +989,13 @@ export class MidyGM1 {
     this.handleRPN(channelNumber);
   }
 
-  updateDetune(channel, detuneChange) {
+  updateDetune(channel, detune) {
     const now = this.audioContext.currentTime;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
         const { bufferSource } = note;
-        const detune = bufferSource.detune.value + detuneChange;
         bufferSource.detune
           .cancelScheduledValues(now)
           .setValueAtTime(detune, now);
