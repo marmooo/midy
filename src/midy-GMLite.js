@@ -501,6 +501,7 @@ export class MidyGMLite {
   }
 
   setVolumeEnvelope(note) {
+    const now = this.audioContext.currentTime;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
@@ -509,7 +510,7 @@ export class MidyGMLite {
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay;
     note.volumeNode.gain
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
@@ -552,6 +553,7 @@ export class MidyGMLite {
   }
 
   setFilterEnvelope(note) {
+    const now = this.audioContext.currentTime;
     const { voiceParams, startTime } = note;
     const baseFreq = this.centToHz(voiceParams.initialFilterFc);
     const peekFreq = this.centToHz(
@@ -567,7 +569,7 @@ export class MidyGMLite {
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
     note.filterNode.frequency
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)

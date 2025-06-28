@@ -826,18 +826,20 @@ export class Midy {
   }
 
   setPortamentoStartVolumeEnvelope(channel, note) {
+    const now = this.audioContext.currentTime;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const portamentoTime = volDelay + channel.state.portamentoTime;
     note.volumeNode.gain
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(0, volDelay)
       .linearRampToValueAtTime(sustainVolume, portamentoTime);
   }
 
   setVolumeEnvelope(channel, note) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
@@ -847,7 +849,7 @@ export class Midy {
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay * state.decayTime * 2;
     note.volumeNode.gain
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
@@ -890,6 +892,7 @@ export class Midy {
   }
 
   setPortamentoStartFilterEnvelope(channel, note) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
@@ -906,13 +909,14 @@ export class Midy {
     const portamentoTime = startTime + channel.state.portamentoTime;
     const modDelay = startTime + voiceParams.modDelay;
     note.filterNode.frequency
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .linearRampToValueAtTime(adjustedSustainFreq, portamentoTime);
   }
 
   setFilterEnvelope(channel, note) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
@@ -932,7 +936,7 @@ export class Midy {
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
     note.filterNode.frequency
-      .cancelScheduledValues(startTime)
+      .cancelScheduledValues(now)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
