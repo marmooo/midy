@@ -28,8 +28,8 @@ const defaultControllerState = {
   noteOnKeyNumber: { type: 3, defaultValue: 0 },
   polyPressure: { type: 10, defaultValue: 0 },
   channelPressure: { type: 13, defaultValue: 0 },
-  pitchWheel: { type: 14, defaultValue: 0 },
-  pitchWheelSensitivity: { type: 16, defaultValue: 2 },
+  pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
+  pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
   // bankMSB: { type: 128 + 0, defaultValue: 121, },
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
@@ -373,7 +373,7 @@ export class Midy {
           this.handleChannelPressure(event.channel, event.amount);
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value);
+          this.setPitchBend(event.channel, event.value + 8192);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -819,9 +819,10 @@ export class Midy {
   calcSemitoneOffset(channel) {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
-    const tuning = masterTuning + channelTuning;
-    const state = channel.state;
-    return state.pitchWheel * state.pitchWheelSensitivity + tuning;
+    const pitchWheel = channel.state.pitchWheel * 2 - 1;
+    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
+    const pitch = pitchWheel * pitchWheelSensitivity;
+    return masterTuning + channelTuning + pitch;
   }
 
   setPortamentoStartVolumeEnvelope(channel, note) {
@@ -1291,17 +1292,16 @@ export class Midy {
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
-    const pitchBend = msb * 128 + lsb - 8192;
+    const pitchBend = msb * 128 + lsb;
     this.setPitchBend(channelNumber, pitchBend);
   }
 
-  setPitchBend(channelNumber, pitchWheel) {
+  setPitchBend(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const prevPitchWheel = state.pitchWheel;
-    state.pitchWheel = pitchWheel / 8192;
-    const detuneChange = (state.pitchWheel - prevPitchWheel) *
-      state.pitchWheelSensitivity * 100;
+    state.pitchWheel = value / 16383;
+    const pitchWheel = (value - 8192) / 8192;
+    const detuneChange = pitchWheel * state.pitchWheelSensitivity * 12800;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -1777,14 +1777,13 @@ export class Midy {
     this.handleRPN(channelNumber, 0);
   }
 
-  updateDetune(channel, detuneChange) {
+  updateDetune(channel, detune) {
     const now = this.audioContext.currentTime;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
         const { bufferSource } = note;
-        const detune = bufferSource.detune.value + detuneChange;
         bufferSource.detune
           .cancelScheduledValues(now)
           .setValueAtTime(detune, now);
@@ -1802,12 +1801,10 @@ export class Midy {
   setPitchBendRange(channelNumber, pitchWheelSensitivity) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const prevPitchWheelSensitivity = state.pitchWheelSensitivity;
-    channel.pitchWheelSensitivity = pitchWheelSensitivity;
-    const detuneChange =
-      (state.pitchWheelSensitivity - prevPitchWheelSensitivity) *
-      state.pitchWheel * 100;
-    this.updateDetune(channel, detuneChange);
+    state.pitchWheelSensitivity = pitchWheelSensitivity / 128;
+    const detune = (state.pitchWheel * 2 - 1) * pitchWheelSensitivity * 100;
+    this.updateDetune(channel, detune);
+    this.applyVoiceParams(channel, 16);
   }
 
   handleFineTuningRPN(channelNumber) {

@@ -24,8 +24,8 @@ class Note {
 const defaultControllerState = {
   noteOnVelocity: { type: 2, defaultValue: 0 },
   noteOnKeyNumber: { type: 3, defaultValue: 0 },
-  pitchWheel: { type: 14, defaultValue: 0 },
-  pitchWheelSensitivity: { type: 16, defaultValue: 2 },
+  pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
+  pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
   // bankMSB: { type: 128 + 0, defaultValue: 121, },
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
@@ -251,7 +251,7 @@ export class MidyGM1 {
           this.handleProgramChange(event.channel, event.programNumber);
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value);
+          this.setPitchBend(event.channel, event.value + 8192);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -586,7 +586,6 @@ export class MidyGM1 {
 
   startModulation(channel, note, startTime) {
     const { voiceParams } = note;
-    const { modLfoToVolume } = voiceParams;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
@@ -794,17 +793,16 @@ export class MidyGM1 {
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb) {
-    const pitchBend = msb * 128 + lsb - 8192;
+    const pitchBend = msb * 128 + lsb;
     this.setPitchBend(channelNumber, pitchBend);
   }
 
-  setPitchBend(channelNumber, pitchWheel) {
+  setPitchBend(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const prevPitchWheel = state.pitchWheel;
-    state.pitchWheel = pitchWheel / 8192;
-    const detuneChange = (state.pitchWheel - prevPitchWheel) *
-      state.pitchWheelSensitivity * 100;
+    state.pitchWheel = value / 16383;
+    const pitchWheel = (value - 8192) / 8192;
+    const detuneChange = pitchWheel * state.pitchWheelSensitivity * 12800;
     this.updateDetune(channel, detuneChange);
   }
 
@@ -1016,12 +1014,10 @@ export class MidyGM1 {
   setPitchBendRange(channelNumber, pitchWheelSensitivity) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const prevPitchWheelSensitivity = state.pitchWheelSensitivity;
-    channel.pitchWheelSensitivity = pitchWheelSensitivity;
-    const detuneChange =
-      (state.pitchWheelSensitivity - prevPitchWheelSensitivity) *
-      state.pitchWheel * 100;
-    this.updateDetune(channel, detuneChange);
+    state.pitchWheelSensitivity = pitchWheelSensitivity / 128;
+    const detune = (state.pitchWheel * 2 - 1) * pitchWheelSensitivity * 100;
+    this.updateDetune(channel, detune);
+    this.applyVoiceParams(channel, 16);
   }
 
   handleFineTuningRPN(channelNumber) {
