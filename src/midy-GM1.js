@@ -501,12 +501,10 @@ export class MidyGM1 {
 
   calcSemitoneOffset(channel) {
     const tuning = channel.coarseTuning + channel.fineTuning;
-    const state = channel.state;
-    return state.pitchWheel * state.pitchWheelSensitivity + tuning;
-  }
-
-  calcPlaybackRate(voiceParams, semitoneOffset) {
-    return voiceParams.playbackRate * Math.pow(2, semitoneOffset / 12);
+    const pitchWheel = channel.state.pitchWheel * 2 - 1;
+    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
+    const pitch = pitchWheel * pitchWheelSensitivity;
+    return tuning + pitch;
   }
 
   setVolumeEnvelope(note) {

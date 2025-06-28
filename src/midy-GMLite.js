@@ -495,12 +495,9 @@ export class MidyGMLite {
   }
 
   calcSemitoneOffset(channel) {
-    const state = channel.state;
-    return state.pitchWheel * state.pitchWheelSensitivity;
-  }
-
-  calcPlaybackRate(voiceParams, semitoneOffset) {
-    return voiceParams.playbackRate * Math.pow(2, semitoneOffset / 12);
+    const pitchWheel = channel.state.pitchWheel * 2 - 1;
+    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
+    return pitchWheel * pitchWheelSensitivity;
   }
 
   setVolumeEnvelope(note) {
