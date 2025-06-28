@@ -969,20 +969,16 @@ export class Midy {
 
   startVibrato(channel, note, startTime) {
     const { voiceParams } = note;
-    const { vibLfoToPitch } = voiceParams;
     const state = channel.state;
     note.vibratoLFO = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(voiceParams.freqVibLFO) *
         state.vibratoRate,
     });
-    const vibratoDepth = Math.abs(vibLfoToPitch) * state.vibratoDepth * 2;
-    const vibratoDepthSign = 0 < vibLfoToPitch;
-    note.vibratoDepth = new GainNode(this.audioContext, {
-      gain: vibratoDepth * vibratoDepthSign,
-    });
     note.vibratoLFO.start(
       startTime + voiceParams.delayVibLFO * state.vibratoDelay * 2,
     );
+    note.vibratoDepth = new GainNode(this.audioContext);
+    this.setVibLfoToPitch(channel, note);
     note.vibratoLFO.connect(note.vibratoDepth);
     note.vibratoDepth.connect(note.bufferSource.detune);
   }
@@ -1361,6 +1357,17 @@ export class Midy {
         note.reverbEffectsSend.connect(this.reverbEffect.input);
       }
     }
+  }
+
+  setVibLfoToPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
+    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
+      2;
+    const vibratoDepthSign = 0 < vibLfoToPitch;
+    note.vibratoDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
   }
 
   createControlChangeHandlers() {
