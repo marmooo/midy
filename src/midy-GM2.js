@@ -930,7 +930,6 @@ export class MidyGM2 {
 
   startModulation(channel, note, startTime) {
     const { voiceParams } = note;
-    const { modLfoToVolume } = voiceParams;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
@@ -939,11 +938,9 @@ export class MidyGM2 {
     });
     note.modulationDepth = new GainNode(this.audioContext);
     this.setModLfoToPitch(channel, note);
-    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepthSign = (0 < modLfoToVolume) ? 1 : -1;
-    note.volumeDepth = new GainNode(this.audioContext, {
-      gain: volumeDepth * volumeDepthSign,
-    });
+    note.volumeDepth = new GainNode(this.audioContext);
+    this.setModLfoToVolume(note);
+
     note.modulationLFO.start(startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
     note.filterDepth.connect(note.filterNode.frequency);
@@ -1287,6 +1284,16 @@ export class MidyGM2 {
     note.modulationDepth.gain
       .cancelScheduledValues(now)
       .setValueAtTime(modulationDepth * modulationDepthSign, now);
+  }
+
+  setModLfoToVolume(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToVolume = note.voiceParams.modLfoToVolume;
+    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const volumeDepthSign = (0 < modLfoToVolume) ? 1 : -1;
+    note.volumeDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volumeDepth * volumeDepthSign, now);
   }
 
   setChorusEffectsSend(note, prevValue) {
