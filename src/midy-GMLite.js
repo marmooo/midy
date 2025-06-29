@@ -27,7 +27,6 @@ const defaultControllerState = {
   link: { type: 127, defaultValue: 0 },
   // bankMSB: { type: 128 + 0, defaultValue: 121, },
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
-  portamentoTime: { type: 128 + 5, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
   pan: { type: 128 + 10, defaultValue: 0.5 },
@@ -57,6 +56,30 @@ class ControllerState {
     }
   }
 }
+
+const filterEnvelopeKeys = [
+  "modEnvToPitch",
+  "initialFilterFc",
+  "modEnvToFilterFc",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain",
+  "modRelease",
+  "playbackRate",
+];
+const filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
+const volumeEnvelopeKeys = [
+  "volDelay",
+  "volAttack",
+  "volHold",
+  "volDecay",
+  "volSustain",
+  "volRelease",
+  "initialAttenuation",
+];
+const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class MidyGMLite {
   ticksPerBeat = 120;
@@ -91,6 +114,7 @@ export class MidyGMLite {
   constructor(audioContext) {
     this.audioContext = audioContext;
     this.masterGain = new GainNode(audioContext);
+    this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterGain.connect(audioContext.destination);
@@ -618,6 +642,7 @@ export class MidyGMLite {
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
+    this.setPlaybackRate(note);
     if (0 < state.modulationDepth) {
       this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
@@ -702,10 +727,6 @@ export class MidyGMLite {
           note.volumeDepth.disconnect();
           note.modulationDepth.disconnect();
           note.modulationLFO.stop();
-        }
-        if (note.vibratoDepth) {
-          note.vibratoDepth.disconnect();
-          note.vibratoLFO.stop();
         }
         resolve();
       };
@@ -817,6 +838,109 @@ export class MidyGMLite {
     note.volumeDepth.gain
       .cancelScheduledValues(now)
       .setValueAtTime(volumeDepth * volumeDepthSign, now);
+  }
+
+  setModLfoToFilterFc(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
+    note.filterDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(modLfoToFilterFc, now);
+  }
+
+  setDelayModLFO(note) {
+    const now = this.audioContext.currentTime;
+    const startTime = note.startTime;
+    if (startTime < now) return;
+    note.modulationLFO.stop(now);
+    note.modulationLFO.start(startTime + note.voiceParams.delayModLFO);
+    note.modulationLFO.connect(note.filterDepth);
+  }
+
+  setFreqModLFO(note) {
+    const now = this.audioContext.currentTime;
+    const freqModLFO = note.voiceParams.freqModLFO;
+    note.modulationLFO.frequency
+      .cancelScheduledValues(now)
+      .setValueAtTime(freqModLFO, now);
+  }
+
+  createVoiceParamsHandlers() {
+    return {
+      modLfoToPitch: (channel, note, _prevValue) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setModLfoToPitch(channel, note);
+        }
+      },
+      vibLfoToPitch: (_channel, _note, _prevValue) => {},
+      modLfoToFilterFc: (channel, note, _prevValue) => {
+        if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
+      },
+      modLfoToVolume: (channel, note) => {
+        if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
+      },
+      chorusEffectsSend: (_channel, _note, _prevValue) => {},
+      reverbEffectsSend: (_channel, _note, _prevValue) => {},
+      delayModLFO: (_channel, note, _prevValue) => this.setDelayModLFO(note),
+      freqModLFO: (_channel, note, _prevValue) => this.setFreqModLFO(note),
+      delayVibLFO: (_channel, _note, _prevValue) => {},
+      freqVibLFO: (_channel, _note, _prevValue) => {},
+    };
+  }
+
+  getControllerState(channel, noteNumber, velocity) {
+    const state = new Float32Array(channel.state.array.length);
+    state.set(channel.state.array);
+    state[2] = velocity / 127;
+    state[3] = noteNumber / 127;
+    return state;
+  }
+
+  applyVoiceParams(channel, controllerType) {
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const controllerState = this.getControllerState(
+          channel,
+          note.noteNumber,
+          note.velocity,
+        );
+        const voiceParams = note.voice.getParams(
+          controllerType,
+          controllerState,
+        );
+        let appliedFilterEnvelope = false;
+        let appliedVolumeEnvelope = false;
+        for (const [key, value] of Object.entries(voiceParams)) {
+          const prevValue = note.voiceParams[key];
+          if (value === prevValue) continue;
+          note.voiceParams[key] = value;
+          if (key in this.voiceParamsHandlers) {
+            this.voiceParamsHandlers[key](channel, note, prevValue);
+          } else if (filterEnvelopeKeySet.has(key)) {
+            if (appliedFilterEnvelope) continue;
+            appliedFilterEnvelope = true;
+            const noteVoiceParams = note.voiceParams;
+            for (let i = 0; i < filterEnvelopeKeys.length; i++) {
+              const key = filterEnvelopeKeys[i];
+              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
+            }
+            this.setFilterEnvelope(channel, note);
+            this.setPitch(channel, note);
+          } else if (volumeEnvelopeKeySet.has(key)) {
+            if (appliedVolumeEnvelope) continue;
+            appliedVolumeEnvelope = true;
+            const noteVoiceParams = note.voiceParams;
+            for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
+              const key = volumeEnvelopeKeys[i];
+              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
+            }
+            this.setVolumeEnvelope(channel, note);
+          }
+        }
+      }
+    });
   }
 
   createControlChangeHandlers() {
