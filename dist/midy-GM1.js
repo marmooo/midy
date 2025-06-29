@@ -627,7 +627,7 @@ var require_midi_file = __commonJS({
 // src/midy-GM1.js
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/Stream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Stream.js
 var Stream = class {
   constructor(data, offset) {
     Object.defineProperty(this, "data", {
@@ -696,7 +696,7 @@ var Stream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
 function parseChunk(input, offset, bigEndian) {
   const stream = new Stream(input, offset);
   const type = stream.readString(4);
@@ -740,7 +740,7 @@ var Chunk = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -808,7 +808,82 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
+var ModulatorSource = class _ModulatorSource {
+  constructor(type, polarity, direction, cc, index) {
+    Object.defineProperty(this, "type", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: type
+    });
+    Object.defineProperty(this, "polarity", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: polarity
+    });
+    Object.defineProperty(this, "direction", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: direction
+    });
+    Object.defineProperty(this, "cc", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: cc
+    });
+    Object.defineProperty(this, "index", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: index
+    });
+  }
+  get controllerType() {
+    return this.cc << 7 | this.index;
+  }
+  static parse(sourceOper) {
+    const type = sourceOper >> 10 & 63;
+    const index = sourceOper & 127;
+    const cc = sourceOper >> 7 & 1;
+    const direction = sourceOper >> 8 & 1;
+    const polarity = sourceOper >> 9 & 1;
+    return new _ModulatorSource(type, polarity, direction, cc, index);
+  }
+  map(normalizedValue) {
+    let v = normalizedValue;
+    if (this.polarity === 1) {
+      v = (v - 0.5) * 2;
+      if (this.direction === 1) {
+        v *= -1;
+      }
+    } else if (this.direction === 1) {
+      v = 1 - v;
+    }
+    switch (this.type) {
+      case 0:
+        break;
+      case 1:
+        v = Math.sign(v) * Math.log(Math.abs(v));
+        break;
+      case 2:
+        v = Math.sign(v) * Math.exp(-Math.abs(v));
+        break;
+      case 3:
+        v = v >= 0.5 ? 1 : 0;
+        break;
+      default:
+        console.warn(`unexpected type: ${this.type}`);
+        break;
+    }
+    return v;
+  }
+};
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1033,8 +1108,8 @@ var RangeValue = class _RangeValue {
     this.lo = lo;
     this.hi = hi;
   }
-  in(value) {
-    return this.lo <= value && value <= this.hi;
+  in(value2) {
+    return this.lo <= value2 && value2 <= this.hi;
   }
   static parse(stream) {
     const lo = stream.readByte();
@@ -1043,7 +1118,7 @@ var RangeValue = class _RangeValue {
   }
 };
 var ModulatorList = class _ModulatorList {
-  constructor(sourceOper, destinationOper, value, amountSourceOper, transOper) {
+  constructor(sourceOper, destinationOper, value2, amountSourceOper, transOper) {
     Object.defineProperty(this, "sourceOper", {
       enumerable: true,
       configurable: true,
@@ -1060,7 +1135,7 @@ var ModulatorList = class _ModulatorList {
       enumerable: true,
       configurable: true,
       writable: true,
-      value
+      value: value2
     });
     Object.defineProperty(this, "amountSourceOper", {
       enumerable: true,
@@ -1075,17 +1150,30 @@ var ModulatorList = class _ModulatorList {
       value: transOper
     });
   }
+  transform(inputValue) {
+    const newValue = this.value * inputValue;
+    switch (this.transOper) {
+      case 0:
+        return newValue;
+      case 2:
+        return Math.abs(newValue);
+      default:
+        return newValue;
+    }
+  }
   static parse(stream) {
-    const sourceOper = stream.readWORD();
+    const source = stream.readWORD();
     const destinationOper = stream.readWORD();
-    const value = stream.readInt16();
-    const amountSourceOper = stream.readWORD();
+    const value2 = stream.readInt16();
+    const amountSource = stream.readWORD();
     const transOper = stream.readWORD();
-    return new _ModulatorList(sourceOper, destinationOper, value, amountSourceOper, transOper);
+    const sourceOper = ModulatorSource.parse(source);
+    const amountSourceOper = ModulatorSource.parse(amountSource);
+    return new _ModulatorList(sourceOper, destinationOper, value2, amountSourceOper, transOper);
   }
 };
 var GeneratorList = class _GeneratorList {
-  constructor(code, value) {
+  constructor(code, value2) {
     Object.defineProperty(this, "code", {
       enumerable: true,
       configurable: true,
@@ -1096,7 +1184,7 @@ var GeneratorList = class _GeneratorList {
       enumerable: true,
       configurable: true,
       writable: true,
-      value
+      value: value2
     });
   }
   get type() {
@@ -1108,17 +1196,17 @@ var GeneratorList = class _GeneratorList {
   static parse(stream) {
     const code = stream.readWORD();
     const type = GeneratorKeys[code];
-    let value;
+    let value2;
     switch (type) {
       case "keyRange":
       case "velRange":
-        value = RangeValue.parse(stream);
+        value2 = RangeValue.parse(stream);
         break;
       default:
-        value = stream.readInt16();
+        value2 = stream.readInt16();
         break;
     }
-    return new _GeneratorList(code, value);
+    return new _GeneratorList(code, value2);
   }
 };
 var Instrument = class _Instrument {
@@ -1231,7 +1319,7 @@ var SampleHeader = class _SampleHeader {
   }
 };
 var BoundedValue = class {
-  constructor(min, value, max) {
+  constructor(min, defaultValue, max) {
     Object.defineProperty(this, "min", {
       enumerable: true,
       configurable: true,
@@ -1244,22 +1332,22 @@ var BoundedValue = class {
       writable: true,
       value: void 0
     });
-    Object.defineProperty(this, "value", {
+    Object.defineProperty(this, "defaultValue", {
       enumerable: true,
       configurable: true,
       writable: true,
       value: void 0
     });
     this.min = min;
-    this.value = value;
+    this.defaultValue = defaultValue;
     this.max = max;
   }
-  clamp() {
-    return Math.max(this.min, Math.min(this.value, this.max));
+  clamp(value2) {
+    return Math.max(this.min, Math.min(value2, this.max));
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/Parser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Parser.js
 function parse(input, option = {}) {
   const chunkList = parseRiff(input, 0, input.length, option);
   if (chunkList.length !== 1) {
@@ -1371,11 +1459,15 @@ function loadSample(sampleHeader, samplingDataOffsetMSB, _samplingDataOffsetLSB,
   return result;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
 for (let i = 0; i < GeneratorKeys.length; i++) {
   generatorKeyToIndex.set(GeneratorKeys[i], i);
 }
+var IndexGeneratorKeys = [
+  "instrument",
+  "sampleID"
+];
 var RangeGeneratorKeys = [
   "keyRange",
   "velRange"
@@ -1408,6 +1500,20 @@ for (let i = 0; i < presetExcludedKeys.length; i++) {
   if (index !== void 0)
     presetExcludedIndices.add(index);
 }
+function convertToInstrumentGeneratorParams(input) {
+  const output = {};
+  const keys = Object.keys(input);
+  for (const key of keys) {
+    const value2 = input[key];
+    if (isRangeGenerator(key)) {
+      output[key] = value2;
+    } else {
+      const boundedValue = value2;
+      output[key] = boundedValue.clamp(boundedValue.defaultValue);
+    }
+  }
+  return output;
+}
 var fixedGenerators = [
   ["keynum", "keyRange"],
   ["velocity", "velRange"]
@@ -1415,6 +1521,28 @@ var fixedGenerators = [
 var RangeGeneratorKeysSet = new Set(RangeGeneratorKeys);
 function isRangeGenerator(key) {
   return RangeGeneratorKeysSet.has(key);
+}
+var nonValueGeneratorKeysSet = /* @__PURE__ */ new Set([
+  ...IndexGeneratorKeys,
+  ...RangeGeneratorKeys,
+  ...SubstitutionGeneratorKeys,
+  ...SampleGeneratorKeys
+]);
+function extractValueGeneratorKeys() {
+  const result = [];
+  const length = GeneratorKeys.length;
+  for (let i = 0; i < length; i++) {
+    const key = GeneratorKeys[i];
+    if (key !== void 0 && !nonValueGeneratorKeysSet.has(key)) {
+      result.push(key);
+    }
+  }
+  return result;
+}
+var ValueGeneratorKeys = extractValueGeneratorKeys();
+var ValueGeneratorKeysSet = new Set(ValueGeneratorKeys);
+function isValueGenerator(key) {
+  return ValueGeneratorKeysSet.has(key);
 }
 function createPresetGeneratorObject(generators) {
   const result = {};
@@ -1429,8 +1557,7 @@ function createPresetGeneratorObject(generators) {
       result[type] = gen.value;
     } else {
       const key = type;
-      const defaultValue = defaultInstrumentZone[key];
-      result[key] = new BoundedValue(defaultValue.min, gen.value, defaultValue.max);
+      result[key] = gen.value;
     }
   }
   return result;
@@ -1446,22 +1573,21 @@ function createInstrumentGeneratorObject(generators) {
       result[type] = gen.value;
     } else {
       const key = type;
-      const defaultValue = defaultInstrumentZone[key];
-      result[key] = new BoundedValue(defaultValue.min, gen.value, defaultValue.max);
+      result[key] = gen.value;
     }
   }
   for (let i = 0; i < fixedGenerators.length; i++) {
     const [src, dst] = fixedGenerators[i];
     const v = result[src];
-    if (v instanceof BoundedValue && 0 <= v.value) {
-      result[dst] = new RangeValue(v.value, v.value);
-    }
+    if (v === void 0)
+      continue;
+    result[dst] = new RangeValue(v, v);
   }
   return result;
 }
 var int16min = -32768;
 var int16max = 32767;
-var defaultInstrumentZone = {
+var DefaultInstrumentZone = {
   startAddrsOffset: new BoundedValue(0, 0, int16max),
   endAddrsOffset: new BoundedValue(int16min, 0, 0),
   startloopAddrsOffset: new BoundedValue(int16min, 0, int16max),
@@ -1516,18 +1642,401 @@ var defaultInstrumentZone = {
   overridingRootKey: new BoundedValue(-1, -1, 127)
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.0.7/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/Voice.js
+function timecentToSecond(value2) {
+  return Math.pow(2, value2 / 1200);
+}
+var Voice = class {
+  constructor(key, generators, modulators, sample, sampleHeader) {
+    Object.defineProperty(this, "key", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: key
+    });
+    Object.defineProperty(this, "generators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: generators
+    });
+    Object.defineProperty(this, "modulators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: modulators
+    });
+    Object.defineProperty(this, "sample", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: sample
+    });
+    Object.defineProperty(this, "sampleHeader", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: sampleHeader
+    });
+    Object.defineProperty(this, "controllerToDestinations", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: /* @__PURE__ */ new Map()
+    });
+    Object.defineProperty(this, "destinationToModulators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: /* @__PURE__ */ new Map()
+    });
+    Object.defineProperty(this, "voiceHandlers", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: {
+        // startAddrsOffset
+        // endAddrsOffset
+        // startloopAddrsOffset
+        // endloopAddrsOffset
+        modLfoToPitch: (params, generators2) => {
+          params.modLfoToPitch = this.clamp("modLfoToPitch", generators2);
+        },
+        vibLfoToPitch: (params, generators2) => {
+          params.vibLfoToPitch = this.clamp("vibLfoToPitch", generators2);
+        },
+        modEnvToPitch: (params, generators2) => {
+          params.modEnvToPitch = this.clamp("modEnvToPitch", generators2);
+        },
+        initialFilterFc: (params, generators2) => {
+          params.initialFilterFc = this.clamp("initialFilterFc", generators2);
+        },
+        initialFilterQ: (params, generators2) => {
+          params.initialFilterQ = this.clamp("initialFilterQ", generators2);
+        },
+        modLfoToFilterFc: (params, generators2) => {
+          params.modLfoToFilterFc = this.clamp("modLfoToFilterFc", generators2);
+        },
+        modEnvToFilterFc: (params, generators2) => {
+          params.modEnvToFilterFc = this.clamp("modEnvToFilterFc", generators2);
+        },
+        // endAddrsCoarseOffset
+        modLfoToVolume: (params, generators2) => {
+          params.modLfoToVolume = this.clamp("modLfoToVolume", generators2);
+        },
+        chorusEffectsSend: (params, generators2) => {
+          params.chorusEffectsSend = this.clamp("chorusEffectsSend", generators2) / 1e3;
+        },
+        reverbEffectsSend: (params, generators2) => {
+          params.reverbEffectsSend = this.clamp("reverbEffectsSend", generators2) / 1e3;
+        },
+        pan: (params, generators2) => {
+          params.pan = this.clamp("pan", generators2) / 1e3;
+        },
+        delayModLFO: (params, generators2) => {
+          params.delayModLFO = timecentToSecond(this.clamp("delayModLFO", generators2));
+        },
+        freqModLFO: (params, generators2) => {
+          params.freqModLFO = this.clamp("freqModLFO", generators2);
+        },
+        delayVibLFO: (params, generators2) => {
+          params.delayVibLFO = timecentToSecond(this.clamp("delayVibLFO", generators2));
+        },
+        freqVibLFO: (params, generators2) => {
+          params.freqVibLFO = this.clamp("freqVibLFO", generators2);
+        },
+        delayModEnv: (params, generators2) => {
+          params.modDelay = timecentToSecond(this.clamp("delayModEnv", generators2));
+        },
+        attackModEnv: (params, generators2) => {
+          params.modAttack = timecentToSecond(this.clamp("attackModEnv", generators2));
+        },
+        holdModEnv: (params, generators2) => {
+          const holdModEnv = this.clamp("holdModEnv", generators2);
+          const keynumToModEnvHold = this.clamp("keynumToModEnvHold", generators2);
+          params.modHold = this.getModHold(holdModEnv, keynumToModEnvHold);
+        },
+        decayModEnv: (params, generators2) => {
+          const decayModEnv = this.clamp("decayModEnv", generators2);
+          const keynumToModEnvDecay = this.clamp("keynumToModEnvDecay", generators2);
+          params.modDecay = this.getModDecay(decayModEnv, keynumToModEnvDecay);
+        },
+        sustainModEnv: (params, generators2) => {
+          params.modSustain = this.clamp("sustainModEnv", generators2) / 1e3;
+        },
+        releaseModEnv: (params, generators2) => {
+          params.modRelease = timecentToSecond(this.clamp("releaseModEnv", generators2));
+        },
+        keynumToModEnvHold: (params, generators2) => {
+          const holdModEnv = this.clamp("holdModEnv", generators2);
+          const keynumToModEnvHold = this.clamp("keynumToModEnvHold", generators2);
+          params.modHold = this.getModHold(holdModEnv, keynumToModEnvHold);
+        },
+        keynumToModEnvDecay: (params, generators2) => {
+          const decayModEnv = this.clamp("decayModEnv", generators2);
+          const keynumToModEnvDecay = this.clamp("keynumToModEnvDecay", generators2);
+          params.modDecay = this.getModDecay(decayModEnv, keynumToModEnvDecay);
+        },
+        delayVolEnv: (params, generators2) => {
+          params.volDelay = timecentToSecond(this.clamp("delayVolEnv", generators2));
+        },
+        attackVolEnv: (params, generators2) => {
+          params.volAttack = timecentToSecond(this.clamp("attackVolEnv", generators2));
+        },
+        holdVolEnv: (params, generators2) => {
+          const holdVolEnv = this.clamp("holdVolEnv", generators2);
+          const keynumToVolEnvHold = this.clamp("keynumToVolEnvHold", generators2);
+          params.volHold = this.getVolHold(holdVolEnv, keynumToVolEnvHold);
+        },
+        decayVolEnv: (params, generators2) => {
+          const decayVolEnv = this.clamp("decayVolEnv", generators2);
+          const keynumToVolEnvDecay = this.clamp("keynumToVolEnvDecay", generators2);
+          params.volDecay = this.getVolDecay(decayVolEnv, keynumToVolEnvDecay);
+        },
+        sustainVolEnv: (params, generators2) => {
+          params.volSustain = this.clamp("sustainVolEnv", generators2) / 1e3;
+        },
+        releaseVolEnv: (params, generators2) => {
+          params.volRelease = timecentToSecond(this.clamp("releaseVolEnv", generators2));
+        },
+        keynumToVolEnvHold: (params, generators2) => {
+          const holdVolEnv = this.clamp("holdVolEnv", generators2);
+          const keynumToVolEnvHold = this.clamp("keynumToVolEnvHold", generators2);
+          params.modHold = this.getVolHold(holdVolEnv, keynumToVolEnvHold);
+        },
+        keynumToVolEnvDecay: (params, generators2) => {
+          const decayVolEnv = this.clamp("decayVolEnv", generators2);
+          const keynumToVolEnvDecay = this.clamp("keynumToVolEnvDecay", generators2);
+          params.modDecay = this.getVolDecay(decayVolEnv, keynumToVolEnvDecay);
+        },
+        // instrument
+        // keyRange
+        // velRange
+        // startloopAddrsCoarseOffset
+        // keynum
+        // velocity
+        initialAttenuation: (params, generators2) => {
+          params.initialAttenuation = this.clamp("initialAttenuation", generators2);
+        },
+        // endloopAddrsCoarseOffset
+        coarseTune: (params, generators2) => {
+          params.playbackRate = this.getPlaybackRate(generators2);
+        },
+        fineTune: (params, generators2) => {
+          params.playbackRate = this.getPlaybackRate(generators2);
+        },
+        // sampleID
+        scaleTuning: (params, generators2) => {
+          params.playbackRate = this.getPlaybackRate(generators2);
+        }
+        // exclusiveClass
+        // overridingRootKey
+      }
+    });
+    this.setControllerToDestinations();
+    this.setDestinationToModulators();
+  }
+  setControllerToDestinations() {
+    for (let i = 0; i < this.modulators.length; i++) {
+      const modulator = this.modulators[i];
+      const controllerType = modulator.sourceOper.controllerType;
+      const destinationOper = modulator.destinationOper;
+      const list = this.controllerToDestinations.get(controllerType);
+      if (list) {
+        list.add(modulator.destinationOper);
+      } else {
+        this.controllerToDestinations.set(controllerType, /* @__PURE__ */ new Set([destinationOper]));
+      }
+    }
+  }
+  setDestinationToModulators() {
+    for (let i = 0; i < this.modulators.length; i++) {
+      const modulator = this.modulators[i];
+      const generatorKey = modulator.destinationOper;
+      const list = this.destinationToModulators.get(generatorKey);
+      if (list) {
+        list.push(modulator);
+      } else {
+        this.destinationToModulators.set(generatorKey, [modulator]);
+      }
+    }
+  }
+  getModHold(holdModEnv, keynumToModEnvHold) {
+    return timecentToSecond(holdModEnv + (this.key - 60) * keynumToModEnvHold);
+  }
+  getModDecay(decayModEnv, keynumToModEnvDecay) {
+    return timecentToSecond(decayModEnv + (this.key - 60) * keynumToModEnvDecay);
+  }
+  getVolHold(holdVolEnv, keynumToVolEnvHold) {
+    return timecentToSecond(holdVolEnv + (this.key - 60) * keynumToVolEnvHold);
+  }
+  getVolDecay(decayVolEnv, keynumToVolEnvDecay) {
+    return timecentToSecond(decayVolEnv + (this.key - 60) * keynumToVolEnvDecay);
+  }
+  getPlaybackRate(generators) {
+    const coarseTune = this.clamp("coarseTune", generators);
+    const fineTune = this.clamp("fineTune", generators) / 100;
+    const overridingRootKey = this.clamp("overridingRootKey", generators);
+    const scaleTuning = this.clamp("scaleTuning", generators) / 100;
+    const tune = coarseTune + fineTune;
+    const rootKey = overridingRootKey === -1 ? this.sampleHeader.originalPitch : overridingRootKey;
+    const basePitch = tune + this.sampleHeader.pitchCorrection / 100 - rootKey;
+    return Math.pow(Math.pow(2, 1 / 12), (this.key + basePitch) * scaleTuning);
+  }
+  transformParams(controllerType, controllerState) {
+    const params = {};
+    const destinations = this.controllerToDestinations.get(controllerType);
+    if (!destinations)
+      return params;
+    for (const destinationOper of destinations) {
+      const generatorKey = GeneratorKeys[destinationOper];
+      if (!generatorKey)
+        continue;
+      if (!isValueGenerator(generatorKey))
+        continue;
+      const modulators = this.destinationToModulators.get(destinationOper);
+      if (!modulators)
+        continue;
+      params[generatorKey] = this.generators[generatorKey];
+      for (const modulator of modulators) {
+        const source = modulator.sourceOper;
+        const primary = source.map(controllerState[source.controllerType]);
+        let secondary = 1;
+        const amountSource = modulator.amountSourceOper;
+        if (!(amountSource.cc === 0 && amountSource.index === 0)) {
+          const amount = controllerState[amountSource.controllerType];
+          secondary = amountSource.map(amount);
+        }
+        const summingValue = modulator.transform(primary * secondary);
+        if (Number.isNaN(summingValue))
+          continue;
+        params[generatorKey] += summingValue;
+      }
+    }
+    return params;
+  }
+  transformAllParams(controllerState) {
+    const params = structuredClone(this.generators);
+    for (const modulator of this.modulators) {
+      const controllerType = modulator.sourceOper.controllerType;
+      const controllerValue = controllerState[controllerType];
+      if (!controllerValue)
+        continue;
+      const generatorKey = GeneratorKeys[modulator.destinationOper];
+      if (!generatorKey)
+        continue;
+      if (!isValueGenerator(generatorKey))
+        continue;
+      const source = modulator.sourceOper;
+      const primary = source.map(controllerValue);
+      let secondary = 1;
+      const amountSource = modulator.amountSourceOper;
+      if (!(amountSource.cc === 0 && amountSource.index === 0)) {
+        const amount = controllerState[amountSource.controllerType];
+        secondary = amountSource.map(amount);
+      }
+      const summingValue = modulator.transform(primary * secondary);
+      if (Number.isNaN(summingValue))
+        continue;
+      params[generatorKey] += summingValue;
+    }
+    return params;
+  }
+  clamp(key, generators) {
+    return DefaultInstrumentZone[key].clamp(generators[key]);
+  }
+  getParams(controllerType, controllerState) {
+    const params = {};
+    const generators = structuredClone(this.generators);
+    const updatedParams = this.transformParams(controllerType, controllerState);
+    const updatedKeys = Object.keys(updatedParams);
+    for (const updatedKey of updatedKeys) {
+      generators[updatedKey] = updatedParams[updatedKey];
+    }
+    for (const updatedKey of updatedKeys) {
+      this.voiceHandlers[updatedKey](params, generators);
+    }
+    return params;
+  }
+  getAllParams(controllerValues) {
+    const params = {
+      start: this.generators.startAddrsCoarseOffset * 32768 + this.generators.startAddrsOffset,
+      end: this.generators.endAddrsCoarseOffset * 32768 + this.generators.endAddrsOffset,
+      loopStart: this.sampleHeader.loopStart + this.generators.startloopAddrsCoarseOffset * 32768 + this.generators.startloopAddrsOffset,
+      loopEnd: this.sampleHeader.loopEnd + this.generators.endloopAddrsCoarseOffset * 32768 + this.generators.endloopAddrsOffset,
+      sample: this.sample,
+      sampleRate: this.sampleHeader.sampleRate,
+      sampleName: this.sampleHeader.sampleName,
+      sampleModes: this.generators.sampleModes,
+      exclusiveClass: this.clamp("exclusiveClass", this.generators)
+    };
+    const generators = this.transformAllParams(controllerValues);
+    for (let i = 0; i < ValueGeneratorKeys.length; i++) {
+      const generatorKey = ValueGeneratorKeys[i];
+      this.voiceHandlers[generatorKey](params, generators);
+    }
+    return params;
+  }
+};
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
+var DefaultModulators = [
+  new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(13), 6, 50, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(129), 6, 50, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(1415), 48, 960, ModulatorSource.parse(0), 0),
+  // specification is wrong
+  new ModulatorList(ModulatorSource.parse(650), 48, 1, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(1419), 48, 960, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(219), 16, 0.2, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(221), 15, 0.2, ModulatorSource.parse(0), 0),
+  new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
+];
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.1/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+var InstrumentZone = class {
+  constructor(generators, modulators) {
+    Object.defineProperty(this, "generators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: generators
+    });
+    Object.defineProperty(this, "modulators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: modulators
+    });
+  }
+};
+var PresetZone = class {
+  constructor(generators, modulators) {
+    Object.defineProperty(this, "generators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: generators
+    });
+    Object.defineProperty(this, "modulators", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: modulators
+    });
+  }
+};
 var SoundFont = class {
   constructor(parsed) {
     Object.defineProperty(this, "parsed", {
       enumerable: true,
       configurable: true,
       writable: true,
-      value: void 0
+      value: parsed
     });
-    this.parsed = parsed;
   }
-  getGenerators(generators, zone, from, to) {
+  getGeneratorParams(generators, zone, from, to) {
     const result = new Array(to - from);
     for (let i = from; i < to; i++) {
       const segmentFrom = zone[i].generatorIndex;
@@ -1540,179 +2049,124 @@ var SoundFont = class {
     const presetHeader = this.parsed.presetHeaders[presetHeaderIndex];
     const nextPresetHeader = this.parsed.presetHeaders[presetHeaderIndex + 1];
     const nextPresetBagIndex = nextPresetHeader ? nextPresetHeader.presetBagIndex : this.parsed.presetZone.length - 1;
-    return this.getGenerators(this.parsed.presetGenerators, this.parsed.presetZone, presetHeader.presetBagIndex, nextPresetBagIndex);
+    return this.getGeneratorParams(this.parsed.presetGenerators, this.parsed.presetZone, presetHeader.presetBagIndex, nextPresetBagIndex);
   }
   getInstrumentGenerators(instrumentID) {
     const instrument = this.parsed.instruments[instrumentID];
     const nextInstrument = this.parsed.instruments[instrumentID + 1];
     const nextInstrumentBagIndex = nextInstrument ? nextInstrument.instrumentBagIndex : this.parsed.instrumentZone.length - 1;
-    return this.getGenerators(this.parsed.instrumentGenerators, this.parsed.instrumentZone, instrument.instrumentBagIndex, nextInstrumentBagIndex);
+    return this.getGeneratorParams(this.parsed.instrumentGenerators, this.parsed.instrumentZone, instrument.instrumentBagIndex, nextInstrumentBagIndex);
+  }
+  getModulators(modulators, zone, from, to) {
+    const result = new Array(to - from);
+    for (let i = from; i < to; i++) {
+      const segmentFrom = zone[i].modulatorIndex;
+      const segmentTo = zone[i + 1].modulatorIndex;
+      result[i - from] = modulators.slice(segmentFrom, segmentTo);
+    }
+    return result;
+  }
+  getPresetModulators(presetHeaderIndex) {
+    const presetHeader = this.parsed.presetHeaders[presetHeaderIndex];
+    const nextPresetHeader = this.parsed.presetHeaders[presetHeaderIndex + 1];
+    const nextPresetBagIndex = nextPresetHeader ? nextPresetHeader.presetBagIndex : this.parsed.presetZone.length - 1;
+    return this.getModulators(this.parsed.presetModulators, this.parsed.presetZone, presetHeader.presetBagIndex, nextPresetBagIndex);
+  }
+  getInstrumentModulators(instrumentID) {
+    const instrument = this.parsed.instruments[instrumentID];
+    const nextInstrument = this.parsed.instruments[instrumentID + 1];
+    const nextInstrumentBagIndex = nextInstrument ? nextInstrument.instrumentBagIndex : this.parsed.instrumentZone.length - 1;
+    return this.getModulators(this.parsed.instrumentModulators, this.parsed.instrumentZone, instrument.instrumentBagIndex, nextInstrumentBagIndex);
   }
   findInstrumentZone(instrumentID, key, velocity) {
     const instrumentGenerators = this.getInstrumentGenerators(instrumentID);
-    let globalZone;
-    for (let j = 0; j < instrumentGenerators.length; j++) {
-      const zone = createInstrumentGeneratorObject(instrumentGenerators[j]);
-      if (zone.sampleID === void 0) {
-        globalZone = zone;
+    const instrumentModulators = this.getInstrumentModulators(instrumentID);
+    let globalGenerators;
+    let globalModulators = [];
+    for (let i = 0; i < instrumentGenerators.length; i++) {
+      const generators = createInstrumentGeneratorObject(instrumentGenerators[i]);
+      if (generators.sampleID === void 0) {
+        globalGenerators = generators;
+        globalModulators = instrumentModulators[i];
         continue;
       }
-      if (zone.keyRange && !zone.keyRange.in(key))
+      if (generators.keyRange && !generators.keyRange.in(key))
         continue;
-      if (zone.velRange && !zone.velRange.in(velocity))
+      if (generators.velRange && !generators.velRange.in(velocity))
         continue;
-      if (globalZone) {
-        return { ...globalZone, ...zone };
+      if (globalGenerators) {
+        const gen = { ...globalGenerators, ...generators };
+        const mod = [...globalModulators, ...instrumentModulators[i]];
+        return new InstrumentZone(gen, mod);
       } else {
-        return zone;
+        return new InstrumentZone(generators, instrumentModulators[i]);
       }
     }
     return;
   }
   findInstrument(presetHeaderIndex, key, velocity) {
     const presetGenerators = this.getPresetGenerators(presetHeaderIndex);
-    let globalZone;
+    const presetModulators = this.getPresetModulators(presetHeaderIndex);
+    let globalGenerators;
+    let globalModulators = [];
     for (let i = 0; i < presetGenerators.length; i++) {
-      const zone = createPresetGeneratorObject(presetGenerators[i]);
-      if (zone.instrument === void 0) {
-        globalZone = zone;
+      const generators = createPresetGeneratorObject(presetGenerators[i]);
+      if (generators.instrument === void 0) {
+        globalGenerators = generators;
+        globalModulators = presetModulators[i];
         continue;
       }
-      if (zone.keyRange && !zone.keyRange.in(key))
+      if (generators.keyRange && !generators.keyRange.in(key))
         continue;
-      if (zone.velRange && !zone.velRange.in(velocity))
+      if (generators.velRange && !generators.velRange.in(velocity))
         continue;
-      const instrumentZone = this.findInstrumentZone(zone.instrument.value, key, velocity);
+      const instrumentZone = this.findInstrumentZone(generators.instrument, key, velocity);
       if (instrumentZone) {
-        if (globalZone) {
-          return this.getInstrument({ ...globalZone, ...zone }, instrumentZone);
+        if (globalGenerators) {
+          const gen = { ...globalGenerators, ...generators };
+          const mod = [...globalModulators, ...presetModulators[i]];
+          const presetZone = new PresetZone(gen, mod);
+          return this.createVoice(key, presetZone, instrumentZone);
         } else {
-          return this.getInstrument(zone, instrumentZone);
+          const presetZone = new PresetZone(generators, presetModulators[i]);
+          return this.createVoice(key, presetZone, instrumentZone);
         }
       }
     }
     return null;
   }
-  getInstrument(presetZone, instrumentZone) {
-    const instrument = {
-      ...defaultInstrumentZone,
-      ...instrumentZone
-    };
-    const keys = Object.keys(presetZone);
+  createVoice(key, presetZone, instrumentZone) {
+    const instrumentGenerators = convertToInstrumentGeneratorParams(DefaultInstrumentZone);
+    Object.assign(instrumentGenerators, instrumentZone.generators);
+    const keys = Object.keys(presetZone.generators);
     for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (isRangeGenerator(key))
+      const key2 = keys[i];
+      if (isRangeGenerator(key2))
         continue;
-      const instrumentValue = instrument[key];
-      const presetValue = presetZone[key];
-      instrument[key] = new BoundedValue(instrumentValue.min, instrumentValue.value + presetValue.value, instrumentValue.max);
+      instrumentGenerators[key2] += presetZone.generators[key2];
     }
-    return instrument;
+    const modulators = [
+      ...DefaultModulators,
+      ...presetZone.modulators,
+      ...instrumentZone.modulators
+    ];
+    const sampleID = instrumentGenerators.sampleID;
+    const sample = this.parsed.samples[sampleID];
+    const sampleHeader = this.parsed.sampleHeaders[sampleID];
+    return new Voice(key, instrumentGenerators, modulators, sample, sampleHeader);
   }
-  getInstrumentKey(bankNumber, instrumentNumber, key, velocity) {
+  getVoice(bankNumber, instrumentNumber, key, velocity) {
     const presetHeaderIndex = this.parsed.presetHeaders.findIndex((p) => p.preset === instrumentNumber && p.bank === bankNumber);
     if (presetHeaderIndex < 0) {
       console.warn("preset not found: bank=%s instrument=%s", bankNumber, instrumentNumber);
       return null;
     }
-    const gen = this.findInstrument(presetHeaderIndex, key, velocity);
-    if (!gen) {
+    const instrument = this.findInstrument(presetHeaderIndex, key, velocity);
+    if (!instrument) {
       console.warn("instrument not found: bank=%s instrument=%s", bankNumber, instrumentNumber);
       return null;
     }
-    const clamped = {};
-    const keys = Object.keys(gen);
-    for (let i = 0; i < keys.length; i++) {
-      const key2 = keys[i];
-      if (isRangeGenerator(key2)) {
-        clamped[key2] = gen[key2];
-      } else {
-        clamped[key2] = gen[key2].clamp();
-      }
-    }
-    const modHold = timecentToSecond(clamped.holdModEnv + (key - 60) * clamped.keynumToModEnvHold);
-    const modDecay = timecentToSecond(clamped.decayModEnv + (key - 60) * clamped.keynumToModEnvDecay);
-    const volHold = timecentToSecond(clamped.holdVolEnv + (key - 60) * clamped.keynumToVolEnvHold);
-    const volDecay = timecentToSecond(clamped.decayVolEnv + (key - 60) * clamped.keynumToVolEnvDecay);
-    const sample = this.parsed.samples[clamped.sampleID];
-    const sampleHeader = this.parsed.sampleHeaders[clamped.sampleID];
-    const tune = clamped.coarseTune + clamped.fineTune / 100;
-    const rootKey = clamped.overridingRootKey === -1 ? sampleHeader.originalPitch : clamped.overridingRootKey;
-    const basePitch = tune + sampleHeader.pitchCorrection / 100 - rootKey;
-    const scaleTuning = clamped.scaleTuning / 100;
-    return {
-      // startAddrsOffset: clamped.startAddrsOffset,
-      // endAddrsOffset: clamped.endAddrsOffset,
-      start: clamped.startAddrsCoarseOffset * 32768 + clamped.startAddrsOffset,
-      end: clamped.endAddrsCoarseOffset * 32768 + clamped.endAddrsOffset,
-      // startloopAddrsOffset: clamped.startloopAddrsOffset,
-      // endloopAddrsOffset: clamped.endloopAddrsOffset,
-      loopStart: sampleHeader.loopStart + clamped.startloopAddrsCoarseOffset * 32768 + clamped.startloopAddrsOffset,
-      loopEnd: sampleHeader.loopEnd + clamped.endloopAddrsCoarseOffset * 32768 + clamped.endloopAddrsOffset,
-      modLfoToPitch: clamped.modLfoToPitch,
-      vibLfoToPitch: clamped.vibLfoToPitch,
-      modEnvToPitch: clamped.modEnvToPitch,
-      initialFilterFc: clamped.initialFilterFc,
-      initialFilterQ: clamped.initialFilterQ,
-      modLfoToFilterFc: clamped.modLfoToFilterFc,
-      modEnvToFilterFc: clamped.modEnvToFilterFc,
-      // endAddrsCoarseOffset: clamped.endAddrsCoarseOffset,
-      modLfoToVolume: clamped.modLfoToVolume,
-      chorusEffectsSend: clamped.chorusEffectsSend / 1e3,
-      reverbEffectsSend: clamped.reverbEffectsSend / 1e3,
-      pan: clamped.pan,
-      delayModLFO: timecentToSecond(clamped.delayModLFO),
-      freqModLFO: clamped.freqModLFO,
-      delayVibLFO: timecentToSecond(clamped.delayVibLFO),
-      freqVibLFO: clamped.freqVibLFO,
-      // delayModEnv: clamped.delayModEnv,
-      // attackModEnv: clamped.attackModEnv,
-      // holdModEnv: clamped.holdModEnv,
-      // decayModEnv: clamped.decayModEnv,
-      // sustainModEnv: clamped.sustainModEnv,
-      // releaseModEnv: clamped.releaseModEnv,
-      modDelay: timecentToSecond(clamped.delayModEnv),
-      modAttack: timecentToSecond(clamped.attackModEnv),
-      modHold,
-      modDecay,
-      modSustain: clamped.sustainModEnv / 1e3,
-      modRelease: timecentToSecond(clamped.releaseModEnv),
-      // keynumToModEnvHold: clamped.keynumToModEnvHold,
-      // keynumToModEnvDecay: clamped.keynumToModEnvDecay,
-      // delayVolEnv: clamped.delayVolEnv,
-      // attackVolEnv: clamped.attackVolEnv,
-      // holdVolEnv: clamped.holdVolEnv,
-      // decayVolEnv: clamped.decayVolEnv,
-      // sustainVolEnv: clamped.sustainVolEnv,
-      // releaseVolEnv: clamped.releaseVolEnv,
-      volDelay: timecentToSecond(clamped.delayVolEnv),
-      volAttack: timecentToSecond(clamped.attackVolEnv),
-      volHold,
-      volDecay,
-      volSustain: clamped.sustainVolEnv / 1e3,
-      volRelease: timecentToSecond(clamped.releaseVolEnv),
-      // keynumToVolEnvHold: clamped.keynumToVolEnvHold,
-      // keynumToVolEnvDecay: clamped.keynumToVolEnvDecay,
-      // instrument: clamped.instrument,
-      // keyRange: clamped.keyRange,
-      // velRange: clamped.velRange,
-      // startloopAddrsCoarseOffset: clamped.startloopAddrsCoarseOffset,
-      // keynum: clamped.keynum,
-      // velocity: clamped.velocity,
-      initialAttenuation: clamped.initialAttenuation,
-      // endloopAddrsCoarseOffset: clamped.endloopAddrsCoarseOffset,
-      // coarseTune: clamped.coarseTune,
-      // fineTune: clamped.fineTune,
-      playbackRate: (key2) => Math.pow(Math.pow(2, 1 / 12), (key2 + basePitch) * scaleTuning),
-      // sampleID: clamped.sampleID,
-      sample,
-      sampleRate: sampleHeader.sampleRate,
-      sampleName: sampleHeader.sampleName,
-      sampleModes: clamped.sampleModes,
-      // scaleTuning,
-      exclusiveClass: clamped.exclusiveClass
-      // overridingRootKey: clamped.overridingRootKey,
-    };
+    return instrument;
   }
   // presetNames[bankNumber][presetNumber] = presetName
   getPresetNames() {
@@ -1728,9 +2182,6 @@ var SoundFont = class {
     return bank;
   }
 };
-function timecentToSecond(value) {
-  return Math.pow(2, value / 1200);
-}
 
 // src/midy-GM1.js
 var Note = class {
@@ -1742,13 +2193,73 @@ var Note = class {
   modulationDepth;
   vibratoLFO;
   vibratoDepth;
-  constructor(noteNumber, velocity, startTime, instrumentKey) {
+  constructor(noteNumber, velocity, startTime, voice, voiceParams2) {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
     this.startTime = startTime;
-    this.instrumentKey = instrumentKey;
+    this.voice = voice;
+    this.voiceParams = voiceParams2;
   }
 };
+var defaultControllerState = {
+  noteOnVelocity: { type: 2, defaultValue: 0 },
+  noteOnKeyNumber: { type: 3, defaultValue: 0 },
+  pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
+  pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
+  link: { type: 127, defaultValue: 0 },
+  // bankMSB: { type: 128 + 0, defaultValue: 121, },
+  modulationDepth: { type: 128 + 1, defaultValue: 0 },
+  // dataMSB: { type: 128 + 6, defaultValue: 0, },
+  volume: { type: 128 + 7, defaultValue: 100 / 127 },
+  pan: { type: 128 + 10, defaultValue: 0.5 },
+  expression: { type: 128 + 11, defaultValue: 1 },
+  // bankLSB: { type: 128 + 32, defaultValue: 0, },
+  // dataLSB: { type: 128 + 38, defaultValue: 0, },
+  sustainPedal: { type: 128 + 64, defaultValue: 0 }
+  // rpnLSB: { type: 128 + 100, defaultValue: 127 },
+  // rpnMSB: { type: 128 + 101, defaultValue: 127 },
+  // allSoundOff: { type: 128 + 120, defaultValue: 0 },
+  // resetAllControllers: { type: 128 + 121, defaultValue: 0 },
+  // allNotesOff: { type: 128 + 123, defaultValue: 0 },
+};
+var ControllerState = class {
+  array = new Float32Array(256);
+  constructor() {
+    const entries = Object.entries(defaultControllerState);
+    for (const [name, { type, defaultValue }] of entries) {
+      this.array[type] = defaultValue;
+      Object.defineProperty(this, name, {
+        get: () => this.array[type],
+        set: (value2) => this.array[type] = value2,
+        enumerable: true,
+        configurable: true
+      });
+    }
+  }
+};
+var filterEnvelopeKeys = [
+  "modEnvToPitch",
+  "initialFilterFc",
+  "modEnvToFilterFc",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain",
+  "modRelease",
+  "playbackRate"
+];
+var filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
+var volumeEnvelopeKeys = [
+  "volDelay",
+  "volAttack",
+  "volHold",
+  "volDecay",
+  "volSustain",
+  "volRelease",
+  "initialAttenuation"
+];
+var volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 var MidyGM1 = class {
   ticksPerBeat = 120;
   totalTime = 0;
@@ -1769,13 +2280,13 @@ var MidyGM1 = class {
   notePromises = [];
   exclusiveClassMap = /* @__PURE__ */ new Map();
   static channelSettings = {
-    volume: 100 / 127,
-    pan: 64,
+    currentBufferSource: null,
+    program: 0,
     bank: 0,
     dataMSB: 0,
     dataLSB: 0,
-    program: 0,
-    pitchBend: 0,
+    rpnMSB: 127,
+    rpnLSB: 127,
     fineTuning: 0,
     // cb
     coarseTuning: 0,
@@ -1783,17 +2294,10 @@ var MidyGM1 = class {
     modulationDepthRange: 50
     // cent
   };
-  static effectSettings = {
-    expression: 1,
-    modulationDepth: 0,
-    sustainPedal: false,
-    rpnMSB: 127,
-    rpnLSB: 127,
-    pitchBendRange: 2
-  };
   constructor(audioContext) {
     this.audioContext = audioContext;
     this.masterGain = new GainNode(audioContext);
+    this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterGain.connect(audioContext.destination);
@@ -1837,7 +2341,7 @@ var MidyGM1 = class {
   }
   setChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      this.constructor.channelSettings.pan
+      defaultControllerState.pan.defaultValue
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -1855,32 +2359,32 @@ var MidyGM1 = class {
     const channels = Array.from({ length: 16 }, () => {
       return {
         ...this.constructor.channelSettings,
-        ...this.constructor.effectSettings,
+        state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: /* @__PURE__ */ new Map()
       };
     });
     return channels;
   }
-  async createNoteBuffer(instrumentKey, isSF3) {
-    const sampleStart = instrumentKey.start;
-    const sampleEnd = instrumentKey.sample.length + instrumentKey.end;
+  async createNoteBuffer(voiceParams2, isSF3) {
+    const sampleStart = voiceParams2.start;
+    const sampleEnd = voiceParams2.sample.length + voiceParams2.end;
     if (isSF3) {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams2.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = await this.audioContext.decodeAudioData(buffer);
       return audioBuffer;
     } else {
-      const sample = instrumentKey.sample;
+      const sample = voiceParams2.sample;
       const start = sample.byteOffset + sampleStart;
       const end = sample.byteOffset + sampleEnd;
       const buffer = sample.buffer.slice(start, end);
       const audioBuffer = new AudioBuffer({
         numberOfChannels: 1,
         length: sample.length,
-        sampleRate: instrumentKey.sampleRate
+        sampleRate: voiceParams2.sampleRate
       });
       const channelData = audioBuffer.getChannelData(0);
       const int16Array = new Int16Array(buffer);
@@ -1890,14 +2394,14 @@ var MidyGM1 = class {
       return audioBuffer;
     }
   }
-  async createNoteBufferNode(instrumentKey, isSF3) {
+  async createNoteBufferNode(voiceParams2, isSF3) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(instrumentKey, isSF3);
+    const audioBuffer = await this.createNoteBuffer(voiceParams2, isSF3);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = instrumentKey.sampleModes % 2 !== 0;
+    bufferSource.loop = voiceParams2.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
-      bufferSource.loopStart = instrumentKey.loopStart / instrumentKey.sampleRate;
-      bufferSource.loopEnd = instrumentKey.loopEnd / instrumentKey.sampleRate;
+      bufferSource.loopStart = voiceParams2.loopStart / voiceParams2.sampleRate;
+      bufferSource.loopEnd = voiceParams2.loopEnd / voiceParams2.sampleRate;
     }
     return bufferSource;
   }
@@ -1940,7 +2444,7 @@ var MidyGM1 = class {
           this.handleProgramChange(event.channel, event.programNumber);
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value);
+          this.setPitchBend(event.channel, event.value + 8192);
           break;
         case "sysEx":
           this.handleSysEx(event.data);
@@ -2172,41 +2676,39 @@ var MidyGM1 = class {
   }
   calcSemitoneOffset(channel) {
     const tuning = channel.coarseTuning + channel.fineTuning;
-    return channel.pitchBend * channel.pitchBendRange + tuning;
-  }
-  calcPlaybackRate(instrumentKey, noteNumber, semitoneOffset) {
-    return instrumentKey.playbackRate(noteNumber) * Math.pow(2, semitoneOffset / 12);
+    const pitchWheel = channel.state.pitchWheel * 2 - 1;
+    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
+    const pitch = pitchWheel * pitchWheelSensitivity;
+    return tuning + pitch;
   }
   setVolumeEnvelope(note) {
-    const { instrumentKey, startTime } = note;
-    const attackVolume = this.cbToRatio(-instrumentKey.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - instrumentKey.volSustain);
-    const volDelay = startTime + instrumentKey.volDelay;
-    const volAttack = volDelay + instrumentKey.volAttack;
-    const volHold = volAttack + instrumentKey.volHold;
-    const volDecay = volHold + instrumentKey.volDecay;
-    note.volumeNode.gain.cancelScheduledValues(startTime).setValueAtTime(0, startTime).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).linearRampToValueAtTime(sustainVolume, volDecay);
+    const now = this.audioContext.currentTime;
+    const { voiceParams: voiceParams2, startTime } = note;
+    const attackVolume = this.cbToRatio(-voiceParams2.initialAttenuation);
+    const sustainVolume = attackVolume * (1 - voiceParams2.volSustain);
+    const volDelay = startTime + voiceParams2.volDelay;
+    const volAttack = volDelay + voiceParams2.volAttack;
+    const volHold = volAttack + voiceParams2.volHold;
+    const volDecay = volHold + voiceParams2.volDecay;
+    note.volumeNode.gain.cancelScheduledValues(now).setValueAtTime(0, startTime).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).linearRampToValueAtTime(sustainVolume, volDecay);
   }
-  setPitch(note, semitoneOffset) {
-    const { instrumentKey, noteNumber, startTime } = note;
-    const modEnvToPitch = instrumentKey.modEnvToPitch / 100;
-    note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-      instrumentKey,
-      noteNumber,
-      semitoneOffset
-    );
+  setPlaybackRate(note) {
+    const now = this.audioContext.currentTime;
+    note.bufferSource.playbackRate.cancelScheduledValues(now).setValueAtTime(note.voiceParams.playbackRate, now);
+  }
+  setPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const { startTime } = note;
+    const basePitch = this.calcSemitoneOffset(channel) * 100;
+    note.bufferSource.detune.cancelScheduledValues(now).setValueAtTime(basePitch, startTime);
+    const modEnvToPitch = note.voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
-    const basePitch = note.bufferSource.playbackRate.value;
-    const peekPitch = this.calcPlaybackRate(
-      instrumentKey,
-      noteNumber,
-      semitoneOffset + modEnvToPitch
-    );
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
-    note.bufferSource.playbackRate.value.setValueAtTime(basePitch, modDelay).exponentialRampToValueAtTime(peekPitch, modAttack).setValueAtTime(peekPitch, modHold).linearRampToValueAtTime(basePitch, modDecay);
+    const peekPitch = basePitch + modEnvToPitch;
+    const modDelay = startTime + voiceParams.modDelay;
+    const modAttack = modDelay + voiceParams.modAttack;
+    const modHold = modAttack + voiceParams.modHold;
+    const modDecay = modHold + voiceParams.modDecay;
+    note.bufferSource.detune.setValueAtTime(basePitch, modDelay).exponentialRampToValueAtTime(peekPitch, modAttack).setValueAtTime(peekPitch, modHold).linearRampToValueAtTime(basePitch, modDecay);
   }
   clampCutoffFrequency(frequency) {
     const minFrequency = 20;
@@ -2214,41 +2716,35 @@ var MidyGM1 = class {
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
   setFilterEnvelope(note) {
-    const { instrumentKey, startTime } = note;
-    const baseFreq = this.centToHz(instrumentKey.initialFilterFc);
+    const now = this.audioContext.currentTime;
+    const { voiceParams: voiceParams2, startTime } = note;
+    const baseFreq = this.centToHz(voiceParams2.initialFilterFc);
     const peekFreq = this.centToHz(
-      instrumentKey.initialFilterFc + instrumentKey.modEnvToFilterFc
+      voiceParams2.initialFilterFc + voiceParams2.modEnvToFilterFc
     );
-    const sustainFreq = baseFreq + (peekFreq - baseFreq) * (1 - instrumentKey.modSustain);
+    const sustainFreq = baseFreq + (peekFreq - baseFreq) * (1 - voiceParams2.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const modDelay = startTime + instrumentKey.modDelay;
-    const modAttack = modDelay + instrumentKey.modAttack;
-    const modHold = modAttack + instrumentKey.modHold;
-    const modDecay = modHold + instrumentKey.modDecay;
-    note.filterNode.frequency.cancelScheduledValues(startTime).setValueAtTime(adjustedBaseFreq, startTime).setValueAtTime(adjustedBaseFreq, modDelay).exponentialRampToValueAtTime(adjustedPeekFreq, modAttack).setValueAtTime(adjustedPeekFreq, modHold).linearRampToValueAtTime(adjustedSustainFreq, modDecay);
+    const modDelay = startTime + voiceParams2.modDelay;
+    const modAttack = modDelay + voiceParams2.modAttack;
+    const modHold = modAttack + voiceParams2.modHold;
+    const modDecay = modHold + voiceParams2.modDecay;
+    note.filterNode.frequency.cancelScheduledValues(now).setValueAtTime(adjustedBaseFreq, startTime).setValueAtTime(adjustedBaseFreq, modDelay).exponentialRampToValueAtTime(adjustedPeekFreq, modAttack).setValueAtTime(adjustedPeekFreq, modHold).linearRampToValueAtTime(adjustedSustainFreq, modDecay);
   }
   startModulation(channel, note, startTime) {
-    const { instrumentKey } = note;
-    const { modLfoToPitch, modLfoToVolume } = instrumentKey;
+    const { voiceParams: voiceParams2 } = note;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(instrumentKey.freqModLFO)
+      frequency: this.centToHz(voiceParams2.freqModLFO)
     });
     note.filterDepth = new GainNode(this.audioContext, {
-      gain: instrumentKey.modLfoToFilterFc
+      gain: voiceParams2.modLfoToFilterFc
     });
-    const modulationDepth = Math.abs(modLfoToPitch) + channel.modulationDepth;
-    const modulationDepthSign = 0 < modLfoToPitch ? 1 : -1;
-    note.modulationDepth = new GainNode(this.audioContext, {
-      gain: modulationDepth * modulationDepthSign
-    });
-    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepthSign = 0 < modLfoToVolume ? 1 : -1;
-    note.volumeDepth = new GainNode(this.audioContext, {
-      gain: volumeDepth * volumeDepthSign
-    });
-    note.modulationLFO.start(startTime + instrumentKey.delayModLFO);
+    note.modulationDepth = new GainNode(this.audioContext);
+    this.setModLfoToPitch(channel, note);
+    note.volumeDepth = new GainNode(this.audioContext);
+    this.setModLfoToVolume(note);
+    note.modulationLFO.start(startTime + voiceParams2.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
     note.filterDepth.connect(note.filterNode.frequency);
     note.modulationLFO.connect(note.modulationDepth);
@@ -2256,27 +2752,23 @@ var MidyGM1 = class {
     note.modulationLFO.connect(note.volumeDepth);
     note.volumeDepth.connect(note.volumeNode.gain);
   }
-  async createNote(channel, instrumentKey, noteNumber, velocity, startTime, isSF3) {
-    const semitoneOffset = this.calcSemitoneOffset(channel);
-    const note = new Note(noteNumber, velocity, startTime, instrumentKey);
-    note.bufferSource = await this.createNoteBufferNode(instrumentKey, isSF3);
+  async createNote(channel, voice, noteNumber, velocity, startTime, isSF3) {
+    const state = channel.state;
+    const voiceParams2 = voice.getAllParams(state.array);
+    const note = new Note(noteNumber, velocity, startTime, voice, voiceParams2);
+    note.bufferSource = await this.createNoteBufferNode(voiceParams2, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: instrumentKey.initialFilterQ / 10
+      Q: voiceParams2.initialFilterQ / 10
       // dB
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
-    if (0 < channel.modulationDepth) {
-      this.setPitch(note, semitoneOffset);
+    this.setPlaybackRate(note);
+    if (0 < state.modulationDepth) {
+      this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
-    } else {
-      note.bufferSource.playbackRate.value = this.calcPlaybackRate(
-        instrumentKey,
-        noteNumber,
-        semitoneOffset
-      );
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeNode);
@@ -2285,21 +2777,21 @@ var MidyGM1 = class {
   }
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
-    const bankNumber = 0;
+    const bankNumber = channel.bank;
     const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const isSF3 = soundFont.parsed.info.version.major === 3;
-    const instrumentKey = soundFont.getInstrumentKey(
+    const voice = soundFont.getVoice(
       bankNumber,
       channel.program,
       noteNumber,
       velocity
     );
-    if (!instrumentKey) return;
+    if (!voice) return;
     const note = await this.createNote(
       channel,
-      instrumentKey,
+      voice,
       noteNumber,
       velocity,
       startTime,
@@ -2307,7 +2799,7 @@ var MidyGM1 = class {
     );
     note.volumeNode.connect(channel.gainL);
     note.volumeNode.connect(channel.gainR);
-    const exclusiveClass = instrumentKey.exclusiveClass;
+    const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
@@ -2368,15 +2860,15 @@ var MidyGM1 = class {
   }
   scheduleNoteRelease(channelNumber, noteNumber, _velocity, endTime, force) {
     const channel = this.channels[channelNumber];
-    if (!force && channel.sustainPedal) return;
+    if (!force && 0.5 < channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const volRelease = endTime + note.instrumentKey.volRelease;
-      const modRelease = endTime + note.instrumentKey.modRelease;
+      const volRelease = endTime + note.voiceParams.volRelease;
+      const modRelease = endTime + note.voiceParams.modRelease;
       note.filterNode.frequency.cancelScheduledValues(endTime).linearRampToValueAtTime(0, modRelease);
       const stopTime = Math.min(volRelease, modRelease);
       return this.stopNote(endTime, stopTime, scheduledNotes, i);
@@ -2390,7 +2882,7 @@ var MidyGM1 = class {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.sustainPedal = false;
+    channel.state.sustainPedal = halfVelocity;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -2425,15 +2917,150 @@ var MidyGM1 = class {
     channel.program = program;
   }
   handlePitchBendMessage(channelNumber, lsb, msb) {
-    const pitchBend = msb * 128 + lsb - 8192;
+    const pitchBend = msb * 128 + lsb;
     this.setPitchBend(channelNumber, pitchBend);
   }
-  setPitchBend(channelNumber, pitchBend) {
+  setPitchBend(channelNumber, value2) {
     const channel = this.channels[channelNumber];
-    const prevPitchBend = channel.pitchBend;
-    channel.pitchBend = pitchBend / 8192;
-    const detuneChange = (channel.pitchBend - prevPitchBend) * channel.pitchBendRange * 100;
+    const state = channel.state;
+    state.pitchWheel = value2 / 16383;
+    const pitchWheel = (value2 - 8192) / 8192;
+    const detuneChange = pitchWheel * state.pitchWheelSensitivity * 12800;
     this.updateDetune(channel, detuneChange);
+  }
+  setModLfoToPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToPitch = note.voiceParams.modLfoToPitch;
+    const modulationDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+    const modulationDepthSign = 0 < modLfoToPitch ? 1 : -1;
+    note.modulationDepth.gain.cancelScheduledValues(now).setValueAtTime(modulationDepth * modulationDepthSign, now);
+  }
+  setModLfoToVolume(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToVolume = note.voiceParams.modLfoToVolume;
+    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const volumeDepthSign = 0 < modLfoToVolume ? 1 : -1;
+    note.volumeDepth.gain.cancelScheduledValues(now).setValueAtTime(volumeDepth * volumeDepthSign, now);
+  }
+  setVibLfoToPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
+    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth * 2;
+    const vibratoDepthSign = 0 < vibLfoToPitch;
+    note.vibratoDepth.gain.cancelScheduledValues(now).setValueAtTime(vibratoDepth * vibratoDepthSign, now);
+  }
+  setModLfoToFilterFc(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
+    note.filterDepth.gain.cancelScheduledValues(now).setValueAtTime(modLfoToFilterFc, now);
+  }
+  setDelayModLFO(note) {
+    const now = this.audioContext.currentTime;
+    const startTime = note.startTime;
+    if (startTime < now) return;
+    note.modulationLFO.stop(now);
+    note.modulationLFO.start(startTime + note.voiceParams.delayModLFO);
+    note.modulationLFO.connect(note.filterDepth);
+  }
+  setFreqModLFO(note) {
+    const now = this.audioContext.currentTime;
+    const freqModLFO = note.voiceParams.freqModLFO;
+    note.modulationLFO.frequency.cancelScheduledValues(now).setValueAtTime(freqModLFO, now);
+  }
+  createVoiceParamsHandlers() {
+    return {
+      modLfoToPitch: (channel, note, _prevValue) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setModLfoToPitch(channel, note);
+        }
+      },
+      vibLfoToPitch: (channel, note, _prevValue) => {
+        if (0 < channel.state.vibratoDepth) {
+          this.setVibLfoToPitch(channel, note);
+        }
+      },
+      modLfoToFilterFc: (channel, note, _prevValue) => {
+        if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
+      },
+      modLfoToVolume: (channel, note) => {
+        if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
+      },
+      chorusEffectsSend: (_channel, _note, _prevValue) => {
+      },
+      reverbEffectsSend: (_channel, _note, _prevValue) => {
+      },
+      delayModLFO: (_channel, note, _prevValue) => this.setDelayModLFO(note),
+      freqModLFO: (_channel, note, _prevValue) => this.setFreqModLFO(note),
+      delayVibLFO: (channel, note, prevValue) => {
+        if (0 < channel.state.vibratoDepth) {
+          const now = this.audioContext.currentTime;
+          const prevStartTime = note.startTime + prevValue * channel.state.vibratoDelay * 2;
+          if (now < prevStartTime) return;
+          const startTime = note.startTime + value * channel.state.vibratoDelay * 2;
+          note.vibratoLFO.stop(now);
+          note.vibratoLFO.start(startTime);
+        }
+      },
+      freqVibLFO: (channel, note, _prevValue) => {
+        if (0 < channel.state.vibratoDepth) {
+          const now = this.audioContext.currentTime;
+          note.vibratoLFO.frequency.cancelScheduledValues(now).setValueAtTime(value * sate.vibratoRate, now);
+        }
+      }
+    };
+  }
+  getControllerState(channel, noteNumber, velocity) {
+    const state = new Float32Array(channel.state.array.length);
+    state.set(channel.state.array);
+    state[2] = velocity / 127;
+    state[3] = noteNumber / 127;
+    return state;
+  }
+  applyVoiceParams(channel, controllerType) {
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const controllerState = this.getControllerState(
+          channel,
+          note.noteNumber,
+          note.velocity
+        );
+        const voiceParams2 = note.voice.getParams(
+          controllerType,
+          controllerState
+        );
+        let appliedFilterEnvelope = false;
+        let appliedVolumeEnvelope = false;
+        for (const [key, value2] of Object.entries(voiceParams2)) {
+          const prevValue = note.voiceParams[key];
+          if (value2 === prevValue) continue;
+          note.voiceParams[key] = value2;
+          if (key in this.voiceParamsHandlers) {
+            this.voiceParamsHandlers[key](channel, note, prevValue);
+          } else if (filterEnvelopeKeySet.has(key)) {
+            if (appliedFilterEnvelope) continue;
+            appliedFilterEnvelope = true;
+            const noteVoiceParams = note.voiceParams;
+            for (let i2 = 0; i2 < filterEnvelopeKeys.length; i2++) {
+              const key2 = filterEnvelopeKeys[i2];
+              if (key2 in voiceParams2) noteVoiceParams[key2] = voiceParams2[key2];
+            }
+            this.setFilterEnvelope(channel, note);
+            this.setPitch(channel, note);
+          } else if (volumeEnvelopeKeySet.has(key)) {
+            if (appliedVolumeEnvelope) continue;
+            appliedVolumeEnvelope = true;
+            const noteVoiceParams = note.voiceParams;
+            for (let i2 = 0; i2 < volumeEnvelopeKeys.length; i2++) {
+              const key2 = volumeEnvelopeKeys[i2];
+              if (key2 in voiceParams2) noteVoiceParams[key2] = voiceParams2[key2];
+            }
+            this.setVolumeEnvelope(channel, note);
+          }
+        }
+      }
+    });
   }
   createControlChangeHandlers() {
     return {
@@ -2451,13 +3078,13 @@ var MidyGM1 = class {
       123: this.allNotesOff
     };
   }
-  handleControlChange(channelNumber, controller, value) {
-    const handler = this.controlChangeHandlers[controller];
+  handleControlChange(channelNumber, controllerType, value2) {
+    const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(this, channelNumber, value);
+      handler.call(this, channelNumber, value2);
     } else {
       console.warn(
-        `Unsupported Control change: controller=${controller} value=${value}`
+        `Unsupported Control change: controllerType=${controllerType} value=${value2}`
       );
     }
   }
@@ -2469,12 +3096,11 @@ var MidyGM1 = class {
         if (!note) continue;
         if (note.modulationDepth) {
           note.modulationDepth.gain.setValueAtTime(
-            channel.modulationDepth,
+            channel.state.modulationDepth,
             now
           );
         } else {
-          const semitoneOffset = this.calcSemitoneOffset(channel);
-          this.setPitch(note, semitoneOffset);
+          this.setPitch(channel, note);
           this.startModulation(channel, note, now);
         }
       }
@@ -2482,16 +3108,16 @@ var MidyGM1 = class {
   }
   setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.modulationDepth = modulation / 127 * channel.modulationDepthRange;
+    channel.state.modulationDepth = modulation / 127 * channel.modulationDepthRange;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {
     const channel = this.channels[channelNumber];
-    channel.volume = volume / 127;
+    channel.state.volume = volume / 127;
     this.updateChannelVolume(channel);
   }
   panToGain(pan) {
-    const theta = Math.PI / 2 * Math.max(0, pan - 1) / 126;
+    const theta = Math.PI / 2 * Math.max(0, pan * 127 - 1) / 126;
     return {
       gainLeft: Math.cos(theta),
       gainRight: Math.sin(theta)
@@ -2499,30 +3125,30 @@ var MidyGM1 = class {
   }
   setPan(channelNumber, pan) {
     const channel = this.channels[channelNumber];
-    channel.pan = pan;
+    channel.state.pan = pan / 127;
     this.updateChannelVolume(channel);
   }
   setExpression(channelNumber, expression) {
     const channel = this.channels[channelNumber];
-    channel.expression = expression / 127;
+    channel.state.expression = expression / 127;
     this.updateChannelVolume(channel);
   }
-  dataEntryLSB(channelNumber, value) {
-    this.channels[channelNumber].dataLSB = value;
+  dataEntryLSB(channelNumber, value2) {
+    this.channels[channelNumber].dataLSB = value2;
     this.handleRPN(channelNumber, 0);
   }
   updateChannelVolume(channel) {
     const now = this.audioContext.currentTime;
-    const volume = channel.volume * channel.expression;
-    const { gainLeft, gainRight } = this.panToGain(channel.pan);
+    const state = channel.state;
+    const volume = state.volume * state.expression;
+    const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain.cancelScheduledValues(now).setValueAtTime(volume * gainLeft, now);
     channel.gainR.gain.cancelScheduledValues(now).setValueAtTime(volume * gainRight, now);
   }
-  setSustainPedal(channelNumber, value) {
-    const isOn = value >= 64;
-    this.channels[channelNumber].sustainPedal = isOn;
-    if (!isOn) {
-      this.releaseSustainPedal(channelNumber, value);
+  setSustainPedal(channelNumber, value2) {
+    this.channels[channelNumber].state.sustainPedal = value2 / 127;
+    if (value2 < 64) {
+      this.releaseSustainPedal(channelNumber, value2);
     }
   }
   limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
@@ -2567,24 +3193,23 @@ var MidyGM1 = class {
         );
     }
   }
-  setRPNMSB(channelNumber, value) {
-    this.channels[channelNumber].rpnMSB = value;
+  setRPNMSB(channelNumber, value2) {
+    this.channels[channelNumber].rpnMSB = value2;
   }
-  setRPNLSB(channelNumber, value) {
-    this.channels[channelNumber].rpnLSB = value;
+  setRPNLSB(channelNumber, value2) {
+    this.channels[channelNumber].rpnLSB = value2;
   }
-  dataEntryMSB(channelNumber, value) {
-    this.channels[channelNumber].dataMSB = value;
+  dataEntryMSB(channelNumber, value2) {
+    this.channels[channelNumber].dataMSB = value2;
     this.handleRPN(channelNumber);
   }
-  updateDetune(channel, detuneChange) {
+  updateDetune(channel, detune) {
     const now = this.audioContext.currentTime;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
         const { bufferSource } = note;
-        const detune = bufferSource.detune.value + detuneChange;
         bufferSource.detune.cancelScheduledValues(now).setValueAtTime(detune, now);
       }
     });
@@ -2595,12 +3220,13 @@ var MidyGM1 = class {
     const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
     this.setPitchBendRange(channelNumber, pitchBendRange);
   }
-  setPitchBendRange(channelNumber, pitchBendRange) {
+  setPitchBendRange(channelNumber, pitchWheelSensitivity) {
     const channel = this.channels[channelNumber];
-    const prevPitchBendRange = channel.pitchBendRange;
-    channel.pitchBendRange = pitchBendRange;
-    const detuneChange = (channel.pitchBendRange - prevPitchBendRange) * channel.pitchBend * 100;
-    this.updateDetune(channel, detuneChange);
+    const state = channel.state;
+    state.pitchWheelSensitivity = pitchWheelSensitivity / 128;
+    const detune = (state.pitchWheel * 2 - 1) * pitchWheelSensitivity * 100;
+    this.updateDetune(channel, detune);
+    this.applyVoiceParams(channel, 16);
   }
   handleFineTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
@@ -2632,7 +3258,26 @@ var MidyGM1 = class {
     return this.stopChannelNotes(channelNumber, 0, true);
   }
   resetAllControllers(channelNumber) {
-    Object.assign(this.channels[channelNumber], this.effectSettings);
+    const stateTypes = [
+      "expression",
+      "modulationDepth",
+      "sustainPedal",
+      "pitchWheelSensitivity"
+    ];
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    for (let i = 0; i < stateTypes.length; i++) {
+      const type = stateTypes[i];
+      state[type] = defaultControllerState[type];
+    }
+    const settingTypes = [
+      "rpnMSB",
+      "rpnLSB"
+    ];
+    for (let i = 0; i < settingTypes.length; i++) {
+      const type = settingTypes[i];
+      channel[type] = this.constructor.channelSettings[type];
+    }
   }
   allNotesOff(channelNumber) {
     return this.stopChannelNotes(channelNumber, 0, false);
@@ -2657,11 +3302,8 @@ var MidyGM1 = class {
   GM1SystemOn() {
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
-      channel.bankMSB = 0;
-      channel.bankLSB = 0;
       channel.bank = 0;
     }
-    this.channels[9].bankMSB = 1;
     this.channels[9].bank = 128;
   }
   handleUniversalRealTimeExclusiveMessage(data) {
