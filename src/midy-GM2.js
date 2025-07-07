@@ -1863,15 +1863,13 @@ export class MidyGM2 {
   handleCoarseTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
-    const coarseTuning = channel.dataMSB - 64;
-    this.setFineTuning(channelNumber, coarseTuning);
+    const coarseTuning = channel.dataMSB;
+    this.setCoarseTuning(channelNumber, coarseTuning);
   }
 
-  setCoarseTuning(channelNumber, coarseTuning) {
+  setCoarseTuning(channelNumber, coarseTuning) { // [0, 127]
     const channel = this.channels[channelNumber];
-    const prevCoarseTuning = channel.coarseTuning;
-    channel.coarseTuning = coarseTuning;
-    const detuneChange = channel.coarseTuning - prevCoarseTuning;
+    channel.coarseTuning = (coarseTuning - 64) * 100; // cent
     this.updateDetune(channel, detuneChange);
   }
 
