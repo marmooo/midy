@@ -1850,15 +1850,13 @@ export class MidyGM2 {
   handleFineTuningRPN(channelNumber) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
-    const fineTuning = (channel.dataMSB * 128 + channel.dataLSB - 8192) / 8192;
+    const fineTuning = channel.dataMSB * 128 + channel.dataLSB;
     this.setFineTuning(channelNumber, fineTuning);
   }
 
-  setFineTuning(channelNumber, fineTuning) {
+  setFineTuning(channelNumber, fineTuning) { // [0, 16383]
     const channel = this.channels[channelNumber];
-    const prevFineTuning = channel.fineTuning;
-    channel.fineTuning = fineTuning;
-    const detuneChange = channel.fineTuning - prevFineTuning;
+    channel.fineTuning = (fineTuning - 8192) / 8.192; // cent
     this.updateDetune(channel, detuneChange);
   }
 
