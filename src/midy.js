@@ -843,7 +843,7 @@ export class Midy {
     return 8.176 * Math.pow(2, cent / 1200);
   }
 
-  calcSemitoneOffset(channel, note) {
+  calcDetune(channel, note) {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
     const scaleOctaveTuning =
@@ -897,7 +897,7 @@ export class Midy {
   setPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const { startTime } = note;
-    const basePitch = this.calcSemitoneOffset(channel, note) * 100;
+    const basePitch = this.calcDetune(channel, note);
     note.bufferSource.detune
       .cancelScheduledValues(now)
       .setValueAtTime(basePitch, startTime);
@@ -2202,7 +2202,7 @@ export class Midy {
     this.setMasterFineTuning(fineTuning);
   }
 
-  setMasterFineTuning(fineTuning) {  // [0, 16383]
+  setMasterFineTuning(fineTuning) { // [0, 16383]
     fineTuning = (fineTuning - 8192) / 8.192; // cent
     this.masterFineTuning = fineTuning;
   }

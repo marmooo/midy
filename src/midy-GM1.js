@@ -523,7 +523,7 @@ export class MidyGM1 {
     return 8.176 * Math.pow(2, cent / 1200);
   }
 
-  calcSemitoneOffset(channel) {
+  calcDetune(channel) {
     const tuning = channel.coarseTuning + channel.fineTuning;
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
@@ -559,7 +559,7 @@ export class MidyGM1 {
   setPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const { startTime } = note;
-    const basePitch = this.calcSemitoneOffset(channel) * 100;
+    const basePitch = this.calcDetune(channel);
     note.bufferSource.detune
       .cancelScheduledValues(now)
       .setValueAtTime(basePitch, startTime);

@@ -156,6 +156,7 @@ export class MidyGM2 {
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
     modulationDepthRange: 50, // cent
+    scaleOctaveTuningTable: new Array(12).fill(0), // cent
   };
 
   static controllerDestinationSettings = {
@@ -832,13 +833,16 @@ export class MidyGM2 {
     return 8.176 * Math.pow(2, cent / 1200);
   }
 
-  calcSemitoneOffset(channel) {
+  calcDetune(channel, note) {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
+    const scaleOctaveTuning =
+      channel.scaleOctaveTuningTable[note.noteNumber % 12];
+    const tuning = masterTuning + channelTuning + scaleOctaveTuning;
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    return masterTuning + channelTuning + pitch;
+    return tuning + pitch;
   }
 
   setPortamentoStartVolumeEnvelope(channel, note) {
@@ -2052,7 +2056,7 @@ export class MidyGM2 {
     this.setMasterFineTuning(fineTuning);
   }
 
-  setMasterFineTuning(fineTuning) {  // [0, 16383]
+  setMasterFineTuning(fineTuning) { // [0, 16383]
     fineTuning = (fineTuning - 8192) / 8.192; // cent
     this.masterFineTuning = fineTuning;
   }
