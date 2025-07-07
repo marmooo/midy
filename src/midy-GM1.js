@@ -841,16 +841,6 @@ export class MidyGM1 {
       .setValueAtTime(modulationDepth * modulationDepthSign, now);
   }
 
-  setModLfoToVolume(note) {
-    const now = this.audioContext.currentTime;
-    const modLfoToVolume = note.voiceParams.modLfoToVolume;
-    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepthSign = (0 < modLfoToVolume) ? 1 : -1;
-    note.volumeDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(volumeDepth * volumeDepthSign, now);
-  }
-
   setVibLfoToPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
@@ -868,6 +858,16 @@ export class MidyGM1 {
     note.filterDepth.gain
       .cancelScheduledValues(now)
       .setValueAtTime(modLfoToFilterFc, now);
+  }
+
+  setModLfoToVolume(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToVolume = note.voiceParams.modLfoToVolume;
+    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const volumeDepthSign = (0 < modLfoToVolume) ? 1 : -1;
+    note.volumeDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(volumeDepth * volumeDepthSign, now);
   }
 
   setDelayModLFO(note) {

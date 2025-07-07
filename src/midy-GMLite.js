@@ -830,6 +830,14 @@ export class MidyGMLite {
       .setValueAtTime(modulationDepth * modulationDepthSign, now);
   }
 
+  setModLfoToFilterFc(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
+    note.filterDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(modLfoToFilterFc, now);
+  }
+
   setModLfoToVolume(note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
@@ -838,14 +846,6 @@ export class MidyGMLite {
     note.volumeDepth.gain
       .cancelScheduledValues(now)
       .setValueAtTime(volumeDepth * volumeDepthSign, now);
-  }
-
-  setModLfoToFilterFc(note) {
-    const now = this.audioContext.currentTime;
-    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
-    note.filterDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modLfoToFilterFc, now);
   }
 
   setDelayModLFO(note) {

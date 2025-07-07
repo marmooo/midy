@@ -1329,6 +1329,25 @@ export class MidyGM2 {
       .setValueAtTime(modulationDepth * modulationDepthSign, now);
   }
 
+  setVibLfoToPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
+    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
+      2;
+    const vibratoDepthSign = 0 < vibLfoToPitch;
+    note.vibratoDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
+  }
+
+  setModLfoToFilterFc(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
+    note.filterDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(modLfoToFilterFc, now);
+  }
+
   setModLfoToVolume(note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
@@ -1385,25 +1404,6 @@ export class MidyGM2 {
         note.reverbEffectsSend.connect(this.reverbEffect.input);
       }
     }
-  }
-
-  setVibLfoToPitch(channel, note) {
-    const now = this.audioContext.currentTime;
-    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
-    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
-      2;
-    const vibratoDepthSign = 0 < vibLfoToPitch;
-    note.vibratoDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
-  }
-
-  setModLfoToFilterFc(note) {
-    const now = this.audioContext.currentTime;
-    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
-    note.filterDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modLfoToFilterFc, now);
   }
 
   setDelayModLFO(note) {

@@ -1360,6 +1360,25 @@ export class Midy {
       .setValueAtTime(modulationDepth * modulationDepthSign, now);
   }
 
+  setVibLfoToPitch(channel, note) {
+    const now = this.audioContext.currentTime;
+    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
+    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
+      2;
+    const vibratoDepthSign = 0 < vibLfoToPitch;
+    note.vibratoDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
+  }
+
+  setModLfoToFilterFc(note) {
+    const now = this.audioContext.currentTime;
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
+    note.filterDepth.gain
+      .cancelScheduledValues(now)
+      .setValueAtTime(modLfoToFilterFc, now);
+  }
+
   setModLfoToVolume(note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
@@ -1416,25 +1435,6 @@ export class Midy {
         note.reverbEffectsSend.connect(this.reverbEffect.input);
       }
     }
-  }
-
-  setVibLfoToPitch(channel, note) {
-    const now = this.audioContext.currentTime;
-    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
-    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
-      2;
-    const vibratoDepthSign = 0 < vibLfoToPitch;
-    note.vibratoDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
-  }
-
-  setModLfoToFilterFc(note) {
-    const now = this.audioContext.currentTime;
-    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
-    note.filterDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modLfoToFilterFc, now);
   }
 
   setDelayModLFO(note) {
@@ -1710,80 +1710,6 @@ export class Midy {
     this.channels[channelNumber].state.portamento = value / 127;
   }
 
-  setReverbSendLevel(channelNumber, reverbSendLevel) {
-    const channel = this.channels[channelNumber];
-    const state = channel.state;
-    const reverbEffect = this.reverbEffect;
-    if (0 < state.reverbSendLevel) {
-      if (0 < reverbSendLevel) {
-        const now = this.audioContext.currentTime;
-        state.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.input.gain.cancelScheduledValues(now);
-        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
-      } else {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            if (note.voiceParams.reverbEffectsSend <= 0) continue;
-            note.reverbEffectsSend.disconnect();
-          }
-        });
-      }
-    } else {
-      if (0 < reverbSendLevel) {
-        const now = this.audioContext.currentTime;
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            this.setReverbEffectsSend(note, 0);
-          }
-        });
-        state.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.input.gain.cancelScheduledValues(now);
-        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
-      }
-    }
-  }
-
-  setChorusSendLevel(channelNumber, chorusSendLevel) {
-    const channel = this.channels[channelNumber];
-    const state = channel.state;
-    const chorusEffect = this.chorusEffect;
-    if (0 < state.chorusSendLevel) {
-      if (0 < chorusSendLevel) {
-        const now = this.audioContext.currentTime;
-        state.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.input.gain.cancelScheduledValues(now);
-        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
-      } else {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            if (note.voiceParams.chorusEffectsSend <= 0) continue;
-            note.chorusEffectsSend.disconnect();
-          }
-        });
-      }
-    } else {
-      if (0 < chorusSendLevel) {
-        const now = this.audioContext.currentTime;
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            this.setChorusEffectsSend(note, 0);
-          }
-        });
-        state.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.input.gain.cancelScheduledValues(now);
-        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
-      }
-    }
-  }
-
   setSostenutoPedal(channelNumber, value) {
     const channel = this.channels[channelNumber];
     channel.state.sostenutoPedal = value / 127;
@@ -1880,6 +1806,80 @@ export class Midy {
   setVibratoDelay(channelNumber, vibratoDelay) {
     const channel = this.channels[channelNumber];
     channel.state.vibratoDelay = vibratoDelay / 64;
+  }
+
+  setReverbSendLevel(channelNumber, reverbSendLevel) {
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    const reverbEffect = this.reverbEffect;
+    if (0 < state.reverbSendLevel) {
+      if (0 < reverbSendLevel) {
+        const now = this.audioContext.currentTime;
+        state.reverbSendLevel = reverbSendLevel / 127;
+        reverbEffect.input.gain.cancelScheduledValues(now);
+        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
+      } else {
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.voiceParams.reverbEffectsSend <= 0) continue;
+            note.reverbEffectsSend.disconnect();
+          }
+        });
+      }
+    } else {
+      if (0 < reverbSendLevel) {
+        const now = this.audioContext.currentTime;
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            this.setReverbEffectsSend(note, 0);
+          }
+        });
+        state.reverbSendLevel = reverbSendLevel / 127;
+        reverbEffect.input.gain.cancelScheduledValues(now);
+        reverbEffect.input.gain.setValueAtTime(state.reverbSendLevel, now);
+      }
+    }
+  }
+
+  setChorusSendLevel(channelNumber, chorusSendLevel) {
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    const chorusEffect = this.chorusEffect;
+    if (0 < state.chorusSendLevel) {
+      if (0 < chorusSendLevel) {
+        const now = this.audioContext.currentTime;
+        state.chorusSendLevel = chorusSendLevel / 127;
+        chorusEffect.input.gain.cancelScheduledValues(now);
+        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
+      } else {
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            if (note.voiceParams.chorusEffectsSend <= 0) continue;
+            note.chorusEffectsSend.disconnect();
+          }
+        });
+      }
+    } else {
+      if (0 < chorusSendLevel) {
+        const now = this.audioContext.currentTime;
+        channel.scheduledNotes.forEach((noteList) => {
+          for (let i = 0; i < noteList.length; i++) {
+            const note = noteList[i];
+            if (!note) continue;
+            this.setChorusEffectsSend(note, 0);
+          }
+        });
+        state.chorusSendLevel = chorusSendLevel / 127;
+        chorusEffect.input.gain.cancelScheduledValues(now);
+        chorusEffect.input.gain.setValueAtTime(state.chorusSendLevel, now);
+      }
+    }
   }
 
   limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
