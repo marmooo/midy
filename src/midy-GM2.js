@@ -1858,10 +1858,12 @@ export class MidyGM2 {
     this.setFineTuning(channelNumber, fineTuning);
   }
 
-  setFineTuning(channelNumber, fineTuning) { // [0, 16383]
+  setFineTuning(channelNumber, value) { // [0, 16383]
     const channel = this.channels[channelNumber];
-    channel.fineTuning = (fineTuning - 8192) / 8.192; // cent
-    this.updateDetune(channel, detuneChange);
+    const prev = channel.fineTuning;
+    const next = (value - 8192) / 8.192; // cent
+    channel.fineTuning = next;
+    this.updateDetune(channel, next - prev);
   }
 
   handleCoarseTuningRPN(channelNumber) {
@@ -1871,10 +1873,12 @@ export class MidyGM2 {
     this.setCoarseTuning(channelNumber, coarseTuning);
   }
 
-  setCoarseTuning(channelNumber, coarseTuning) { // [0, 127]
+  setCoarseTuning(channelNumber, value) { // [0, 127]
     const channel = this.channels[channelNumber];
-    channel.coarseTuning = (coarseTuning - 64) * 100; // cent
-    this.updateDetune(channel, detuneChange);
+    const prev = channel.coarseTuning;
+    const next = (value - 64) * 100; // cent
+    channel.coarseTuning = next;
+    this.updateDetune(channel, next - prev);
   }
 
   handleModulationDepthRangeRPN(channelNumber) {
@@ -2056,9 +2060,11 @@ export class MidyGM2 {
     this.setMasterFineTuning(fineTuning);
   }
 
-  setMasterFineTuning(fineTuning) { // [0, 16383]
-    fineTuning = (fineTuning - 8192) / 8.192; // cent
-    this.masterFineTuning = fineTuning;
+  setMasterFineTuning(value) { // [0, 16383]
+    const prev = this.masterFineTuning;
+    const next = (value - 8192) / 8.192; // cent
+    this.masterFineTuning = next;
+    this.updateDetune(channel, next - prev);
   }
 
   handleMasterCoarseTuningSysEx(data) {
@@ -2066,9 +2072,11 @@ export class MidyGM2 {
     this.setMasterCoarseTuning(coarseTuning);
   }
 
-  setMasterCoarseTuning(coarseTuning) { // [0, 127]
-    coarseTuning = (coarseTuning - 64) * 100; // cent
-    this.masterCoarseTuning = coarseTuning;
+  setMasterCoarseTuning(value) { // [0, 127]
+    const prev = this.masterCoarseTuning;
+    const next = (value - 64) * 100; // cent
+    this.masterCoarseTuning = next;
+    this.updateDetune(channel, next - prev);
   }
 
   getChannelBitmap(data) {
