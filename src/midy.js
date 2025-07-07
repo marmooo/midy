@@ -156,6 +156,7 @@ export class Midy {
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
     modulationDepthRange: 50, // cent
+    scaleOctaveTuningTable: new Array(12).fill(0), // cent
   };
 
   static controllerDestinationSettings = {
@@ -842,13 +843,16 @@ export class Midy {
     return 8.176 * Math.pow(2, cent / 1200);
   }
 
-  calcSemitoneOffset(channel) {
+  calcSemitoneOffset(channel, note) {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
+    const scaleOctaveTuning =
+      channel.scaleOctaveTuningTable[note.noteNumber % 12];
+    const tuning = masterTuning + channelTuning + scaleOctaveTuning;
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    return masterTuning + channelTuning + pitch;
+    return tuning + pitch;
   }
 
   setPortamentoStartVolumeEnvelope(channel, note) {
@@ -893,7 +897,7 @@ export class Midy {
   setPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const { startTime } = note;
-    const basePitch = this.calcSemitoneOffset(channel) * 100;
+    const basePitch = this.calcSemitoneOffset(channel, note) * 100;
     note.bufferSource.detune
       .cancelScheduledValues(now)
       .setValueAtTime(basePitch, startTime);
@@ -2080,6 +2084,15 @@ export class Midy {
 
   handleUniversalNonRealTimeExclusiveMessage(data) {
     switch (data[2]) {
+      case 8:
+        switch (data[3]) {
+          case 8:
+            // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
+            return this.handleScaleOctaveTuning1ByteFormat();
+          default:
+            console.warn(`Unsupported Exclusive Message: ${data}`);
+        }
+        break;
       case 9:
         switch (data[3]) {
           case 1:
@@ -2139,9 +2152,10 @@ export class Midy {
         break;
       case 8:
         switch (data[3]) {
-          // case 8:
-          //   // TODO
-          //   return this.handleScaleOctaveTuning1ByteFormat();
+          case 8:
+            // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
+            // TODO: realtime
+            return this.handleScaleOctaveTuning1ByteFormat();
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2210,6 +2224,38 @@ export class Midy {
       console.error("Master Coarse Tuning value is out of range");
     } else {
       this.masterCoarseTuning = coarseTuning - 64;
+    }
+  }
+
+  getChannelBitmap(data) {
+    const bitmap = new Array(16).fill(false);
+    const ff = data[4] & 0b11;
+    const gg = data[5] & 0x7F;
+    const hh = data[6] & 0x7F;
+    for (let bit = 0; bit < 7; bit++) {
+      if (hh & (1 << bit)) bitmap[bit] = true;
+    }
+    for (let bit = 0; bit < 7; bit++) {
+      if (gg & (1 << bit)) bitmap[bit + 7] = true;
+    }
+    for (let bit = 0; bit < 2; bit++) {
+      if (ff & (1 << bit)) bitmap[bit + 14] = true;
+    }
+    return bitmap;
+  }
+
+  handleScaleOctaveTuning1ByteFormat(data) {
+    if (data.length < 18) {
+      console.error("Data length is too short");
+      return;
+    }
+    const channelBitmap = this.getChannelBitmap(data);
+    for (let i = 0; i < channelBitmap.length; i++) {
+      if (!channelBitmap[i]) continue;
+      for (let j = 0; j < 12; j++) {
+        const value = data[j + 7] - 64; // cent
+        this.channels[i].scaleOctaveTuningTable[j] = value;
+      }
     }
   }
 

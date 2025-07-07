@@ -1944,6 +1944,15 @@ export class MidyGM2 {
 
   handleUniversalNonRealTimeExclusiveMessage(data) {
     switch (data[2]) {
+      case 8:
+        switch (data[3]) {
+          case 8:
+            // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
+            return this.handleScaleOctaveTuning1ByteFormat();
+          default:
+            console.warn(`Unsupported Exclusive Message: ${data}`);
+        }
+        break;
       case 9:
         switch (data[3]) {
           case 1:
@@ -1997,15 +2006,6 @@ export class MidyGM2 {
             return this.handleMasterCoarseTuningSysEx(data);
           case 5:
             return this.handleGlobalParameterControlSysEx(data);
-          default:
-            console.warn(`Unsupported Exclusive Message: ${data}`);
-        }
-        break;
-      case 8:
-        switch (data[3]) {
-          // case 8:
-          //   // TODO
-          //   return this.handleScaleOctaveTuning1ByteFormat();
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2074,6 +2074,38 @@ export class MidyGM2 {
       console.error("Master Coarse Tuning value is out of range");
     } else {
       this.masterCoarseTuning = coarseTuning - 64;
+    }
+  }
+
+  getChannelBitmap(data) {
+    const bitmap = new Array(16).fill(false);
+    const ff = data[4] & 0b11;
+    const gg = data[5] & 0x7F;
+    const hh = data[6] & 0x7F;
+    for (let bit = 0; bit < 7; bit++) {
+      if (hh & (1 << bit)) bitmap[bit] = true;
+    }
+    for (let bit = 0; bit < 7; bit++) {
+      if (gg & (1 << bit)) bitmap[bit + 7] = true;
+    }
+    for (let bit = 0; bit < 2; bit++) {
+      if (ff & (1 << bit)) bitmap[bit + 14] = true;
+    }
+    return bitmap;
+  }
+
+  handleScaleOctaveTuning1ByteFormat(data) {
+    if (data.length < 18) {
+      console.error("Data length is too short");
+      return;
+    }
+    const channelBitmap = this.getChannelBitmap(data);
+    for (let i = 0; i < channelBitmap.length; i++) {
+      if (!channelBitmap[i]) continue;
+      for (let j = 0; j < 12; j++) {
+        const value = data[j + 7] - 64; // cent
+        this.channels[i].scaleOctaveTuningTable[j] = value;
+      }
     }
   }
 
