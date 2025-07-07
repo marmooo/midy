@@ -1948,7 +1948,7 @@ export class MidyGM2 {
         switch (data[3]) {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormat();
+            return this.handleScaleOctaveTuning1ByteFormat(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
