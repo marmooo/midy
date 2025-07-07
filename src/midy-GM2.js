@@ -2062,12 +2062,9 @@ export class MidyGM2 {
     this.setMasterCoarseTuning(coarseTuning);
   }
 
-  setMasterCoarseTuning(coarseTuning) {
-    if (coarseTuning < 0 && 127 < coarseTuning) {
-      console.error("Master Coarse Tuning value is out of range");
-    } else {
-      this.masterCoarseTuning = coarseTuning - 64;
-    }
+  setMasterCoarseTuning(coarseTuning) { // [0, 127]
+    coarseTuning = (coarseTuning - 64) * 100; // cent
+    this.masterCoarseTuning = coarseTuning;
   }
 
   getChannelBitmap(data) {
