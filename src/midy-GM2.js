@@ -2048,16 +2048,13 @@ export class MidyGM2 {
   }
 
   handleMasterFineTuningSysEx(data) {
-    const fineTuning = (data[5] * 128 + data[4] - 8192) / 8192;
+    const fineTuning = data[5] * 128 + data[4];
     this.setMasterFineTuning(fineTuning);
   }
 
-  setMasterFineTuning(fineTuning) {
-    if (fineTuning < -1 && 1 < fineTuning) {
-      console.error("Master Fine Tuning value is out of range");
-    } else {
-      this.masterFineTuning = fineTuning;
-    }
+  setMasterFineTuning(fineTuning) {  // [0, 16383]
+    fineTuning = (fineTuning - 8192) / 8.192; // cent
+    this.masterFineTuning = fineTuning;
   }
 
   handleMasterCoarseTuningSysEx(data) {
