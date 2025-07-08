@@ -549,32 +549,27 @@ export class MidyGM1 {
       .linearRampToValueAtTime(sustainVolume, volDecay);
   }
 
-  setPlaybackRate(note) {
+  setPitchEnvelope(note) {
     const now = this.audioContext.currentTime;
+    const { voiceParams } = note;
+    const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
       .cancelScheduledValues(now)
-      .setValueAtTime(note.voiceParams.playbackRate, now);
-  }
-
-  setPitch(channel, note) {
-    const now = this.audioContext.currentTime;
-    const { startTime } = note;
-    const basePitch = this.calcDetune(channel);
-    note.bufferSource.detune
-      .cancelScheduledValues(now)
-      .setValueAtTime(basePitch, startTime);
-    const modEnvToPitch = note.voiceParams.modEnvToPitch;
+      .setValueAtTime(baseRate, now);
+    const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
+    const basePitch = this.rateToCent(baseRate);
     const peekPitch = basePitch + modEnvToPitch;
+    const peekRate = this.centToRate(peekPitch);
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
-    note.bufferSource.detune
-      .setValueAtTime(basePitch, modDelay)
-      .exponentialRampToValueAtTime(peekPitch, modAttack)
-      .setValueAtTime(peekPitch, modHold)
-      .linearRampToValueAtTime(basePitch, modDecay);
+    note.bufferSource.playbackRate
+      .setValueAtTime(baseRate, modDelay)
+      .exponentialRampToValueAtTime(peekRate, modAttack)
+      .setValueAtTime(peekRate, modHold)
+      .linearRampToValueAtTime(baseRate, modDecay);
   }
 
   clampCutoffFrequency(frequency) {
@@ -649,9 +644,8 @@ export class MidyGM1 {
     });
     this.setVolumeEnvelope(note);
     this.setFilterEnvelope(note);
-    this.setPlaybackRate(note);
+    this.setPitchEnvelope(note);
     if (0 < state.modulationDepth) {
-      this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
     }
     note.bufferSource.connect(note.filterNode);
@@ -971,7 +965,7 @@ export class MidyGM1 {
               if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
             }
             this.setFilterEnvelope(channel, note);
-            this.setPitch(channel, note);
+            this.setPitchEnvelope(note);
           } else if (volumeEnvelopeKeySet.has(key)) {
             if (appliedVolumeEnvelope) continue;
             appliedVolumeEnvelope = true;
@@ -1027,7 +1021,7 @@ export class MidyGM1 {
             now,
           );
         } else {
-          this.setPitch(channel, note);
+          this.setPitchEnvelope(note);
           this.startModulation(channel, note, now);
         }
       }

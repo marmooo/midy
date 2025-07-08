@@ -839,8 +839,16 @@ export class Midy {
     return Math.pow(10, cb / 200);
   }
 
+  rateToCent(rate) {
+    return 1200 * Math.log2(rate);
+  }
+
+  centToRate(cent) {
+    return Math.pow(2, cent / 1200);
+  }
+
   centToHz(cent) {
-    return 8.176 * Math.pow(2, cent / 1200);
+    return 8.176 * this.centToRate(cent);
   }
 
   calcDetune(channel, note) {
@@ -887,32 +895,27 @@ export class Midy {
       .linearRampToValueAtTime(sustainVolume, volDecay);
   }
 
-  setPlaybackRate(note) {
+  setPitchEnvelope(note) {
     const now = this.audioContext.currentTime;
+    const { voiceParams } = note;
+    const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
       .cancelScheduledValues(now)
-      .setValueAtTime(note.voiceParams.playbackRate, now);
-  }
-
-  setPitch(channel, note) {
-    const now = this.audioContext.currentTime;
-    const { startTime } = note;
-    const basePitch = this.calcDetune(channel, note);
-    note.bufferSource.detune
-      .cancelScheduledValues(now)
-      .setValueAtTime(basePitch, startTime);
-    const modEnvToPitch = note.voiceParams.modEnvToPitch;
+      .setValueAtTime(baseRate, now);
+    const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
+    const basePitch = this.rateToCent(baseRate);
     const peekPitch = basePitch + modEnvToPitch;
+    const peekRate = this.centToRate(peekPitch);
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
-    note.bufferSource.detune
-      .setValueAtTime(basePitch, modDelay)
-      .exponentialRampToValueAtTime(peekPitch, modAttack)
-      .setValueAtTime(peekPitch, modHold)
-      .linearRampToValueAtTime(basePitch, modDecay);
+    note.bufferSource.playbackRate
+      .setValueAtTime(baseRate, modDelay)
+      .exponentialRampToValueAtTime(peekRate, modAttack)
+      .setValueAtTime(peekRate, modHold)
+      .linearRampToValueAtTime(baseRate, modDecay);
   }
 
   clampCutoffFrequency(frequency) {
@@ -1047,9 +1050,8 @@ export class Midy {
     if (0 < state.vibratoDepth) {
       this.startVibrato(channel, note, startTime);
     }
-    this.setPlaybackRate(note);
+    this.setPitchEnvelope(note);
     if (0 < state.modulationDepth) {
-      this.setPitch(channel, note);
       this.startModulation(channel, note, startTime);
     }
     if (this.mono && channel.currentBufferSource) {
@@ -1546,7 +1548,7 @@ export class Midy {
             } else {
               this.setFilterEnvelope(channel, note);
             }
-            this.setPitch(channel, note);
+            this.setPitchEnvelope(note);
           } else if (volumeEnvelopeKeySet.has(key)) {
             if (appliedVolumeEnvelope) continue;
             appliedVolumeEnvelope = true;
@@ -1631,7 +1633,7 @@ export class Midy {
             now,
           );
         } else {
-          this.setPitch(channel, note);
+          this.setPitchEnvelope(note);
           this.startModulation(channel, note, now);
         }
       }
@@ -1963,8 +1965,7 @@ export class Midy {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        const { bufferSource } = note;
-        bufferSource.detune
+        note.bufferSource.detune
           .cancelScheduledValues(now)
           .setValueAtTime(detune, now);
       }
