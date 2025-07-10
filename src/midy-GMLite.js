@@ -103,6 +103,7 @@ export class MidyGMLite {
 
   static channelSettings = {
     currentBufferSource: null,
+    detune: 0,
     program: 0,
     bank: 0,
     dataMSB: 0,
@@ -514,14 +515,35 @@ export class MidyGMLite {
     return Math.pow(10, cb / 200);
   }
 
-  centToHz(cent) {
-    return 8.176 * Math.pow(2, cent / 1200);
+  rateToCent(rate) {
+    return 1200 * Math.log2(rate);
   }
 
-  calcDetune(channel) {
+  centToRate(cent) {
+    return Math.pow(2, cent / 1200);
+  }
+
+  centToHz(cent) {
+    return 8.176 * this.centToRate(cent);
+  }
+
+  calcChannelDetune(channel) {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
-    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 128;
+    const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     return pitchWheel * pitchWheelSensitivity;
+  }
+
+  updateDetune(channel) {
+    const now = this.audioContext.currentTime;
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        note.bufferSource.detune
+          .cancelScheduledValues(now)
+          .setValueAtTime(channel.detune, now);
+      }
+    });
   }
 
   setVolumeEnvelope(note) {
@@ -807,10 +829,12 @@ export class MidyGMLite {
   setPitchBend(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
+    const prev = state.pitchWheel * 2 - 1;
+    const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
-    const pitchWheel = (value - 8192) / 8192;
-    const detuneChange = pitchWheel * state.pitchWheelSensitivity * 12800;
-    this.updateDetune(channel, detuneChange);
+    channel.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
+    this.updateDetune(channel);
+    this.applyVoiceParams(channel, 14);
   }
 
   setModLfoToPitch(channel, note) {
@@ -1083,20 +1107,6 @@ export class MidyGMLite {
   dataEntryMSB(channelNumber, value) {
     this.channels[channelNumber].dataMSB = value;
     this.handleRPN(channelNumber);
-  }
-
-  updateDetune(channel, detune) {
-    const now = this.audioContext.currentTime;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const { bufferSource } = note;
-        bufferSource.detune
-          .cancelScheduledValues(now)
-          .setValueAtTime(detune, now);
-      }
-    });
   }
 
   handlePitchBendRangeRPN(channelNumber) {
