@@ -1424,35 +1424,6 @@ export class Midy {
       .setValueAtTime(volumeDepth * volumeDepthSign, now);
   }
 
-  setChorusEffectsSend(channel, note, prevValue) {
-    if (0 < prevValue) {
-      if (0 < note.voiceParams.chorusEffectsSend) {
-        const now = this.audioContext.currentTime;
-        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-          channel,
-          note.noteNumber,
-          93,
-        );
-        const value = note.voiceParams.chorusEffectsSend + keyBasedValue;
-        note.chorusEffectsSend.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(value, now);
-      } else {
-        note.chorusEffectsSend.disconnect();
-      }
-    } else {
-      if (0 < note.voiceParams.chorusEffectsSend) {
-        if (!note.chorusEffectsSend) {
-          note.chorusEffectsSend = new GainNode(this.audioContext, {
-            gain: note.voiceParams.chorusEffectsSend,
-          });
-          note.volumeNode.connect(note.chorusEffectsSend);
-        }
-        note.chorusEffectsSend.connect(this.chorusEffect.input);
-      }
-    }
-  }
-
   setReverbEffectsSend(channel, note, prevValue) {
     if (0 < prevValue) {
       if (0 < note.voiceParams.reverbEffectsSend) {
@@ -1478,6 +1449,35 @@ export class Midy {
           note.volumeNode.connect(note.reverbEffectsSend);
         }
         note.reverbEffectsSend.connect(this.reverbEffect.input);
+      }
+    }
+  }
+
+  setChorusEffectsSend(channel, note, prevValue) {
+    if (0 < prevValue) {
+      if (0 < note.voiceParams.chorusEffectsSend) {
+        const now = this.audioContext.currentTime;
+        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+          channel,
+          note.noteNumber,
+          93,
+        );
+        const value = note.voiceParams.chorusEffectsSend + keyBasedValue;
+        note.chorusEffectsSend.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(value, now);
+      } else {
+        note.chorusEffectsSend.disconnect();
+      }
+    } else {
+      if (0 < note.voiceParams.chorusEffectsSend) {
+        if (!note.chorusEffectsSend) {
+          note.chorusEffectsSend = new GainNode(this.audioContext, {
+            gain: note.voiceParams.chorusEffectsSend,
+          });
+          note.volumeNode.connect(note.chorusEffectsSend);
+        }
+        note.chorusEffectsSend.connect(this.chorusEffect.input);
       }
     }
   }
@@ -2305,38 +2305,6 @@ export class Midy {
     this.updateDetune(channel);
   }
 
-  getChannelBitmap(data) {
-    const bitmap = new Array(16).fill(false);
-    const ff = data[4] & 0b11;
-    const gg = data[5] & 0x7F;
-    const hh = data[6] & 0x7F;
-    for (let bit = 0; bit < 7; bit++) {
-      if (hh & (1 << bit)) bitmap[bit] = true;
-    }
-    for (let bit = 0; bit < 7; bit++) {
-      if (gg & (1 << bit)) bitmap[bit + 7] = true;
-    }
-    for (let bit = 0; bit < 2; bit++) {
-      if (ff & (1 << bit)) bitmap[bit + 14] = true;
-    }
-    return bitmap;
-  }
-
-  handleScaleOctaveTuning1ByteFormat(data) {
-    if (data.length < 18) {
-      console.error("Data length is too short");
-      return;
-    }
-    const channelBitmap = this.getChannelBitmap(data);
-    for (let i = 0; i < channelBitmap.length; i++) {
-      if (!channelBitmap[i]) continue;
-      for (let j = 0; j < 12; j++) {
-        const value = data[j + 7] - 64; // cent
-        this.channels[i].scaleOctaveTuningTable[j] = value;
-      }
-    }
-  }
-
   handleGlobalParameterControlSysEx(data) {
     if (data[7] === 1) {
       switch (data[8]) {
@@ -2540,8 +2508,36 @@ export class Midy {
     return value * 0.00787;
   }
 
-  handleExclusiveMessage(data) {
-    console.warn(`Unsupported Exclusive Message: ${data}`);
+  getChannelBitmap(data) {
+    const bitmap = new Array(16).fill(false);
+    const ff = data[4] & 0b11;
+    const gg = data[5] & 0x7F;
+    const hh = data[6] & 0x7F;
+    for (let bit = 0; bit < 7; bit++) {
+      if (hh & (1 << bit)) bitmap[bit] = true;
+    }
+    for (let bit = 0; bit < 7; bit++) {
+      if (gg & (1 << bit)) bitmap[bit + 7] = true;
+    }
+    for (let bit = 0; bit < 2; bit++) {
+      if (ff & (1 << bit)) bitmap[bit + 14] = true;
+    }
+    return bitmap;
+  }
+
+  handleScaleOctaveTuning1ByteFormat(data) {
+    if (data.length < 18) {
+      console.error("Data length is too short");
+      return;
+    }
+    const channelBitmap = this.getChannelBitmap(data);
+    for (let i = 0; i < channelBitmap.length; i++) {
+      if (!channelBitmap[i]) continue;
+      for (let j = 0; j < 12; j++) {
+        const value = data[j + 7] - 64; // cent
+        this.channels[i].scaleOctaveTuningTable[j] = value;
+      }
+    }
   }
 
   getKeyBasedInstrumentControlValue(channel, keyNumber, controllerType) {
@@ -2561,6 +2557,10 @@ export class Midy {
       const index = keyNumber * 128 + controllerType;
       table[index] = value - 64;
     }
+  }
+
+  handleExclusiveMessage(data) {
+    console.warn(`Unsupported Exclusive Message: ${data}`);
   }
 
   handleSysEx(data) {
