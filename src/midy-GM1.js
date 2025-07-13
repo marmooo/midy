@@ -4,7 +4,7 @@ import { parse, SoundFont } from "@marmooo/soundfont-parser";
 class Note {
   bufferSource;
   filterNode;
-  volumeNode;
+  volumeEnvelope;
   volumeDepth;
   modulationLFO;
   modulationDepth;
@@ -562,7 +562,7 @@ export class MidyGM1 {
     const volAttack = volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay;
-    note.volumeNode.gain
+    note.volumeEnvelope.gain
       .cancelScheduledValues(now)
       .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
@@ -644,7 +644,7 @@ export class MidyGM1 {
     note.modulationLFO.connect(note.modulationDepth);
     note.modulationDepth.connect(note.bufferSource.detune);
     note.modulationLFO.connect(note.volumeDepth);
-    note.volumeDepth.connect(note.volumeNode.gain);
+    note.volumeDepth.connect(note.volumeEnvelope.gain);
   }
 
   async createNote(
@@ -659,7 +659,7 @@ export class MidyGM1 {
     const voiceParams = voice.getAllParams(state.array);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
-    note.volumeNode = new GainNode(this.audioContext);
+    note.volumeEnvelope = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10, // dB
@@ -671,7 +671,7 @@ export class MidyGM1 {
       this.startModulation(channel, note, startTime);
     }
     note.bufferSource.connect(note.filterNode);
-    note.filterNode.connect(note.volumeNode);
+    note.filterNode.connect(note.volumeEnvelope);
     note.bufferSource.start(startTime);
     return note;
   }
@@ -698,8 +698,8 @@ export class MidyGM1 {
       startTime,
       isSF3,
     );
-    note.volumeNode.connect(channel.gainL);
-    note.volumeNode.connect(channel.gainR);
+    note.volumeEnvelope.connect(channel.gainL);
+    note.volumeEnvelope.connect(channel.gainR);
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
@@ -733,7 +733,7 @@ export class MidyGM1 {
 
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
-    note.volumeNode.gain
+    note.volumeEnvelope.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, stopTime);
     note.ending = true;
@@ -744,8 +744,8 @@ export class MidyGM1 {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
         note.bufferSource.disconnect();
-        note.volumeNode.disconnect();
         note.filterNode.disconnect();
+        note.volumeEnvelope.disconnect();
         if (note.modulationDepth) {
           note.volumeDepth.disconnect();
           note.modulationDepth.disconnect();

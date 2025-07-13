@@ -4,7 +4,10 @@ import { parse, SoundFont } from "@marmooo/soundfont-parser";
 class Note {
   bufferSource;
   filterNode;
+  volumeEnvelopeNode;
   volumeNode;
+  gainL;
+  gainR;
   volumeDepth;
   modulationLFO;
   modulationDepth;
@@ -147,6 +150,7 @@ export class MidyGM2 {
     currentBufferSource: null,
     detune: 0,
     scaleOctaveTuningTable: new Array(12).fill(0), // cent
+    keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
     program: 0,
     bank: 121 * 128,
     bankMSB: 121,
@@ -842,12 +846,10 @@ export class MidyGM2 {
     return 8.176 * this.centToRate(cent);
   }
 
-  calcDetune(channel, note) {
+  calcChannelDetune(channel) {
     const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
-    const scaleOctaveTuning =
-      channel.scaleOctaveTuningTable[note.noteNumber % 12];
-    const tuning = masterTuning + channelTuning + scaleOctaveTuning;
+    const tuning = masterTuning + channelTuning;
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
@@ -880,7 +882,7 @@ export class MidyGM2 {
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const portamentoTime = volDelay + channel.state.portamentoTime;
-    note.volumeNode.gain
+    note.volumeEnvelopeNode.gain
       .cancelScheduledValues(now)
       .setValueAtTime(0, volDelay)
       .linearRampToValueAtTime(sustainVolume, portamentoTime);
@@ -895,7 +897,7 @@ export class MidyGM2 {
     const volAttack = volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay;
-    note.volumeNode.gain
+    note.volumeEnvelopeNode.gain
       .cancelScheduledValues(now)
       .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
@@ -1005,7 +1007,7 @@ export class MidyGM2 {
     note.modulationLFO.connect(note.modulationDepth);
     note.modulationDepth.connect(note.bufferSource.detune);
     note.modulationLFO.connect(note.volumeDepth);
-    note.volumeDepth.connect(note.volumeNode.gain);
+    note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
   }
 
   startVibrato(channel, note, startTime) {
@@ -1043,6 +1045,9 @@ export class MidyGM2 {
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeNode = new GainNode(this.audioContext);
+    note.gainL = new GainNode(this.audioContext);
+    note.gainR = new GainNode(this.audioContext);
+    note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10, // dB
@@ -1068,7 +1073,10 @@ export class MidyGM2 {
       channel.currentBufferSource = note.bufferSource;
     }
     note.bufferSource.connect(note.filterNode);
-    note.filterNode.connect(note.volumeNode);
+    note.filterNode.connect(note.volumeEnvelopeNode);
+    note.volumeEnvelopeNode.connect(note.volumeNode);
+    note.volumeNode.connect(note.gainL);
+    note.volumeNode.connect(note.gainR);
 
     if (0 < channel.chorusSendLevel) {
       this.setChorusEffectsSend(channel, note, 0);
@@ -1120,8 +1128,8 @@ export class MidyGM2 {
       portamento,
       isSF3,
     );
-    note.volumeNode.connect(channel.gainL);
-    note.volumeNode.connect(channel.gainR);
+    note.gainL.connect(channel.gainL);
+    note.gainR.connect(channel.gainR);
     if (channel.state.sostenutoPedal) {
       channel.sostenutoNotes.set(noteNumber, note);
     }
@@ -1164,7 +1172,7 @@ export class MidyGM2 {
 
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
-    note.volumeNode.gain
+    note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, stopTime);
     note.ending = true;
@@ -1175,8 +1183,11 @@ export class MidyGM2 {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
         note.bufferSource.disconnect();
-        note.volumeNode.disconnect();
         note.filterNode.disconnect();
+        note.volumeEnvelopeNode.disconnect();
+        note.volumeNode.disconnect();
+        note.gainL.disconnect();
+        note.gainR.disconnect();
         if (note.modulationDepth) {
           note.volumeDepth.disconnect();
           note.modulationDepth.disconnect();
@@ -1382,11 +1393,16 @@ export class MidyGM2 {
       .setValueAtTime(volumeDepth * volumeDepthSign, now);
   }
 
-  setChorusEffectsSend(note, prevValue) {
+  setChorusEffectsSend(channel, note, prevValue) {
     if (0 < prevValue) {
       if (0 < note.voiceParams.chorusEffectsSend) {
         const now = this.audioContext.currentTime;
-        const value = note.voiceParams.chorusEffectsSend;
+        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+          channel,
+          note.noteNumber,
+          93,
+        );
+        const value = note.voiceParams.chorusEffectsSend + keyBasedValue;
         note.chorusEffectsSend.gain
           .cancelScheduledValues(now)
           .setValueAtTime(value, now);
@@ -1406,11 +1422,16 @@ export class MidyGM2 {
     }
   }
 
-  setReverbEffectsSend(note, prevValue) {
+  setReverbEffectsSend(channel, note, prevValue) {
     if (0 < prevValue) {
       if (0 < note.voiceParams.reverbEffectsSend) {
         const now = this.audioContext.currentTime;
-        const value = note.voiceParams.reverbEffectsSend;
+        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+          channel,
+          note.noteNumber,
+          91,
+        );
+        const value = note.voiceParams.reverbEffectsSend + keyBasedValue;
         note.reverbEffectsSend.gain
           .cancelScheduledValues(now)
           .setValueAtTime(value, now);
@@ -1465,11 +1486,11 @@ export class MidyGM2 {
       modLfoToVolume: (channel, note) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
       },
-      chorusEffectsSend: (_channel, note, prevValue) => {
-        this.setChorusEffectsSend(note, prevValue);
+      chorusEffectsSend: (channel, note, prevValue) => {
+        this.setChorusEffectsSend(channel, note, prevValue);
       },
-      reverbEffectsSend: (_channel, note, prevValue) => {
-        this.setReverbEffectsSend(note, prevValue);
+      reverbEffectsSend: (channel, note, prevValue) => {
+        this.setReverbEffectsSend(channel, note, prevValue);
       },
       delayModLFO: (_channel, note, _prevValue) => this.setDelayModLFO(note),
       freqModLFO: (_channel, note, _prevValue) => this.setFreqModLFO(note),
@@ -1634,10 +1655,30 @@ export class MidyGM2 {
     channel.state.portamentoTime = Math.exp(factor * portamentoTime);
   }
 
+  setKeyBasedVolume(channel) {
+    const now = this.audioContext.currentTime;
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+          channel,
+          note.noteNumber,
+          7,
+        );
+        if (keyBasedValue === 0) continue;
+        note.volumeNode.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(1 + keyBasedValue, now);
+      }
+    });
+  }
+
   setVolume(channelNumber, volume) {
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel);
+    this.setKeyBasedVolume(channel);
   }
 
   panToGain(pan) {
@@ -1648,10 +1689,34 @@ export class MidyGM2 {
     };
   }
 
+  setKeyBasedPan(channel) {
+    const now = this.audioContext.currentTime;
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+          channel,
+          note.noteNumber,
+          10,
+        );
+        if (keyBasedValue === 0) continue;
+        const { gainLeft, gainRight } = this.panToGain((keyBasedValue + 1) / 2);
+        note.gainL.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(gainLeft, now);
+        note.gainR.gain
+          .cancelScheduledValues(now)
+          .setValueAtTime(gainRight, now);
+      }
+    });
+  }
+
   setPan(channelNumber, pan) {
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel);
+    this.setKeyBasedPan(channel);
   }
 
   setExpression(channelNumber, expression) {
@@ -1720,7 +1785,7 @@ export class MidyGM2 {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            this.setReverbEffectsSend(note, 0);
+            this.setReverbEffectsSend(channel, note, 0);
           }
         });
         state.reverbSendLevel = reverbSendLevel / 127;
@@ -1757,7 +1822,7 @@ export class MidyGM2 {
           for (let i = 0; i < noteList.length; i++) {
             const note = noteList[i];
             if (!note) continue;
-            this.setChorusEffectsSend(note, 0);
+            this.setChorusEffectsSend(channel, note, 0);
           }
         });
         state.chorusSendLevel = chorusSendLevel / 127;
@@ -2042,9 +2107,8 @@ export class MidyGM2 {
         break;
       case 10:
         switch (data[3]) {
-          // case 1:
-          //   // TODO
-          //   return this.handleKeyBasedInstrumentControl();
+          case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca23.pdf
+            return this.handleKeyBasedInstrumentControl(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2332,6 +2396,25 @@ export class MidyGM2 {
 
   handleExclusiveMessage(data) {
     console.warn(`Unsupported Exclusive Message: ${data}`);
+  }
+
+  getKeyBasedInstrumentControlValue(channel, keyNumber, controllerType) {
+    const index = keyNumber * 128 + controllerType;
+    const controlValue = channel.keyBasedInstrumentControlTable[index];
+    return (controlValue + 64) / 64;
+  }
+
+  handleKeyBasedInstrumentControl(data) {
+    const channelNumber = data[4];
+    const keyNumber = data[5];
+    const channel = this.channels[channelNumber];
+    const table = channel.keyBasedInstrumentControlTable;
+    for (let i = 6; i < data.length - 1; i += 2) {
+      const controllerType = data[i];
+      const value = data[i + 1];
+      const index = keyNumber * 128 + controllerType;
+      table[index] = value - 64;
+    }
   }
 
   handleSysEx(data) {
