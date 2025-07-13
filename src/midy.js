@@ -2223,7 +2223,7 @@ export class Midy {
             return this.handleMasterFineTuningSysEx(data);
           case 4: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
             return this.handleMasterCoarseTuningSysEx(data);
-          case 5:
+          case 5: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca24.pdf
             return this.handleGlobalParameterControlSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
