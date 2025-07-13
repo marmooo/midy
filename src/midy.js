@@ -2234,7 +2234,7 @@ export class Midy {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
             // TODO: realtime
-            return this.handleScaleOctaveTuning1ByteFormat(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2254,7 +2254,7 @@ export class Midy {
       case 10:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca23.pdf
-            return this.handleKeyBasedInstrumentControl(data);
+            return this.handleKeyBasedInstrumentControlSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2525,7 +2525,7 @@ export class Midy {
     return bitmap;
   }
 
-  handleScaleOctaveTuning1ByteFormat(data) {
+  handleScaleOctaveTuning1ByteFormatSysEx(data) {
     if (data.length < 18) {
       console.error("Data length is too short");
       return;
@@ -2546,7 +2546,7 @@ export class Midy {
     return (controlValue + 64) / 64;
   }
 
-  handleKeyBasedInstrumentControl(data) {
+  handleKeyBasedInstrumentControlSysEx(data) {
     const channelNumber = data[4];
     const keyNumber = data[5];
     const channel = this.channels[channelNumber];
