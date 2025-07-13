@@ -1387,12 +1387,12 @@ export class Midy {
   setModLfoToPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToPitch = note.voiceParams.modLfoToPitch;
-    const modulationDepth = Math.abs(modLfoToPitch) +
+    const baseDepth = Math.abs(modLfoToPitch) +
       channel.state.modulationDepth;
-    const modulationDepthSign = (0 < modLfoToPitch) ? 1 : -1;
+    const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
     note.modulationDepth.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(modulationDepth * modulationDepthSign, now);
+      .setValueAtTime(modulationDepth, now);
   }
 
   setVibLfoToPitch(channel, note) {
@@ -1417,11 +1417,11 @@ export class Midy {
   setModLfoToVolume(note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
-    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepthSign = (0 < modLfoToVolume) ? 1 : -1;
+    const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const volumeDepth = baseDepth * Math.sign(modLfoToVolume);
     note.volumeDepth.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volumeDepth * volumeDepthSign, now);
+      .setValueAtTime(volumeDepth, now);
   }
 
   setReverbEffectsSend(channel, note, prevValue) {
