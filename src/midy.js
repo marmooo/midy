@@ -2167,7 +2167,7 @@ export class Midy {
         switch (data[3]) {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormat(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
