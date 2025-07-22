@@ -878,13 +878,19 @@ export class MidyGM2 {
     });
   }
 
+  getPortamentoTime(channel) {
+    const factor = 5 * Math.log(10) / 127;
+    const time = channel.state.portamentoTime;
+    return Math.log(time) / factor;
+  }
+
   setPortamentoStartVolumeEnvelope(channel, note) {
     const now = this.audioContext.currentTime;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
-    const portamentoTime = volDelay + channel.state.portamentoTime;
+    const portamentoTime = volDelay + this.getPortamentoTime(channel);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(now)
       .setValueAtTime(0, volDelay)
@@ -959,7 +965,7 @@ export class MidyGM2 {
       (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const portamentoTime = startTime + channel.state.portamentoTime;
+    const portamentoTime = startTime + this.getPortamentoTime(channel);
     const modDelay = startTime + voiceParams.modDelay;
     note.filterNode.frequency
       .cancelScheduledValues(now)
@@ -1247,7 +1253,7 @@ export class MidyGM2 {
         const stopTime = Math.min(volRelease, modRelease);
         return this.stopNote(endTime, stopTime, scheduledNotes, i);
       } else {
-        const portamentoTime = endTime + state.portamentoTime;
+        const portamentoTime = endTime + this.getPortamentoTime(channel);
         const deltaNote = portamentoNoteNumber - noteNumber;
         const baseRate = note.voiceParams.playbackRate;
         const targetRate = baseRate * Math.pow(2, deltaNote / 12);
