@@ -1,6 +1,6 @@
 {
   "imports": {
-    "@deno/dnt": "jsr:@deno/dnt@^0.42.1",
+    "@deno/dnt": "jsr:@deno/dnt@^0.42.3",
     "@luca/esbuild-deno-loader": "jsr:@luca/esbuild-deno-loader@^0.11.1",
     "@marmooo/soundfont-parser": "npm:@marmooo/soundfont-parser@^0.1.1",
     "esbuild": "npm:esbuild@^0.25.4",
