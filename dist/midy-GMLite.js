@@ -2187,7 +2187,7 @@ var SoundFont = class {
 var Note = class {
   bufferSource;
   filterNode;
-  volumeNode;
+  volumeEnvelopeNode;
   volumeDepth;
   modulationLFO;
   modulationDepth;
@@ -2697,7 +2697,7 @@ var MidyGMLite = class {
     const volAttack = volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay;
-    note.volumeNode.gain.cancelScheduledValues(now).setValueAtTime(0, startTime2).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).linearRampToValueAtTime(sustainVolume, volDecay);
+    note.volumeEnvelopeNode.gain.cancelScheduledValues(now).setValueAtTime(0, startTime2).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).linearRampToValueAtTime(sustainVolume, volDecay);
   }
   setPitchEnvelope(note) {
     const now = this.audioContext.currentTime;
@@ -2755,14 +2755,14 @@ var MidyGMLite = class {
     note.modulationLFO.connect(note.modulationDepth);
     note.modulationDepth.connect(note.bufferSource.detune);
     note.modulationLFO.connect(note.volumeDepth);
-    note.volumeDepth.connect(note.volumeNode.gain);
+    note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
   }
   async createNote(channel, voice, noteNumber, velocity, startTime2, isSF3) {
     const state = channel.state;
     const voiceParams = voice.getAllParams(state.array);
     const note = new Note(noteNumber, velocity, startTime2, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
-    note.volumeNode = new GainNode(this.audioContext);
+    note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10
@@ -2775,7 +2775,7 @@ var MidyGMLite = class {
       this.startModulation(channel, note, startTime2);
     }
     note.bufferSource.connect(note.filterNode);
-    note.filterNode.connect(note.volumeNode);
+    note.filterNode.connect(note.volumeEnvelopeNode);
     note.bufferSource.start(startTime2);
     return note;
   }
@@ -2801,8 +2801,8 @@ var MidyGMLite = class {
       startTime2,
       isSF3
     );
-    note.volumeNode.connect(channel.gainL);
-    note.volumeNode.connect(channel.gainR);
+    note.volumeEnvelopeNode.connect(channel.gainL);
+    note.volumeEnvelopeNode.connect(channel.gainR);
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
@@ -2837,7 +2837,7 @@ var MidyGMLite = class {
   }
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
-    note.volumeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, stopTime);
+    note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, stopTime);
     note.ending = true;
     this.scheduleTask(() => {
       note.bufferSource.loop = false;
@@ -2846,8 +2846,8 @@ var MidyGMLite = class {
       note.bufferSource.onended = () => {
         scheduledNotes[index] = null;
         note.bufferSource.disconnect();
-        note.volumeNode.disconnect();
         note.filterNode.disconnect();
+        note.volumeEnvelopeNode.disconnect();
         if (note.modulationDepth) {
           note.volumeDepth.disconnect();
           note.modulationDepth.disconnect();
@@ -2933,9 +2933,9 @@ var MidyGMLite = class {
   setModLfoToPitch(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToPitch = note.voiceParams.modLfoToPitch;
-    const modulationDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-    const modulationDepthSign = 0 < modLfoToPitch ? 1 : -1;
-    note.modulationDepth.gain.cancelScheduledValues(now).setValueAtTime(modulationDepth * modulationDepthSign, now);
+    const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+    const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+    note.modulationDepth.gain.cancelScheduledValues(now).setValueAtTime(modulationDepth, now);
   }
   setModLfoToFilterFc(note) {
     const now = this.audioContext.currentTime;
@@ -2945,9 +2945,9 @@ var MidyGMLite = class {
   setModLfoToVolume(note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
-    const volumeDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepthSign = 0 < modLfoToVolume ? 1 : -1;
-    note.volumeDepth.gain.cancelScheduledValues(now).setValueAtTime(volumeDepth * volumeDepthSign, now);
+    const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const volumeDepth = baseDepth * Math.sign(modLfoToVolume);
+    note.volumeDepth.gain.cancelScheduledValues(now).setValueAtTime(volumeDepth, now);
   }
   setDelayModLFO(note) {
     const now = this.audioContext.currentTime;
