@@ -991,15 +991,13 @@ export class MidyGMLite {
 
   updateModulation(channel) {
     const now = this.audioContext.currentTime;
+    const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
         if (note.modulationDepth) {
-          note.modulationDepth.gain.setValueAtTime(
-            channel.state.modulationDepth,
-            now,
-          );
+          note.modulationDepth.gain.setValueAtTime(depth, now);
         } else {
           this.setPitchEnvelope(note);
           this.startModulation(channel, note, now);
@@ -1010,8 +1008,7 @@ export class MidyGMLite {
 
   setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.state.modulationDepth = (modulation / 127) *
-      channel.modulationDepthRange;
+    channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {
