@@ -119,11 +119,11 @@ export class MidyGM1 {
 
   constructor(audioContext) {
     this.audioContext = audioContext;
-    this.masterGain = new GainNode(audioContext);
+    this.masterVolume = new GainNode(audioContext);
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
-    this.masterGain.connect(audioContext.destination);
+    this.masterVolume.connect(audioContext.destination);
     this.GM1SystemOn();
   }
 
@@ -176,7 +176,7 @@ export class MidyGM1 {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    merger.connect(this.masterGain);
+    merger.connect(this.masterVolume);
     return {
       gainL,
       gainR,
@@ -1296,8 +1296,8 @@ export class MidyGM1 {
       console.error("Master Volume is out of range");
     } else {
       const now = this.audioContext.currentTime;
-      this.masterGain.gain.cancelScheduledValues(now);
-      this.masterGain.gain.setValueAtTime(volume * volume, now);
+      this.masterVolume.gain.cancelScheduledValues(now);
+      this.masterVolume.gain.setValueAtTime(volume * volume, now);
     }
   }
 
