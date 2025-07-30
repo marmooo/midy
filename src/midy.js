@@ -1389,11 +1389,13 @@ export class Midy {
     if (channel.pressureTable[0] !== 64) {
       this.updateDetune(channel);
     }
-    if (channel.pressureTable[1] !== 64 && !note.portamento) {
-      this.setFilterEnvelope(channel, note);
-    }
-    if (channel.pressureTable[2] !== 64 && !note.portamento) {
-      this.setVolumeEnvelope(channel, note);
+    if (!note.portamento) {
+      if (channel.pressureTable[1] !== 64) {
+        this.setFilterEnvelope(channel, note);
+      }
+      if (channel.pressureTable[2] !== 64) {
+        this.setVolumeEnvelope(channel, note);
+      }
     }
     if (channel.pressureTable[3] !== 0) {
       this.setModLfoToPitch(channel, note);
