@@ -281,6 +281,7 @@ export class MidyGM2 {
       return {
         ...this.constructor.channelSettings,
         state: new ControllerState(),
+        controlTable: this.initControlTable(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new Map(),
         sostenutoNotes: new Map(),
@@ -1344,11 +1345,12 @@ export class MidyGM2 {
       const pressureDepth = (channel.pressureTable[0] - 64) / 37.5; // 2400 / 64;
       channel.detune += pressureDepth * (next - prev);
     }
+    const table = channel.pressureTable;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        this.setChannelPressure(channel, note);
+        this.applyDestinationSettings(channel, note, table);
       }
     });
     // this.applyVoiceParams(channel, 13);
@@ -1660,8 +1662,8 @@ export class MidyGM2 {
     if (handler) {
       handler.call(this, channelNumber, value);
       const channel = this.channels[channelNumber];
-      const controller = 128 + controllerType;
-      this.applyVoiceParams(channel, controller);
+      this.applyVoiceParams(channel, controller + 128);
+      this.applyControlTable(channel, controllerType);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -2143,9 +2145,8 @@ export class MidyGM2 {
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
             return this.handleChannelPressureSysEx(data);
-          // case 3:
-          //   // TODO
-          //   return this.setControlChange();
+          case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
+            return this.handleControlChangeSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2439,10 +2440,69 @@ export class MidyGM2 {
     }
   }
 
+  applyDestinationSettings(channel, note, table) {
+    if (table[0] !== 64) {
+      this.updateDetune(channel);
+    }
+    if (!note.portamento) {
+      if (table[1] !== 64) {
+        this.setFilterEnvelope(channel, note);
+      }
+      if (table[2] !== 64) {
+        this.setVolumeEnvelope(channel, note);
+      }
+    }
+    if (table[3] !== 0) {
+      this.setModLfoToPitch(channel, note);
+    }
+    if (table[4] !== 0) {
+      this.setModLfoToFilterFc(channel, note);
+    }
+    if (table[5] !== 0) {
+      this.setModLfoToVolume(channel, note);
+    }
+  }
+
   handleChannelPressureSysEx(data) {
     const channelNumber = data[4];
     const table = this.channels[channelNumber].pressureTable;
     for (let i = 5; i < data.length - 1; i += 2) {
+      const pp = data[i];
+      const rr = data[i + 1];
+      table[pp] = rr;
+    }
+  }
+
+  initControlTable() {
+    const channelCount = 128;
+    const slotSize = 6;
+    const defaultValues = [64, 64, 64, 0, 0, 0];
+    const table = new Uint8Array(channelCount * slotSize);
+    for (let ch = 0; ch < channelCount; ch++) {
+      const offset = ch * slotSize;
+      table.set(defaultValues, offset);
+    }
+    return table;
+  }
+
+  applyControlTable(channel, controllerType) {
+    const slotSize = 6;
+    const offset = controllerType * slotSize;
+    const table = channel.controlTable.subarray(offset, offset + slotSize);
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        this.applyDestinationSettings(channel, note, table);
+      }
+    });
+  }
+
+  handleControlChangeSysEx(data) {
+    const channelNumber = data[4];
+    const controllerType = data[5];
+    const table = this.channels[channelNumber].controlTable[controllerType];
+    for (let i = 6; i < data.length - 1; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
       table[pp] = rr;
