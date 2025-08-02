@@ -1026,6 +1026,8 @@ export class MidyGM1 {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value);
+      const channel = this.channels[channelNumber];
+      this.applyVoiceParams(channel, controller + 128);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
