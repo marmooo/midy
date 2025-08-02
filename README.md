@@ -1,10 +1,9 @@
 # Midy
 
-A MIDI player/synthesizer written in JavaScript that supports GM-Lite/GM1 and
-SF2/SF3.
+A MIDI player/synthesizer written in JavaScript that supports GM-Lite/GM1/GM2
+and SF2/SF3.
 
-This library provides several files depending on the implementation level. GM2
-support is in progress and should be completed soon.
+This library provides several files depending on the implementation level.
 
 - midy-GMLite.js: support minimal GM-Lite (ref:
   [en](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/gml-v1.pdf),
@@ -16,7 +15,6 @@ support is in progress and should be completed soon.
   [en v1.2a](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/GM2-v12a.pdf),
   [en v1.0](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp24(e).pdf),
   [ja v1.0](https://amei.or.jp/midistandardcommittee/Recommended_Practice/GM2_japanese.pdf))
-  (in progress)
 - midy.js: full implementation (in progress)
 
 ## Usage
