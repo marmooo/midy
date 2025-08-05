@@ -1561,9 +1561,10 @@ export class MidyGM2 {
       freqVibLFO: (channel, note, _prevValue) => {
         if (0 < channel.state.vibratoDepth) {
           const now = this.audioContext.currentTime;
+          const freqVibLFO = note.voiceParams.freqVibLFO;
           note.vibratoLFO.frequency
             .cancelScheduledValues(now)
-            .setValueAtTime(value * channel.state.vibratoRate, now);
+            .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
         }
       },
     };
