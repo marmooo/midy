@@ -1560,6 +1560,7 @@ export class Midy {
           const prevStartTime = note.startTime +
             prevValue * channel.state.vibratoDelay * 2;
           if (now < prevStartTime) return;
+          const value = note.voiceParams.delayVibLFO;
           const startTime = note.startTime +
             value * channel.state.vibratoDelay * 2;
           note.vibratoLFO.stop(now);
