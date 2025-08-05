@@ -930,12 +930,11 @@ export class MidyGM1 {
       delayVibLFO: (channel, note, prevValue) => {
         if (0 < channel.state.vibratoDepth) {
           const now = this.audioContext.currentTime;
-          const prevStartTime = note.startTime +
-            prevValue * channel.state.vibratoDelay * 2;
+          const vibratoDelay = channel.state.vibratoDelay * 2;
+          const prevStartTime = note.startTime + prevValue * vibratoDelay;
           if (now < prevStartTime) return;
           const value = note.voiceParams.delayVibLFO;
-          const startTime = note.startTime +
-            value * channel.state.vibratoDelay * 2;
+          const startTime = note.startTime + value * vibratoDelay;
           note.vibratoLFO.stop(now);
           note.vibratoLFO.start(startTime);
         }
