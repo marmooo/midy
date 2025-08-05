@@ -1533,7 +1533,7 @@ export class MidyGM2 {
           this.setModLfoToFilterFc(channel, note);
         }
       },
-      modLfoToVolume: (channel, note) => {
+      modLfoToVolume: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToVolume(channel, note);
         }

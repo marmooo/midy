@@ -920,7 +920,7 @@ export class MidyGM1 {
       modLfoToFilterFc: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
       },
-      modLfoToVolume: (channel, note) => {
+      modLfoToVolume: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
       },
       chorusEffectsSend: (_channel, _note, _prevValue) => {},
