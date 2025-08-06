@@ -2289,11 +2289,11 @@ var MidyGMLite = class {
   };
   constructor(audioContext) {
     this.audioContext = audioContext;
-    this.masterGain = new GainNode(audioContext);
+    this.masterVolume = new GainNode(audioContext);
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
-    this.masterGain.connect(audioContext.destination);
+    this.masterVolume.connect(audioContext.destination);
     this.GM1SystemOn();
   }
   initSoundFontTable() {
@@ -2341,7 +2341,7 @@ var MidyGMLite = class {
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
-    merger.connect(this.masterGain);
+    merger.connect(this.masterVolume);
     return {
       gainL,
       gainR,
@@ -2974,7 +2974,7 @@ var MidyGMLite = class {
       modLfoToFilterFc: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
       },
-      modLfoToVolume: (channel, note) => {
+      modLfoToVolume: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
       },
       chorusEffectsSend: (_channel, _note, _prevValue) => {
@@ -3062,6 +3062,8 @@ var MidyGMLite = class {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value);
+      const channel = this.channels[channelNumber];
+      this.applyVoiceParams(channel, controller + 128);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`
@@ -3070,15 +3072,13 @@ var MidyGMLite = class {
   }
   updateModulation(channel) {
     const now = this.audioContext.currentTime;
+    const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
         if (note.modulationDepth) {
-          note.modulationDepth.gain.setValueAtTime(
-            channel.state.modulationDepth,
-            now
-          );
+          note.modulationDepth.gain.setValueAtTime(depth, now);
         } else {
           this.setPitchEnvelope(note);
           this.startModulation(channel, note, now);
@@ -3088,7 +3088,7 @@ var MidyGMLite = class {
   }
   setModulationDepth(channelNumber, modulation) {
     const channel = this.channels[channelNumber];
-    channel.state.modulationDepth = modulation / 127 * channel.modulationDepthRange;
+    channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel);
   }
   setVolume(channelNumber, volume) {
@@ -3259,8 +3259,8 @@ var MidyGMLite = class {
       console.error("Master Volume is out of range");
     } else {
       const now = this.audioContext.currentTime;
-      this.masterGain.gain.cancelScheduledValues(now);
-      this.masterGain.gain.setValueAtTime(volume * volume, now);
+      this.masterVolume.gain.cancelScheduledValues(now);
+      this.masterVolume.gain.setValueAtTime(volume * volume, now);
     }
   }
   handleExclusiveMessage(data) {
