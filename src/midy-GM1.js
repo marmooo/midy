@@ -945,7 +945,7 @@ export class MidyGM1 {
           const freqVibLFO = note.voiceParams.freqVibLFO;
           note.vibratoLFO.frequency
             .cancelScheduledValues(now)
-            .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+            .setValueAtTime(freqVibLFO * channel.state.vibratoRate * 2, now);
         }
       },
     };

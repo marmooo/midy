@@ -1030,8 +1030,7 @@ export class MidyGM2 {
     const { voiceParams } = note;
     const state = channel.state;
     note.vibratoLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(voiceParams.freqVibLFO) *
-        state.vibratoRate,
+      frequency: this.centToHz(voiceParams.freqVibLFO) * state.vibratoRate * 2,
     });
     note.vibratoLFO.start(
       startTime + voiceParams.delayVibLFO * state.vibratoDelay * 2,
@@ -1521,7 +1520,7 @@ export class MidyGM2 {
     const freqVibLFO = note.voiceParams.freqVibLFO;
     note.vibratoLFO.frequency
       .cancelScheduledValues(now)
-      .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+      .setValueAtTime(freqVibLFO * channel.state.vibratoRate * 2, now);
   }
 
   createVoiceParamsHandlers() {
