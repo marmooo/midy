@@ -1524,6 +1524,14 @@ export class Midy {
       .setValueAtTime(freqModLFO, now);
   }
 
+  setFreqVibLFO(channel, note) {
+    const now = this.audioContext.currentTime;
+    const freqVibLFO = note.voiceParams.freqVibLFO;
+    note.vibratoLFO.frequency
+      .cancelScheduledValues(now)
+      .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+  }
+
   createVoiceParamsHandlers() {
     return {
       modLfoToPitch: (channel, note, _prevValue) => {
@@ -1568,11 +1576,7 @@ export class Midy {
       },
       freqVibLFO: (channel, note, _prevValue) => {
         if (0 < channel.state.vibratoDepth) {
-          const now = this.audioContext.currentTime;
-          const freqVibLFO = note.voiceParams.freqVibLFO;
-          note.vibratoLFO.frequency
-            .cancelScheduledValues(now)
-            .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+          this.setFreqVibLFO(channel, note);
         }
       },
     };
@@ -1905,12 +1909,12 @@ export class Midy {
     const channel = this.channels[channelNumber];
     channel.state.vibratoRate = vibratoRate / 64;
     if (channel.vibratoDepth <= 0) return;
-    const now = this.audioContext.currentTime;
-    const activeNotes = this.getActiveNotes(channel, now);
-    activeNotes.forEach((activeNote) => {
-      activeNote.vibratoLFO.frequency
-        .cancelScheduledValues(now)
-        .setValueAtTime(channel.state.vibratoRate, now);
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        this.setFreqVibLFO(channel, note);
+      }
     });
   }
 

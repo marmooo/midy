@@ -1516,6 +1516,14 @@ export class MidyGM2 {
       .setValueAtTime(freqModLFO, now);
   }
 
+  setFreqVibLFO(channel, note) {
+    const now = this.audioContext.currentTime;
+    const freqVibLFO = note.voiceParams.freqVibLFO;
+    note.vibratoLFO.frequency
+      .cancelScheduledValues(now)
+      .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+  }
+
   createVoiceParamsHandlers() {
     return {
       modLfoToPitch: (channel, note, _prevValue) => {
@@ -1560,11 +1568,7 @@ export class MidyGM2 {
       },
       freqVibLFO: (channel, note, _prevValue) => {
         if (0 < channel.state.vibratoDepth) {
-          const now = this.audioContext.currentTime;
-          const freqVibLFO = note.voiceParams.freqVibLFO;
-          note.vibratoLFO.frequency
-            .cancelScheduledValues(now)
-            .setValueAtTime(freqVibLFO * channel.state.vibratoRate, now);
+          this.setFreqVibLFO(channel, note);
         }
       },
     };
