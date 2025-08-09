@@ -1943,6 +1943,15 @@ export class Midy {
   setVibratoDelay(channelNumber, vibratoDelay) {
     const channel = this.channels[channelNumber];
     channel.state.vibratoDelay = vibratoDelay / 64;
+    if (0 < channel.state.vibratoDepth) {
+      channel.scheduledNotes.forEach((noteList) => {
+        for (let i = 0; i < noteList.length; i++) {
+          const note = noteList[i];
+          if (!note) continue;
+          this.startVibrato(channel, note, note.startTime);
+        }
+      });
+    }
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel) {
