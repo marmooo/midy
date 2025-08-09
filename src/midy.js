@@ -913,7 +913,7 @@ export class Midy {
     const state = channel.state;
     const { voiceParams, startTime } = note;
     const pressureDepth = channel.pressureTable[2] / 64;
-    const pressure = 1 + pressureDepth * channel.state.channelPressure;
+    const pressure = 1 + pressureDepth * state.channelPressure;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
       pressure;
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
