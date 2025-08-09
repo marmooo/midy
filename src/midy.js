@@ -1919,14 +1919,25 @@ export class Midy {
 
   setVibratoDepth(channelNumber, vibratoDepth) {
     const channel = this.channels[channelNumber];
+    const prev = channel.state.vibratoDepth;
     channel.state.vibratoDepth = vibratoDepth / 64;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        this.setFreqVibLFO(channel, note);
-      }
-    });
+    if (0 < prev) {
+      channel.scheduledNotes.forEach((noteList) => {
+        for (let i = 0; i < noteList.length; i++) {
+          const note = noteList[i];
+          if (!note) continue;
+          this.setFreqVibLFO(channel, note);
+        }
+      });
+    } else {
+      channel.scheduledNotes.forEach((noteList) => {
+        for (let i = 0; i < noteList.length; i++) {
+          const note = noteList[i];
+          if (!note) continue;
+          this.startVibrato(channel, note, note.startTime);
+        }
+      });
+    }
   }
 
   setVibratoDelay(channelNumber, vibratoDelay) {
