@@ -150,7 +150,7 @@ export class Midy {
     currentBufferSource: null,
     detune: 0,
     scaleOctaveTuningTable: new Array(12).fill(0), // cent
-    pressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
+    channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
     program: 0,
     bank: 121 * 128,
@@ -865,7 +865,7 @@ export class Midy {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const pressureDepth = (channel.pressureTable[0] - 64) / 37.5; // 2400 / 64;
+    const pressureDepth = (channel.channelPressureTable[0] - 64) / 37.5; // 2400 / 64;
     const pressure = pressureDepth * channel.state.channelPressure;
     return tuning + pitch + pressure;
   }
@@ -912,7 +912,7 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const state = channel.state;
     const { voiceParams, startTime } = note;
-    const pressureDepth = channel.pressureTable[2] / 64;
+    const pressureDepth = channel.channelPressureTable[2] / 64;
     const pressure = 1 + pressureDepth * state.channelPressure;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
       pressure;
@@ -990,7 +990,7 @@ export class Midy {
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
-    const pressureDepth = (channel.pressureTable[1] - 64) * 15;
+    const pressureDepth = (channel.channelPressureTable[1] - 64) * 15;
     const pressure = pressureDepth * channel.state.channelPressure;
     const baseCent = voiceParams.initialFilterFc + pressure;
     const baseFreq = this.centToHz(baseCent) * softPedalFactor *
@@ -1371,11 +1371,11 @@ export class Midy {
     const prev = channel.state.channelPressure;
     const next = value / 127;
     channel.state.channelPressure = next;
-    if (channel.pressureTable[0] !== 64) {
-      const pressureDepth = (channel.pressureTable[0] - 64) / 37.5; // 2400 / 64;
+    if (channel.channelPressureTable[0] !== 64) {
+      const pressureDepth = (channel.channelPressureTable[0] - 64) / 37.5; // 2400 / 64;
       channel.detune += pressureDepth * (next - prev);
     }
-    const table = channel.pressureTable;
+    const table = channel.channelPressureTable;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -1404,7 +1404,7 @@ export class Midy {
 
   setModLfoToPitch(channel, note) {
     const now = this.audioContext.currentTime;
-    const pressureDepth = channel.pressureTable[3] / 127 * 600;
+    const pressureDepth = channel.channelPressureTable[3] / 127 * 600;
     const pressure = pressureDepth * channel.state.channelPressure;
     const modLfoToPitch = note.voiceParams.modLfoToPitch + pressure;
     const baseDepth = Math.abs(modLfoToPitch) +
@@ -1428,7 +1428,7 @@ export class Midy {
 
   setModLfoToFilterFc(channel, note) {
     const now = this.audioContext.currentTime;
-    const pressureDepth = channel.pressureTable[4] / 127 * 2400;
+    const pressureDepth = channel.channelPressureTable[4] / 127 * 2400;
     const pressure = pressureDepth * channel.state.channelPressure;
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc + pressure;
     note.filterDepth.gain
@@ -1440,7 +1440,7 @@ export class Midy {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const pressureDepth = channel.pressureTable[5] / 127;
+    const pressureDepth = channel.channelPressureTable[5] / 127;
     const pressure = 1 + pressureDepth * channel.state.channelPressure;
     const volumeDepth = baseDepth * Math.sign(modLfoToVolume) * pressure;
     note.volumeDepth.gain
@@ -2622,7 +2622,7 @@ export class Midy {
 
   handleChannelPressureSysEx(data) {
     const channelNumber = data[4];
-    const table = this.channels[channelNumber].pressureTable;
+    const table = this.channels[channelNumber].channelPressureTable;
     for (let i = 5; i < data.length - 1; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
