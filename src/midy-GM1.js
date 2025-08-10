@@ -540,17 +540,21 @@ export class MidyGM1 {
     return tuning + pitch;
   }
 
-  updateDetune(channel) {
-    const now = this.audioContext.currentTime;
+  updateChannelDetune(channel) {
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        note.bufferSource.detune
-          .cancelScheduledValues(now)
-          .setValueAtTime(channel.detune, now);
+        this.updateDetune(channel, note);
       }
     });
+  }
+
+  updateDetune(channel, note) {
+    const now = this.audioContext.currentTime;
+    note.bufferSource.detune
+      .cancelScheduledValues(now)
+      .setValueAtTime(channel.detune, now);
   }
 
   setVolumeEnvelope(note) {
@@ -844,7 +848,7 @@ export class MidyGM1 {
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     channel.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
-    this.updateDetune(channel);
+    this.updateChannelDetune(channel);
     this.applyVoiceParams(channel, 14);
   }
 
@@ -1181,7 +1185,7 @@ export class MidyGM1 {
     const next = value / 128;
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
-    this.updateDetune(channel);
+    this.updateChannelDetune(channel);
     this.applyVoiceParams(channel, 16);
   }
 
@@ -1198,7 +1202,7 @@ export class MidyGM1 {
     const next = (value - 8192) / 8.192; // cent
     channel.fineTuning = next;
     channel.detune += next - prev;
-    this.updateDetune(channel);
+    this.updateChannelDetune(channel);
   }
 
   handleCoarseTuningRPN(channelNumber) {
@@ -1214,7 +1218,7 @@ export class MidyGM1 {
     const next = (value - 64) * 100; // cent
     channel.coarseTuning = next;
     channel.detune += next - prev;
-    this.updateDetune(channel);
+    this.updateChannelDetune(channel);
   }
 
   allSoundOff(channelNumber) {

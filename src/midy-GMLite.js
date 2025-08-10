@@ -533,17 +533,21 @@ export class MidyGMLite {
     return pitchWheel * pitchWheelSensitivity;
   }
 
-  updateDetune(channel) {
-    const now = this.audioContext.currentTime;
+  updateChannelDetune(channel) {
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        note.bufferSource.detune
-          .cancelScheduledValues(now)
-          .setValueAtTime(channel.detune, now);
+        this.updateDetune(channel, note);
       }
     });
+  }
+
+  updateDetune(channel, note) {
+    const now = this.audioContext.currentTime;
+    note.bufferSource.detune
+      .cancelScheduledValues(now)
+      .setValueAtTime(channel.detune, now);
   }
 
   setVolumeEnvelope(note) {
@@ -833,7 +837,7 @@ export class MidyGMLite {
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     channel.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
-    this.updateDetune(channel);
+    this.updateChannelDetune(channel);
     this.applyVoiceParams(channel, 14);
   }
 
@@ -1115,12 +1119,14 @@ export class MidyGMLite {
     this.setPitchBendRange(channelNumber, pitchBendRange);
   }
 
-  setPitchBendRange(channelNumber, pitchWheelSensitivity) {
+  setPitchBendRange(channelNumber, value) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    state.pitchWheelSensitivity = pitchWheelSensitivity / 128;
-    const detune = (state.pitchWheel * 2 - 1) * pitchWheelSensitivity * 100;
-    this.updateDetune(channel, detune);
+    const prev = state.pitchWheelSensitivity;
+    const next = value / 128;
+    state.pitchWheelSensitivity = next;
+    channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
+    this.updateChannelDetune(channel);
     this.applyVoiceParams(channel, 16);
   }
 
