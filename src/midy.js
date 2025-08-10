@@ -2189,7 +2189,7 @@ export class Midy {
     const state = channel.state;
     for (let i = 0; i < stateTypes.length; i++) {
       const type = stateTypes[i];
-      state[type] = defaultControllerState[type];
+      state[type] = defaultControllerState[type].defaultValue;
     }
     const settingTypes = [
       "rpnMSB",
