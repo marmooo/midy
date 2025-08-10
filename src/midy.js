@@ -965,10 +965,8 @@ export class Midy {
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
-    const pressureDepth = (channel.pressureTable[1] - 64) * 15;
-    const pressure = pressureDepth * channel.state.channelPressure;
-    const baseCent = voiceParams.initialFilterFc + pressure;
-    const baseFreq = this.centToHz(baseCent) * softPedalFactor *
+    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
+      softPedalFactor *
       state.brightness * 2;
     const peekFreq = this.centToHz(
       voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
@@ -992,11 +990,13 @@ export class Midy {
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
-    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
+    const pressureDepth = (channel.pressureTable[1] - 64) * 15;
+    const pressure = pressureDepth * channel.state.channelPressure;
+    const baseCent = voiceParams.initialFilterFc + pressure;
+    const baseFreq = this.centToHz(baseCent) * softPedalFactor *
+      state.brightness * 2;
+    const peekFreq = this.centToHz(baseCent + voiceParams.modEnvToFilterFc) *
       softPedalFactor * state.brightness * 2;
-    const peekFreq = this.centToHz(
-      voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
-    ) * softPedalFactor * state.brightness * 2;
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
