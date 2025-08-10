@@ -983,7 +983,7 @@ export class MidyGMLite {
     if (handler) {
       handler.call(this, channelNumber, value);
       const channel = this.channels[channelNumber];
-      this.applyVoiceParams(channel, controller + 128);
+      this.applyVoiceParams(channel, controllerType + 128);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
