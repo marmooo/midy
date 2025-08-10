@@ -1875,7 +1875,11 @@ export class Midy {
         const note = noteList[i];
         if (!note) continue;
         if (note.startTime < now) continue;
-        this.setVolumeEnvelope(channel, note);
+        if (note.portamento) {
+          this.setPortamentoStartVolumeEnvelope(channel, note);
+        } else {
+          this.setVolumeEnvelope(channel, note);
+        }
       }
     });
   }
@@ -1887,7 +1891,11 @@ export class Midy {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        this.setFilterEnvelope(channel, note);
+        if (note.portamento) {
+          this.setPortamentoStartFilterEnvelope(channel, note);
+        } else {
+          this.setFilterEnvelope(channel, note);
+        }
       }
     });
   }
