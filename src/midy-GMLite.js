@@ -944,7 +944,7 @@ export class MidyGMLite {
               const key = filterEnvelopeKeys[i];
               if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
             }
-            this.setFilterEnvelope(channel, note);
+            this.setFilterEnvelope(note);
             this.setPitchEnvelope(note);
           } else if (volumeEnvelopeKeySet.has(key)) {
             if (appliedVolumeEnvelope) continue;
