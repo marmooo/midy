@@ -154,6 +154,8 @@ export class MidyGM1 {
   resumeTime = 0;
   soundFonts = [];
   soundFontTable = this.initSoundFontTable();
+  audioBufferCounter = new Map();
+  audioBufferCache = new Map();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -369,6 +371,7 @@ export class MidyGM1 {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           return;
         }
@@ -383,8 +386,9 @@ export class MidyGM1 {
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true);
-          this.exclusiveClassMap.clear();
           this.notePromises = [];
+          this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
           this.isPaused = false;
@@ -416,6 +420,10 @@ export class MidyGM1 {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
 
+  getAudioBufferId(programNumber, noteNumber, velocity) {
+    return `${programNumber}:${noteNumber}:${velocity}`;
+  }
+
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
@@ -436,6 +444,15 @@ export class MidyGM1 {
         switch (event.type) {
           case "noteOn": {
             const channel = tmpChannels[event.channel];
+            const audioBufferId = this.getAudioBufferId(
+              channel.programNumber,
+              event.noteNumber,
+              event.velocity,
+            );
+            this.audioBufferCounter.set(
+              audioBufferId,
+              (this.audioBufferCounter.get(audioBufferId) ?? 0) + 1,
+            );
             if (channel.programNumber < 0) {
               instruments.add(`${channel.bank}:0`);
               channel.programNumber = 0;
@@ -451,6 +468,9 @@ export class MidyGM1 {
         delete event.deltaTime;
         timeline.push(event);
       }
+    }
+    for (const [audioBufferId, count] of this.audioBufferCounter) {
+      if (count === 1) this.audioBufferCounter.delete(audioBufferId);
     }
     const priority = {
       controller: 0,
@@ -712,6 +732,24 @@ export class MidyGM1 {
     note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
   }
 
+  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
+    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+    const cache = this.audioBufferCache.get(audioBufferId);
+    if (cache) {
+      cache.counter += 1;
+      if (cache.maxCount <= cache.counter) {
+        this.audioBufferCache.delete(audioBufferId);
+      }
+      return cache.audioBuffer;
+    } else {
+      const maxCount = this.audioBufferCounter.get(audioBufferId) ?? 0;
+      const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
+      const cache = { audioBuffer, maxCount, counter: 1 };
+      this.audioBufferCache.set(audioBufferId, cache);
+      return audioBuffer;
+    }
+  }
+
   async createNote(
     channel,
     voice,
@@ -728,7 +766,14 @@ export class MidyGM1 {
     );
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
-    note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
+    const audioBuffer = await this.getAudioBuffer(
+      channel.program,
+      noteNumber,
+      velocity,
+      voiceParams,
+      isSF3,
+    );
+    note.bufferSource = this.createNoteBufferNode(audioBuffer, voiceParams);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -752,7 +797,6 @@ export class MidyGM1 {
     const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const isSF3 = soundFont.parsed.info.version.major === 3;
     const voice = soundFont.getVoice(
       bankNumber,
       channel.program,
@@ -760,6 +804,7 @@ export class MidyGM1 {
       velocity,
     );
     if (!voice) return;
+    const isSF3 = soundFont.parsed.info.version.major === 3;
     const note = await this.createNote(
       channel,
       voice,
