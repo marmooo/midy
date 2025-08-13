@@ -1,7 +1,7 @@
 import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
-// 2-3 times faster and 20-30 times more efficient than Map
+// 2-3 times faster than Map
 class SparseMap {
   constructor(size) {
     this.data = new Array(size);
