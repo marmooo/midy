@@ -211,7 +211,7 @@ export class Midy {
   static channelSettings = {
     currentBufferSource: null,
     detune: 0,
-    scaleOctaveTuningTable: new Array(12).fill(0), // cent
+    scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
     channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     polyphonicKeyPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
