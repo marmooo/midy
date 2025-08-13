@@ -288,9 +288,8 @@ export class MidyGM1 {
     }
   }
 
-  async createNoteBufferNode(voiceParams, isSF3) {
+  createNoteBufferNode(audioBuffer, voiceParams) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
