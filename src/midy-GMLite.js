@@ -714,7 +714,12 @@ export class MidyGMLite {
     isSF3,
   ) {
     const state = channel.state;
-    const voiceParams = voice.getAllParams(state.array);
+    const controllerState = this.getControllerState(
+      channel,
+      noteNumber,
+      velocity,
+    );
+    const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
