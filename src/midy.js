@@ -40,9 +40,10 @@ class SparseMap {
   }
 
   clear() {
-    this.activeIndices.forEach((key) => {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
       this.data[key] = undefined;
-    });
+    }
     this.activeIndices = [];
   }
 
