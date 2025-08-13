@@ -3,7 +3,7 @@ import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
 // 2-3 times faster and 20-30 times more efficient than Map
 class SparseMap {
-  constructor(size = 128) {
+  constructor(size) {
     this.data = new Array(size);
     this.activeIndices = [];
   }
@@ -162,7 +162,7 @@ export class MidyGM1 {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new SparseMap();
+  exclusiveClassMap = new SparseMap(128);
 
   static channelSettings = {
     currentBufferSource: null,
@@ -191,7 +191,7 @@ export class MidyGM1 {
   initSoundFontTable() {
     const table = new Array(128);
     for (let i = 0; i < 128; i++) {
-      table[i] = new SparseMap();
+      table[i] = new SparseMap(128);
     }
     return table;
   }
@@ -251,7 +251,7 @@ export class MidyGM1 {
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: new SparseMap(),
+        scheduledNotes: new SparseMap(128),
       };
     });
     return channels;
@@ -557,7 +557,7 @@ export class MidyGM1 {
   }
 
   getActiveNotes(channel, time) {
-    const activeNotes = new SparseMap();
+    const activeNotes = new SparseMap(128);
     channel.scheduledNotes.forEach((noteList) => {
       const activeNote = this.getActiveNote(noteList, time);
       if (activeNote) {
