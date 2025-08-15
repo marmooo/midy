@@ -2304,10 +2304,10 @@ export class Midy {
         switch (data[3]) {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, false);
           case 9:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning2ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(data, false);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2372,11 +2372,10 @@ export class Midy {
       case 8:
         switch (data[3]) {
           case 8: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            // TODO: realtime
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, true);
           case 9:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning2ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(data, true);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2667,7 +2666,7 @@ export class Midy {
     return bitmap;
   }
 
-  handleScaleOctaveTuning1ByteFormatSysEx(data) {
+  handleScaleOctaveTuning1ByteFormatSysEx(data, realtime) {
     if (data.length < 19) {
       console.error("Data length is too short");
       return;
@@ -2675,14 +2674,16 @@ export class Midy {
     const channelBitmap = this.getChannelBitmap(data);
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
+      const channel = this.channels[i];
       for (let j = 0; j < 12; j++) {
         const centValue = data[j + 7] - 64;
-        this.channels[i].scaleOctaveTuningTable[j] = centValue;
+        channel.scaleOctaveTuningTable[j] = centValue;
       }
+      if (realtime) this.updateChannelDetune(channel);
     }
   }
 
-  handleScaleOctaveTuning2ByteFormatSysEx(data) {
+  handleScaleOctaveTuning2ByteFormatSysEx(data, realtime) {
     if (data.length < 31) {
       console.error("Data length is too short");
       return;
@@ -2690,14 +2691,16 @@ export class Midy {
     const channelBitmap = this.getChannelBitmap(data);
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
+      const channel = this.channels[i];
       for (let j = 0; j < 12; j++) {
         const index = 7 + j * 2;
         const msb = data[index] & 0x7F;
         const lsb = data[index + 1] & 0x7F;
         const value14bit = msb * 128 + lsb;
         const centValue = (value14bit - 8192) / 8.192;
-        this.channels[i].scaleOctaveTuningTable[j] = centValue;
+        channel.scaleOctaveTuningTable[j] = centValue;
       }
+      if (realtime) this.updateChannelDetune(channel);
     }
   }
 

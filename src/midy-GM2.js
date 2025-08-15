@@ -2139,7 +2139,7 @@ export class MidyGM2 {
         switch (data[3]) {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, false);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2485,7 +2485,7 @@ export class MidyGM2 {
     return bitmap;
   }
 
-  handleScaleOctaveTuning1ByteFormatSysEx(data) {
+  handleScaleOctaveTuning1ByteFormatSysEx(data, realtime) {
     if (data.length < 19) {
       console.error("Data length is too short");
       return;
@@ -2493,10 +2493,12 @@ export class MidyGM2 {
     const channelBitmap = this.getChannelBitmap(data);
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
+      const channel = this.channels[i];
       for (let j = 0; j < 12; j++) {
         const centValue = data[j + 7] - 64;
-        this.channels[i].scaleOctaveTuningTable[j] = centValue;
+        channel.scaleOctaveTuningTable[j] = centValue;
       }
+      if (realtime) this.updateChannelDetune(channel);
     }
   }
 
