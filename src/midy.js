@@ -2662,7 +2662,7 @@ export class Midy {
   }
 
   handleScaleOctaveTuning1ByteFormatSysEx(data) {
-    if (data.length < 18) {
+    if (data.length < 19) {
       console.error("Data length is too short");
       return;
     }
@@ -2670,8 +2670,8 @@ export class Midy {
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
       for (let j = 0; j < 12; j++) {
-        const value = data[j + 7] - 64; // cent
-        this.channels[i].scaleOctaveTuningTable[j] = value;
+        const centValue = data[j + 7] - 64;
+        this.channels[i].scaleOctaveTuningTable[j] = centValue;
       }
     }
   }
