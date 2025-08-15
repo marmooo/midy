@@ -213,7 +213,7 @@ export class Midy {
   static channelSettings = {
     currentBufferSource: null,
     detune: 0,
-    scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
+    scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
     channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     polyphonicKeyPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
@@ -2305,6 +2305,9 @@ export class Midy {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
             return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+          case 9:
+            // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2371,6 +2374,9 @@ export class Midy {
           case 8: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
             // TODO: realtime
             return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+          case 9:
+            // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(data);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2671,6 +2677,25 @@ export class Midy {
       if (!channelBitmap[i]) continue;
       for (let j = 0; j < 12; j++) {
         const centValue = data[j + 7] - 64;
+        this.channels[i].scaleOctaveTuningTable[j] = centValue;
+      }
+    }
+  }
+
+  handleScaleOctaveTuning2ByteFormatSysEx(data) {
+    if (data.length < 31) {
+      console.error("Data length is too short");
+      return;
+    }
+    const channelBitmap = this.getChannelBitmap(data);
+    for (let i = 0; i < channelBitmap.length; i++) {
+      if (!channelBitmap[i]) continue;
+      for (let j = 0; j < 12; j++) {
+        const index = 7 + j * 2;
+        const msb = data[index] & 0x7F;
+        const lsb = data[index + 1] & 0x7F;
+        const value14bit = msb * 128 + lsb;
+        const centValue = (value14bit - 8192) / 8.192;
         this.channels[i].scaleOctaveTuningTable[j] = centValue;
       }
     }
