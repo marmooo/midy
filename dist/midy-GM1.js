@@ -2184,6 +2184,57 @@ var SoundFont = class {
 };
 
 // src/midy-GM1.js
+var SparseMap = class {
+  constructor(size) {
+    this.data = new Array(size);
+    this.activeIndices = [];
+  }
+  set(key, value) {
+    if (this.data[key] === void 0) {
+      this.activeIndices.push(key);
+    }
+    this.data[key] = value;
+  }
+  get(key) {
+    return this.data[key];
+  }
+  delete(key) {
+    if (this.data[key] !== void 0) {
+      this.data[key] = void 0;
+      const index = this.activeIndices.indexOf(key);
+      if (index !== -1) {
+        this.activeIndices.splice(index, 1);
+      }
+      return true;
+    }
+    return false;
+  }
+  has(key) {
+    return this.data[key] !== void 0;
+  }
+  get size() {
+    return this.activeIndices.length;
+  }
+  clear() {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      this.data[key] = void 0;
+    }
+    this.activeIndices = [];
+  }
+  *[Symbol.iterator]() {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      yield [key, this.data[key]];
+    }
+  }
+  forEach(callback) {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      callback(this.data[key], key, this);
+    }
+  }
+};
 var Note = class {
   bufferSource;
   filterNode;
@@ -2270,6 +2321,8 @@ var MidyGM1 = class {
   resumeTime = 0;
   soundFonts = [];
   soundFontTable = this.initSoundFontTable();
+  audioBufferCounter = /* @__PURE__ */ new Map();
+  audioBufferCache = /* @__PURE__ */ new Map();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -2278,7 +2331,7 @@ var MidyGM1 = class {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = /* @__PURE__ */ new Map();
+  exclusiveClassMap = new SparseMap(128);
   static channelSettings = {
     currentBufferSource: null,
     detune: 0,
@@ -2307,7 +2360,7 @@ var MidyGM1 = class {
   initSoundFontTable() {
     const table = new Array(128);
     for (let i = 0; i < 128; i++) {
-      table[i] = /* @__PURE__ */ new Map();
+      table[i] = new SparseMap(128);
     }
     return table;
   }
@@ -2362,7 +2415,7 @@ var MidyGM1 = class {
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: /* @__PURE__ */ new Map()
+        scheduledNotes: new SparseMap(128)
       };
     });
     return channels;
@@ -2395,9 +2448,8 @@ var MidyGM1 = class {
       return audioBuffer;
     }
   }
-  async createNoteBufferNode(voiceParams, isSF3) {
+  createNoteBufferNode(audioBuffer, voiceParams) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
@@ -2475,6 +2527,7 @@ var MidyGM1 = class {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           return;
         }
@@ -2489,8 +2542,9 @@ var MidyGM1 = class {
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true);
-          this.exclusiveClassMap.clear();
           this.notePromises = [];
+          this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
           this.isPaused = false;
@@ -2520,6 +2574,9 @@ var MidyGM1 = class {
   secondToTicks(second, secondsPerBeat) {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
+  getAudioBufferId(programNumber, noteNumber, velocity) {
+    return `${programNumber}:${noteNumber}:${velocity}`;
+  }
   extractMidiData(midi) {
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
@@ -2540,6 +2597,15 @@ var MidyGM1 = class {
         switch (event.type) {
           case "noteOn": {
             const channel = tmpChannels[event.channel];
+            const audioBufferId = this.getAudioBufferId(
+              channel.programNumber,
+              event.noteNumber,
+              event.velocity
+            );
+            this.audioBufferCounter.set(
+              audioBufferId,
+              (this.audioBufferCounter.get(audioBufferId) ?? 0) + 1
+            );
             if (channel.programNumber < 0) {
               instruments.add(`${channel.bank}:0`);
               channel.programNumber = 0;
@@ -2555,6 +2621,9 @@ var MidyGM1 = class {
         delete event.deltaTime;
         timeline.push(event);
       }
+    }
+    for (const [audioBufferId, count] of this.audioBufferCounter) {
+      if (count === 1) this.audioBufferCounter.delete(audioBufferId);
     }
     const priority = {
       controller: 0,
@@ -2651,7 +2720,7 @@ var MidyGM1 = class {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
   getActiveNotes(channel, time) {
-    const activeNotes = /* @__PURE__ */ new Map();
+    const activeNotes = new SparseMap(128);
     channel.scheduledNotes.forEach((noteList) => {
       const activeNote = this.getActiveNote(noteList, time);
       if (activeNote) {
@@ -2770,11 +2839,40 @@ var MidyGM1 = class {
     note.modulationLFO.connect(note.volumeDepth);
     note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
   }
+  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
+    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+    const cache = this.audioBufferCache.get(audioBufferId);
+    if (cache) {
+      cache.counter += 1;
+      if (cache.maxCount <= cache.counter) {
+        this.audioBufferCache.delete(audioBufferId);
+      }
+      return cache.audioBuffer;
+    } else {
+      const maxCount = this.audioBufferCounter.get(audioBufferId) ?? 0;
+      const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
+      const cache2 = { audioBuffer, maxCount, counter: 1 };
+      this.audioBufferCache.set(audioBufferId, cache2);
+      return audioBuffer;
+    }
+  }
   async createNote(channel, voice, noteNumber, velocity, startTime2, isSF3) {
     const state = channel.state;
-    const voiceParams = voice.getAllParams(state.array);
+    const controllerState = this.getControllerState(
+      channel,
+      noteNumber,
+      velocity
+    );
+    const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime2, voice, voiceParams);
-    note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
+    const audioBuffer = await this.getAudioBuffer(
+      channel.program,
+      noteNumber,
+      velocity,
+      voiceParams,
+      isSF3
+    );
+    note.bufferSource = this.createNoteBufferNode(audioBuffer, voiceParams);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -2798,7 +2896,6 @@ var MidyGM1 = class {
     const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const isSF3 = soundFont.parsed.info.version.major === 3;
     const voice = soundFont.getVoice(
       bankNumber,
       channel.program,
@@ -2806,6 +2903,7 @@ var MidyGM1 = class {
       velocity
     );
     if (!voice) return;
+    const isSF3 = soundFont.parsed.info.version.major === 3;
     const note = await this.createNote(
       channel,
       voice,

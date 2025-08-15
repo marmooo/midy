@@ -2184,6 +2184,57 @@ var SoundFont = class {
 };
 
 // src/midy-GM2.js
+var SparseMap = class {
+  constructor(size) {
+    this.data = new Array(size);
+    this.activeIndices = [];
+  }
+  set(key, value) {
+    if (this.data[key] === void 0) {
+      this.activeIndices.push(key);
+    }
+    this.data[key] = value;
+  }
+  get(key) {
+    return this.data[key];
+  }
+  delete(key) {
+    if (this.data[key] !== void 0) {
+      this.data[key] = void 0;
+      const index = this.activeIndices.indexOf(key);
+      if (index !== -1) {
+        this.activeIndices.splice(index, 1);
+      }
+      return true;
+    }
+    return false;
+  }
+  has(key) {
+    return this.data[key] !== void 0;
+  }
+  get size() {
+    return this.activeIndices.length;
+  }
+  clear() {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      this.data[key] = void 0;
+    }
+    this.activeIndices = [];
+  }
+  *[Symbol.iterator]() {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      yield [key, this.data[key]];
+    }
+  }
+  forEach(callback) {
+    for (let i = 0; i < this.activeIndices.length; i++) {
+      const key = this.activeIndices[i];
+      callback(this.data[key], key, this);
+    }
+  }
+};
 var Note = class {
   bufferSource;
   filterNode;
@@ -2316,6 +2367,8 @@ var MidyGM2 = class {
   resumeTime = 0;
   soundFonts = [];
   soundFontTable = this.initSoundFontTable();
+  audioBufferCounter = /* @__PURE__ */ new Map();
+  audioBufferCache = /* @__PURE__ */ new Map();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -2324,12 +2377,12 @@ var MidyGM2 = class {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = /* @__PURE__ */ new Map();
+  exclusiveClassMap = new SparseMap(128);
   static channelSettings = {
     currentBufferSource: null,
     detune: 0,
-    scaleOctaveTuningTable: new Array(12).fill(0),
-    // cent
+    scaleOctaveTuningTable: new Int8Array(12),
+    // [-64, 63] cent
     channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
     keyBasedInstrumentControlTable: new Int8Array(128 * 128),
     // [-64, 63]
@@ -2385,7 +2438,7 @@ var MidyGM2 = class {
   initSoundFontTable() {
     const table = new Array(128);
     for (let i = 0; i < 128; i++) {
-      table[i] = /* @__PURE__ */ new Map();
+      table[i] = new SparseMap(128);
     }
     return table;
   }
@@ -2441,8 +2494,8 @@ var MidyGM2 = class {
         state: new ControllerState(),
         controlTable: this.initControlTable(),
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: /* @__PURE__ */ new Map(),
-        sostenutoNotes: /* @__PURE__ */ new Map()
+        scheduledNotes: new SparseMap(128),
+        sostenutoNotes: new SparseMap(128)
       };
     });
     return channels;
@@ -2475,9 +2528,8 @@ var MidyGM2 = class {
       return audioBuffer;
     }
   }
-  async createNoteBufferNode(voiceParams, isSF3) {
+  createNoteBufferNode(audioBuffer, voiceParams) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
@@ -2579,6 +2631,7 @@ var MidyGM2 = class {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           return;
         }
@@ -2593,8 +2646,9 @@ var MidyGM2 = class {
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true);
-          this.exclusiveClassMap.clear();
           this.notePromises = [];
+          this.exclusiveClassMap.clear();
+          this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
           this.isPaused = false;
@@ -2624,6 +2678,9 @@ var MidyGM2 = class {
   secondToTicks(second, secondsPerBeat) {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
+  getAudioBufferId(programNumber, noteNumber, velocity) {
+    return `${programNumber}:${noteNumber}:${velocity}`;
+  }
   extractMidiData(midi) {
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
@@ -2645,6 +2702,15 @@ var MidyGM2 = class {
         switch (event.type) {
           case "noteOn": {
             const channel2 = tmpChannels[event.channel];
+            const audioBufferId = this.getAudioBufferId(
+              channel2.programNumber,
+              event.noteNumber,
+              event.velocity
+            );
+            this.audioBufferCounter.set(
+              audioBufferId,
+              (this.audioBufferCounter.get(audioBufferId) ?? 0) + 1
+            );
             if (channel2.programNumber < 0) {
               channel2.programNumber = event.programNumber;
               switch (channel2.bankMSB) {
@@ -2693,6 +2759,9 @@ var MidyGM2 = class {
         delete event.deltaTime;
         timeline.push(event);
       }
+    }
+    for (const [audioBufferId, count] of this.audioBufferCounter) {
+      if (count === 1) this.audioBufferCounter.delete(audioBufferId);
     }
     const priority = {
       controller: 0,
@@ -2794,7 +2863,7 @@ var MidyGM2 = class {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
   getActiveNotes(channel2, time) {
-    const activeNotes = /* @__PURE__ */ new Map();
+    const activeNotes = new SparseMap(128);
     channel2.scheduledNotes.forEach((noteList) => {
       const activeNote = this.getActiveNote(noteList, time);
       if (activeNote) {
@@ -3108,6 +3177,23 @@ var MidyGM2 = class {
     note.vibratoLFO.connect(note.vibratoDepth);
     note.vibratoDepth.connect(note.bufferSource.detune);
   }
+  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
+    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+    const cache = this.audioBufferCache.get(audioBufferId);
+    if (cache) {
+      cache.counter += 1;
+      if (cache.maxCount <= cache.counter) {
+        this.audioBufferCache.delete(audioBufferId);
+      }
+      return cache.audioBuffer;
+    } else {
+      const maxCount = this.audioBufferCounter.get(audioBufferId) ?? 0;
+      const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
+      const cache2 = { audioBuffer, maxCount, counter: 1 };
+      this.audioBufferCache.set(audioBufferId, cache2);
+      return audioBuffer;
+    }
+  }
   async createNote(channel2, voice, noteNumber, velocity, startTime2, portamento, isSF3) {
     const state = channel2.state;
     const controllerState = this.getControllerState(
@@ -3117,7 +3203,14 @@ var MidyGM2 = class {
     );
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime2, voice, voiceParams);
-    note.bufferSource = await this.createNoteBufferNode(voiceParams, isSF3);
+    const audioBuffer = await this.getAudioBuffer(
+      channel2.program,
+      noteNumber,
+      velocity,
+      voiceParams,
+      isSF3
+    );
+    note.bufferSource = this.createNoteBufferNode(audioBuffer, voiceParams);
     note.volumeNode = new GainNode(this.audioContext);
     note.gainL = new GainNode(this.audioContext);
     note.gainR = new GainNode(this.audioContext);
@@ -3176,7 +3269,6 @@ var MidyGM2 = class {
     const soundFontIndex = this.soundFontTable[channel2.program].get(bankNumber);
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const isSF3 = soundFont.parsed.info.version.major === 3;
     const voice = soundFont.getVoice(
       bankNumber,
       channel2.program,
@@ -3184,6 +3276,7 @@ var MidyGM2 = class {
       velocity
     );
     if (!voice) return;
+    const isSF3 = soundFont.parsed.info.version.major === 3;
     const note = await this.createNote(
       channel2,
       voice,
@@ -3367,6 +3460,7 @@ var MidyGM2 = class {
     channel2.program = program;
   }
   handleChannelPressure(channelNumber, value) {
+    const now = this.audioContext.currentTime;
     const channel2 = this.channels[channelNumber];
     const prev = channel2.state.channelPressure;
     const next = value / 127;
@@ -3376,12 +3470,8 @@ var MidyGM2 = class {
       channel2.detune += pressureDepth * (next - prev);
     }
     const table = channel2.channelPressureTable;
-    channel2.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        this.applyDestinationSettings(channel2, note, table);
-      }
+    this.getActiveNotes(channel2, now).forEach((note) => {
+      this.applyDestinationSettings(channel2, note, table);
     });
   }
   handlePitchBendMessage(channelNumber, lsb, msb) {
@@ -3757,8 +3847,7 @@ var MidyGM2 = class {
     channel2.state.sostenutoPedal = value / 127;
     if (64 <= value) {
       const now = this.audioContext.currentTime;
-      const activeNotes = this.getActiveNotes(channel2, now);
-      channel2.sostenutoNotes = new Map(activeNotes);
+      channel2.sostenutoNotes = this.getActiveNotes(channel2, now);
     } else {
       this.releaseSostenutoPedal(channelNumber, value);
     }
@@ -3998,7 +4087,7 @@ var MidyGM2 = class {
       case 8:
         switch (data[3]) {
           case 8:
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, false);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -4307,18 +4396,20 @@ var MidyGM2 = class {
     }
     return bitmap;
   }
-  handleScaleOctaveTuning1ByteFormatSysEx(data) {
-    if (data.length < 18) {
+  handleScaleOctaveTuning1ByteFormatSysEx(data, realtime) {
+    if (data.length < 19) {
       console.error("Data length is too short");
       return;
     }
     const channelBitmap = this.getChannelBitmap(data);
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
+      const channel2 = this.channels[i];
       for (let j = 0; j < 12; j++) {
-        const value = data[j + 7] - 64;
-        this.channels[i].scaleOctaveTuningTable[j] = value;
+        const centValue = data[j + 7] - 64;
+        channel2.scaleOctaveTuningTable[j] = centValue;
       }
+      if (realtime) this.updateChannelDetune(channel2);
     }
   }
   applyDestinationSettings(channel2, note, table) {
