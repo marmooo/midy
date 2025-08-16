@@ -1438,7 +1438,7 @@ export class MidyGM2 {
     }
     const table = channel.channelPressureTable;
     this.getActiveNotes(channel, now).forEach((note) => {
-      this.applyDestinationSettings(note, table);
+      this.setControllerParameters(note, table);
     });
     // this.applyVoiceParams(channel, 13);
   }
@@ -2536,7 +2536,7 @@ export class MidyGM2 {
     return channelPressure / 127;
   }
 
-  applyDestinationSettings(note, table) {
+  setControllerParameters(note, table) {
     if (table[0] !== 64) this.updateDetune(note);
     if (!note.portamento) {
       if (table[1] !== 64) this.setFilterEnvelope(note);
@@ -2577,7 +2577,7 @@ export class MidyGM2 {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        this.applyDestinationSettings(note, table);
+        this.setControllerParameters(note, table);
       }
     });
   }

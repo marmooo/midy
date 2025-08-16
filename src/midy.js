@@ -1445,7 +1445,7 @@ export class Midy {
     const activeNotes = this.getActiveNotes(channel, now);
     if (activeNotes.has(noteNumber)) {
       const note = activeNotes.get(noteNumber);
-      this.applyDestinationSettings(channel, note, table);
+      this.setControllerParameters(channel, note, table);
     }
     // this.applyVoiceParams(channel, 10);
   }
@@ -1468,7 +1468,7 @@ export class Midy {
     }
     const table = channel.channelPressureTable;
     this.getActiveNotes(channel, now).forEach((note) => {
-      this.applyDestinationSettings(channel, note, table);
+      this.setControllerParameters(channel, note, table);
     });
     // this.applyVoiceParams(channel, 13);
   }
@@ -2755,7 +2755,7 @@ export class Midy {
     return (channelPressure + polyphonicKeyPressure) / 254;
   }
 
-  applyDestinationSettings(channel, note, table) {
+  setControllerParameters(channel, note, table) {
     if (table[0] !== 64) this.updateDetune(channel, note);
     if (!note.portamento) {
       if (table[1] !== 64) this.setFilterEnvelope(channel, note);
@@ -2796,7 +2796,7 @@ export class Midy {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        this.applyDestinationSettings(channel, note, table);
+        this.setControllerParameters(channel, note, table);
       }
     });
   }
