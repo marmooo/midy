@@ -1463,8 +1463,8 @@ export class Midy {
     channel.program = program;
   }
 
-  handleChannelPressure(channelNumber, value) {
-    const now = this.audioContext.currentTime;
+  handleChannelPressure(channelNumber, value, startTime) {
+    if (!startTime) startTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.state.channelPressure;
     const next = value / 127;
@@ -1474,7 +1474,7 @@ export class Midy {
       channel.detune += pressureDepth * (next - prev);
     }
     const table = channel.channelPressureTable;
-    this.getActiveNotes(channel, now).forEach((note) => {
+    this.getActiveNotes(channel, startTime).forEach((note) => {
       this.setControllerParameters(channel, note, table);
     });
     // this.applyVoiceParams(channel, 13);
