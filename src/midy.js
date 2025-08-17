@@ -406,6 +406,7 @@ export class Midy {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
       if (event.startTime > t + this.lookAhead) break;
+      const startTime = event.startTime + this.startDelay - offset;
       switch (event.type) {
         case "noteOn":
           if (event.velocity !== 0) {
@@ -413,7 +414,7 @@ export class Midy {
               event.channel,
               event.noteNumber,
               event.velocity,
-              event.startTime + this.startDelay - offset,
+              startTime,
               event.portamento,
             );
             break;
@@ -426,7 +427,7 @@ export class Midy {
             this.omni ? 0 : event.channel,
             event.noteNumber,
             event.velocity,
-            event.startTime + this.startDelay - offset,
+            startTime,
             portamentoTarget?.noteNumber,
             false, // force
           );
@@ -440,6 +441,7 @@ export class Midy {
             event.channel,
             event.noteNumber,
             event.amount,
+            startTime,
           );
           break;
         case "controller":
@@ -447,19 +449,24 @@ export class Midy {
             this.omni ? 0 : event.channel,
             event.controllerType,
             event.value,
+            startTime,
           );
           break;
         case "programChange":
-          this.handleProgramChange(event.channel, event.programNumber);
+          this.handleProgramChange(
+            event.channel,
+            event.programNumber,
+            startTime,
+          );
           break;
         case "channelAftertouch":
-          this.handleChannelPressure(event.channel, event.amount);
+          this.handleChannelPressure(event.channel, event.amount, startTime);
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192);
+          this.setPitchBend(event.channel, event.value + 8192, startTime);
           break;
         case "sysEx":
-          this.handleSysEx(event.data);
+          this.handleSysEx(event.data, startTime);
       }
       queueIndex++;
     }

@@ -303,6 +303,7 @@ export class MidyGM1 {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
       if (event.startTime > t + this.lookAhead) break;
+      const startTime = event.startTime + this.startDelay - offset;
       switch (event.type) {
         case "noteOn":
           if (event.velocity !== 0) {
@@ -310,7 +311,7 @@ export class MidyGM1 {
               event.channel,
               event.noteNumber,
               event.velocity,
-              event.startTime + this.startDelay - offset,
+              startTime,
             );
             break;
           }
@@ -320,7 +321,7 @@ export class MidyGM1 {
             event.channel,
             event.noteNumber,
             event.velocity,
-            event.startTime + this.startDelay - offset,
+            startTime,
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -332,16 +333,21 @@ export class MidyGM1 {
             event.channel,
             event.controllerType,
             event.value,
+            startTime,
           );
           break;
         case "programChange":
-          this.handleProgramChange(event.channel, event.programNumber);
+          this.handleProgramChange(
+            event.channel,
+            event.programNumber,
+            startTime,
+          );
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192);
+          this.setPitchBend(event.channel, event.value + 8192, startTime);
           break;
         case "sysEx":
-          this.handleSysEx(event.data);
+          this.handleSysEx(event.data, startTime);
       }
       queueIndex++;
     }
