@@ -69,8 +69,6 @@ class Note {
   volumeDepth;
   modulationLFO;
   modulationDepth;
-  vibratoLFO;
-  vibratoDepth;
 
   constructor(noteNumber, velocity, startTime, voice, voiceParams) {
     this.noteNumber = noteNumber;
@@ -871,10 +869,6 @@ export class MidyGM1 {
           note.modulationDepth.disconnect();
           note.modulationLFO.stop();
         }
-        if (note.vibratoDepth) {
-          note.vibratoDepth.disconnect();
-          note.vibratoLFO.stop();
-        }
         resolve();
       };
       note.bufferSource.stop(stopTime);
@@ -979,17 +973,6 @@ export class MidyGM1 {
       .setValueAtTime(modulationDepth, now);
   }
 
-  setVibLfoToPitch(channel, note) {
-    const now = this.audioContext.currentTime;
-    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
-    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
-      2;
-    const vibratoDepthSign = 0 < vibLfoToPitch;
-    note.vibratoDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
-  }
-
   setModLfoToFilterFc(note) {
     const now = this.audioContext.currentTime;
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
@@ -1032,11 +1015,7 @@ export class MidyGM1 {
           this.setModLfoToPitch(channel, note);
         }
       },
-      vibLfoToPitch: (channel, note, _prevValue) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setVibLfoToPitch(channel, note);
-        }
-      },
+      vibLfoToPitch: (_channel, _note, _prevValue) => {},
       modLfoToFilterFc: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
       },
@@ -1047,27 +1026,8 @@ export class MidyGM1 {
       reverbEffectsSend: (_channel, _note, _prevValue) => {},
       delayModLFO: (_channel, note, _prevValue) => this.setDelayModLFO(note),
       freqModLFO: (_channel, note, _prevValue) => this.setFreqModLFO(note),
-      delayVibLFO: (channel, note, prevValue) => {
-        if (0 < channel.state.vibratoDepth) {
-          const now = this.audioContext.currentTime;
-          const vibratoDelay = channel.state.vibratoDelay * 2;
-          const prevStartTime = note.startTime + prevValue * vibratoDelay;
-          if (now < prevStartTime) return;
-          const value = note.voiceParams.delayVibLFO;
-          const startTime = note.startTime + value * vibratoDelay;
-          note.vibratoLFO.stop(now);
-          note.vibratoLFO.start(startTime);
-        }
-      },
-      freqVibLFO: (channel, note, _prevValue) => {
-        if (0 < channel.state.vibratoDepth) {
-          const now = this.audioContext.currentTime;
-          const freqVibLFO = note.voiceParams.freqVibLFO;
-          note.vibratoLFO.frequency
-            .cancelScheduledValues(now)
-            .setValueAtTime(freqVibLFO * channel.state.vibratoRate * 2, now);
-        }
-      },
+      delayVibLFO: (_channel, _note, _prevValue) => {},
+      freqVibLFO: (_channel, _note, _prevValue) => {},
     };
   }
 
