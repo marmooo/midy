@@ -1432,7 +1432,7 @@ export class MidyGM2 {
     channel.program = program;
   }
 
-  handleChannelPressure(channelNumber, value) {
+  handleChannelPressure(channelNumber, value, startTime) {
     if (!startTime) startTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.state.channelPressure;
