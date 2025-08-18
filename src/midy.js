@@ -1444,12 +1444,12 @@ export class Midy {
     }
   }
 
-  handlePolyphonicKeyPressure(channelNumber, noteNumber, pressure) {
-    const now = this.audioContext.currentTime;
+  handlePolyphonicKeyPressure(channelNumber, noteNumber, pressure, startTime) {
+    if (!startTime) startTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.polyphonicKeyPressure = pressure / 127;
     const table = channel.polyphonicKeyPressureTable;
-    const activeNotes = this.getActiveNotes(channel, now);
+    const activeNotes = this.getActiveNotes(channel, startTime);
     if (activeNotes.has(noteNumber)) {
       const note = activeNotes.get(noteNumber);
       this.setControllerParameters(channel, note, table);
