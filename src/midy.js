@@ -1103,7 +1103,7 @@ export class Midy {
     note.modulationDepth = new GainNode(this.audioContext);
     this.setModLfoToPitch(channel, note);
     note.volumeDepth = new GainNode(this.audioContext);
-    this.setModLfoToVolume(note);
+    this.setModLfoToVolume(channel, note);
 
     note.modulationLFO.start(startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
@@ -1519,7 +1519,7 @@ export class Midy {
       .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
   }
 
-  setModLfoToFilterFc(note) {
+  setModLfoToFilterFc(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc +
       this.getLFOFilterDepth(channel, note);
@@ -1528,7 +1528,7 @@ export class Midy {
       .setValueAtTime(modLfoToFilterFc, now);
   }
 
-  setModLfoToVolume(note) {
+  setModLfoToVolume(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
@@ -1636,12 +1636,12 @@ export class Midy {
       },
       modLfoToFilterFc: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToFilterFc(note);
+          this.setModLfoToFilterFc(channel, note);
         }
       },
       modLfoToVolume: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToVolume(note);
+          this.setModLfoToVolume(channel, note);
         }
       },
       chorusEffectsSend: (channel, note, prevValue) => {
@@ -2770,8 +2770,8 @@ export class Midy {
       if (table[2] !== 64) this.setVolumeEnvelope(channel, note);
     }
     if (table[3] !== 0) this.setModLfoToPitch(channel, note);
-    if (table[4] !== 0) this.setModLfoToFilterFc(note);
-    if (table[5] !== 0) this.setModLfoToVolume(note);
+    if (table[4] !== 0) this.setModLfoToFilterFc(channel, note);
+    if (table[5] !== 0) this.setModLfoToVolume(channel, note);
   }
 
   handleChannelPressureSysEx(data, tableName) {

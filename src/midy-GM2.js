@@ -1088,7 +1088,7 @@ export class MidyGM2 {
     note.modulationDepth = new GainNode(this.audioContext);
     this.setModLfoToPitch(channel, note);
     note.volumeDepth = new GainNode(this.audioContext);
-    this.setModLfoToVolume(note);
+    this.setModLfoToVolume(channel, note);
 
     note.modulationLFO.start(startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
@@ -1445,7 +1445,7 @@ export class MidyGM2 {
     }
     const table = channel.channelPressureTable;
     this.getActiveNotes(channel, startTime).forEach((note) => {
-      this.setControllerParameters(note, table);
+      this.setControllerParameters(channel, note, table);
     });
     // this.applyVoiceParams(channel, 13);
   }
@@ -1488,7 +1488,7 @@ export class MidyGM2 {
       .setValueAtTime(vibratoDepth * vibratoDepthSign, now);
   }
 
-  setModLfoToFilterFc(note) {
+  setModLfoToFilterFc(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc +
       this.getLFOFilterDepth(channel);
@@ -1497,7 +1497,7 @@ export class MidyGM2 {
       .setValueAtTime(modLfoToFilterFc, now);
   }
 
-  setModLfoToVolume(note) {
+  setModLfoToVolume(channel, note) {
     const now = this.audioContext.currentTime;
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
@@ -1595,7 +1595,7 @@ export class MidyGM2 {
     return {
       modLfoToPitch: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToPitch(channel, note, 0);
+          this.setModLfoToPitch(channel, note);
         }
       },
       vibLfoToPitch: (channel, note, _prevValue) => {
@@ -1605,12 +1605,12 @@ export class MidyGM2 {
       },
       modLfoToFilterFc: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToFilterFc(note, 0);
+          this.setModLfoToFilterFc(channel, note);
         }
       },
       modLfoToVolume: (channel, note, _prevValue) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToVolume(note);
+          this.setModLfoToVolume(channel, note);
         }
       },
       chorusEffectsSend: (channel, note, prevValue) => {
@@ -1682,7 +1682,7 @@ export class MidyGM2 {
             if (note.portamento) {
               this.setPortamentoStartFilterEnvelope(channel, note);
             } else {
-              this.setFilterEnvelope(channel, note, 0);
+              this.setFilterEnvelope(channel, note);
             }
             this.setPitchEnvelope(note);
           } else if (volumeEnvelopeKeySet.has(key)) {
@@ -2543,15 +2543,15 @@ export class MidyGM2 {
     return channelPressure / 127;
   }
 
-  setControllerParameters(note, table) {
-    if (table[0] !== 64) this.updateDetune(note);
+  setControllerParameters(channel, note, table) {
+    if (table[0] !== 64) this.updateDetune(channel, note);
     if (!note.portamento) {
-      if (table[1] !== 64) this.setFilterEnvelope(note);
-      if (table[2] !== 64) this.setVolumeEnvelope(note);
+      if (table[1] !== 64) this.setFilterEnvelope(channel, note);
+      if (table[2] !== 64) this.setVolumeEnvelope(channel, note);
     }
-    if (table[3] !== 0) this.setModLfoToPitch(note);
-    if (table[4] !== 0) this.setModLfoToFilterFc(note);
-    if (table[5] !== 0) this.setModLfoToVolume(note);
+    if (table[3] !== 0) this.setModLfoToPitch(channel, note);
+    if (table[4] !== 0) this.setModLfoToFilterFc(channel, note);
+    if (table[5] !== 0) this.setModLfoToVolume(channel, note);
   }
 
   handleChannelPressureSysEx(data, tableName) {
@@ -2584,7 +2584,7 @@ export class MidyGM2 {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        this.setControllerParameters(note, table);
+        this.setControllerParameters(channel, note, table);
       }
     });
   }
