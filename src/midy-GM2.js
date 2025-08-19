@@ -65,11 +65,12 @@ class SparseMap {
 class Note {
   bufferSource;
   filterNode;
+  filterDepth;
   volumeEnvelopeNode;
+  volumeDepth;
   volumeNode;
   gainL;
   gainR;
-  volumeDepth;
   modulationLFO;
   modulationDepth;
   vibratoLFO;
