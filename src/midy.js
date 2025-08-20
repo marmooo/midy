@@ -1789,7 +1789,7 @@ export class Midy {
   }
 
   updateModulation(channel, startTime) {
-    const now = this.audioContext.currentTime;
+    if (!startTime) startTime = this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
@@ -1797,10 +1797,10 @@ export class Midy {
         if (!note) continue;
         if (startTime < note.startTime) continue;
         if (note.modulationDepth) {
-          note.modulationDepth.gain.setValueAtTime(depth, now);
+          note.modulationDepth.gain.setValueAtTime(depth, startTime);
         } else {
           this.setPitchEnvelope(note);
-          this.startModulation(channel, note, now);
+          this.startModulation(channel, note, startTime);
         }
       }
     });
