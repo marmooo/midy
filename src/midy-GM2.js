@@ -1729,10 +1729,10 @@ export class MidyGM2 {
     };
   }
 
-  handleControlChange(channelNumber, controllerType, value) {
+  handleControlChange(channelNumber, controllerType, value, startTime) {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(this, channelNumber, value);
+      handler.call(this, channelNumber, value, startTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128);
       this.applyControlTable(channel, controllerType);
@@ -1747,13 +1747,14 @@ export class MidyGM2 {
     this.channels[channelNumber].bankMSB = msb;
   }
 
-  updateModulation(channel) {
+  updateModulation(channel, startTime) {
     const now = this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
+        if (startTime < note.startTime) continue;
         if (note.modulationDepth) {
           note.modulationDepth.gain.setValueAtTime(depth, now);
         } else {
@@ -1764,10 +1765,10 @@ export class MidyGM2 {
     });
   }
 
-  setModulationDepth(channelNumber, modulation) {
+  setModulationDepth(channelNumber, modulation, startTime) {
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
-    this.updateModulation(channel);
+    this.updateModulation(channel, startTime);
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
