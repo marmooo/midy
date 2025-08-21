@@ -212,9 +212,6 @@ export class MidyGM2 {
   static channelSettings = {
     currentBufferSource: null,
     detune: 0,
-    scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
-    channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
-    keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
     program: 0,
     bank: 121 * 128,
     bankMSB: 121,
@@ -339,6 +336,9 @@ export class MidyGM2 {
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new SparseMap(128),
         sostenutoNotes: new SparseMap(128),
+        scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
+        channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
+        keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
       };
     });
     return channels;
