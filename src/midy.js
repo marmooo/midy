@@ -1008,19 +1008,19 @@ export class Midy {
       .linearRampToValueAtTime(sustainVolume, volDecay);
   }
 
-  setPitchEnvelope(note) {
-    const now = this.audioContext.currentTime;
+  setPitchEnvelope(note, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const { voiceParams } = note;
     const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
-      .cancelScheduledValues(now)
-      .setValueAtTime(baseRate, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(baseRate, scheduleTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const basePitch = this.rateToCent(baseRate);
     const peekPitch = basePitch + modEnvToPitch;
     const peekRate = this.centToRate(peekPitch);
-    const modDelay = startTime + voiceParams.modDelay;
+    const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
@@ -1799,7 +1799,7 @@ export class Midy {
         if (note.modulationDepth) {
           note.modulationDepth.gain.setValueAtTime(depth, startTime);
         } else {
-          this.setPitchEnvelope(note);
+          this.setPitchEnvelope(note, startTime);
           this.startModulation(channel, note, startTime);
         }
       }
