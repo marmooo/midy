@@ -1713,7 +1713,7 @@ export class Midy {
             if (note.portamento) {
               this.setPortamentoStartFilterEnvelope(channel, note);
             } else {
-              this.setFilterEnvelope(channel, note, 0);
+              this.setFilterEnvelope(channel, note);
             }
             this.setPitchEnvelope(note);
           } else if (volumeEnvelopeKeySet.has(key)) {
@@ -1981,7 +1981,7 @@ export class Midy {
         if (note.portamento) {
           this.setPortamentoStartFilterEnvelope(channel, note);
         } else {
-          this.setFilterEnvelope(channel, note, 0);
+          this.setFilterEnvelope(channel, note);
         }
       }
     });
