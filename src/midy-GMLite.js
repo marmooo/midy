@@ -577,6 +577,17 @@ export class MidyGMLite {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
 
+  processScheduledNotes(channel, scheduleTime, callback) {
+    channel.scheduledNotes.forEach((noteList) => {
+      for (let i = 0; i < noteList.length; i++) {
+        const note = noteList[i];
+        if (!note) continue;
+        if (scheduleTime < note.startTime) continue;
+        callback(note);
+      }
+    });
+  }
+
   getActiveNotes(channel, time) {
     const activeNotes = new SparseMap(128);
     channel.scheduledNotes.forEach((noteList) => {
@@ -1112,20 +1123,15 @@ export class MidyGMLite {
     }
   }
 
-  updateModulation(channel, startTime) {
-    if (!startTime) startTime = this.audioContext.currentTime;
+  updateModulation(channel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        if (startTime < note.startTime) continue;
-        if (note.modulationDepth) {
-          note.modulationDepth.gain.setValueAtTime(depth, startTime);
-        } else {
-          this.setPitchEnvelope(note, startTime);
-          this.startModulation(channel, note, startTime);
-        }
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      if (note.modulationDepth) {
+        note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
+      } else {
+        this.setPitchEnvelope(note, scheduleTime);
+        this.startModulation(channel, note, scheduleTime);
       }
     });
   }
