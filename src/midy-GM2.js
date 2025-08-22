@@ -1771,10 +1771,10 @@ export class MidyGM2 {
     });
   }
 
-  setModulationDepth(channelNumber, modulation, startTime) {
+  setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
-    this.updateModulation(channel, startTime);
+    this.updateModulation(channel, scheduleTime);
   }
 
   setPortamentoTime(channelNumber, portamentoTime) {
@@ -1783,30 +1783,27 @@ export class MidyGM2 {
     channel.state.portamentoTime = Math.exp(factor * portamentoTime);
   }
 
-  setKeyBasedVolume(channel) {
-    const now = this.audioContext.currentTime;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-          channel,
-          note.noteNumber,
-          7,
-        );
-        if (keyBasedValue === 0) continue;
+  setKeyBasedVolume(channel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+        channel,
+        note.noteNumber,
+        7,
+      );
+      if (keyBasedValue !== 0) {
         note.volumeNode.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(1 + keyBasedValue, now);
+          .cancelScheduledValues(scheduleTime)
+          .setValueAtTime(1 + keyBasedValue, scheduleTime);
       }
     });
   }
 
-  setVolume(channelNumber, volume) {
+  setVolume(channelNumber, volume, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
-    this.updateChannelVolume(channel);
-    this.setKeyBasedVolume(channel);
+    this.updateChannelVolume(channel, scheduleTime);
+    this.setKeyBasedVolume(channel, scheduleTime);
   }
 
   panToGain(pan) {
@@ -1817,40 +1814,37 @@ export class MidyGM2 {
     };
   }
 
-  setKeyBasedPan(channel) {
-    const now = this.audioContext.currentTime;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-          channel,
-          note.noteNumber,
-          10,
-        );
-        if (keyBasedValue === 0) continue;
+  setKeyBasedPan(channel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+        channel,
+        note.noteNumber,
+        10,
+      );
+      if (keyBasedValue !== 0) {
         const { gainLeft, gainRight } = this.panToGain((keyBasedValue + 1) / 2);
         note.gainL.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(gainLeft, now);
+          .cancelScheduledValues(scheduleTime)
+          .setValueAtTime(gainLeft, scheduleTime);
         note.gainR.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(gainRight, now);
+          .cancelScheduledValues(scheduleTime)
+          .setValueAtTime(gainRight, scheduleTime);
       }
     });
   }
 
-  setPan(channelNumber, pan) {
+  setPan(channelNumber, pan, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
-    this.updateChannelVolume(channel);
-    this.setKeyBasedPan(channel);
+    this.updateChannelVolume(channel, scheduleTime);
+    this.setKeyBasedPan(channel, scheduleTime);
   }
 
-  setExpression(channelNumber, expression) {
+  setExpression(channelNumber, expression, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
-    this.updateChannelVolume(channel);
+    this.updateChannelVolume(channel, scheduleTime);
   }
 
   setBankLSB(channelNumber, lsb) {

@@ -1141,16 +1141,16 @@ export class MidyGM1 {
     });
   }
 
-  setModulationDepth(channelNumber, modulation, startTime) {
+  setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
-    this.updateModulation(channel, startTime);
+    this.updateModulation(channel, scheduleTime);
   }
 
-  setVolume(channelNumber, volume) {
+  setVolume(channelNumber, volume, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
-    this.updateChannelVolume(channel);
+    this.updateChannelVolume(channel, scheduleTime);
   }
 
   panToGain(pan) {
@@ -1161,16 +1161,16 @@ export class MidyGM1 {
     };
   }
 
-  setPan(channelNumber, pan) {
+  setPan(channelNumber, pan, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
-    this.updateChannelVolume(channel);
+    this.updateChannelVolume(channel, scheduleTime);
   }
 
-  setExpression(channelNumber, expression) {
+  setExpression(channelNumber, expression, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
-    this.updateChannelVolume(channel);
+    this.updateChannelVolume(channel, scheduleTime);
   }
 
   dataEntryLSB(channelNumber, value) {
@@ -1178,17 +1178,17 @@ export class MidyGM1 {
     this.handleRPN(channelNumber, 0);
   }
 
-  updateChannelVolume(channel) {
-    const now = this.audioContext.currentTime;
+  updateChannelVolume(channel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainLeft, now);
+      .setValueAtTime(volume * gainLeft, scheduleTime);
     channel.gainR.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainRight, now);
+      .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
   setSustainPedal(channelNumber, value) {
