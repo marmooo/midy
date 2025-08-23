@@ -1390,15 +1390,15 @@ export class Midy {
     }
   }
 
-  releaseNote(channelNumber, noteNumber, velocity, portamentoNoteNumber) {
+  releaseNote(channelNumber, noteNumber, velocity) {
     const now = this.audioContext.currentTime;
     return this.scheduleNoteRelease(
       channelNumber,
       noteNumber,
       velocity,
       now,
-      portamentoNoteNumber,
-      false,
+      undefined, // portamentoNoteNumber
+      false, // force
     );
   }
 

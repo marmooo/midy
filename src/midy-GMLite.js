@@ -909,7 +909,13 @@ export class MidyGMLite {
 
   releaseNote(channelNumber, noteNumber, velocity) {
     const now = this.audioContext.currentTime;
-    return this.scheduleNoteRelease(channelNumber, noteNumber, velocity, now);
+    return this.scheduleNoteRelease(
+      channelNumber,
+      noteNumber,
+      velocity,
+      now,
+      false, // force
+    );
   }
 
   releaseSustainPedal(channelNumber, halfVelocity) {
