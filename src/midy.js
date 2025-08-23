@@ -429,8 +429,8 @@ export class Midy {
             event.noteNumber,
             event.velocity,
             startTime,
-            portamentoTarget?.noteNumber,
             false, // force
+            portamentoTarget?.noteNumber,
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -675,8 +675,8 @@ export class Midy {
           note.noteNumber,
           velocity,
           now,
-          undefined, // portamentoNoteNumber
           force,
+          undefined, // portamentoNoteNumber
         );
         this.notePromises.push(promise);
       }
@@ -1283,8 +1283,8 @@ export class Midy {
             prevNote.noteNumber,
             0, // velocity,
             startTime,
-            undefined, // portamentoNoteNumber
             true, // force
+            undefined, // portamentoNoteNumber
           );
         }
       }
@@ -1353,8 +1353,8 @@ export class Midy {
     noteNumber,
     _velocity,
     endTime,
-    portamentoNoteNumber,
     force,
+    portamentoNoteNumber,
   ) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
@@ -1397,8 +1397,8 @@ export class Midy {
       noteNumber,
       velocity,
       now,
-      undefined, // portamentoNoteNumber
       false, // force
+      undefined, // portamentoNoteNumber
     );
   }
 

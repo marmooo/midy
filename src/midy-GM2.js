@@ -426,8 +426,8 @@ export class MidyGM2 {
             event.noteNumber,
             event.velocity,
             startTime,
-            portamentoTarget?.noteNumber,
             false, // force
+            portamentoTarget?.noteNumber,
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -664,8 +664,8 @@ export class MidyGM2 {
           note.noteNumber,
           velocity,
           now,
-          undefined, // portamentoNoteNumber
           force,
+          undefined, // portamentoNoteNumber
         );
         this.notePromises.push(promise);
       }
@@ -1268,8 +1268,8 @@ export class MidyGM2 {
             prevNote.noteNumber,
             0, // velocity,
             startTime,
-            undefined, // portamentoNoteNumber
             true, // force
+            undefined, // portamentoNoteNumber
           );
         }
       }
@@ -1338,8 +1338,8 @@ export class MidyGM2 {
     noteNumber,
     _velocity,
     endTime,
-    portamentoNoteNumber,
     force,
+    portamentoNoteNumber,
   ) {
     const channel = this.channels[channelNumber];
     const state = channel.state;
@@ -1381,8 +1381,8 @@ export class MidyGM2 {
       noteNumber,
       velocity,
       now,
-      undefined, // portamentoNoteNumber
       false, // force
+      undefined, // portamentoNoteNumber
     );
   }
 
