@@ -316,7 +316,7 @@ export class MidyGM1 {
           }
           /* falls through */
         case "noteOff": {
-          const notePromise = this.scheduleNoteRelease(
+          const notePromise = this.scheduleNoteOff(
             event.channel,
             event.noteNumber,
             event.velocity,
@@ -513,7 +513,7 @@ export class MidyGM1 {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        const promise = this.scheduleNoteRelease(
+        const promise = this.scheduleNoteOff(
           channelNumber,
           note.noteNumber,
           velocity,
@@ -836,7 +836,7 @@ export class MidyGM1 {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
         const [prevNote, prevChannelNumber] = prevEntry;
         if (!prevNote.ending) {
-          this.scheduleNoteRelease(
+          this.scheduleNoteOff(
             prevChannelNumber,
             prevNote.noteNumber,
             0, // velocity,
@@ -887,7 +887,7 @@ export class MidyGM1 {
     });
   }
 
-  scheduleNoteRelease(
+  scheduleNoteOff(
     channelNumber,
     noteNumber,
     _velocity,
@@ -912,9 +912,9 @@ export class MidyGM1 {
     }
   }
 
-  releaseNote(channelNumber, noteNumber, velocity) {
+  noteOff(channelNumber, noteNumber, velocity) {
     const now = this.audioContext.currentTime;
-    return this.scheduleNoteRelease(
+    return this.scheduleNoteOff(
       channelNumber,
       noteNumber,
       velocity,
@@ -933,7 +933,7 @@ export class MidyGM1 {
         const note = noteList[i];
         if (!note) continue;
         const { noteNumber } = note;
-        const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+        const promise = this.noteOff(channelNumber, noteNumber, velocity);
         promises.push(promise);
       }
     });
@@ -945,7 +945,7 @@ export class MidyGM1 {
     const messageType = statusByte & 0xF0;
     switch (messageType) {
       case 0x80:
-        return this.releaseNote(channelNumber, data1, data2);
+        return this.noteOff(channelNumber, data1, data2);
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
       case 0xB0:

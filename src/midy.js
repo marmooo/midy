@@ -424,7 +424,7 @@ export class Midy {
         case "noteOff": {
           const portamentoTarget = this.findPortamentoTarget(queueIndex);
           if (portamentoTarget) portamentoTarget.portamento = true;
-          const notePromise = this.scheduleNoteRelease(
+          const notePromise = this.scheduleNoteOff(
             this.omni ? 0 : event.channel,
             event.noteNumber,
             event.velocity,
@@ -670,7 +670,7 @@ export class Midy {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        const promise = this.scheduleNoteRelease(
+        const promise = this.scheduleNoteOff(
           channelNumber,
           note.noteNumber,
           velocity,
@@ -1278,7 +1278,7 @@ export class Midy {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
         const [prevNote, prevChannelNumber] = prevEntry;
         if (!prevNote.ending) {
-          this.scheduleNoteRelease(
+          this.scheduleNoteOff(
             prevChannelNumber,
             prevNote.noteNumber,
             0, // velocity,
@@ -1348,7 +1348,7 @@ export class Midy {
     });
   }
 
-  scheduleNoteRelease(
+  scheduleNoteOff(
     channelNumber,
     noteNumber,
     _velocity,
@@ -1390,9 +1390,9 @@ export class Midy {
     }
   }
 
-  releaseNote(channelNumber, noteNumber, velocity) {
+  noteOff(channelNumber, noteNumber, velocity) {
     const now = this.audioContext.currentTime;
-    return this.scheduleNoteRelease(
+    return this.scheduleNoteOff(
       channelNumber,
       noteNumber,
       velocity,
@@ -1412,7 +1412,7 @@ export class Midy {
         const note = noteList[i];
         if (!note) continue;
         const { noteNumber } = note;
-        const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+        const promise = this.noteOff(channelNumber, noteNumber, velocity);
         promises.push(promise);
       }
     });
@@ -1426,7 +1426,7 @@ export class Midy {
     channel.state.sostenutoPedal = 0;
     channel.sostenutoNotes.forEach((activeNote) => {
       const { noteNumber } = activeNote;
-      const promise = this.releaseNote(channelNumber, noteNumber, velocity);
+      const promise = this.noteOff(channelNumber, noteNumber, velocity);
       promises.push(promise);
     });
     channel.sostenutoNotes.clear();
@@ -1438,7 +1438,7 @@ export class Midy {
     const messageType = statusByte & 0xF0;
     switch (messageType) {
       case 0x80:
-        return this.releaseNote(channelNumber, data1, data2);
+        return this.noteOff(channelNumber, data1, data2);
       case 0x90:
         return this.noteOn(channelNumber, data1, data2);
       case 0xA0:
