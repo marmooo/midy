@@ -663,9 +663,10 @@ export class Midy {
     return { instruments, timeline };
   }
 
-  async stopChannelNotes(channelNumber, velocity, force) {
+  stopChannelNotes(channelNumber, velocity, force) {
     const now = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -679,15 +680,17 @@ export class Midy {
           undefined, // portamentoNoteNumber
         );
         this.notePromises.push(promise);
+        promises.push(promise);
       }
     });
     channel.scheduledNotes.clear();
-    await Promise.all(this.notePromises);
+    return Promise.all(promises);
   }
 
   stopNotes(velocity, force) {
+    const promises = [];
     for (let i = 0; i < this.channels.length; i++) {
-      this.stopChannelNotes(i, velocity, force);
+      promises.push(this.stopChannelNotes(i, velocity, force));
     }
     return Promise.all(this.notePromises);
   }
