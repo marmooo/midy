@@ -925,19 +925,14 @@ export class MidyGM1 {
     );
   }
 
-  releaseSustainPedal(channelNumber, halfVelocity) {
+  releaseSustainPedal(channelNumber, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.state.sustainPedal = halfVelocity;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const { noteNumber } = note;
-        const promise = this.noteOff(channelNumber, noteNumber, velocity);
-        promises.push(promise);
-      }
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      const { noteNumber } = note;
+      const promise = this.noteOff(channelNumber, noteNumber, velocity);
+      promises.push(promise);
     });
     return promises;
   }
@@ -1186,23 +1181,24 @@ export class MidyGM1 {
     this.handleRPN(channelNumber, 0);
   }
 
-  updateChannelVolume(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+  updateChannelVolume(channel) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainLeft, scheduleTime);
+      .setValueAtTime(volume * gainLeft, now);
     channel.gainR.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainRight, scheduleTime);
+      .setValueAtTime(volume * gainRight, now);
   }
 
-  setSustainPedal(channelNumber, value) {
+  setSustainPedal(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     this.channels[channelNumber].state.sustainPedal = value / 127;
     if (value < 64) {
-      this.releaseSustainPedal(channelNumber, value);
+      this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
   }
 

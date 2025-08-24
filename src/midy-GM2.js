@@ -1388,19 +1388,14 @@ export class MidyGM2 {
     );
   }
 
-  releaseSustainPedal(channelNumber, halfVelocity) {
+  releaseSustainPedal(channelNumber, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.state.sustainPedal = halfVelocity;
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const { noteNumber } = note;
-        const promise = this.noteOff(channelNumber, noteNumber, velocity);
-        promises.push(promise);
-      }
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      const { noteNumber } = note;
+      const promise = this.noteOff(channelNumber, noteNumber, velocity);
+      promises.push(promise);
     });
     return promises;
   }
@@ -1871,10 +1866,11 @@ export class MidyGM2 {
       .setValueAtTime(volume * gainRight, now);
   }
 
-  setSustainPedal(channelNumber, value) {
+  setSustainPedal(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     this.channels[channelNumber].state.sustainPedal = value / 127;
     if (value < 64) {
-      this.releaseSustainPedal(channelNumber, value);
+      this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
   }
 
