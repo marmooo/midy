@@ -376,17 +376,18 @@ export class MidyGMLite {
           resolve();
           return;
         }
-        const t = this.audioContext.currentTime + offset;
+        const now = this.audioContext.currentTime;
+        const t = now + offset;
         queueIndex = await this.scheduleTimelineEvents(t, offset, queueIndex);
         if (this.isPausing) {
-          await this.stopNotes(0, true);
+          await this.stopNotes(0, true, now);
           this.notePromises = [];
           resolve();
           this.isPausing = false;
           this.isPaused = true;
           return;
         } else if (this.isStopping) {
-          await this.stopNotes(0, true);
+          await this.stopNotes(0, true, now);
           this.notePromises = [];
           this.exclusiveClassMap.clear();
           this.audioBufferCache.clear();
@@ -395,7 +396,7 @@ export class MidyGMLite {
           this.isPaused = false;
           return;
         } else if (this.isSeeking) {
-          this.stopNotes(0, true);
+          this.stopNotes(0, true, now);
           this.exclusiveClassMap.clear();
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
@@ -403,7 +404,6 @@ export class MidyGMLite {
           this.isSeeking = false;
           await schedulePlayback();
         } else {
-          const now = this.audioContext.currentTime;
           const waitTime = now + this.noteCheckInterval;
           await this.scheduleTask(() => {}, waitTime);
           await schedulePlayback();
@@ -503,8 +503,7 @@ export class MidyGMLite {
     return { instruments, timeline };
   }
 
-  stopChannelNotes(channelNumber, velocity, force) {
-    const now = this.audioContext.currentTime;
+  stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
     channel.scheduledNotes.forEach((noteList) => {
@@ -515,7 +514,7 @@ export class MidyGMLite {
           channelNumber,
           note.noteNumber,
           velocity,
-          now,
+          scheduleTime,
           force,
         );
         this.notePromises.push(promise);
@@ -526,10 +525,10 @@ export class MidyGMLite {
     return Promise.all(promises);
   }
 
-  stopNotes(velocity, force) {
+  stopNotes(velocity, force, scheduleTime) {
     const promises = [];
     for (let i = 0; i < this.channels.length; i++) {
-      promises.push(this.stopChannelNotes(i, velocity, force));
+      promises.push(this.stopChannelNotes(i, velocity, force, scheduleTime));
     }
     return Promise.all(this.notePromises);
   }
@@ -1182,17 +1181,17 @@ export class MidyGMLite {
     this.handleRPN(channelNumber);
   }
 
-  updateChannelVolume(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+  updateChannelVolume(channel) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainLeft, scheduleTime);
+      .setValueAtTime(volume * gainLeft, now);
     channel.gainR.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainRight, scheduleTime);
+      .setValueAtTime(volume * gainRight, now);
   }
 
   setSustainPedal(channelNumber, value) {
@@ -1264,8 +1263,9 @@ export class MidyGMLite {
     this.applyVoiceParams(channel, 16);
   }
 
-  allSoundOff(channelNumber) {
-    return this.stopChannelNotes(channelNumber, 0, true);
+  allSoundOff(channelNumber, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
   }
 
   resetAllControllers(channelNumber) {
@@ -1291,8 +1291,9 @@ export class MidyGMLite {
     }
   }
 
-  allNotesOff(channelNumber) {
-    return this.stopChannelNotes(channelNumber, 0, false);
+  allNotesOff(channelNumber, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(data) {
