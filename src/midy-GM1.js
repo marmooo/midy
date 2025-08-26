@@ -638,21 +638,16 @@ export class MidyGM1 {
     return tuning + pitch;
   }
 
-  updateChannelDetune(channel) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        this.updateDetune(channel, note);
-      }
+  updateChannelDetune(channel, scheduleTime) {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
+      this.updateDetune(channel, note, scheduleTime);
     });
   }
 
-  updateDetune(channel, note) {
-    const now = this.audioContext.currentTime;
+  updateDetune(channel, note, scheduleTime) {
     note.bufferSource.detune
-      .cancelScheduledValues(now)
-      .setValueAtTime(channel.detune, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(channel.detune, scheduleTime);
   }
 
   setVolumeEnvelope(note) {
@@ -961,20 +956,21 @@ export class MidyGM1 {
     channel.program = program;
   }
 
-  handlePitchBendMessage(channelNumber, lsb, msb) {
+  handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
     const pitchBend = msb * 128 + lsb;
-    this.setPitchBend(channelNumber, pitchBend);
+    this.setPitchBend(channelNumber, pitchBend, scheduleTime);
   }
 
-  setPitchBend(channelNumber, value) {
+  setPitchBend(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     channel.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
-    this.updateChannelDetune(channel);
-    this.applyVoiceParams(channel, 14);
+    this.updateChannelDetune(channel, scheduleTime);
+    this.applyVoiceParams(channel, 14, scheduleTime);
   }
 
   setModLfoToPitch(channel, note) {
@@ -1176,9 +1172,9 @@ export class MidyGM1 {
     this.updateChannelVolume(channel, scheduleTime);
   }
 
-  dataEntryLSB(channelNumber, value) {
+  dataEntryLSB(channelNumber, value, scheduleTime) {
     this.channels[channelNumber].dataLSB = value;
-    this.handleRPN(channelNumber, 0);
+    this.handleRPN(channelNumber, scheduleTime);
   }
 
   updateChannelVolume(channel) {
@@ -1227,12 +1223,12 @@ export class MidyGM1 {
     }
   }
 
-  handleRPN(channelNumber) {
+  handleRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     const rpn = channel.rpnMSB * 128 + channel.rpnLSB;
     switch (rpn) {
       case 0:
-        this.handlePitchBendRangeRPN(channelNumber);
+        this.handlePitchBendRangeRPN(channelNumber, scheduleTime);
         break;
       case 1:
         this.handleFineTuningRPN(channelNumber);
@@ -1255,26 +1251,27 @@ export class MidyGM1 {
     this.channels[channelNumber].rpnLSB = value;
   }
 
-  dataEntryMSB(channelNumber, value) {
+  dataEntryMSB(channelNumber, value, scheduleTime) {
     this.channels[channelNumber].dataMSB = value;
-    this.handleRPN(channelNumber);
+    this.handleRPN(channelNumber, scheduleTime);
   }
 
-  handlePitchBendRangeRPN(channelNumber) {
+  handlePitchBendRangeRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 99);
     const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
-    this.setPitchBendRange(channelNumber, pitchBendRange);
+    this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
-  setPitchBendRange(channelNumber, value) {
+  setPitchBendRange(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 128;
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
     this.applyVoiceParams(channel, 16);
   }
 
