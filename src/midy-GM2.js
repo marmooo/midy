@@ -740,10 +740,10 @@ export class MidyGM2 {
     });
   }
 
-  getActiveNotes(channel, time) {
+  getActiveNotes(channel, scheduleTime) {
     const activeNotes = new SparseMap(128);
     channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList, time);
+      const activeNote = this.getActiveNote(noteList, scheduleTime);
       if (activeNote) {
         activeNotes.set(activeNote.noteNumber, activeNote);
       }
@@ -751,11 +751,11 @@ export class MidyGM2 {
     return activeNotes;
   }
 
-  getActiveNote(noteList, time) {
+  getActiveNote(noteList, scheduleTime) {
     for (let i = noteList.length - 1; i >= 0; i--) {
       const note = noteList[i];
       if (!note) return;
-      if (time < note.startTime) continue;
+      if (scheduleTime < note.startTime) continue;
       return (note.ending) ? null : note;
     }
     return noteList[0];
@@ -1733,10 +1733,10 @@ export class MidyGM2 {
     };
   }
 
-  handleControlChange(channelNumber, controllerType, value, startTime) {
+  handleControlChange(channelNumber, controllerType, value, scheduleTime) {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(this, channelNumber, value, startTime);
+      handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128);
       this.applyControlTable(channel, controllerType);
