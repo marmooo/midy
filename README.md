@@ -21,7 +21,7 @@ This library provides several files depending on the implementation level.
 
 ### Initialization
 
-```
+```js
 // import { MidyGMLite as Midy } from "midy-GMLite.js";
 // import { MidyGM1 as Midy } from "midy-GM1.js";
 // import { MidyGM2 as Midy } from "midy-GM2.js";
@@ -36,7 +36,7 @@ await midy.start();
 
 ### Playback
 
-```
+```js
 await midy.start();
 midy.stop();
 midy.pause();
@@ -49,7 +49,7 @@ midy.seekTo(second);
 There are functions that handle MIDI messages as they are, as well as simplified
 functions.
 
-```
+```js
 midy.handleMIDIMessage(statusByte, data1, data2, scheduleTime);
 midy.noteOn(channelNumber, noteNumber, velocity);
 midy.handleProgramChange(channelNumber, program);
@@ -60,7 +60,7 @@ midy.handleProgramChange(channelNumber, program);
 There are functions that handle control changes as they are, as well as
 simplified functions.
 
-```
+```js
 midy.handleControlChange(
   channelNumber,
   controller,
@@ -68,7 +68,7 @@ midy.handleControlChange(
   scheduleTime,
 ); // [0-127] value
 midy.setModulation(channelNumber, modulation); // [0-127] modulation
-midy.setVolume(channelNumber, volume);         // [0-127] volume
+midy.setVolume(channelNumber, volume); // [0-127] volume
 ```
 
 ### System Exclusive Message
@@ -76,10 +76,10 @@ midy.setVolume(channelNumber, volume);         // [0-127] volume
 There are functions that handle SysEx data as is, as well as simplified
 functions.
 
-```
-midy.handleSysEx(data);             // [F0 F6 04 01 xx xx F7] data
+```js
+midy.handleSysEx(data); // [F0 F6 04 01 xx xx F7] data
 midy.handleMasterVolumeSysEx(data); // [F0 F6 04 01 xx xx F7] data
-midy.setMasterVolume(volume);       // [0-1] volume
+midy.setMasterVolume(volume); // [0-1] volume
 ```
 
 ### Multiple Soundfonts
@@ -89,7 +89,7 @@ and [splitted soundfonts](https://github.com/marmooo/free-soundfonts) that are
 optimized for playback on the web. The following example loads only the minimum
 presets required for playback.
 
-```
+```js
 const baseUrl = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
 for (const instrument of midy.instruments) {
   const [bankNumber, programNumber] = instrument.split(":").map(Number);
