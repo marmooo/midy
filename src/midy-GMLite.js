@@ -849,8 +849,13 @@ export class MidyGMLite {
   }
 
   noteOn(channelNumber, noteNumber, velocity) {
-    const now = this.audioContext.currentTime;
-    return this.scheduleNoteOn(channelNumber, noteNumber, velocity, now);
+    scheduleTime ??= this.audioContext.currentTime;
+    return this.scheduleNoteOn(
+      channelNumber,
+      noteNumber,
+      velocity,
+      scheduleTime,
+    );
   }
 
   stopNote(endTime, stopTime, scheduledNotes, index) {
@@ -904,13 +909,13 @@ export class MidyGMLite {
     }
   }
 
-  noteOff(channelNumber, noteNumber, velocity) {
-    const now = this.audioContext.currentTime;
+  noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     return this.scheduleNoteOff(
       channelNumber,
       noteNumber,
       velocity,
-      now,
+      scheduleTime,
       false, // force
     );
   }
@@ -927,26 +932,37 @@ export class MidyGMLite {
     return promises;
   }
 
-  handleMIDIMessage(statusByte, data1, data2) {
+  handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channelNumber = statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {
       case 0x80:
-        return this.noteOff(channelNumber, data1, data2);
+        return this.noteOff(channelNumber, data1, data2, scheduleTime);
       case 0x90:
-        return this.noteOn(channelNumber, data1, data2);
+        return this.noteOn(channelNumber, data1, data2, scheduleTime);
       case 0xB0:
-        return this.handleControlChange(channelNumber, data1, data2);
+        return this.handleControlChange(
+          channelNumber,
+          data1,
+          data2,
+          scheduleTime,
+        );
       case 0xC0:
-        return this.handleProgramChange(channelNumber, data1);
+        return this.handleProgramChange(channelNumber, data1, scheduleTime);
       case 0xE0:
-        return this.handlePitchBendMessage(channelNumber, data1, data2);
+        return this.handlePitchBendMessage(
+          channelNumber,
+          data1,
+          data2,
+          scheduleTime,
+        );
       default:
         console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
     }
   }
 
-  handleProgramChange(channelNumber, program) {
+  handleProgramChange(channelNumber, program, _scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.program = program;
   }
@@ -1172,17 +1188,16 @@ export class MidyGMLite {
     this.handleRPN(channelNumber, scheduleTime);
   }
 
-  updateChannelVolume(channel) {
-    const now = this.audioContext.currentTime;
+  updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainLeft, now);
+      .setValueAtTime(volume * gainLeft, scheduleTime);
     channel.gainR.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainRight, now);
+      .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {

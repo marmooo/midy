@@ -1849,17 +1849,16 @@ export class MidyGM2 {
     this.handleRPN(channelNumber, scheduleTime);
   }
 
-  updateChannelVolume(channel) {
-    const now = this.audioContext.currentTime;
+  updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainLeft, now);
+      .setValueAtTime(volume * gainLeft, scheduleTime);
     channel.gainR.gain
       .cancelScheduledValues(now)
-      .setValueAtTime(volume * gainRight, now);
+      .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
