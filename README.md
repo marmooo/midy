@@ -61,9 +61,14 @@ There are functions that handle control changes as they are, as well as
 simplified functions.
 
 ```
-midy.handleControlChange(channelNumber, controller, value); // [0-127] value
-midy.setModulation(channelNumber, modulation);              // [0-127] modulation
-midy.setVolume(channelNumber, volume);                      // [0-127] volume
+midy.handleControlChange(
+  channelNumber,
+  controller,
+  value,
+  scheduleTime,
+); // [0-127] value
+midy.setModulation(channelNumber, modulation); // [0-127] modulation
+midy.setVolume(channelNumber, volume);         // [0-127] volume
 ```
 
 ### System Exclusive Message
