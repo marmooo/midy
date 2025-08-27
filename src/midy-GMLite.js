@@ -933,7 +933,6 @@ export class MidyGMLite {
   }
 
   handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channelNumber = statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {

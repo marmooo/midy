@@ -50,7 +50,7 @@ There are functions that handle MIDI messages as they are, as well as simplified
 functions.
 
 ```
-midy.handleMIDIMessage(statusByte, data1, data2);
+midy.handleMIDIMessage(statusByte, data1, data2, scheduleTime);
 midy.noteOn(channelNumber, noteNumber, velocity);
 midy.handleProgramChange(channelNumber, program);
 ```

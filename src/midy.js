@@ -1425,24 +1425,39 @@ export class Midy {
     return promises;
   }
 
-  handleMIDIMessage(statusByte, data1, data2) {
+  handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
     const channelNumber = omni ? 0 : statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {
       case 0x80:
-        return this.noteOff(channelNumber, data1, data2);
+        return this.noteOff(channelNumber, data1, data2, scheduleTime);
       case 0x90:
-        return this.noteOn(channelNumber, data1, data2);
+        return this.noteOn(channelNumber, data1, data2, scheduleTime);
       case 0xA0:
-        return this.handlePolyphonicKeyPressure(channelNumber, data1, data2);
+        return this.handlePolyphonicKeyPressure(
+          channelNumber,
+          data1,
+          data2,
+          scheduleTime,
+        );
       case 0xB0:
-        return this.handleControlChange(channelNumber, data1, data2);
+        return this.handleControlChange(
+          channelNumber,
+          data1,
+          data2,
+          scheduleTime,
+        );
       case 0xC0:
-        return this.handleProgramChange(channelNumber, data1);
+        return this.handleProgramChange(channelNumber, data1, scheduleTime);
       case 0xD0:
-        return this.handleChannelPressure(channelNumber, data1);
+        return this.handleChannelPressure(channelNumber, data1, scheduleTime);
       case 0xE0:
-        return this.handlePitchBendMessage(channelNumber, data1, data2);
+        return this.handlePitchBendMessage(
+          channelNumber,
+          data1,
+          data2,
+          scheduleTime,
+        );
       default:
         console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
     }
