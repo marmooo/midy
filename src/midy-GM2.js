@@ -1864,10 +1864,10 @@ export class MidyGM2 {
     const volume = state.volume * state.expression;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     channel.gainL.gain
-      .cancelScheduledValues(now)
+      .cancelScheduledValues(scheduleTime)
       .setValueAtTime(volume * gainLeft, scheduleTime);
     channel.gainR.gain
-      .cancelScheduledValues(now)
+      .cancelScheduledValues(scheduleTime)
       .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
