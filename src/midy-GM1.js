@@ -1405,10 +1405,6 @@ export class MidyGM1 {
     }
   }
 
-  handleExclusiveMessage(data) {
-    console.warn(`Unsupported Exclusive Message: ${data}`);
-  }
-
   handleSysEx(data) {
     switch (data[0]) {
       case 126:
@@ -1416,7 +1412,7 @@ export class MidyGM1 {
       case 127:
         return this.handleUniversalRealTimeExclusiveMessage(data);
       default:
-        return this.handleExclusiveMessage(data);
+        console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
