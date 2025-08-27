@@ -1316,7 +1316,7 @@ export class MidyGM1 {
     this.updateChannelDetune(channel);
   }
 
-  allSoundOff(channelNumber, scheduleTime) {
+  allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
   }
@@ -1344,7 +1344,7 @@ export class MidyGM1 {
     }
   }
 
-  allNotesOff(channelNumber, scheduleTime) {
+  allNotesOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }

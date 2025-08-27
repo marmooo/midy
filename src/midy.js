@@ -2270,7 +2270,7 @@ export class Midy {
     this.updateModulation(channel);
   }
 
-  allSoundOff(channelNumber, scheduleTime) {
+  allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
   }
@@ -2302,7 +2302,7 @@ export class Midy {
     }
   }
 
-  allNotesOff(channelNumber, scheduleTime) {
+  allNotesOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }

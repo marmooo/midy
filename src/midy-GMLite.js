@@ -1270,7 +1270,7 @@ export class MidyGMLite {
     this.applyVoiceParams(channel, 16);
   }
 
-  allSoundOff(channelNumber, scheduleTime) {
+  allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
   }
@@ -1298,7 +1298,7 @@ export class MidyGMLite {
     }
   }
 
-  allNotesOff(channelNumber, scheduleTime) {
+  allNotesOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }
