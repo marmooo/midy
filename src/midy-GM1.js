@@ -1109,7 +1109,7 @@ export class MidyGM1 {
               const key = volumeEnvelopeKeys[i];
               if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
             }
-            this.setVolumeEnvelope(channel, note, scheduleTime);
+            this.setVolumeEnvelope(note, scheduleTime);
           }
         }
       }
