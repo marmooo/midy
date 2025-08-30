@@ -2320,16 +2320,24 @@ export class Midy {
     this.mono = false;
   }
 
-  handleUniversalNonRealTimeExclusiveMessage(data) {
+  handleUniversalNonRealTimeExclusiveMessage(data, scheduleTime) {
     switch (data[2]) {
       case 8:
         switch (data[3]) {
           case 8:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, false);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(
+              data,
+              false,
+              scheduleTime,
+            );
           case 9:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning2ByteFormatSysEx(data, false);
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(
+              data,
+              false,
+              scheduleTime,
+            );
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2375,18 +2383,18 @@ export class Midy {
     this.channels[9].bank = 120 * 128;
   }
 
-  handleUniversalRealTimeExclusiveMessage(data) {
+  handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {
     switch (data[2]) {
       case 4:
         switch (data[3]) {
           case 1:
-            return this.handleMasterVolumeSysEx(data);
+            return this.handleMasterVolumeSysEx(data, scheduleTime);
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
-            return this.handleMasterFineTuningSysEx(data);
+            return this.handleMasterFineTuningSysEx(data, scheduleTime);
           case 4: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca25.pdf
-            return this.handleMasterCoarseTuningSysEx(data);
+            return this.handleMasterCoarseTuningSysEx(data, scheduleTime);
           case 5: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca24.pdf
-            return this.handleGlobalParameterControlSysEx(data);
+            return this.handleGlobalParameterControlSysEx(data, scheduleTime);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2394,10 +2402,18 @@ export class Midy {
       case 8:
         switch (data[3]) {
           case 8: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning1ByteFormatSysEx(data, true);
+            return this.handleScaleOctaveTuning1ByteFormatSysEx(
+              data,
+              true,
+              scheduleTime,
+            );
           case 9:
             // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca21.pdf
-            return this.handleScaleOctaveTuning2ByteFormatSysEx(data, true);
+            return this.handleScaleOctaveTuning2ByteFormatSysEx(
+              data,
+              true,
+              scheduleTime,
+            );
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2427,54 +2443,55 @@ export class Midy {
     }
   }
 
-  handleMasterVolumeSysEx(data) {
+  handleMasterVolumeSysEx(data, scheduleTime) {
     const volume = (data[5] * 128 + data[4]) / 16383;
-    this.setMasterVolume(volume);
+    this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(volume) {
+  setMasterVolume(volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     if (volume < 0 && 1 < volume) {
       console.error("Master Volume is out of range");
     } else {
-      const now = this.audioContext.currentTime;
-      this.masterVolume.gain.cancelScheduledValues(now);
-      this.masterVolume.gain.setValueAtTime(volume * volume, now);
+      this.masterVolume.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(volume * volume, scheduleTime);
     }
   }
 
-  handleMasterFineTuningSysEx(data) {
+  handleMasterFineTuningSysEx(data, scheduleTime) {
     const fineTuning = data[5] * 128 + data[4];
-    this.setMasterFineTuning(fineTuning);
+    this.setMasterFineTuning(fineTuning, scheduleTime);
   }
 
-  setMasterFineTuning(value) { // [0, 16383]
+  setMasterFineTuning(value, scheduleTime) { // [0, 16383]
     const prev = this.masterFineTuning;
     const next = (value - 8192) / 8.192; // cent
     this.masterFineTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
-  handleMasterCoarseTuningSysEx(data) {
+  handleMasterCoarseTuningSysEx(data, scheduleTime) {
     const coarseTuning = data[4];
-    this.setMasterCoarseTuning(coarseTuning);
+    this.setMasterCoarseTuning(coarseTuning, scheduleTime);
   }
 
-  setMasterCoarseTuning(value) { // [0, 127]
+  setMasterCoarseTuning(value, scheduleTime) { // [0, 127]
     const prev = this.masterCoarseTuning;
     const next = (value - 64) * 100; // cent
     this.masterCoarseTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
-  handleGlobalParameterControlSysEx(data) {
+  handleGlobalParameterControlSysEx(data, scheduleTime) {
     if (data[7] === 1) {
       switch (data[8]) {
         case 1:
           return this.handleReverbParameterSysEx(data);
         case 2:
-          return this.handleChorusParameterSysEx(data);
+          return this.handleChorusParameterSysEx(data, scheduleTime);
         default:
           console.warn(
             `Unsupported Global Parameter Control Message: ${data}`,
@@ -2561,80 +2578,77 @@ export class Midy {
     return -rt60 * Math.log10(feedback) / 3;
   }
 
-  handleChorusParameterSysEx(data) {
+  handleChorusParameterSysEx(data, scheduleTime) {
     switch (data[9]) {
       case 0:
-        return this.setChorusType(data[10]);
+        return this.setChorusType(data[10], scheduleTime);
       case 1:
-        return this.setChorusModRate(data[10]);
+        return this.setChorusModRate(data[10], scheduleTime);
       case 2:
-        return this.setChorusModDepth(data[10]);
+        return this.setChorusModDepth(data[10], scheduleTime);
       case 3:
-        return this.setChorusFeedback(data[10]);
+        return this.setChorusFeedback(data[10], scheduleTime);
       case 4:
-        return this.setChorusSendToReverb(data[10]);
+        return this.setChorusSendToReverb(data[10], scheduleTime);
     }
   }
 
-  setChorusType(type) {
+  setChorusType(type, scheduleTime) {
     switch (type) {
       case 0:
-        return this.setChorusParameter(3, 5, 0, 0);
+        return this.setChorusParameter(3, 5, 0, 0, scheduleTime);
       case 1:
-        return this.setChorusParameter(9, 19, 5, 0);
+        return this.setChorusParameter(9, 19, 5, 0, scheduleTime);
       case 2:
-        return this.setChorusParameter(3, 19, 8, 0);
+        return this.setChorusParameter(3, 19, 8, 0, scheduleTime);
       case 3:
-        return this.setChorusParameter(9, 16, 16, 0);
+        return this.setChorusParameter(9, 16, 16, 0, scheduleTime);
       case 4:
-        return this.setChorusParameter(2, 24, 64, 0);
+        return this.setChorusParameter(2, 24, 64, 0, scheduleTime);
       case 5:
-        return this.setChorusParameter(1, 5, 112, 0);
+        return this.setChorusParameter(1, 5, 112, 0, scheduleTime);
       default:
         console.warn(`Unsupported Chorus Type: ${type}`);
     }
   }
 
-  setChorusParameter(modRate, modDepth, feedback, sendToReverb) {
-    this.setChorusModRate(modRate);
-    this.setChorusModDepth(modDepth);
-    this.setChorusFeedback(feedback);
-    this.setChorusSendToReverb(sendToReverb);
+  setChorusParameter(modRate, modDepth, feedback, sendToReverb, scheduleTime) {
+    this.setChorusModRate(modRate, scheduleTime);
+    this.setChorusModDepth(modDepth, scheduleTime);
+    this.setChorusFeedback(feedback, scheduleTime);
+    this.setChorusSendToReverb(sendToReverb, scheduleTime);
   }
 
-  setChorusModRate(value) {
-    const now = this.audioContext.currentTime;
+  setChorusModRate(value, scheduleTime) {
     const modRate = this.getChorusModRate(value);
     this.chorus.modRate = modRate;
-    this.chorusEffect.lfo.frequency.setValueAtTime(modRate, now);
+    this.chorusEffect.lfo.frequency.setValueAtTime(modRate, scheduleTime);
   }
 
   getChorusModRate(value) {
     return value * 0.122; // Hz
   }
 
-  setChorusModDepth(value) {
-    const now = this.audioContext.currentTime;
+  setChorusModDepth(value, scheduleTime) {
     const modDepth = this.getChorusModDepth(value);
     this.chorus.modDepth = modDepth;
     this.chorusEffect.lfoGain.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modDepth / 2, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(modDepth / 2, scheduleTime);
   }
 
   getChorusModDepth(value) {
     return (value + 1) / 3200; // second
   }
 
-  setChorusFeedback(value) {
-    const now = this.audioContext.currentTime;
+  setChorusFeedback(value, scheduleTime) {
     const feedback = this.getChorusFeedback(value);
     this.chorus.feedback = feedback;
     const chorusEffect = this.chorusEffect;
     for (let i = 0; i < chorusEffect.feedbackGains.length; i++) {
       chorusEffect.feedbackGains[i].gain
-        .cancelScheduledValues(now)
-        .setValueAtTime(feedback, now);
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(feedback, scheduleTime);
     }
   }
 
@@ -2642,27 +2656,25 @@ export class Midy {
     return value * 0.00763;
   }
 
-  setChorusSendToReverb(value) {
+  setChorusSendToReverb(value, scheduleTime) {
     const sendToReverb = this.getChorusSendToReverb(value);
     const sendGain = this.chorusEffect.sendGain;
     if (0 < this.chorus.sendToReverb) {
       this.chorus.sendToReverb = sendToReverb;
       if (0 < sendToReverb) {
-        const now = this.audioContext.currentTime;
         sendGain.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(sendToReverb, now);
+          .cancelScheduledValues(scheduleTime)
+          .setValueAtTime(sendToReverb, scheduleTime);
       } else {
         sendGain.disconnect();
       }
     } else {
       this.chorus.sendToReverb = sendToReverb;
       if (0 < sendToReverb) {
-        const now = this.audioContext.currentTime;
         sendGain.connect(this.reverbEffect.input);
         sendGain.gain
-          .cancelScheduledValues(now)
-          .setValueAtTime(sendToReverb, now);
+          .cancelScheduledValues(scheduleTime)
+          .setValueAtTime(sendToReverb, scheduleTime);
       }
     }
   }
@@ -2688,7 +2700,7 @@ export class Midy {
     return bitmap;
   }
 
-  handleScaleOctaveTuning1ByteFormatSysEx(data, realtime) {
+  handleScaleOctaveTuning1ByteFormatSysEx(data, realtime, scheduleTime) {
     if (data.length < 19) {
       console.error("Data length is too short");
       return;
@@ -2701,11 +2713,11 @@ export class Midy {
         const centValue = data[j + 7] - 64;
         channel.scaleOctaveTuningTable[j] = centValue;
       }
-      if (realtime) this.updateChannelDetune(channel);
+      if (realtime) this.updateChannelDetune(channel, scheduleTime);
     }
   }
 
-  handleScaleOctaveTuning2ByteFormatSysEx(data, realtime) {
+  handleScaleOctaveTuning2ByteFormatSysEx(data, realtime, scheduleTime) {
     if (data.length < 31) {
       console.error("Data length is too short");
       return;
@@ -2722,7 +2734,7 @@ export class Midy {
         const centValue = (value14bit - 8192) / 8.192;
         channel.scaleOctaveTuningTable[j] = centValue;
       }
-      if (realtime) this.updateChannelDetune(channel);
+      if (realtime) this.updateChannelDetune(channel, scheduleTime);
     }
   }
 
@@ -2835,7 +2847,7 @@ export class Midy {
     return (controlValue + 64) / 64;
   }
 
-  handleKeyBasedInstrumentControlSysEx(data) {
+  handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const keyNumber = data[5];
     const table = this.channels[channelNumber].keyBasedInstrumentControlTable;
@@ -2848,29 +2860,33 @@ export class Midy {
     this.handleChannelPressure(
       channelNumber,
       channel.state.channelPressure * 127,
+      scheduleTime,
     );
   }
 
-  handleSysEx(data) {
+  handleSysEx(data, scheduleTime) {
     switch (data[0]) {
       case 126:
-        return this.handleUniversalNonRealTimeExclusiveMessage(data);
+        return this.handleUniversalNonRealTimeExclusiveMessage(
+          data,
+          scheduleTime,
+        );
       case 127:
-        return this.handleUniversalRealTimeExclusiveMessage(data);
+        return this.handleUniversalRealTimeExclusiveMessage(data, scheduleTime);
       default:
         console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
-  scheduleTask(callback, startTime) {
+  scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext);
       bufferSource.onended = () => {
         callback();
         resolve();
       };
-      bufferSource.start(startTime);
-      bufferSource.stop(startTime);
+      bufferSource.start(scheduleTime);
+      bufferSource.stop(scheduleTime);
     });
   }
 }

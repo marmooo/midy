@@ -1290,7 +1290,7 @@ export class MidyGM1 {
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
     this.updateChannelDetune(channel, scheduleTime);
-    this.applyVoiceParams(channel, 16);
+    this.applyVoiceParams(channel, 16, scheduleTime);
   }
 
   handleFineTuningRPN(channelNumber) {
@@ -1358,7 +1358,7 @@ export class MidyGM1 {
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }
 
-  handleUniversalNonRealTimeExclusiveMessage(data) {
+  handleUniversalNonRealTimeExclusiveMessage(data, _scheduleTime) {
     switch (data[2]) {
       case 9:
         switch (data[3]) {
@@ -1384,12 +1384,12 @@ export class MidyGM1 {
     this.channels[9].bank = 128;
   }
 
-  handleUniversalRealTimeExclusiveMessage(data) {
+  handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {
     switch (data[2]) {
       case 4:
         switch (data[3]) {
           case 1:
-            return this.handleMasterVolumeSysEx(data);
+            return this.handleMasterVolumeSysEx(data, scheduleTime);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -1399,41 +1399,45 @@ export class MidyGM1 {
     }
   }
 
-  handleMasterVolumeSysEx(data) {
+  handleMasterVolumeSysEx(data, scheduleTime) {
     const volume = (data[5] * 128 + data[4]) / 16383;
-    this.setMasterVolume(volume);
+    this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(volume) {
+  setMasterVolume(volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     if (volume < 0 && 1 < volume) {
       console.error("Master Volume is out of range");
     } else {
-      const now = this.audioContext.currentTime;
-      this.masterVolume.gain.cancelScheduledValues(now);
-      this.masterVolume.gain.setValueAtTime(volume * volume, now);
+      this.masterVolume.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(volume * volume, scheduleTime);
     }
   }
 
-  handleSysEx(data) {
+  handleSysEx(data, scheduleTime) {
     switch (data[0]) {
       case 126:
-        return this.handleUniversalNonRealTimeExclusiveMessage(data);
+        return this.handleUniversalNonRealTimeExclusiveMessage(
+          data,
+          scheduleTime,
+        );
       case 127:
-        return this.handleUniversalRealTimeExclusiveMessage(data);
+        return this.handleUniversalRealTimeExclusiveMessage(data, scheduleTime);
       default:
         console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
-  scheduleTask(callback, startTime) {
+  scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext);
       bufferSource.onended = () => {
         callback();
         resolve();
       };
-      bufferSource.start(startTime);
-      bufferSource.stop(startTime);
+      bufferSource.start(scheduleTime);
+      bufferSource.stop(scheduleTime);
     });
   }
 }
