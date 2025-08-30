@@ -645,8 +645,7 @@ export class MidyGMLite {
       .setValueAtTime(channel.detune, scheduleTime);
   }
 
-  setVolumeEnvelope(note) {
-    const now = this.audioContext.currentTime;
+  setVolumeEnvelope(note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
@@ -655,7 +654,7 @@ export class MidyGMLite {
     const volHold = volAttack + voiceParams.volHold;
     const volDecay = volHold + voiceParams.volDecay;
     note.volumeEnvelopeNode.gain
-      .cancelScheduledValues(now)
+      .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
       .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
       .exponentialRampToValueAtTime(attackVolume, volAttack)
@@ -664,7 +663,6 @@ export class MidyGMLite {
   }
 
   setPitchEnvelope(note, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const { voiceParams } = note;
     const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
@@ -692,8 +690,7 @@ export class MidyGMLite {
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
 
-  setFilterEnvelope(note) {
-    const now = this.audioContext.currentTime;
+  setFilterEnvelope(note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const baseFreq = this.centToHz(voiceParams.initialFilterFc);
     const peekFreq = this.centToHz(
@@ -709,7 +706,7 @@ export class MidyGMLite {
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
     note.filterNode.frequency
-      .cancelScheduledValues(now)
+      .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
@@ -717,7 +714,7 @@ export class MidyGMLite {
       .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
   }
 
-  startModulation(channel, note, startTime) {
+  startModulation(channel, note, scheduleTime) {
     const { voiceParams } = note;
     note.modulationLFO = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
@@ -726,11 +723,11 @@ export class MidyGMLite {
       gain: voiceParams.modLfoToFilterFc,
     });
     note.modulationDepth = new GainNode(this.audioContext);
-    this.setModLfoToPitch(channel, note);
+    this.setModLfoToPitch(channel, note, scheduleTime);
     note.volumeDepth = new GainNode(this.audioContext);
-    this.setModLfoToVolume(note);
+    this.setModLfoToVolume(note, scheduleTime);
 
-    note.modulationLFO.start(startTime + voiceParams.delayModLFO);
+    note.modulationLFO.start(note.startTime + voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
     note.filterDepth.connect(note.filterNode.frequency);
     note.modulationLFO.connect(note.modulationDepth);
@@ -765,6 +762,7 @@ export class MidyGMLite {
     startTime,
     isSF3,
   ) {
+    const now = this.audioContext.currentTime;
     const state = channel.state;
     const controllerState = this.getControllerState(
       channel,
@@ -786,11 +784,11 @@ export class MidyGMLite {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10, // dB
     });
-    this.setVolumeEnvelope(note);
-    this.setFilterEnvelope(note);
-    this.setPitchEnvelope(note);
+    this.setVolumeEnvelope(note, now);
+    this.setFilterEnvelope(note, now);
+    this.setPitchEnvelope(note, now);
     if (0 < state.modulationDepth) {
-      this.startModulation(channel, note, startTime);
+      this.startModulation(channel, note, now);
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
@@ -848,7 +846,7 @@ export class MidyGMLite {
     }
   }
 
-  noteOn(channelNumber, noteNumber, velocity) {
+  noteOn(channelNumber, noteNumber, velocity, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.scheduleNoteOn(
       channelNumber,
@@ -983,72 +981,73 @@ export class MidyGMLite {
     this.applyVoiceParams(channel, 14, scheduleTime);
   }
 
-  setModLfoToPitch(channel, note) {
-    const now = this.audioContext.currentTime;
+  setModLfoToPitch(channel, note, scheduleTime) {
     const modLfoToPitch = note.voiceParams.modLfoToPitch;
     const baseDepth = Math.abs(modLfoToPitch) +
       channel.state.modulationDepth;
     const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
     note.modulationDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modulationDepth, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(modulationDepth, scheduleTime);
   }
 
-  setModLfoToFilterFc(note) {
-    const now = this.audioContext.currentTime;
+  setModLfoToFilterFc(note, scheduleTime) {
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
     note.filterDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(modLfoToFilterFc, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(modLfoToFilterFc, scheduleTime);
   }
 
-  setModLfoToVolume(note) {
-    const now = this.audioContext.currentTime;
+  setModLfoToVolume(note, scheduleTime) {
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
     const volumeDepth = baseDepth * Math.sign(modLfoToVolume);
     note.volumeDepth.gain
-      .cancelScheduledValues(now)
-      .setValueAtTime(volumeDepth, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(volumeDepth, scheduleTime);
   }
 
-  setDelayModLFO(note) {
-    const now = this.audioContext.currentTime;
+  setDelayModLFO(note, scheduleTime) {
     const startTime = note.startTime;
-    if (startTime < now) return;
-    note.modulationLFO.stop(now);
+    if (startTime < scheduleTime) return;
+    note.modulationLFO.stop(scheduleTime);
     note.modulationLFO.start(startTime + note.voiceParams.delayModLFO);
     note.modulationLFO.connect(note.filterDepth);
   }
 
-  setFreqModLFO(note) {
-    const now = this.audioContext.currentTime;
+  setFreqModLFO(note, scheduleTime) {
     const freqModLFO = note.voiceParams.freqModLFO;
     note.modulationLFO.frequency
-      .cancelScheduledValues(now)
-      .setValueAtTime(freqModLFO, now);
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(freqModLFO, scheduleTime);
   }
 
   createVoiceParamsHandlers() {
     return {
-      modLfoToPitch: (channel, note, _prevValue) => {
+      modLfoToPitch: (channel, note, _prevValue, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
-          this.setModLfoToPitch(channel, note);
+          this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
-      vibLfoToPitch: (_channel, _note, _prevValue) => {},
-      modLfoToFilterFc: (channel, note, _prevValue) => {
-        if (0 < channel.state.modulationDepth) this.setModLfoToFilterFc(note);
+      vibLfoToPitch: (_channel, _note, _prevValue, _scheduleTime) => {},
+      modLfoToFilterFc: (channel, note, _prevValue, scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setModLfoToFilterFc(note, scheduleTime);
+        }
       },
-      modLfoToVolume: (channel, note, _prevValue) => {
-        if (0 < channel.state.modulationDepth) this.setModLfoToVolume(note);
+      modLfoToVolume: (channel, note, _prevValue, scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setModLfoToVolume(note, scheduleTime);
+        }
       },
-      chorusEffectsSend: (_channel, _note, _prevValue) => {},
-      reverbEffectsSend: (_channel, _note, _prevValue) => {},
-      delayModLFO: (_channel, note, _prevValue) => this.setDelayModLFO(note),
-      freqModLFO: (_channel, note, _prevValue) => this.setFreqModLFO(note),
-      delayVibLFO: (_channel, _note, _prevValue) => {},
-      freqVibLFO: (_channel, _note, _prevValue) => {},
+      chorusEffectsSend: (_channel, _note, _prevValue, _scheduleTime) => {},
+      reverbEffectsSend: (_channel, _note, _prevValue, _scheduleTime) => {},
+      delayModLFO: (_channel, note, _prevValue, scheduleTime) =>
+        this.setDelayModLFO(note, scheduleTime),
+      freqModLFO: (_channel, note, _prevValue, scheduleTime) =>
+        this.setFreqModLFO(note, scheduleTime),
+      delayVibLFO: (_channel, _note, _prevValue, _scheduleTime) => {},
+      freqVibLFO: (_channel, _note, _prevValue, _scheduleTime) => {},
     };
   }
 
@@ -1060,7 +1059,7 @@ export class MidyGMLite {
     return state;
   }
 
-  applyVoiceParams(channel, controllerType) {
+  applyVoiceParams(channel, controllerType, scheduleTime) {
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
@@ -1081,7 +1080,12 @@ export class MidyGMLite {
           if (value === prevValue) continue;
           note.voiceParams[key] = value;
           if (key in this.voiceParamsHandlers) {
-            this.voiceParamsHandlers[key](channel, note, prevValue);
+            this.voiceParamsHandlers[key](
+              channel,
+              note,
+              prevValue,
+              scheduleTime,
+            );
           } else if (filterEnvelopeKeySet.has(key)) {
             if (appliedFilterEnvelope) continue;
             appliedFilterEnvelope = true;
@@ -1090,8 +1094,8 @@ export class MidyGMLite {
               const key = filterEnvelopeKeys[i];
               if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
             }
-            this.setFilterEnvelope(note);
-            this.setPitchEnvelope(note);
+            this.setFilterEnvelope(note, scheduleTime);
+            this.setPitchEnvelope(note, scheduleTime);
           } else if (volumeEnvelopeKeySet.has(key)) {
             if (appliedVolumeEnvelope) continue;
             appliedVolumeEnvelope = true;
@@ -1100,7 +1104,7 @@ export class MidyGMLite {
               const key = volumeEnvelopeKeys[i];
               if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
             }
-            this.setVolumeEnvelope(channel, note);
+            this.setVolumeEnvelope(channel, note, scheduleTime);
           }
         }
       }
@@ -1129,7 +1133,7 @@ export class MidyGMLite {
     if (handler) {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
-      this.applyVoiceParams(channel, controllerType + 128);
+      this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -1267,7 +1271,7 @@ export class MidyGMLite {
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
     this.updateChannelDetune(channel, scheduleTime);
-    this.applyVoiceParams(channel, 16);
+    this.applyVoiceParams(channel, 16, scheduleTime);
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
