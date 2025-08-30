@@ -2231,7 +2231,7 @@ export class MidyGM2 {
       case 10:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca23.pdf
-            return this.handleKeyBasedInstrumentControlSysEx(data);
+            return this.handleKeyBasedInstrumentControlSysEx(data, scheduleTime);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -2556,7 +2556,7 @@ export class MidyGM2 {
     if (table[5] !== 0) this.setModLfoToVolume(channel, note);
   }
 
-  handleChannelPressureSysEx(data, tableName) {
+  handlePressureSysEx(data, tableName) {
     const channelNumber = data[4];
     const table = this.channels[channelNumber][tableName];
     for (let i = 5; i < data.length - 1; i += 2) {
