@@ -2163,15 +2163,15 @@ export class Midy {
         break;
       case 1:
         channel.dataLSB += value;
-        this.handleFineTuningRPN(channelNumber);
+        this.handleFineTuningRPN(channelNumber, scheduleTime);
         break;
       case 2:
         channel.dataMSB += value;
-        this.handleCoarseTuningRPN(channelNumber);
+        this.handleCoarseTuningRPN(channelNumber, scheduleTime);
         break;
       case 5:
         channel.dataLSB += value;
-        this.handleModulationDepthRangeRPN(channelNumber);
+        this.handleModulationDepthRangeRPN(channelNumber, scheduleTime);
         break;
       default:
         console.warn(
@@ -2222,49 +2222,53 @@ export class Midy {
     this.applyVoiceParams(channel, 16, scheduleTime);
   }
 
-  handleFineTuningRPN(channelNumber) {
+  handleFineTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
     const fineTuning = channel.dataMSB * 128 + channel.dataLSB;
-    this.setFineTuning(channelNumber, fineTuning);
+    this.setFineTuning(channelNumber, fineTuning, scheduleTime);
   }
 
-  setFineTuning(channelNumber, value) { // [0, 16383]
+  setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
     const channel = this.channels[channelNumber];
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
     channel.fineTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
-  handleCoarseTuningRPN(channelNumber) {
+  handleCoarseTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
     const coarseTuning = channel.dataMSB;
-    this.setCoarseTuning(channelNumber, coarseTuning);
+    this.setCoarseTuning(channelNumber, coarseTuning, scheduleTime);
   }
 
-  setCoarseTuning(channelNumber, value) { // [0, 127]
+  setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
     const channel = this.channels[channelNumber];
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
     channel.coarseTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
-  handleModulationDepthRangeRPN(channelNumber) {
+  handleModulationDepthRangeRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
     const modulationDepthRange = (dataMSB + dataLSB / 128) * 100;
-    this.setModulationDepthRange(channelNumber, modulationDepthRange);
+    this.setModulationDepthRange(
+      channelNumber,
+      modulationDepthRange,
+      scheduleTime,
+    );
   }
 
-  setModulationDepthRange(channelNumber, modulationDepthRange) {
+  setModulationDepthRange(channelNumber, modulationDepthRange, scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
-    this.updateModulation(channel);
+    this.updateModulation(channel, scheduleTime);
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
@@ -2433,7 +2437,10 @@ export class Midy {
       case 10:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca23.pdf
-            return this.handleKeyBasedInstrumentControlSysEx(data, scheduleTime);
+            return this.handleKeyBasedInstrumentControlSysEx(
+              data,
+              scheduleTime,
+            );
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }

@@ -1249,10 +1249,10 @@ export class MidyGM1 {
         this.handlePitchBendRangeRPN(channelNumber, scheduleTime);
         break;
       case 1:
-        this.handleFineTuningRPN(channelNumber);
+        this.handleFineTuningRPN(channelNumber, scheduleTime);
         break;
       case 2:
-        this.handleCoarseTuningRPN(channelNumber);
+        this.handleCoarseTuningRPN(channelNumber, scheduleTime);
         break;
       default:
         console.warn(
@@ -1293,36 +1293,36 @@ export class MidyGM1 {
     this.applyVoiceParams(channel, 16, scheduleTime);
   }
 
-  handleFineTuningRPN(channelNumber) {
+  handleFineTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
     const fineTuning = channel.dataMSB * 128 + channel.dataLSB;
-    this.setFineTuning(channelNumber, fineTuning);
+    this.setFineTuning(channelNumber, fineTuning, scheduleTime);
   }
 
-  setFineTuning(channelNumber, value) { // [0, 16383]
+  setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
     const channel = this.channels[channelNumber];
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
     channel.fineTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
-  handleCoarseTuningRPN(channelNumber) {
+  handleCoarseTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
     const coarseTuning = channel.dataMSB;
-    this.setCoarseTuning(channelNumber, coarseTuning);
+    this.setCoarseTuning(channelNumber, coarseTuning, scheduleTime);
   }
 
-  setCoarseTuning(channelNumber, value) { // [0, 127]
+  setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
     const channel = this.channels[channelNumber];
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
     channel.coarseTuning = next;
     channel.detune += next - prev;
-    this.updateChannelDetune(channel);
+    this.updateChannelDetune(channel, scheduleTime);
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
