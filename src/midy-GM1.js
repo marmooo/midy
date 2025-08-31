@@ -582,12 +582,11 @@ export class MidyGM1 {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
 
-  processScheduledNotes(channel, scheduleTime, callback) {
+  processScheduledNotes(channel, callback) {
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        if (scheduleTime < note.startTime) continue;
         callback(note);
       }
     });
@@ -639,7 +638,7 @@ export class MidyGM1 {
   }
 
   updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       this.updateDetune(channel, note, scheduleTime);
     });
   }
@@ -927,9 +926,14 @@ export class MidyGM1 {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       const { noteNumber } = note;
-      const promise = this.noteOff(channelNumber, noteNumber, velocity);
+      const promise = this.noteOff(
+        channelNumber,
+        noteNumber,
+        velocity,
+        scheduleTime,
+      );
       promises.push(promise);
     });
     return promises;
@@ -1149,7 +1153,7 @@ export class MidyGM1 {
   updateModulation(channel, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
