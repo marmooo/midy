@@ -655,21 +655,17 @@ export class MidyGM2 {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const promise = this.scheduleNoteOff(
-          channelNumber,
-          note.noteNumber,
-          velocity,
-          scheduleTime,
-          force,
-          undefined, // portamentoNoteNumber
-        );
-        this.notePromises.push(promise);
-        promises.push(promise);
-      }
+    this.processScheduledNotes(channel, (note) => {
+      const promise = this.scheduleNoteOff(
+        channelNumber,
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        force,
+        undefined, // portamentoNoteNumber
+      );
+      this.notePromises.push(promise);
+      promises.push(promise);
     });
     channel.scheduledNotes.clear();
     return Promise.all(promises);
@@ -1655,60 +1651,53 @@ export class MidyGM2 {
   }
 
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const controllerState = this.getControllerState(
-          channel,
-          note.noteNumber,
-          note.velocity,
-        );
-        const voiceParams = note.voice.getParams(
-          controllerType,
-          controllerState,
-        );
-        let appliedFilterEnvelope = false;
-        let appliedVolumeEnvelope = false;
-        for (const [key, value] of Object.entries(voiceParams)) {
-          const prevValue = note.voiceParams[key];
-          if (value === prevValue) continue;
-          note.voiceParams[key] = value;
-          if (key in this.voiceParamsHandlers) {
-            this.voiceParamsHandlers[key](
+    this.processScheduledNotes(channel, (note) => {
+      const controllerState = this.getControllerState(
+        channel,
+        note.noteNumber,
+        note.velocity,
+      );
+      const voiceParams = note.voice.getParams(controllerType, controllerState);
+      let appliedFilterEnvelope = false;
+      let appliedVolumeEnvelope = false;
+      for (const [key, value] of Object.entries(voiceParams)) {
+        const prevValue = note.voiceParams[key];
+        if (value === prevValue) continue;
+        note.voiceParams[key] = value;
+        if (key in this.voiceParamsHandlers) {
+          this.voiceParamsHandlers[key](
+            channel,
+            note,
+            prevValue,
+            scheduleTime,
+          );
+        } else if (filterEnvelopeKeySet.has(key)) {
+          if (appliedFilterEnvelope) continue;
+          appliedFilterEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < filterEnvelopeKeys.length; i++) {
+            const key = filterEnvelopeKeys[i];
+            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
+          }
+          if (note.portamento) {
+            this.setPortamentoStartFilterEnvelope(
               channel,
               note,
-              prevValue,
               scheduleTime,
             );
-          } else if (filterEnvelopeKeySet.has(key)) {
-            if (appliedFilterEnvelope) continue;
-            appliedFilterEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i = 0; i < filterEnvelopeKeys.length; i++) {
-              const key = filterEnvelopeKeys[i];
-              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-            }
-            if (note.portamento) {
-              this.setPortamentoStartFilterEnvelope(
-                channel,
-                note,
-                scheduleTime,
-              );
-            } else {
-              this.setFilterEnvelope(channel, note, scheduleTime);
-            }
-            this.setPitchEnvelope(note, scheduleTime);
-          } else if (volumeEnvelopeKeySet.has(key)) {
-            if (appliedVolumeEnvelope) continue;
-            appliedVolumeEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
-              const key = volumeEnvelopeKeys[i];
-              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-            }
-            this.setVolumeEnvelope(channel, note, scheduleTime);
+          } else {
+            this.setFilterEnvelope(channel, note, scheduleTime);
           }
+          this.setPitchEnvelope(note, scheduleTime);
+        } else if (volumeEnvelopeKeySet.has(key)) {
+          if (appliedVolumeEnvelope) continue;
+          appliedVolumeEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
+            const key = volumeEnvelopeKeys[i];
+            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
+          }
+          this.setVolumeEnvelope(channel, note, scheduleTime);
         }
       }
     });
@@ -1909,23 +1898,15 @@ export class MidyGM2 {
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(state.reverbSendLevel, scheduleTime);
       } else {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            if (note.voiceParams.reverbEffectsSend <= 0) continue;
-            note.reverbEffectsSend.disconnect();
-          }
+        this.processScheduledNotes(channel, (note) => {
+          if (note.voiceParams.reverbEffectsSend <= 0) return false;
+          note.reverbEffectsSend.disconnect();
         });
       }
     } else {
       if (0 < reverbSendLevel) {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            this.setReverbEffectsSend(channel, note, 0, scheduleTime);
-          }
+        this.processScheduledNotes(channel, (note) => {
+          this.setReverbEffectsSend(channel, note, 0, scheduleTime);
         });
         state.reverbSendLevel = reverbSendLevel / 127;
         reverbEffect.input.gain
@@ -1946,23 +1927,15 @@ export class MidyGM2 {
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(state.chorusSendLevel, scheduleTime);
       } else {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            if (note.voiceParams.chorusEffectsSend <= 0) continue;
-            note.chorusEffectsSend.disconnect();
-          }
+        this.processScheduledNotes(channel, (note) => {
+          if (note.voiceParams.chorusEffectsSend <= 0) return false;
+          note.chorusEffectsSend.disconnect();
         });
       }
     } else {
       if (0 < chorusSendLevel) {
-        channel.scheduledNotes.forEach((noteList) => {
-          for (let i = 0; i < noteList.length; i++) {
-            const note = noteList[i];
-            if (!note) continue;
-            this.setChorusEffectsSend(channel, note, 0, scheduleTime);
-          }
+        this.processScheduledNotes(channel, (note) => {
+          this.setChorusEffectsSend(channel, note, 0, scheduleTime);
         });
         state.chorusSendLevel = chorusSendLevel / 127;
         chorusEffect.input.gain
@@ -2593,12 +2566,8 @@ export class MidyGM2 {
     const slotSize = 6;
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        this.setControllerParameters(channel, note, table);
-      }
+    this.processScheduledNotes(channel, (note) => {
+      this.setControllerParameters(channel, note, table);
     });
   }
 

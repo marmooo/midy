@@ -509,20 +509,16 @@ export class MidyGM1 {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const promise = this.scheduleNoteOff(
-          channelNumber,
-          note.noteNumber,
-          velocity,
-          scheduleTime,
-          force,
-        );
-        this.notePromises.push(promise);
-        promises.push(promise);
-      }
+    this.processScheduledNotes(channel, (note) => {
+      const promise = this.scheduleNoteOff(
+        channelNumber,
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        force,
+      );
+      this.notePromises.push(promise);
+      promises.push(promise);
     });
     channel.scheduledNotes.clear();
     return Promise.all(promises);
@@ -1069,52 +1065,45 @@ export class MidyGM1 {
   }
 
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const controllerState = this.getControllerState(
-          channel,
-          note.noteNumber,
-          note.velocity,
-        );
-        const voiceParams = note.voice.getParams(
-          controllerType,
-          controllerState,
-        );
-        let appliedFilterEnvelope = false;
-        let appliedVolumeEnvelope = false;
-        for (const [key, value] of Object.entries(voiceParams)) {
-          const prevValue = note.voiceParams[key];
-          if (value === prevValue) continue;
-          note.voiceParams[key] = value;
-          if (key in this.voiceParamsHandlers) {
-            this.voiceParamsHandlers[key](
-              channel,
-              note,
-              prevValue,
-              scheduleTime,
-            );
-          } else if (filterEnvelopeKeySet.has(key)) {
-            if (appliedFilterEnvelope) continue;
-            appliedFilterEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i = 0; i < filterEnvelopeKeys.length; i++) {
-              const key = filterEnvelopeKeys[i];
-              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-            }
-            this.setFilterEnvelope(note, scheduleTime);
-            this.setPitchEnvelope(note, scheduleTime);
-          } else if (volumeEnvelopeKeySet.has(key)) {
-            if (appliedVolumeEnvelope) continue;
-            appliedVolumeEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
-              const key = volumeEnvelopeKeys[i];
-              if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-            }
-            this.setVolumeEnvelope(note, scheduleTime);
+    this.processScheduledNotes(channel, (note) => {
+      const controllerState = this.getControllerState(
+        channel,
+        note.noteNumber,
+        note.velocity,
+      );
+      const voiceParams = note.voice.getParams(controllerType, controllerState);
+      let appliedFilterEnvelope = false;
+      let appliedVolumeEnvelope = false;
+      for (const [key, value] of Object.entries(voiceParams)) {
+        const prevValue = note.voiceParams[key];
+        if (value === prevValue) continue;
+        note.voiceParams[key] = value;
+        if (key in this.voiceParamsHandlers) {
+          this.voiceParamsHandlers[key](
+            channel,
+            note,
+            prevValue,
+            scheduleTime,
+          );
+        } else if (filterEnvelopeKeySet.has(key)) {
+          if (appliedFilterEnvelope) continue;
+          appliedFilterEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < filterEnvelopeKeys.length; i++) {
+            const key = filterEnvelopeKeys[i];
+            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
           }
+          this.setFilterEnvelope(note, scheduleTime);
+          this.setPitchEnvelope(note, scheduleTime);
+        } else if (volumeEnvelopeKeySet.has(key)) {
+          if (appliedVolumeEnvelope) continue;
+          appliedVolumeEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
+            const key = volumeEnvelopeKeys[i];
+            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
+          }
+          this.setVolumeEnvelope(note, scheduleTime);
         }
       }
     });
