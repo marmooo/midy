@@ -1751,7 +1751,6 @@ export class MidyGM2 {
   }
 
   updateModulation(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
@@ -1764,6 +1763,7 @@ export class MidyGM2 {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
@@ -1776,7 +1776,6 @@ export class MidyGM2 {
   }
 
   setKeyBasedVolume(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     this.processScheduledNotes(channel, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
@@ -1792,6 +1791,7 @@ export class MidyGM2 {
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1807,7 +1807,6 @@ export class MidyGM2 {
   }
 
   setKeyBasedPan(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     this.processScheduledNotes(channel, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
@@ -1827,6 +1826,7 @@ export class MidyGM2 {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1834,6 +1834,7 @@ export class MidyGM2 {
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1873,6 +1874,7 @@ export class MidyGM2 {
   }
 
   setSostenutoPedal(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.sostenutoPedal = value / 127;
     if (64 <= value) {
@@ -1888,6 +1890,7 @@ export class MidyGM2 {
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const reverbEffect = this.reverbEffect;
@@ -1917,6 +1920,7 @@ export class MidyGM2 {
   }
 
   setChorusSendLevel(channelNumber, chorusSendLevel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const chorusEffect = this.chorusEffect;
@@ -2033,6 +2037,7 @@ export class MidyGM2 {
   }
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
@@ -2049,6 +2054,7 @@ export class MidyGM2 {
   }
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
@@ -2069,6 +2075,7 @@ export class MidyGM2 {
   }
 
   setModulationDepthRange(channelNumber, modulationDepthRange, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
     this.updateModulation(channel, scheduleTime);

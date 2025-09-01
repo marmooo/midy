@@ -1140,7 +1140,6 @@ export class MidyGM1 {
   }
 
   updateModulation(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
@@ -1153,12 +1152,14 @@ export class MidyGM1 {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1173,12 +1174,14 @@ export class MidyGM1 {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1294,6 +1297,7 @@ export class MidyGM1 {
   }
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
@@ -1310,6 +1314,7 @@ export class MidyGM1 {
   }
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent

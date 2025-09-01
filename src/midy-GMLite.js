@@ -1148,12 +1148,14 @@ export class MidyGMLite {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1168,12 +1170,14 @@ export class MidyGMLite {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);

@@ -1801,7 +1801,6 @@ export class Midy {
   }
 
   updateModulation(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
@@ -1814,6 +1813,7 @@ export class Midy {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
@@ -1826,7 +1826,6 @@ export class Midy {
   }
 
   setKeyBasedVolume(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     this.processScheduledNotes(channel, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
@@ -1842,6 +1841,7 @@ export class Midy {
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1857,7 +1857,6 @@ export class Midy {
   }
 
   setKeyBasedPan(channel, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     this.processScheduledNotes(channel, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
@@ -1877,6 +1876,7 @@ export class Midy {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1884,6 +1884,7 @@ export class Midy {
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1923,6 +1924,7 @@ export class Midy {
   }
 
   setSostenutoPedal(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.sostenutoPedal = value / 127;
     if (64 <= value) {
@@ -1938,6 +1940,7 @@ export class Midy {
   }
 
   setFilterResonance(channelNumber, filterResonance, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     state.filterResonance = filterResonance / 64;
@@ -1948,11 +1951,13 @@ export class Midy {
   }
 
   setReleaseTime(channelNumber, releaseTime, _scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.releaseTime = releaseTime / 64;
   }
 
   setAttackTime(channelNumber, attackTime, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.attackTime = attackTime / 64;
     this.processScheduledNotes(channel, (note) => {
@@ -1962,6 +1967,7 @@ export class Midy {
   }
 
   setBrightness(channelNumber, brightness, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.brightness = brightness / 64;
     this.processScheduledNotes(channel, (note) => {
@@ -1974,6 +1980,7 @@ export class Midy {
   }
 
   setDecayTime(channelNumber, dacayTime, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.decayTime = dacayTime / 64;
     this.processScheduledNotes(channel, (note) => {
@@ -1982,6 +1989,7 @@ export class Midy {
   }
 
   setVibratoRate(channelNumber, vibratoRate, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.vibratoRate = vibratoRate / 64;
     if (channel.vibratoDepth <= 0) return;
@@ -1991,6 +1999,7 @@ export class Midy {
   }
 
   setVibratoDepth(channelNumber, vibratoDepth, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.state.vibratoDepth;
     channel.state.vibratoDepth = vibratoDepth / 64;
@@ -2006,6 +2015,7 @@ export class Midy {
   }
 
   setVibratoDelay(channelNumber, vibratoDelay) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.vibratoDelay = vibratoDelay / 64;
     if (0 < channel.state.vibratoDepth) {
@@ -2016,6 +2026,7 @@ export class Midy {
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const reverbEffect = this.reverbEffect;
@@ -2045,6 +2056,7 @@ export class Midy {
   }
 
   setChorusSendLevel(channelNumber, chorusSendLevel, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
     const chorusEffect = this.chorusEffect;
@@ -2175,6 +2187,7 @@ export class Midy {
   }
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
@@ -2191,6 +2204,7 @@ export class Midy {
   }
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
@@ -2211,6 +2225,7 @@ export class Midy {
   }
 
   setModulationDepthRange(channelNumber, modulationDepthRange, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.modulationDepthRange = modulationDepthRange;
     this.updateModulation(channel, scheduleTime);
