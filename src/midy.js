@@ -190,8 +190,6 @@ export class Midy {
     sendToReverb: this.getChorusSendToReverb(0),
     delayTimes: this.generateDistributedArray(0.02, 2, 0.5),
   };
-  mono = false; // CC#124, CC#125
-  omni = false; // CC#126, CC#127
   noteCheckInterval = 0.1;
   lookAhead = 1;
   startDelay = 0.1;
@@ -222,6 +220,8 @@ export class Midy {
     dataLSB: 0,
     rpnMSB: 127,
     rpnLSB: 127,
+    mono: false, // CC#124, CC#125
+    omni: false, // CC#126, CC#127
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
     modulationDepthRange: 50, // cent
@@ -1195,7 +1195,7 @@ export class Midy {
     if (0 < state.modulationDepth) {
       this.startModulation(channel, note, now);
     }
-    if (this.mono && channel.currentBufferSource) {
+    if (channel.mono && channel.currentBufferSource) {
       channel.currentBufferSource.stop(startTime);
       channel.currentBufferSource = note.bufferSource;
     }
@@ -2268,20 +2268,28 @@ export class Midy {
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }
 
-  omniOff() {
-    this.omni = false;
+  omniOff(channelNumber, value, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    channel.omni = false;
+    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
-  omniOn() {
-    this.omni = true;
+  omniOn(channelNumber, value, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    channel.omni = true;
+    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
-  monoOn() {
-    this.mono = true;
+  monoOn(channelNumber, value, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    channel.mono = true;
+    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
-  polyOn() {
-    this.mono = false;
+  polyOn(channelNumber, value, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    channel.mono = false;
+    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(data, scheduleTime) {
