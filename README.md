@@ -77,8 +77,8 @@ There are functions that handle SysEx data as is, as well as simplified
 functions.
 
 ```js
-midy.handleSysEx(data); // [F0 F6 04 01 xx xx F7] data
-midy.handleMasterVolumeSysEx(data); // [F0 F6 04 01 xx xx F7] data
+midy.handleSysEx(data, scheduleTime); // [F0 F6 04 01 xx xx F7] data
+midy.handleMasterVolumeSysEx(data, scheduleTime); // [F0 F6 04 01 xx xx F7] data
 midy.setMasterVolume(volume); // [0-1] volume
 ```
 
