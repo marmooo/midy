@@ -1180,7 +1180,7 @@ export class MidyGM2 {
     if (0 < state.modulationDepth) {
       this.startModulation(channel, note, now);
     }
-    if (this.mono && channel.currentBufferSource) {
+    if (channel.mono && channel.currentBufferSource) {
       channel.currentBufferSource.stop(startTime);
       channel.currentBufferSource = note.bufferSource;
     }
