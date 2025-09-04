@@ -221,7 +221,6 @@ export class Midy {
     rpnMSB: 127,
     rpnLSB: 127,
     mono: false, // CC#124, CC#125
-    omni: false, // CC#126, CC#127
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
     modulationDepthRange: 50, // cent
@@ -425,7 +424,7 @@ export class Midy {
           const portamentoTarget = this.findPortamentoTarget(queueIndex);
           if (portamentoTarget) portamentoTarget.portamento = true;
           const notePromise = this.scheduleNoteOff(
-            this.omni ? 0 : event.channel,
+            event.channel,
             event.noteNumber,
             event.velocity,
             startTime,
@@ -447,7 +446,7 @@ export class Midy {
           break;
         case "controller":
           this.handleControlChange(
-            this.omni ? 0 : event.channel,
+            event.channel,
             event.controllerType,
             event.value,
             startTime,
@@ -1422,7 +1421,7 @@ export class Midy {
   }
 
   handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
-    const channelNumber = omni ? 0 : statusByte & 0x0F;
+    const channelNumber = statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {
       case 0x80:
@@ -2269,27 +2268,23 @@ export class Midy {
   }
 
   omniOff(channelNumber, value, scheduleTime) {
-    const channel = this.channels[channelNumber];
-    channel.omni = false;
-    this.allSoundOff(channelNumber, value, scheduleTime);
+    this.allNotesOff(channelNumber, value, scheduleTime);
   }
 
   omniOn(channelNumber, value, scheduleTime) {
-    const channel = this.channels[channelNumber];
-    channel.omni = true;
-    this.allSoundOff(channelNumber, value, scheduleTime);
+    this.allNotesOff(channelNumber, value, scheduleTime);
   }
 
   monoOn(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    this.allNotesOff(channelNumber, value, scheduleTime);
     channel.mono = true;
-    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
   polyOn(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    this.allNotesOff(channelNumber, value, scheduleTime);
     channel.mono = false;
-    this.allSoundOff(channelNumber, value, scheduleTime);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(data, scheduleTime) {
