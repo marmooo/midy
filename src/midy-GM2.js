@@ -1241,9 +1241,6 @@ export class MidyGM2 {
     );
     note.gainL.connect(channel.gainL);
     note.gainR.connect(channel.gainR);
-    if (channel.state.sostenutoPedal) {
-      channel.sostenutoNotes.set(noteNumber, note);
-    }
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
