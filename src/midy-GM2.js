@@ -1391,14 +1391,18 @@ export class MidyGM2 {
     return promises;
   }
 
-  releaseSostenutoPedal(channelNumber, halfVelocity) {
+  releaseSostenutoPedal(channelNumber, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
     channel.state.sostenutoPedal = 0;
-    channel.sostenutoNotes.forEach((activeNote) => {
-      const { noteNumber } = activeNote;
-      const promise = this.noteOff(channelNumber, noteNumber, velocity);
+    channel.sostenutoNotes.forEach((note) => {
+      const promise = this.noteOff(
+        channelNumber,
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+      );
       promises.push(promise);
     });
     channel.sostenutoNotes.clear();
@@ -1885,7 +1889,7 @@ export class MidyGM2 {
     if (64 <= value) {
       channel.sostenutoNotes = this.getActiveNotes(channel, scheduleTime);
     } else {
-      this.releaseSostenutoPedal(channelNumber, value);
+      this.releaseSostenutoPedal(channelNumber, value, scheduleTime);
     }
   }
 
