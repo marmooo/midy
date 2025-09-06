@@ -253,6 +253,7 @@ export class MidyGM1 {
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new SparseMap(128),
+        sustainNotes: [],
       };
     });
     return channels;
@@ -820,6 +821,9 @@ export class MidyGM1 {
     );
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
@@ -890,7 +894,7 @@ export class MidyGM1 {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (!force && 0.5 < channel.state.sustainPedal) return;
+    if (!force && 0.5 <= channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {
@@ -922,16 +926,16 @@ export class MidyGM1 {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, (note) => {
-      const { noteNumber } = note;
+    for (let i = 0; i < channel.sustainNotes.length; i++) {
       const promise = this.noteOff(
         channelNumber,
-        noteNumber,
+        channel.sustainNotes[i].noteNumber,
         velocity,
         scheduleTime,
       );
       promises.push(promise);
-    });
+    }
+    channel.sustainNotes = [];
     return promises;
   }
 
@@ -1206,8 +1210,13 @@ export class MidyGM1 {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    this.channels[channelNumber].state.sustainPedal = value / 127;
-    if (value < 64) {
+    const channel = this.channels[channelNumber];
+    channel.state.sustainPedal = value / 127;
+    if (64 <= value) {
+      this.processScheduledNotes(channel, (note) => {
+        channel.sustainNotes.push(note);
+      });
+    } else {
       this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
   }

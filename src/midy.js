@@ -336,6 +336,7 @@ export class Midy {
         controlTable: this.initControlTable(),
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: new SparseMap(128),
+        sustainNotes: [],
         sostenutoNotes: new SparseMap(128),
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
         channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
@@ -1256,6 +1257,9 @@ export class Midy {
     );
     note.gainL.connect(channel.gainL);
     note.gainR.connect(channel.gainR);
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
@@ -1343,7 +1347,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     const state = channel.state;
     if (!force) {
-      if (0.5 < state.sustainPedal) return;
+      if (0.5 <= state.sustainPedal) return;
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
     if (!channel.scheduledNotes.has(noteNumber)) return;
@@ -1390,16 +1394,16 @@ export class Midy {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, (note) => {
-      const { noteNumber } = note;
+    for (let i = 0; i < channel.sustainNotes.length; i++) {
       const promise = this.noteOff(
         channelNumber,
-        noteNumber,
+        channel.sustainNotes[i].noteNumber,
         velocity,
         scheduleTime,
       );
       promises.push(promise);
-    });
+    }
+    channel.sustainNotes = [];
     return promises;
   }
 
@@ -1909,8 +1913,13 @@ export class Midy {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    this.channels[channelNumber].state.sustainPedal = value / 127;
-    if (value < 64) {
+    const channel = this.channels[channelNumber];
+    channel.state.sustainPedal = value / 127;
+    if (64 <= value) {
+      this.processScheduledNotes(channel, (note) => {
+        channel.sustainNotes.push(note);
+      });
+    } else {
       this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
   }
