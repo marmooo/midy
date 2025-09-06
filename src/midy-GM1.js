@@ -322,6 +322,7 @@ export class MidyGM1 {
             event.noteNumber,
             event.velocity,
             startTime,
+            false, // force
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -835,7 +836,6 @@ export class MidyGM1 {
             prevNote.noteNumber,
             0, // velocity,
             startTime,
-            undefined, // portamentoNoteNumber
             true, // force
           );
         }
