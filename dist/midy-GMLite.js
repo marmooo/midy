@@ -2408,7 +2408,8 @@ var MidyGMLite = class {
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: new SparseMap(128)
+        scheduledNotes: new SparseMap(128),
+        sustainNotes: []
       };
     });
     return channels;
@@ -2473,7 +2474,9 @@ var MidyGMLite = class {
             event.channel,
             event.noteNumber,
             event.velocity,
-            startTime
+            startTime,
+            false
+            // force
           );
           if (notePromise) {
             this.notePromises.push(notePromise);
@@ -2656,20 +2659,16 @@ var MidyGMLite = class {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const promise = this.scheduleNoteOff(
-          channelNumber,
-          note.noteNumber,
-          velocity,
-          scheduleTime,
-          force
-        );
-        this.notePromises.push(promise);
-        promises.push(promise);
-      }
+    this.processScheduledNotes(channel, (note) => {
+      const promise = this.scheduleNoteOff(
+        channelNumber,
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        force
+      );
+      this.notePromises.push(promise);
+      promises.push(promise);
     });
     channel.scheduledNotes.clear();
     return Promise.all(promises);
@@ -2720,12 +2719,11 @@ var MidyGMLite = class {
     const now = this.audioContext.currentTime;
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
-  processScheduledNotes(channel, scheduleTime, callback) {
+  processScheduledNotes(channel, callback) {
     channel.scheduledNotes.forEach((noteList) => {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
-        if (scheduleTime < note.startTime) continue;
         callback(note);
       }
     });
@@ -2767,7 +2765,7 @@ var MidyGMLite = class {
     return pitchWheel * pitchWheelSensitivity;
   }
   updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       this.updateDetune(channel, note, scheduleTime);
     });
   }
@@ -2916,6 +2914,9 @@ var MidyGMLite = class {
     );
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass !== 0) {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
@@ -2928,8 +2929,6 @@ var MidyGMLite = class {
             0,
             // velocity,
             startTime,
-            void 0,
-            // portamentoNoteNumber
             true
             // force
           );
@@ -2978,7 +2977,7 @@ var MidyGMLite = class {
   }
   scheduleNoteOff(channelNumber, noteNumber, _velocity, endTime, force) {
     const channel = this.channels[channelNumber];
-    if (!force && 0.5 < channel.state.sustainPedal) return;
+    if (!force && 0.5 <= channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);
     for (let i = 0; i < scheduledNotes.length; i++) {
@@ -3007,11 +3006,16 @@ var MidyGMLite = class {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
-      const { noteNumber } = note;
-      const promise = this.noteOff(channelNumber, noteNumber, velocity);
+    for (let i = 0; i < channel.sustainNotes.length; i++) {
+      const promise = this.noteOff(
+        channelNumber,
+        channel.sustainNotes[i].noteNumber,
+        velocity,
+        scheduleTime
+      );
       promises.push(promise);
-    });
+    }
+    channel.sustainNotes = [];
     return promises;
   }
   handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
@@ -3127,52 +3131,45 @@ var MidyGMLite = class {
     return state;
   }
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        const controllerState = this.getControllerState(
-          channel,
-          note.noteNumber,
-          note.velocity
-        );
-        const voiceParams = note.voice.getParams(
-          controllerType,
-          controllerState
-        );
-        let appliedFilterEnvelope = false;
-        let appliedVolumeEnvelope = false;
-        for (const [key, value] of Object.entries(voiceParams)) {
-          const prevValue = note.voiceParams[key];
-          if (value === prevValue) continue;
-          note.voiceParams[key] = value;
-          if (key in this.voiceParamsHandlers) {
-            this.voiceParamsHandlers[key](
-              channel,
-              note,
-              prevValue,
-              scheduleTime
-            );
-          } else if (filterEnvelopeKeySet.has(key)) {
-            if (appliedFilterEnvelope) continue;
-            appliedFilterEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i2 = 0; i2 < filterEnvelopeKeys.length; i2++) {
-              const key2 = filterEnvelopeKeys[i2];
-              if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
-            }
-            this.setFilterEnvelope(note, scheduleTime);
-            this.setPitchEnvelope(note, scheduleTime);
-          } else if (volumeEnvelopeKeySet.has(key)) {
-            if (appliedVolumeEnvelope) continue;
-            appliedVolumeEnvelope = true;
-            const noteVoiceParams = note.voiceParams;
-            for (let i2 = 0; i2 < volumeEnvelopeKeys.length; i2++) {
-              const key2 = volumeEnvelopeKeys[i2];
-              if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
-            }
-            this.setVolumeEnvelope(channel, note, scheduleTime);
+    this.processScheduledNotes(channel, (note) => {
+      const controllerState = this.getControllerState(
+        channel,
+        note.noteNumber,
+        note.velocity
+      );
+      const voiceParams = note.voice.getParams(controllerType, controllerState);
+      let appliedFilterEnvelope = false;
+      let appliedVolumeEnvelope = false;
+      for (const [key, value] of Object.entries(voiceParams)) {
+        const prevValue = note.voiceParams[key];
+        if (value === prevValue) continue;
+        note.voiceParams[key] = value;
+        if (key in this.voiceParamsHandlers) {
+          this.voiceParamsHandlers[key](
+            channel,
+            note,
+            prevValue,
+            scheduleTime
+          );
+        } else if (filterEnvelopeKeySet.has(key)) {
+          if (appliedFilterEnvelope) continue;
+          appliedFilterEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < filterEnvelopeKeys.length; i++) {
+            const key2 = filterEnvelopeKeys[i];
+            if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
           }
+          this.setFilterEnvelope(note, scheduleTime);
+          this.setPitchEnvelope(note, scheduleTime);
+        } else if (volumeEnvelopeKeySet.has(key)) {
+          if (appliedVolumeEnvelope) continue;
+          appliedVolumeEnvelope = true;
+          const noteVoiceParams = note.voiceParams;
+          for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
+            const key2 = volumeEnvelopeKeys[i];
+            if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
+          }
+          this.setVolumeEnvelope(note, scheduleTime);
         }
       }
     });
@@ -3208,7 +3205,7 @@ var MidyGMLite = class {
   updateModulation(channel, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
@@ -3218,11 +3215,13 @@ var MidyGMLite = class {
     });
   }
   setModulationDepth(channelNumber, modulation, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
   setVolume(channelNumber, volume, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -3235,11 +3234,13 @@ var MidyGMLite = class {
     };
   }
   setPan(channelNumber, pan, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
   setExpression(channelNumber, expression, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -3257,8 +3258,13 @@ var MidyGMLite = class {
   }
   setSustainPedal(channelNumber, value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    this.channels[channelNumber].state.sustainPedal = value / 127;
-    if (value < 64) {
+    const channel = this.channels[channelNumber];
+    channel.state.sustainPedal = value / 127;
+    if (64 <= value) {
+      this.processScheduledNotes(channel, (note) => {
+        channel.sustainNotes.push(note);
+      });
+    } else {
       this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
   }
