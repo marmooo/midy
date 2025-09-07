@@ -175,6 +175,7 @@ const volumeEnvelopeKeys = [
 const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class Midy {
+  mode = "GM2";
   ticksPerBeat = 120;
   totalTime = 0;
   masterFineTuning = 0; // cb
@@ -211,6 +212,7 @@ export class Midy {
 
   static channelSettings = {
     currentBufferSource: null,
+    isDrum: false,
     detune: 0,
     program: 0,
     bank: 121 * 128,
@@ -1216,14 +1218,18 @@ export class Midy {
     return note;
   }
 
-  calcBank(channel, channelNumber) {
-    if (channel.bankMSB === 121) {
-      return 0;
+  calcBank(channel) {
+    switch (this.mode) {
+      case "GM1":
+        if (channel.isDrum) return 128;
+        return 0;
+      case "GM2":
+        if (channel.bankMSB === 121) return 0;
+        if (channel.isDrum) return 128;
+        return channel.bank;
+      default:
+        return channel.bank;
     }
-    if (channelNumber % 9 <= 1 && channel.bankMSB === 120) {
-      return 128;
-    }
-    return channel.bank;
   }
 
   async scheduleNoteOn(
@@ -1484,6 +1490,16 @@ export class Midy {
     const channel = this.channels[channelNumber];
     channel.bank = channel.bankMSB * 128 + channel.bankLSB;
     channel.program = program;
+    if (this.mode === "GM2") {
+      switch (channel.bankMSB) {
+        case 120:
+          channel.isDrum = true;
+          break;
+        case 121:
+          channel.isDrum = false;
+          break;
+      }
+    }
   }
 
   handleChannelPressure(channelNumber, value, scheduleTime) {
@@ -2339,25 +2355,31 @@ export class Midy {
   }
 
   GM1SystemOn() {
+    this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
       channel.bank = 0;
+      channel.isDrum = false;
     }
     this.channels[9].bankMSB = 1;
     this.channels[9].bank = 128;
+    this.channels[9].isDrum = true;
   }
 
   GM2SystemOn() {
+    this.mode = "GM2";
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
       channel.bank = 121 * 128;
+      channel.isDrum = false;
     }
     this.channels[9].bankMSB = 120;
     this.channels[9].bank = 120 * 128;
+    this.channels[9].isDrum = true;
   }
 
   handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {

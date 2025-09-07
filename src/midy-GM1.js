@@ -144,6 +144,7 @@ const volumeEnvelopeKeys = [
 const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class MidyGM1 {
+  mode = "GM1";
   ticksPerBeat = 120;
   totalTime = 0;
   noteCheckInterval = 0.1;
@@ -167,6 +168,7 @@ export class MidyGM1 {
 
   static channelSettings = {
     currentBufferSource: null,
+    isDrum: false,
     detune: 0,
     program: 0,
     bank: 0,
@@ -1384,11 +1386,14 @@ export class MidyGM1 {
   }
 
   GM1SystemOn() {
+    this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
       channel.bank = 0;
+      channel.isDrum = false;
     }
     this.channels[9].bank = 128;
+    this.channels[9].isDrum = true;
   }
 
   handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {
