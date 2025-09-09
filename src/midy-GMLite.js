@@ -181,10 +181,16 @@ export class MidyGMLite {
   constructor(audioContext) {
     this.audioContext = audioContext;
     this.masterVolume = new GainNode(audioContext);
+    this.scheduler = new GainNode(audioContext, { gain: 0 });
+    this.schedulerBuffer = new AudioBuffer({
+      length: 1,
+      sampleRate: audioContext.sampleRate,
+    });
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterVolume.connect(audioContext.destination);
+    this.scheduler.connect(audioContext.destination);
     this.GM1SystemOn();
   }
 
@@ -1390,7 +1396,10 @@ export class MidyGMLite {
 
   scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
-      const bufferSource = new AudioBufferSourceNode(this.audioContext);
+      const bufferSource = new AudioBufferSourceNode(this.audioContext, {
+        buffer: this.schedulerBuffer,
+      });
+      bufferSource.connect(this.scheduler);
       bufferSource.onended = () => {
         callback();
         resolve();

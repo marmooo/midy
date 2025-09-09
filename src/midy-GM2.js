@@ -260,6 +260,11 @@ export class MidyGM2 {
     this.audioContext = audioContext;
     this.options = { ...this.defaultOptions, ...options };
     this.masterVolume = new GainNode(audioContext);
+    this.scheduler = new GainNode(audioContext, { gain: 0 });
+    this.schedulerBuffer = new AudioBuffer({
+      length: 1,
+      sampleRate: audioContext.sampleRate,
+    });
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
@@ -268,6 +273,7 @@ export class MidyGM2 {
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
     this.masterVolume.connect(audioContext.destination);
+    this.scheduler.connect(audioContext.destination);
     this.GM2SystemOn();
   }
 
@@ -2663,7 +2669,10 @@ export class MidyGM2 {
 
   scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
-      const bufferSource = new AudioBufferSourceNode(this.audioContext);
+      const bufferSource = new AudioBufferSourceNode(this.audioContext, {
+        buffer: this.schedulerBuffer,
+      });
+      bufferSource.connect(this.scheduler);
       bufferSource.onended = () => {
         callback();
         resolve();
