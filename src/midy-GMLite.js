@@ -833,7 +833,7 @@ export class MidyGMLite {
       if (this.exclusiveClassMap.has(exclusiveClass)) {
         const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
         const [prevNote, prevChannelNumber] = prevEntry;
-        if (!prevNote.ending) {
+        if (prevNote && !prevNote.ending) {
           this.scheduleNoteOff(
             prevChannelNumber,
             prevNote.noteNumber,
