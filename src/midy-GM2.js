@@ -1470,6 +1470,7 @@ export class MidyGM2 {
 
   handleChannelPressure(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     const prev = channel.state.channelPressure;
     const next = value / 127;
     channel.state.channelPressure = next;
@@ -1490,8 +1491,9 @@ export class MidyGM2 {
   }
 
   setPitchBend(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
@@ -1789,8 +1791,9 @@ export class MidyGM2 {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
@@ -1888,8 +1891,9 @@ export class MidyGM2 {
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
       this.processScheduledNotes(channel, (note) => {
@@ -1901,12 +1905,15 @@ export class MidyGM2 {
   }
 
   setPortamento(channelNumber, value) {
-    this.channels[channelNumber].state.portamento = value / 127;
+    const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    channel.state.portamento = value / 127;
   }
 
   setSostenutoPedal(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.sostenutoPedal = value / 127;
     if (64 <= value) {
       channel.sostenutoNotes = this.getActiveNotes(channel, scheduleTime);
@@ -1917,6 +1924,7 @@ export class MidyGM2 {
 
   setSoftPedal(channelNumber, softPedal, _scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     channel.state.softPedal = softPedal / 127;
   }
 
@@ -2049,8 +2057,9 @@ export class MidyGM2 {
   }
 
   setPitchBendRange(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 128;
@@ -2068,8 +2077,9 @@ export class MidyGM2 {
   }
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
     channel.fineTuning = next;
@@ -2085,8 +2095,9 @@ export class MidyGM2 {
   }
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
     channel.coarseTuning = next;
@@ -2106,8 +2117,9 @@ export class MidyGM2 {
   }
 
   setModulationDepthRange(channelNumber, modulationDepthRange, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.modulationDepthRange = modulationDepthRange;
     this.updateModulation(channel, scheduleTime);
   }

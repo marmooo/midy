@@ -1510,6 +1510,7 @@ export class Midy {
 
   handleChannelPressure(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     const prev = channel.state.channelPressure;
     const next = value / 127;
     channel.state.channelPressure = next;
@@ -1530,8 +1531,9 @@ export class Midy {
   }
 
   setPitchBend(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
@@ -1839,8 +1841,9 @@ export class Midy {
   }
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
@@ -1938,8 +1941,9 @@ export class Midy {
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
       this.processScheduledNotes(channel, (note) => {
@@ -1951,12 +1955,15 @@ export class Midy {
   }
 
   setPortamento(channelNumber, value) {
-    this.channels[channelNumber].state.portamento = value / 127;
+    const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    channel.state.portamento = value / 127;
   }
 
   setSostenutoPedal(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.sostenutoPedal = value / 127;
     if (64 <= value) {
       channel.sostenutoNotes = this.getActiveNotes(channel, scheduleTime);
@@ -1967,12 +1974,14 @@ export class Midy {
 
   setSoftPedal(channelNumber, softPedal, _scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     channel.state.softPedal = softPedal / 127;
   }
 
   setFilterResonance(channelNumber, filterResonance, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     state.filterResonance = filterResonance / 64;
     this.processScheduledNotes(channel, (note) => {
@@ -1982,14 +1991,16 @@ export class Midy {
   }
 
   setReleaseTime(channelNumber, releaseTime, _scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.releaseTime = releaseTime / 64;
   }
 
   setAttackTime(channelNumber, attackTime, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.attackTime = attackTime / 64;
     this.processScheduledNotes(channel, (note) => {
       if (note.startTime < scheduleTime) return false;
@@ -1998,8 +2009,9 @@ export class Midy {
   }
 
   setBrightness(channelNumber, brightness, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.brightness = brightness / 64;
     this.processScheduledNotes(channel, (note) => {
       if (note.portamento) {
@@ -2011,8 +2023,9 @@ export class Midy {
   }
 
   setDecayTime(channelNumber, dacayTime, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.decayTime = dacayTime / 64;
     this.processScheduledNotes(channel, (note) => {
       this.setVolumeEnvelope(channel, note, scheduleTime);
@@ -2020,8 +2033,9 @@ export class Midy {
   }
 
   setVibratoRate(channelNumber, vibratoRate, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.vibratoRate = vibratoRate / 64;
     if (channel.vibratoDepth <= 0) return;
     this.processScheduledNotes(channel, (note) => {
@@ -2030,8 +2044,9 @@ export class Midy {
   }
 
   setVibratoDepth(channelNumber, vibratoDepth, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.state.vibratoDepth;
     channel.state.vibratoDepth = vibratoDepth / 64;
     if (0 < prev) {
@@ -2046,8 +2061,9 @@ export class Midy {
   }
 
   setVibratoDelay(channelNumber, vibratoDelay) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.vibratoDelay = vibratoDelay / 64;
     if (0 < channel.state.vibratoDepth) {
       this.processScheduledNotes(channel, (note) => {
@@ -2199,8 +2215,9 @@ export class Midy {
   }
 
   setPitchBendRange(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 128;
@@ -2218,8 +2235,9 @@ export class Midy {
   }
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
     channel.fineTuning = next;
@@ -2235,8 +2253,9 @@ export class Midy {
   }
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
     channel.coarseTuning = next;
@@ -2256,8 +2275,9 @@ export class Midy {
   }
 
   setModulationDepthRange(channelNumber, modulationDepthRange, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.modulationDepthRange = modulationDepthRange;
     this.updateModulation(channel, scheduleTime);
   }
@@ -2717,6 +2737,7 @@ export class Midy {
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
       const channel = this.channels[i];
+      if (channel.isDrum) continue;
       for (let j = 0; j < 12; j++) {
         const centValue = data[j + 7] - 64;
         channel.scaleOctaveTuningTable[j] = centValue;
@@ -2734,6 +2755,7 @@ export class Midy {
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
       const channel = this.channels[i];
+      if (channel.isDrum) continue;
       for (let j = 0; j < 12; j++) {
         const index = 7 + j * 2;
         const msb = data[index] & 0x7F;
@@ -2805,7 +2827,9 @@ export class Midy {
 
   handlePressureSysEx(data, tableName) {
     const channelNumber = data[4];
-    const table = this.channels[channelNumber][tableName];
+    const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    const table = channel[tableName];
     for (let i = 5; i < data.length - 1; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
@@ -2836,8 +2860,10 @@ export class Midy {
 
   handleControlChangeSysEx(data) {
     const channelNumber = data[4];
+    const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     const controllerType = data[5];
-    const table = this.channels[channelNumber].controlTable[controllerType];
+    const table = channel.controlTable[controllerType];
     for (let i = 6; i < data.length - 1; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
@@ -2853,8 +2879,10 @@ export class Midy {
 
   handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
     const channelNumber = data[4];
+    const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     const keyNumber = data[5];
-    const table = this.channels[channelNumber].keyBasedInstrumentControlTable;
+    const table = channel.keyBasedInstrumentControlTable;
     for (let i = 6; i < data.length - 1; i += 2) {
       const controllerType = data[i];
       const value = data[i + 1];
