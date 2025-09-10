@@ -2310,8 +2310,12 @@ export class MidyGM2 {
     const prev = this.masterFineTuning;
     const next = (value - 8192) / 8.192; // cent
     this.masterFineTuning = next;
-    channel.detune += next - prev;
-    this.updateChannelDetune(channel, scheduleTime);
+    const detuneChange = next - prev;
+    for (let i = 0; i < this.channels.length; i++) {
+      const channel = this.channels[i];
+      channel.detune += detuneChange;
+      this.updateChannelDetune(channel, scheduleTime);
+    }
   }
 
   handleMasterCoarseTuningSysEx(data, scheduleTime) {
@@ -2323,8 +2327,12 @@ export class MidyGM2 {
     const prev = this.masterCoarseTuning;
     const next = (value - 64) * 100; // cent
     this.masterCoarseTuning = next;
-    channel.detune += next - prev;
-    this.updateChannelDetune(channel, scheduleTime);
+    const detuneChange = next - prev;
+    for (let i = 0; i < this.channels.length; i++) {
+      const channel = this.channels[i];
+      channel.detune += detuneChange;
+      this.updateChannelDetune(channel, scheduleTime);
+    }
   }
 
   handleGlobalParameterControlSysEx(data, scheduleTime) {
