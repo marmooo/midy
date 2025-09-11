@@ -939,7 +939,9 @@ export class MidyGM2 {
   }
 
   calcChannelDetune(channel) {
-    const masterTuning = this.masterCoarseTuning + this.masterFineTuning;
+    const masterTuning = channel.isDrum
+      ? 0
+      : this.masterCoarseTuning + this.masterFineTuning;
     const channelTuning = channel.coarseTuning + channel.fineTuning;
     const tuning = masterTuning + channelTuning;
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
@@ -2313,6 +2315,7 @@ export class MidyGM2 {
     const detuneChange = next - prev;
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
+      if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
     }
@@ -2330,6 +2333,7 @@ export class MidyGM2 {
     const detuneChange = next - prev;
     for (let i = 0; i < this.channels.length; i++) {
       const channel = this.channels[i];
+      if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
     }
