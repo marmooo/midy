@@ -2929,11 +2929,14 @@ export class Midy {
       });
       bufferSource.connect(this.scheduler);
       bufferSource.onended = () => {
-        callback();
-        resolve();
+        try {
+          callback();
+        } finally {
+          bufferSource.disconnect();
+          resolve();
+        }
       };
       bufferSource.start(scheduleTime);
-      bufferSource.stop(scheduleTime);
     });
   }
 }
