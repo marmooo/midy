@@ -381,10 +381,23 @@ export class MidyGM2 {
     }
   }
 
-  createNoteBufferNode(audioBuffer, voiceParams) {
+  calcLoopMode(channel, note, voiceParams) {
+    if (channel.isDrum) {
+      const noteNumber = note.noteNumber;
+      if (noteNumber === 88 || 47 <= noteNumber && noteNumber <= 84) {
+        return true;
+      } else {
+        return false;
+      }
+    } else {
+      return voiceParams.sampleModes % 2 !== 0;
+    }
+  }
+
+  createBufferSource(channel, note, voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
+    bufferSource.loop = this.calcLoopMode(channel, note, voiceParams);
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -1164,7 +1177,12 @@ export class MidyGM2 {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createNoteBufferNode(audioBuffer, voiceParams);
+    note.bufferSource = this.createBufferSource(
+      channel,
+      note,
+      voiceParams,
+      audioBuffer,
+    );
     note.volumeNode = new GainNode(this.audioContext);
     note.gainL = new GainNode(this.audioContext);
     note.gainR = new GainNode(this.audioContext);

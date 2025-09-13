@@ -296,7 +296,7 @@ export class MidyGM1 {
     }
   }
 
-  createNoteBufferNode(audioBuffer, voiceParams) {
+  createBufferSource(audioBuffer, voiceParams) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
@@ -788,7 +788,7 @@ export class MidyGM1 {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createNoteBufferNode(audioBuffer, voiceParams);
+    note.bufferSource = this.createBufferSource(audioBuffer, voiceParams);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
