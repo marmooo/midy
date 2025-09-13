@@ -221,9 +221,9 @@ export class MidyGM2 {
     rpnMSB: 127,
     rpnLSB: 127,
     mono: false, // CC#124, CC#125
+    modulationDepthRange: 50, // cent
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
-    modulationDepthRange: 50, // cent
   };
 
   defaultOptions = {
@@ -1922,10 +1922,20 @@ export class MidyGM2 {
     }
   }
 
-  setSoftPedal(channelNumber, softPedal, _scheduleTime) {
+  setSoftPedal(channelNumber, softPedal, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.softPedal = softPedal / 127;
+    this.processScheduledNotes(channel, (note) => {
+      if (note.portamento) {
+        this.setPortamentoStartVolumeEnvelope(channel, note, scheduleTime);
+        this.setPortamentoStartFilterEnvelope(channel, note, scheduleTime);
+      } else {
+        this.setVolumeEnvelope(channel, note, scheduleTime);
+        this.setFilterEnvelope(channel, note, scheduleTime);
+      }
+    });
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel, scheduleTime) {
