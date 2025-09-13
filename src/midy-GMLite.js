@@ -176,6 +176,7 @@ export class MidyGMLite {
     dataLSB: 0,
     rpnMSB: 127,
     rpnLSB: 127,
+    modulationDepthRange: 50, // cent
   };
 
   constructor(audioContext) {
@@ -1214,8 +1215,9 @@ export class MidyGMLite {
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
       this.processScheduledNotes(channel, (note) => {

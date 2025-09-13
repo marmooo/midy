@@ -176,9 +176,9 @@ export class MidyGM1 {
     dataLSB: 0,
     rpnMSB: 127,
     rpnLSB: 127,
+    modulationDepthRange: 50, // cent
     fineTuning: 0, // cb
     coarseTuning: 0, // cb
-    modulationDepthRange: 50, // cent
   };
 
   constructor(audioContext) {
@@ -987,8 +987,9 @@ export class MidyGM1 {
   }
 
   setPitchBend(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
