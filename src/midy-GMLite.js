@@ -1280,8 +1280,9 @@ export class MidyGMLite {
   }
 
   setPitchBendRange(channelNumber, value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 128;
