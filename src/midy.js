@@ -2364,12 +2364,12 @@ export class Midy {
       case 9:
         switch (data[3]) {
           case 1:
-            this.GM1SystemOn();
+            this.GM1SystemOn(scheduleTime);
             break;
           case 2: // GM System Off
             break;
           case 3:
-            this.GM2SystemOn();
+            this.GM2SystemOn(scheduleTime);
             break;
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
@@ -2380,9 +2380,11 @@ export class Midy {
     }
   }
 
-  GM1SystemOn() {
+  GM1SystemOn(scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
+      this.allSoundOff(i, 0, scheduleTime);
       const channel = this.channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
@@ -2394,9 +2396,11 @@ export class Midy {
     this.channels[9].isDrum = true;
   }
 
-  GM2SystemOn() {
+  GM2SystemOn(scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     this.mode = "GM2";
     for (let i = 0; i < this.channels.length; i++) {
+      this.allSoundOff(i, 0, scheduleTime);
       const channel = this.channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;

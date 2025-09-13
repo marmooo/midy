@@ -1375,12 +1375,12 @@ export class MidyGM1 {
     return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
   }
 
-  handleUniversalNonRealTimeExclusiveMessage(data, _scheduleTime) {
+  handleUniversalNonRealTimeExclusiveMessage(data, scheduleTime) {
     switch (data[2]) {
       case 9:
         switch (data[3]) {
           case 1:
-            this.GM1SystemOn();
+            this.GM1SystemOn(scheduleTime);
             break;
           case 2: // GM System Off
             break;
@@ -1393,9 +1393,11 @@ export class MidyGM1 {
     }
   }
 
-  GM1SystemOn() {
+  GM1SystemOn(scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
     this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
+      this.allSoundOff(i, 0, scheduleTime);
       const channel = this.channels[i];
       channel.bank = 0;
       channel.isDrum = false;
