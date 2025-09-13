@@ -983,9 +983,8 @@ export class Midy {
   }
 
   getPortamentoTime(channel) {
-    const factor = 5 * Math.log(10) / 127;
-    const time = channel.state.portamentoTime;
-    return Math.log(time) / factor;
+    const factor = 5 * Math.log(10) * 127;
+    return channel.state.portamentoTime * factor;
   }
 
   setPortamentoStartVolumeEnvelope(channel, note, scheduleTime) {
@@ -1852,8 +1851,7 @@ export class Midy {
 
   setPortamentoTime(channelNumber, portamentoTime) {
     const channel = this.channels[channelNumber];
-    const factor = 5 * Math.log(10) / 127;
-    channel.state.portamentoTime = Math.exp(factor * portamentoTime);
+    channel.state.portamentoTime = portamentoTime / 127;
   }
 
   setKeyBasedVolume(channel, scheduleTime) {
