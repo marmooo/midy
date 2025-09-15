@@ -89,6 +89,43 @@ class Note {
   }
 }
 
+const drumExclusiveClassesByKit = new Array(57);
+// Standard Set
+drumExclusiveClassesByKit[0] = new Map([
+  [42, 1],
+  [44, 1],
+  [46, 1], // HH
+  [71, 2],
+  [72, 2], // Whistle
+  [73, 3],
+  [74, 3], // Guiro
+  [78, 4],
+  [79, 4], // Cuica
+  [80, 5],
+  [81, 5], // Triangle
+  [29, 6],
+  [30, 6], // Scratch
+  [86, 7],
+  [87, 7], // Surdo
+]);
+// Analog Set
+drumExclusiveClassesByKit[25] = new Map([
+  [42, 1],
+  [44, 1],
+  [46, 1], // CHH
+]);
+// Orchestra Set
+drumExclusiveClassesByKit[48] = new Map([
+  [27, 1],
+  [28, 1],
+  [29, 1], // HH
+]);
+// SFX Set
+drumExclusiveClassesByKit[56] = new Map([
+  [41, 1],
+  [42, 1], // Scratch
+]);
+
 // normalized to 0-1 for use with the SF2 modulator model
 const defaultControllerState = {
   noteOnVelocity: { type: 2, defaultValue: 0 },
@@ -209,6 +246,7 @@ export class Midy {
   instruments = [];
   notePromises = [];
   exclusiveClassMap = new SparseMap(128);
+  drumExclusiveClassMap = new Array(16).fill(new SparseMap(128));
 
   static channelSettings = {
     currentBufferSource: null,
@@ -1257,6 +1295,50 @@ export class Midy {
     }
   }
 
+  handleExclusiveClass(note, channelNumber, startTime) {
+    const exclusiveClass = note.voiceParams.exclusiveClass;
+    if (exclusiveClass === 0) return;
+    if (this.exclusiveClassMap.has(exclusiveClass)) {
+      const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
+      const [prevNote, prevChannelNumber] = prevEntry;
+      if (prevNote && !prevNote.ending) {
+        this.scheduleNoteOff(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0, // velocity,
+          startTime,
+          true, // force
+          undefined, // portamentoNoteNumber
+        );
+      }
+    }
+    this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+  }
+
+  handleDrumExclusiveClass(note, channelNumber, startTime) {
+    const channel = this.channels[channelNumber];
+    if (!channel.isDrum) return;
+    const kitMap = drumExclusiveClassesByKit[channel.programNumber];
+    if (!kitMap) return;
+    const drumExclusiveClass = kitMap[noteNumber];
+    if (!drumExclusiveClass) return;
+    const drumClassMap = this.drumExclusiveClassMap[channelNumber];
+    if (drumClassMap.has(drumExclusiveClass)) {
+      const prevNote = map.get(exclusiveClass);
+      if (prevNote && !prevNote.ending) {
+        this.scheduleNoteOff(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0, // velocity,
+          startTime,
+          true, // force
+          undefined, // portamentoNoteNumber
+        );
+      }
+    }
+    drumClassMap.set(drumExclusiveClass, note);
+  }
+
   async scheduleNoteOn(
     channelNumber,
     noteNumber,
@@ -1291,24 +1373,8 @@ export class Midy {
     if (0.5 <= channel.state.sustainPedal) {
       channel.sustainNotes.push(note);
     }
-    const exclusiveClass = note.voiceParams.exclusiveClass;
-    if (exclusiveClass !== 0) {
-      if (this.exclusiveClassMap.has(exclusiveClass)) {
-        const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-        const [prevNote, prevChannelNumber] = prevEntry;
-        if (prevNote && !prevNote.ending) {
-          this.scheduleNoteOff(
-            prevChannelNumber,
-            prevNote.noteNumber,
-            0, // velocity,
-            startTime,
-            true, // force
-            undefined, // portamentoNoteNumber
-          );
-        }
-      }
-      this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
-    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {
       scheduledNotes.get(noteNumber).push(note);

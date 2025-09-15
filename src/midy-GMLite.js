@@ -80,6 +80,20 @@ class Note {
   }
 }
 
+const drumExclusiveClasses = new Map([
+  [42, 1],
+  [44, 1],
+  [46, 1], // HH
+  [71, 2],
+  [72, 2], // Whistle
+  [73, 3],
+  [74, 3], // Guiro
+  [78, 4],
+  [79, 4], // Cuica
+  [80, 5],
+  [81, 5], // Triangle
+]);
+
 // normalized to 0-1 for use with the SF2 modulator model
 const defaultControllerState = {
   noteOnVelocity: { type: 2, defaultValue: 0 },
@@ -165,6 +179,7 @@ export class MidyGMLite {
   instruments = [];
   notePromises = [];
   exclusiveClassMap = new SparseMap(128);
+  drumExclusiveClassMap = new Array(16).fill(new SparseMap(128));
 
   static channelSettings = {
     currentBufferSource: null,
@@ -814,6 +829,46 @@ export class MidyGMLite {
     return note;
   }
 
+  handleExclusiveClass(note, channelNumber, startTime) {
+    const exclusiveClass = note.voiceParams.exclusiveClass;
+    if (exclusiveClass === 0) return;
+    if (this.exclusiveClassMap.has(exclusiveClass)) {
+      const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
+      const [prevNote, prevChannelNumber] = prevEntry;
+      if (prevNote && !prevNote.ending) {
+        this.scheduleNoteOff(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0, // velocity,
+          startTime,
+          true, // force
+        );
+      }
+    }
+    this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+  }
+
+  handleDrumExclusiveClass(note, channelNumber, startTime) {
+    const channel = this.channels[channelNumber];
+    if (!channel.isDrum) return;
+    const drumExclusiveClass = drumExclusiveClasses[noteNumber];
+    if (!drumExclusiveClass) return;
+    const drumClassMap = this.drumExclusiveClassMap[channelNumber];
+    if (drumClassMap.has(drumExclusiveClass)) {
+      const prevNote = map.get(exclusiveClass);
+      if (prevNote && !prevNote.ending) {
+        this.scheduleNoteOff(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0, // velocity,
+          startTime,
+          true, // force
+        );
+      }
+    }
+    drumClassMap.set(drumExclusiveClass, note);
+  }
+
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
@@ -841,23 +896,8 @@ export class MidyGMLite {
     if (0.5 <= channel.state.sustainPedal) {
       channel.sustainNotes.push(note);
     }
-    const exclusiveClass = note.voiceParams.exclusiveClass;
-    if (exclusiveClass !== 0) {
-      if (this.exclusiveClassMap.has(exclusiveClass)) {
-        const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-        const [prevNote, prevChannelNumber] = prevEntry;
-        if (prevNote && !prevNote.ending) {
-          this.scheduleNoteOff(
-            prevChannelNumber,
-            prevNote.noteNumber,
-            0, // velocity,
-            startTime,
-            true, // force
-          );
-        }
-      }
-      this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
-    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
     if (scheduledNotes.has(noteNumber)) {
       scheduledNotes.get(noteNumber).push(note);
