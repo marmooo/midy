@@ -167,8 +167,6 @@ export class MidyGM1 {
   exclusiveClassMap = new SparseMap(128);
 
   static channelSettings = {
-    currentBufferSource: null,
-    isDrum: false,
     detune: 0,
     program: 0,
     bank: 0,
@@ -257,6 +255,8 @@ export class MidyGM1 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
+        currentBufferSource: null,
+        isDrum: false,
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
@@ -552,6 +552,9 @@ export class MidyGM1 {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
+    for (let i = 0; i < this.channels.length; i++) {
+      this.resetAllStates(i);
+    }
   }
 
   pause() {
@@ -1353,6 +1356,18 @@ export class MidyGM1 {
   allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
+  }
+
+  resetAllStates(channelNumber) {
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    for (const type of Object.keys(defaultControllerState)) {
+      state[type] = defaultControllerState[type].defaultValue;
+    }
+    for (const type of Object.keys(this.constructor.channelSettings)) {
+      channel[type] = this.constructor.channelSettings[type];
+    }
+    this.mode = "GM1";
   }
 
   resetAllControllers(channelNumber) {

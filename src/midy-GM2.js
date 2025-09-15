@@ -211,8 +211,6 @@ const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class MidyGM2 {
   mode = "GM2";
-  ticksPerBeat = 120;
-  totalTime = 0;
   masterFineTuning = 0; // cb
   masterCoarseTuning = 0; // cb
   reverb = {
@@ -226,6 +224,8 @@ export class MidyGM2 {
     sendToReverb: this.getChorusSendToReverb(0),
     delayTimes: this.generateDistributedArray(0.02, 2, 0.5),
   };
+  ticksPerBeat = 120;
+  totalTime = 0;
   noteCheckInterval = 0.1;
   lookAhead = 1;
   startDelay = 0.1;
@@ -247,8 +247,6 @@ export class MidyGM2 {
   drumExclusiveClassMap = new Array(16).fill(new SparseMap(128));
 
   static channelSettings = {
-    currentBufferSource: null,
-    isDrum: false,
     detune: 0,
     program: 0,
     bank: 121 * 128,
@@ -375,6 +373,8 @@ export class MidyGM2 {
   createChannels(audioContext) {
     const channels = Array.from({ length: 16 }, () => {
       return {
+        currentBufferSource: null,
+        isDrum: false,
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         controlTable: this.initControlTable(),
@@ -748,6 +748,9 @@ export class MidyGM2 {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
+    for (let i = 0; i < this.channels.length; i++) {
+      this.resetAllStates(i);
+    }
   }
 
   pause() {
@@ -2221,6 +2224,20 @@ export class MidyGM2 {
   allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
+  }
+
+  resetAllStates(channelNumber) {
+    const channel = this.channels[channelNumber];
+    const state = channel.state;
+    for (const type of Object.keys(defaultControllerState)) {
+      state[type] = defaultControllerState[type].defaultValue;
+    }
+    for (const type of Object.keys(this.constructor.channelSettings)) {
+      channel[type] = this.constructor.channelSettings[type];
+    }
+    this.mode = "GM2";
+    this.masterFineTuning = 0; // cb
+    this.masterCoarseTuning = 0; // cb
   }
 
   resetAllControllers(channelNumber) {
