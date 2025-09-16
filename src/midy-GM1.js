@@ -145,6 +145,7 @@ const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class MidyGM1 {
   mode = "GM1";
+  numChannels = 16;
   ticksPerBeat = 120;
   totalTime = 0;
   noteCheckInterval = 0.1;
@@ -253,7 +254,7 @@ export class MidyGM1 {
   }
 
   createChannels(audioContext) {
-    const channels = Array.from({ length: 16 }, () => {
+    const channels = Array.from({ length: this.numChannels }, () => {
       return {
         currentBufferSource: null,
         isDrum: false,
@@ -441,7 +442,7 @@ export class MidyGM1 {
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
-    const tmpChannels = new Array(16);
+    const tmpChannels = new Array(this.channels.length);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
         programNumber: -1,

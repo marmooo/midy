@@ -159,6 +159,7 @@ const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 
 export class MidyGMLite {
   mode = "GM1";
+  numChannels = 16;
   ticksPerBeat = 120;
   totalTime = 0;
   noteCheckInterval = 0.1;
@@ -179,7 +180,7 @@ export class MidyGMLite {
   instruments = [];
   notePromises = [];
   exclusiveClassMap = new SparseMap(128);
-  drumExclusiveClassMap = new Array(16).fill(new SparseMap(128));
+  drumExclusiveClassMap = new Array(this.numChannels).fill(new SparseMap(128));
 
   static channelSettings = {
     detune: 0,
@@ -266,7 +267,7 @@ export class MidyGMLite {
   }
 
   createChannels(audioContext) {
-    const channels = Array.from({ length: 16 }, () => {
+    const channels = Array.from({ length: this.numChannels }, () => {
       return {
         currentBufferSource: null,
         isDrum: false,
@@ -462,7 +463,7 @@ export class MidyGMLite {
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
-    const tmpChannels = new Array(16);
+    const tmpChannels = new Array(this.channels.length);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
         programNumber: -1,

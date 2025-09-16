@@ -226,6 +226,7 @@ export class Midy {
     sendToReverb: this.getChorusSendToReverb(0),
     delayTimes: this.generateDistributedArray(0.02, 2, 0.5),
   };
+  numChannels = 16;
   ticksPerBeat = 120;
   totalTime = 0;
   noteCheckInterval = 0.1;
@@ -246,7 +247,7 @@ export class Midy {
   instruments = [];
   notePromises = [];
   exclusiveClassMap = new SparseMap(128);
-  drumExclusiveClassMap = new Array(16).fill(new SparseMap(128));
+  drumExclusiveClassMap = new Array(this.numChannels).fill(new SparseMap(128));
 
   static channelSettings = {
     detune: 0,
@@ -373,7 +374,7 @@ export class Midy {
   }
 
   createChannels(audioContext) {
-    const channels = Array.from({ length: 16 }, () => {
+    const channels = Array.from({ length: this.numChannels }, () => {
       return {
         currentBufferSource: null,
         isDrum: false,
@@ -611,7 +612,7 @@ export class Midy {
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
-    const tmpChannels = new Array(16);
+    const tmpChannels = new Array(this.channels.length);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
         programNumber: -1,
@@ -2837,7 +2838,7 @@ export class Midy {
   }
 
   getChannelBitmap(data) {
-    const bitmap = new Array(16).fill(false);
+    const bitmap = new Array(this.channels.length).fill(false);
     const ff = data[4] & 0b11;
     const gg = data[5] & 0x7F;
     const hh = data[6] & 0x7F;
