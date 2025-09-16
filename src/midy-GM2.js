@@ -2805,6 +2805,7 @@ export class MidyGM2 {
     }
   }
 
+  // https://github.com/marmooo/js-timer-benchmark
   scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext, {
