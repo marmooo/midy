@@ -1371,12 +1371,13 @@ export class MidyGM1 {
     this.mode = "GM1";
   }
 
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
   resetAllControllers(channelNumber) {
     const stateTypes = [
+      "pitchWheel",
       "expression",
       "modulationDepth",
       "sustainPedal",
-      "pitchWheelSensitivity",
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;

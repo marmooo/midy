@@ -2241,16 +2241,17 @@ export class MidyGM2 {
     this.masterCoarseTuning = 0; // cb
   }
 
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
   resetAllControllers(channelNumber) {
     const stateTypes = [
+      "channelPressure",
+      "pitchWheel",
       "expression",
       "modulationDepth",
       "sustainPedal",
       "portamento",
       "sostenutoPedal",
       "softPedal",
-      "channelPressure",
-      "pitchWheelSensitivity",
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;
