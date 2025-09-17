@@ -1040,7 +1040,6 @@ export class MidyGMLite {
 
   setPitchBend(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
@@ -1218,7 +1217,6 @@ export class MidyGMLite {
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
@@ -1272,7 +1270,6 @@ export class MidyGMLite {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
@@ -1337,7 +1334,6 @@ export class MidyGMLite {
 
   setPitchBendRange(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;

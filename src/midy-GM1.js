@@ -996,7 +996,6 @@ export class MidyGM1 {
 
   setPitchBend(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
@@ -1174,7 +1173,6 @@ export class MidyGM1 {
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
@@ -1228,7 +1226,6 @@ export class MidyGM1 {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
@@ -1307,7 +1304,6 @@ export class MidyGM1 {
 
   setPitchBendRange(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
@@ -1327,7 +1323,6 @@ export class MidyGM1 {
 
   setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.fineTuning;
     const next = (value - 8192) / 8.192; // cent
@@ -1345,7 +1340,6 @@ export class MidyGM1 {
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.coarseTuning;
     const next = (value - 64) * 100; // cent
