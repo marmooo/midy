@@ -310,18 +310,10 @@ export class MidyGMLite {
     }
   }
 
-  calcLoopMode(channel, voiceParams) {
-    if (channel.isDrum) {
-      return false;
-    } else {
-      return voiceParams.sampleModes % 2 !== 0;
-    }
-  }
-
-  createBufferSource(channel, voiceParams, audioBuffer) {
+  createBufferSource(voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = this.calcLoopMode(channel, voiceParams);
+    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -811,11 +803,7 @@ export class MidyGMLite {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createBufferSource(
-      channel,
-      voiceParams,
-      audioBuffer,
-    );
+    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -954,6 +942,7 @@ export class MidyGMLite {
     force,
   ) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) return;
     if (!force && 0.5 <= channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const scheduledNotes = channel.scheduledNotes.get(noteNumber);

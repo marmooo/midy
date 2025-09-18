@@ -423,23 +423,10 @@ export class Midy {
     }
   }
 
-  calcLoopMode(channel, note, voiceParams) {
-    if (channel.isDrum) {
-      const noteNumber = note.noteNumber;
-      if (noteNumber === 88 || 47 <= noteNumber && noteNumber <= 84) {
-        return true;
-      } else {
-        return false;
-      }
-    } else {
-      return voiceParams.sampleModes % 2 !== 0;
-    }
-  }
-
-  createBufferSource(channel, note, voiceParams, audioBuffer) {
+  createBufferSource(voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = this.calcLoopMode(channel, note, voiceParams);
+    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -1234,12 +1221,7 @@ export class Midy {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createBufferSource(
-      channel,
-      note,
-      voiceParams,
-      audioBuffer,
-    );
+    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
     note.volumeNode = new GainNode(this.audioContext);
     note.gainL = new GainNode(this.audioContext);
     note.gainR = new GainNode(this.audioContext);
@@ -1444,6 +1426,12 @@ export class Midy {
     portamentoNoteNumber,
   ) {
     const channel = this.channels[channelNumber];
+    if (channel.isDrum) {
+      const { program } = channel;
+      if (program === 48) return noteNumber !== 88; // Orchestra Set
+      if (program === 56) return !(47 <= noteNumber && noteNumber <= 84); // SFX Set
+      return;
+    }
     const state = channel.state;
     if (!force) {
       if (0.5 <= state.sustainPedal) return;
