@@ -179,7 +179,7 @@ export class MidyGMLite {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new SparseMap(128);
+  exclusiveClassMap = new Array(128);
   drumExclusiveClassMap = new Array(this.numChannels).fill(new SparseMap(128));
 
   static channelSettings = {
@@ -406,7 +406,7 @@ export class MidyGMLite {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.flll(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -424,7 +424,7 @@ export class MidyGMLite {
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -432,7 +432,7 @@ export class MidyGMLite {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -836,9 +836,9 @@ export class MidyGMLite {
   handleExclusiveClass(note, channelNumber, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
-    if (this.exclusiveClassMap.has(exclusiveClass)) {
-      const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-      const [prevNote, prevChannelNumber] = prevEntry;
+    const prev = this.exclusiveClassMap[exclusiveClass];
+    if (prev) {
+      const [prevNote, prevChannelNumber] = prev;
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
@@ -849,7 +849,7 @@ export class MidyGMLite {
         );
       }
     }
-    this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+    this.exclusiveClassMap[exclusiveClass] = [note, channelNumber];
   }
 
   handleDrumExclusiveClass(note, channelNumber, startTime) {

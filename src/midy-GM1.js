@@ -165,7 +165,7 @@ export class MidyGM1 {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new SparseMap(128);
+  exclusiveClassMap = new Array(128);
 
   static channelSettings = {
     detune: 0,
@@ -385,7 +385,7 @@ export class MidyGM1 {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.flll(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -403,7 +403,7 @@ export class MidyGM1 {
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -411,7 +411,7 @@ export class MidyGM1 {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -813,9 +813,9 @@ export class MidyGM1 {
   handleExclusiveClass(note, channelNumber, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
-    if (this.exclusiveClassMap.has(exclusiveClass)) {
-      const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-      const [prevNote, prevChannelNumber] = prevEntry;
+    const prev = this.exclusiveClassMap[exclusiveClass];
+    if (prev) {
+      const [prevNote, prevChannelNumber] = prev;
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
@@ -823,11 +823,10 @@ export class MidyGM1 {
           0, // velocity,
           startTime,
           true, // force
-          undefined, // portamentoNoteNumber
         );
       }
     }
-    this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+    this.exclusiveClassMap[exclusiveClass] = [note, channelNumber];
   }
 
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {

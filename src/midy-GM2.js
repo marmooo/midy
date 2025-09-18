@@ -244,8 +244,8 @@ export class MidyGM2 {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new SparseMap(128);
-  drumExclusiveClassMap = new Array(this.numChannels).fill(new SparseMap(128));
+  exclusiveClassMap = new Array(128);
+  drumExclusiveClassMap = new Array(this.numChannels * 128);
 
   static channelSettings = {
     detune: 0,
@@ -544,7 +544,7 @@ export class MidyGM2 {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -562,7 +562,7 @@ export class MidyGM2 {
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -570,7 +570,7 @@ export class MidyGM2 {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassMap.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -1287,9 +1287,9 @@ export class MidyGM2 {
   handleExclusiveClass(note, channelNumber, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
-    if (this.exclusiveClassMap.has(exclusiveClass)) {
-      const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-      const [prevNote, prevChannelNumber] = prevEntry;
+    const prev = this.exclusiveClassMap[exclusiveClass];
+    if (prev) {
+      const [prevNote, prevChannelNumber] = prev;
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
@@ -1301,7 +1301,7 @@ export class MidyGM2 {
         );
       }
     }
-    this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
+    this.exclusiveClassMap[exclusiveClass] = [note, channelNumber];
   }
 
   handleDrumExclusiveClass(note, channelNumber, startTime) {
@@ -1309,23 +1309,21 @@ export class MidyGM2 {
     if (!channel.isDrum) return;
     const kitMap = drumExclusiveClassesByKit[channel.programNumber];
     if (!kitMap) return;
-    const drumExclusiveClass = kitMap[noteNumber];
+    const drumExclusiveClass = kitMap[note.noteNumber];
     if (!drumExclusiveClass) return;
-    const drumClassMap = this.drumExclusiveClassMap[channelNumber];
-    if (drumClassMap.has(drumExclusiveClass)) {
-      const prevNote = map.get(exclusiveClass);
-      if (prevNote && !prevNote.ending) {
-        this.scheduleNoteOff(
-          prevChannelNumber,
-          prevNote.noteNumber,
-          0, // velocity,
-          startTime,
-          true, // force
-          undefined, // portamentoNoteNumber
-        );
-      }
+    const index = drumExclusiveClass * this.channels.length + channelNumber;
+    const prevNote = this.drumExclusiveClassMap[index];
+    if (prevNote && !prevNote.ending) {
+      this.scheduleNoteOff(
+        channelNumber,
+        prevNote.noteNumber,
+        0, // velocity,
+        startTime,
+        true, // force
+        undefined, // portamentoNoteNumber
+      );
     }
-    drumClassMap.set(drumExclusiveClass, note);
+    this.drumExclusiveClassMap[index] = note;
   }
 
   async scheduleNoteOn(
