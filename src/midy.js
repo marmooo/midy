@@ -1303,9 +1303,9 @@ export class Midy {
   handleDrumExclusiveClass(note, channelNumber, startTime) {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
-    const kitMap = drumExclusiveClassesByKit[channel.program];
-    if (!kitMap) return;
-    const drumExclusiveClass = kitMap[note.noteNumber];
+    const kitTable = drumExclusiveClassesByKit[channel.program];
+    if (!kitTable) return;
+    const drumExclusiveClass = kitTable[note.noteNumber];
     if (drumExclusiveClass === 0) return;
     const index = (drumExclusiveClass - 1) * this.channels.length +
       channelNumber;
