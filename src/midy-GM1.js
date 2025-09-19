@@ -857,11 +857,12 @@ export class MidyGM1 {
       channel.sustainNotes.push(note);
     }
     this.handleExclusiveClass(note, channelNumber, startTime);
-    const scheduledNotes = channel.scheduledNotes;
-    if (scheduledNotes.has(noteNumber)) {
-      scheduledNotes.get(noteNumber).push(note);
+    let notes = scheduledNotes.get(noteNumber);
+    if (notes) {
+      notes.push(note);
     } else {
-      scheduledNotes.set(noteNumber, [note]);
+      notes = [note];
+      scheduledNotes.set(noteNumber, notes);
     }
   }
 
@@ -875,6 +876,18 @@ export class MidyGM1 {
     );
   }
 
+  disconnectNote(note, scheduledNotes, index) {
+    scheduledNotes[index] = null;
+    note.bufferSource.disconnect();
+    note.filterNode.disconnect();
+    note.volumeEnvelopeNode.disconnect();
+    if (note.modulationDepth) {
+      note.volumeDepth.disconnect();
+      note.modulationDepth.disconnect();
+      note.modulationLFO.stop();
+    }
+  }
+
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeEnvelopeNode.gain
@@ -886,15 +899,7 @@ export class MidyGM1 {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        scheduledNotes[index] = null;
-        note.bufferSource.disconnect();
-        note.filterNode.disconnect();
-        note.volumeEnvelopeNode.disconnect();
-        if (note.modulationDepth) {
-          note.volumeDepth.disconnect();
-          note.modulationDepth.disconnect();
-          note.modulationLFO.stop();
-        }
+        this.disconnectNote(note, scheduledNotes, index);
         resolve();
       };
       note.bufferSource.stop(stopTime);

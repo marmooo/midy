@@ -891,10 +891,24 @@ export class MidyGMLite {
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
-    if (scheduledNotes.has(noteNumber)) {
-      scheduledNotes.get(noteNumber).push(note);
+    let notes = scheduledNotes.get(noteNumber);
+    if (notes) {
+      notes.push(note);
     } else {
-      scheduledNotes.set(noteNumber, [note]);
+      notes = [note];
+      scheduledNotes.set(noteNumber, notes);
+    }
+    if (this.isDrumNoteOffException(channel, noteNumber)) {
+      const stopTime = startTime + note.bufferSource.buffer.duration;
+      const index = notes.length - 1;
+      const promise = new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note, scheduledNotes, index);
+          resolve();
+        };
+        note.bufferSource.stop(stopTime);
+      });
+      this.notePromises.push(promise);
     }
   }
 
@@ -908,6 +922,18 @@ export class MidyGMLite {
     );
   }
 
+  disconnectNote(note, scheduledNotes, index) {
+    scheduledNotes[index] = null;
+    note.bufferSource.disconnect();
+    note.filterNode.disconnect();
+    note.volumeEnvelopeNode.disconnect();
+    if (note.modulationDepth) {
+      note.volumeDepth.disconnect();
+      note.modulationDepth.disconnect();
+      note.modulationLFO.stop();
+    }
+  }
+
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeEnvelopeNode.gain
@@ -919,15 +945,7 @@ export class MidyGMLite {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        scheduledNotes[index] = null;
-        note.bufferSource.disconnect();
-        note.filterNode.disconnect();
-        note.volumeEnvelopeNode.disconnect();
-        if (note.modulationDepth) {
-          note.volumeDepth.disconnect();
-          note.modulationDepth.disconnect();
-          note.modulationLFO.stop();
-        }
+        this.disconnectNote(note, scheduledNotes, index);
         resolve();
       };
       note.bufferSource.stop(stopTime);

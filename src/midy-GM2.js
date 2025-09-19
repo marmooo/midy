@@ -1308,6 +1308,13 @@ export class MidyGM2 {
     this.drumExclusiveClassMap[index] = note;
   }
 
+  isDrumNoteOffException(channel, noteNumber) {
+    if (!channel.isDrum) return false;
+    const program = channel.program;
+    return (program === 48 && noteNumber === 88) ||
+      (program === 56 && 47 <= noteNumber && noteNumber <= 84);
+  }
+
   async scheduleNoteOn(
     channelNumber,
     noteNumber,
@@ -1345,10 +1352,24 @@ export class MidyGM2 {
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
-    if (scheduledNotes.has(noteNumber)) {
-      scheduledNotes.get(noteNumber).push(note);
+    let notes = scheduledNotes.get(noteNumber);
+    if (notes) {
+      notes.push(note);
     } else {
-      scheduledNotes.set(noteNumber, [note]);
+      notes = [note];
+      scheduledNotes.set(noteNumber, notes);
+    }
+    if (this.isDrumNoteOffException(channel, noteNumber)) {
+      const stopTime = startTime + note.bufferSource.buffer.duration;
+      const index = notes.length - 1;
+      const promise = new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note, scheduledNotes, index);
+          resolve();
+        };
+        note.bufferSource.stop(stopTime);
+      });
+      this.notePromises.push(promise);
     }
   }
 
@@ -1363,6 +1384,31 @@ export class MidyGM2 {
     );
   }
 
+  disconnectNote(note, scheduledNotes, index) {
+    scheduledNotes[index] = null;
+    note.bufferSource.disconnect();
+    note.filterNode.disconnect();
+    note.volumeEnvelopeNode.disconnect();
+    note.volumeNode.disconnect();
+    note.gainL.disconnect();
+    note.gainR.disconnect();
+    if (note.modulationDepth) {
+      note.volumeDepth.disconnect();
+      note.modulationDepth.disconnect();
+      note.modulationLFO.stop();
+    }
+    if (note.vibratoDepth) {
+      note.vibratoDepth.disconnect();
+      note.vibratoLFO.stop();
+    }
+    if (note.reverbEffectsSend) {
+      note.reverbEffectsSend.disconnect();
+    }
+    if (note.chorusEffectsSend) {
+      note.chorusEffectsSend.disconnect();
+    }
+  }
+
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeEnvelopeNode.gain
@@ -1374,28 +1420,7 @@ export class MidyGM2 {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        scheduledNotes[index] = null;
-        note.bufferSource.disconnect();
-        note.filterNode.disconnect();
-        note.volumeEnvelopeNode.disconnect();
-        note.volumeNode.disconnect();
-        note.gainL.disconnect();
-        note.gainR.disconnect();
-        if (note.modulationDepth) {
-          note.volumeDepth.disconnect();
-          note.modulationDepth.disconnect();
-          note.modulationLFO.stop();
-        }
-        if (note.vibratoDepth) {
-          note.vibratoDepth.disconnect();
-          note.vibratoLFO.stop();
-        }
-        if (note.reverbEffectsSend) {
-          note.reverbEffectsSend.disconnect();
-        }
-        if (note.chorusEffectsSend) {
-          note.chorusEffectsSend.disconnect();
-        }
+        this.disconnectNote(note, scheduledNotes, index);
         resolve();
       };
       note.bufferSource.stop(stopTime);
@@ -1411,12 +1436,7 @@ export class MidyGM2 {
     portamentoNoteNumber,
   ) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) {
-      const { program } = channel;
-      if (program === 48) return noteNumber !== 88; // Orchestra Set
-      if (program === 56) return !(47 <= noteNumber && noteNumber <= 84); // SFX Set
-      return;
-    }
+    if (this.isDrumNoteOffException(channel, noteNumber)) return;
     const state = channel.state;
     if (!force) {
       if (0.5 <= state.sustainPedal) return;
