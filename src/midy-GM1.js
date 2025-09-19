@@ -165,7 +165,7 @@ export class MidyGM1 {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new Array(128);
+  exclusiveClassNotes = new Array(128);
 
   static channelSettings = {
     detune: 0,
@@ -385,7 +385,7 @@ export class MidyGM1 {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassMap.flll(undefined);
+          this.exclusiveClassNotes.flll(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -403,7 +403,7 @@ export class MidyGM1 {
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          this.exclusiveClassMap.fill(undefined);
+          this.exclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -411,7 +411,7 @@ export class MidyGM1 {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
-          this.exclusiveClassMap.fill(undefined);
+          this.exclusiveClassNotes.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -813,7 +813,7 @@ export class MidyGM1 {
   handleExclusiveClass(note, channelNumber, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
-    const prev = this.exclusiveClassMap[exclusiveClass];
+    const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
       const [prevNote, prevChannelNumber] = prev;
       if (prevNote && !prevNote.ending) {
@@ -826,7 +826,7 @@ export class MidyGM1 {
         );
       }
     }
-    this.exclusiveClassMap[exclusiveClass] = [note, channelNumber];
+    this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
 
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
