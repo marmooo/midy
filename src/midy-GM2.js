@@ -89,41 +89,38 @@ class Note {
 }
 
 const drumExclusiveClassesByKit = new Array(57);
-// Standard Set
-drumExclusiveClassesByKit[0] = new Map([
-  [42, 1],
-  [44, 1],
-  [46, 1], // HH
-  [71, 2],
-  [72, 2], // Whistle
-  [73, 3],
-  [74, 3], // Guiro
-  [78, 4],
-  [79, 4], // Cuica
-  [80, 5],
-  [81, 5], // Triangle
-  [29, 6],
-  [30, 6], // Scratch
-  [86, 7],
-  [87, 7], // Surdo
-]);
-// Analog Set
-drumExclusiveClassesByKit[25] = new Map([
-  [42, 1],
-  [44, 1],
-  [46, 1], // CHH
-]);
-// Orchestra Set
-drumExclusiveClassesByKit[48] = new Map([
-  [27, 1],
-  [28, 1],
-  [29, 1], // HH
-]);
-// SFX Set
-drumExclusiveClassesByKit[56] = new Map([
-  [41, 1],
-  [42, 1], // Scratch
-]);
+const drumExclusiveClassCount = 10;
+const standardSet = new Uint8Array(128);
+standardSet[42] = 1;
+standardSet[44] = 1;
+standardSet[46] = 1; // HH
+standardSet[71] = 2;
+standardSet[72] = 2; // Whistle
+standardSet[73] = 3;
+standardSet[74] = 3; // Guiro
+standardSet[78] = 4;
+standardSet[79] = 4; // Cuica
+standardSet[80] = 5;
+standardSet[81] = 5; // Triangle
+standardSet[29] = 6;
+standardSet[30] = 6; // Scratch
+standardSet[86] = 7;
+standardSet[87] = 7; // Surdo
+drumExclusiveClassesByKit[0] = standardSet;
+const analogSet = new Uint8Array(128);
+analogSet[42] = 8;
+analogSet[44] = 8;
+analogSet[46] = 8; // CHH
+drumExclusiveClassesByKit[25] = analogSet;
+const orchestraSet = new Uint8Array(128);
+orchestraSet[27] = 9;
+orchestraSet[28] = 9;
+orchestraSet[29] = 9; // HH
+drumExclusiveClassesByKit[48] = orchestraSet;
+const sfxSet = new Uint8Array(128);
+sfxSet[41] = 10;
+sfxSet[42] = 10; // Scratch
+drumExclusiveClassesByKit[56] = sfxSet;
 
 // normalized to 0-1 for use with the SF2 modulator model
 const defaultControllerState = {
@@ -245,7 +242,9 @@ export class MidyGM2 {
   instruments = [];
   notePromises = [];
   exclusiveClassNotes = new Array(128);
-  drumExclusiveClassNotes = new Array(this.numChannels * 128);
+  drumExclusiveClassNotes = new Array(
+    this.numChannels * drumExclusiveClassCount,
+  );
 
   static channelSettings = {
     detune: 0,
@@ -1289,11 +1288,12 @@ export class MidyGM2 {
   handleDrumExclusiveClass(note, channelNumber, startTime) {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
-    const kitMap = drumExclusiveClassesByKit[channel.programNumber];
+    const kitMap = drumExclusiveClassesByKit[channel.program];
     if (!kitMap) return;
     const drumExclusiveClass = kitMap[note.noteNumber];
-    if (!drumExclusiveClass) return;
-    const index = drumExclusiveClass * this.channels.length + channelNumber;
+    if (drumExclusiveClass === 0) return;
+    const index = (drumExclusiveClass - 1) * this.channels.length +
+      channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
     if (prevNote && !prevNote.ending) {
       this.scheduleNoteOff(

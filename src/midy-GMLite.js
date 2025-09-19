@@ -80,19 +80,19 @@ class Note {
   }
 }
 
-const drumExclusiveClasses = new Map([
-  [42, 1],
-  [44, 1],
-  [46, 1], // HH
-  [71, 2],
-  [72, 2], // Whistle
-  [73, 3],
-  [74, 3], // Guiro
-  [78, 4],
-  [79, 4], // Cuica
-  [80, 5],
-  [81, 5], // Triangle
-]);
+const drumExclusiveClasses = new Uint8Array(128);
+drumExclusiveClasses[42] = 1;
+drumExclusiveClasses[44] = 1;
+drumExclusiveClasses[46] = 1, // HH
+  drumExclusiveClasses[71] = 2;
+drumExclusiveClasses[72] = 2; // Whistle
+drumExclusiveClasses[73] = 3;
+drumExclusiveClasses[74] = 3; // Guiro
+drumExclusiveClasses[78] = 4;
+drumExclusiveClasses[79] = 4; // Cuica
+drumExclusiveClasses[80] = 5;
+drumExclusiveClasses[81] = 5; // Triangle
+const drumExclusiveClassCount = 5;
 
 // normalized to 0-1 for use with the SF2 modulator model
 const defaultControllerState = {
@@ -180,7 +180,9 @@ export class MidyGMLite {
   instruments = [];
   notePromises = [];
   exclusiveClassNotes = new Array(128);
-  drumExclusiveClassNotes = new Array(this.numChannels).fill(new SparseMap(128));
+  drumExclusiveClassNotes = new Array(
+    this.numChannels * drumExclusiveClassCount,
+  );
 
   static channelSettings = {
     detune: 0,
@@ -844,21 +846,19 @@ export class MidyGMLite {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
     const drumExclusiveClass = drumExclusiveClasses[noteNumber];
-    if (!drumExclusiveClass) return;
-    const drumClassMap = this.drumExclusiveClassNotes[channelNumber];
-    if (drumClassMap.has(drumExclusiveClass)) {
-      const prevNote = map.get(exclusiveClass);
-      if (prevNote && !prevNote.ending) {
-        this.scheduleNoteOff(
-          prevChannelNumber,
-          prevNote.noteNumber,
-          0, // velocity,
-          startTime,
-          true, // force
-        );
-      }
+    if (drumExclusiveClass === 0) return;
+    const index = drumExclusiveClass * this.channels.length + channelNumber;
+    const prevNote = this.drumExclusiveClassNotes[index];
+    if (prevNote && !prevNote.ending) {
+      this.scheduleNoteOff(
+        channelNumber,
+        prevNote.noteNumber,
+        0, // velocity,
+        startTime,
+        true, // force
+      );
     }
-    drumClassMap.set(drumExclusiveClass, note);
+    this.drumExclusiveClassNotes[index] = note;
   }
 
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
