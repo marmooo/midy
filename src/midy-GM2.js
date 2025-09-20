@@ -248,7 +248,7 @@ export class MidyGM2 {
 
   static channelSettings = {
     detune: 0,
-    program: 0,
+    programNumber: 0,
     bank: 121 * 128,
     bankMSB: 121,
     bankLSB: 0,
@@ -1162,8 +1162,18 @@ export class MidyGM2 {
     note.vibratoDepth.connect(note.bufferSource.detune);
   }
 
-  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
-    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+  async getAudioBuffer(
+    programNumber,
+    noteNumber,
+    velocity,
+    voiceParams,
+    isSF3,
+  ) {
+    const audioBufferId = this.getAudioBufferId(
+      programNumber,
+      noteNumber,
+      velocity,
+    );
     const cache = this.audioBufferCache.get(audioBufferId);
     if (cache) {
       cache.counter += 1;
@@ -1199,7 +1209,7 @@ export class MidyGM2 {
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     const audioBuffer = await this.getAudioBuffer(
-      channel.program,
+      channel.programNumber,
       noteNumber,
       velocity,
       voiceParams,
@@ -1288,7 +1298,7 @@ export class MidyGM2 {
   handleDrumExclusiveClass(note, channelNumber, startTime) {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
-    const kitTable = drumExclusiveClassesByKit[channel.program];
+    const kitTable = drumExclusiveClassesByKit[channel.programNumber];
     if (!kitTable) return;
     const drumExclusiveClass = kitTable[note.noteNumber];
     if (drumExclusiveClass === 0) return;
@@ -1310,9 +1320,9 @@ export class MidyGM2 {
 
   isDrumNoteOffException(channel, noteNumber) {
     if (!channel.isDrum) return false;
-    const program = channel.program;
-    return (program === 48 && noteNumber === 88) ||
-      (program === 56 && 47 <= noteNumber && noteNumber <= 84);
+    const programNumber = channel.programNumber;
+    return (programNumber === 48 && noteNumber === 88) ||
+      (programNumber === 56 && 47 <= noteNumber && noteNumber <= 84);
   }
 
   async scheduleNoteOn(
@@ -1324,12 +1334,14 @@ export class MidyGM2 {
   ) {
     const channel = this.channels[channelNumber];
     const bankNumber = this.calcBank(channel, channelNumber);
-    const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
+    const soundFontIndex = this.soundFontTable[channel.programNumber].get(
+      bankNumber,
+    );
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
       bankNumber,
-      channel.program,
+      channel.programNumber,
       noteNumber,
       velocity,
     );
@@ -1547,10 +1559,10 @@ export class MidyGM2 {
     }
   }
 
-  handleProgramChange(channelNumber, program, _scheduleTime) {
+  handleProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.bank = channel.bankMSB * 128 + channel.bankLSB;
-    channel.program = program;
+    channel.programNumber = programNumber;
     if (this.mode === "GM2") {
       switch (channel.bankMSB) {
         case 120:

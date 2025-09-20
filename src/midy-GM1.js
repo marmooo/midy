@@ -169,7 +169,7 @@ export class MidyGM1 {
 
   static channelSettings = {
     detune: 0,
-    program: 0,
+    programNumber: 0,
     bank: 0,
     dataMSB: 0,
     dataLSB: 0,
@@ -750,8 +750,18 @@ export class MidyGM1 {
     note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
   }
 
-  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
-    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+  async getAudioBuffer(
+    programNumber,
+    noteNumber,
+    velocity,
+    voiceParams,
+    isSF3,
+  ) {
+    const audioBufferId = this.getAudioBufferId(
+      programNumber,
+      noteNumber,
+      velocity,
+    );
     const cache = this.audioBufferCache.get(audioBufferId);
     if (cache) {
       cache.counter += 1;
@@ -786,7 +796,7 @@ export class MidyGM1 {
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     const audioBuffer = await this.getAudioBuffer(
-      channel.program,
+      channel.programNumber,
       noteNumber,
       velocity,
       voiceParams,
@@ -832,12 +842,14 @@ export class MidyGM1 {
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
-    const soundFontIndex = this.soundFontTable[channel.program].get(bankNumber);
+    const soundFontIndex = this.soundFontTable[channel.programNumber].get(
+      bankNumber,
+    );
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
       bankNumber,
-      channel.program,
+      channel.programNumber,
       noteNumber,
       velocity,
     );
@@ -988,9 +1000,9 @@ export class MidyGM1 {
     }
   }
 
-  handleProgramChange(channelNumber, program, _scheduleTime) {
+  handleProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
-    channel.program = program;
+    channel.programNumber = programNumber;
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
