@@ -531,6 +531,7 @@ export class MidyGM2 {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(undefined);
+          this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -549,6 +550,7 @@ export class MidyGM2 {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(undefined);
+          this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -557,6 +559,7 @@ export class MidyGM2 {
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
           this.exclusiveClassNotes.fill(undefined);
+          this.drumExclusiveClassNotes.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
