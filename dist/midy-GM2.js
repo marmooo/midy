@@ -2259,6 +2259,39 @@ var Note = class {
     this.voiceParams = voiceParams;
   }
 };
+var drumExclusiveClassesByKit = new Array(57);
+var drumExclusiveClassCount = 10;
+var standardSet = new Uint8Array(128);
+standardSet[42] = 1;
+standardSet[44] = 1;
+standardSet[46] = 1;
+standardSet[71] = 2;
+standardSet[72] = 2;
+standardSet[73] = 3;
+standardSet[74] = 3;
+standardSet[78] = 4;
+standardSet[79] = 4;
+standardSet[80] = 5;
+standardSet[81] = 5;
+standardSet[29] = 6;
+standardSet[30] = 6;
+standardSet[86] = 7;
+standardSet[87] = 7;
+drumExclusiveClassesByKit[0] = standardSet;
+var analogSet = new Uint8Array(128);
+analogSet[42] = 8;
+analogSet[44] = 8;
+analogSet[46] = 8;
+drumExclusiveClassesByKit[25] = analogSet;
+var orchestraSet = new Uint8Array(128);
+orchestraSet[27] = 9;
+orchestraSet[28] = 9;
+orchestraSet[29] = 9;
+drumExclusiveClassesByKit[48] = orchestraSet;
+var sfxSet = new Uint8Array(128);
+sfxSet[41] = 10;
+sfxSet[42] = 10;
+drumExclusiveClassesByKit[56] = sfxSet;
 var defaultControllerState = {
   noteOnVelocity: { type: 2, defaultValue: 0 },
   noteOnKeyNumber: { type: 3, defaultValue: 0 },
@@ -2341,8 +2374,6 @@ var volumeEnvelopeKeys = [
 var volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
 var MidyGM2 = class {
   mode = "GM2";
-  ticksPerBeat = 120;
-  totalTime = 0;
   masterFineTuning = 0;
   // cb
   masterCoarseTuning = 0;
@@ -2358,6 +2389,9 @@ var MidyGM2 = class {
     sendToReverb: this.getChorusSendToReverb(0),
     delayTimes: this.generateDistributedArray(0.02, 2, 0.5)
   };
+  numChannels = 16;
+  ticksPerBeat = 120;
+  totalTime = 0;
   noteCheckInterval = 0.1;
   lookAhead = 1;
   startDelay = 0.1;
@@ -2375,12 +2409,13 @@ var MidyGM2 = class {
   timeline = [];
   instruments = [];
   notePromises = [];
-  exclusiveClassMap = new SparseMap(128);
+  exclusiveClassNotes = new Array(128);
+  drumExclusiveClassNotes = new Array(
+    this.numChannels * drumExclusiveClassCount
+  );
   static channelSettings = {
-    currentBufferSource: null,
-    isDrum: false,
     detune: 0,
-    program: 0,
+    programNumber: 0,
     bank: 121 * 128,
     bankMSB: 121,
     bankLSB: 0,
@@ -2490,8 +2525,10 @@ var MidyGM2 = class {
     };
   }
   createChannels(audioContext) {
-    const channels = Array.from({ length: 16 }, () => {
+    const channels = Array.from({ length: this.numChannels }, () => {
       return {
+        currentBufferSource: null,
+        isDrum: false,
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         controlTable: this.initControlTable(),
@@ -2536,22 +2573,10 @@ var MidyGM2 = class {
       return audioBuffer;
     }
   }
-  calcLoopMode(channel2, note, voiceParams) {
-    if (channel2.isDrum) {
-      const noteNumber = note.noteNumber;
-      if (noteNumber === 88 || 47 <= noteNumber && noteNumber <= 84) {
-        return true;
-      } else {
-        return false;
-      }
-    } else {
-      return voiceParams.sampleModes % 2 !== 0;
-    }
-  }
-  createBufferSource(channel2, note, voiceParams, audioBuffer) {
+  createBufferSource(voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = this.calcLoopMode(channel2, note, voiceParams);
+    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -2656,7 +2681,8 @@ var MidyGM2 = class {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.audioBufferCache.clear();
           resolve();
           return;
@@ -2674,7 +2700,8 @@ var MidyGM2 = class {
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.audioBufferCache.clear();
           resolve();
           this.isStopping = false;
@@ -2682,7 +2709,8 @@ var MidyGM2 = class {
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
-          this.exclusiveClassMap.clear();
+          this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
           offset = this.resumeTime - this.startTime;
@@ -2710,7 +2738,7 @@ var MidyGM2 = class {
   extractMidiData(midi) {
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
-    const tmpChannels = new Array(16);
+    const tmpChannels = new Array(this.channels.length);
     for (let i = 0; i < tmpChannels.length; i++) {
       tmpChannels[i] = {
         programNumber: -1,
@@ -2856,6 +2884,9 @@ var MidyGM2 = class {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
+    for (let i = 0; i < this.channels.length; i++) {
+      this.resetAllStates(i);
+    }
   }
   pause() {
     if (!this.isPlaying || this.isPaused) return;
@@ -3199,8 +3230,12 @@ var MidyGM2 = class {
     note.vibratoLFO.connect(note.vibratoDepth);
     note.vibratoDepth.connect(note.bufferSource.detune);
   }
-  async getAudioBuffer(program, noteNumber, velocity, voiceParams, isSF3) {
-    const audioBufferId = this.getAudioBufferId(program, noteNumber, velocity);
+  async getAudioBuffer(programNumber, noteNumber, velocity, voiceParams, isSF3) {
+    const audioBufferId = this.getAudioBufferId(
+      programNumber,
+      noteNumber,
+      velocity
+    );
     const cache = this.audioBufferCache.get(audioBufferId);
     if (cache) {
       cache.counter += 1;
@@ -3227,18 +3262,13 @@ var MidyGM2 = class {
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     const audioBuffer = await this.getAudioBuffer(
-      channel2.program,
+      channel2.programNumber,
       noteNumber,
       velocity,
       voiceParams,
       isSF3
     );
-    note.bufferSource = this.createBufferSource(
-      channel2,
-      note,
-      voiceParams,
-      audioBuffer
-    );
+    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
     note.volumeNode = new GainNode(this.audioContext);
     note.gainL = new GainNode(this.audioContext);
     note.gainR = new GainNode(this.audioContext);
@@ -3295,15 +3325,68 @@ var MidyGM2 = class {
         return channel2.bank;
     }
   }
+  handleExclusiveClass(note, channelNumber, startTime) {
+    const exclusiveClass = note.voiceParams.exclusiveClass;
+    if (exclusiveClass === 0) return;
+    const prev = this.exclusiveClassNotes[exclusiveClass];
+    if (prev) {
+      const [prevNote, prevChannelNumber] = prev;
+      if (prevNote && !prevNote.ending) {
+        this.scheduleNoteOff(
+          prevChannelNumber,
+          prevNote.noteNumber,
+          0,
+          // velocity,
+          startTime,
+          true,
+          // force
+          void 0
+          // portamentoNoteNumber
+        );
+      }
+    }
+    this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
+  }
+  handleDrumExclusiveClass(note, channelNumber, startTime) {
+    const channel2 = this.channels[channelNumber];
+    if (!channel2.isDrum) return;
+    const kitTable = drumExclusiveClassesByKit[channel2.programNumber];
+    if (!kitTable) return;
+    const drumExclusiveClass = kitTable[note.noteNumber];
+    if (drumExclusiveClass === 0) return;
+    const index = (drumExclusiveClass - 1) * this.channels.length + channelNumber;
+    const prevNote = this.drumExclusiveClassNotes[index];
+    if (prevNote && !prevNote.ending) {
+      this.scheduleNoteOff(
+        channelNumber,
+        prevNote.noteNumber,
+        0,
+        // velocity,
+        startTime,
+        true,
+        // force
+        void 0
+        // portamentoNoteNumber
+      );
+    }
+    this.drumExclusiveClassNotes[index] = note;
+  }
+  isDrumNoteOffException(channel2, noteNumber) {
+    if (!channel2.isDrum) return false;
+    const programNumber = channel2.programNumber;
+    return programNumber === 48 && noteNumber === 88 || programNumber === 56 && 47 <= noteNumber && noteNumber <= 84;
+  }
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime, portamento) {
     const channel2 = this.channels[channelNumber];
     const bankNumber = this.calcBank(channel2, channelNumber);
-    const soundFontIndex = this.soundFontTable[channel2.program].get(bankNumber);
+    const soundFontIndex = this.soundFontTable[channel2.programNumber].get(
+      bankNumber
+    );
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
       bankNumber,
-      channel2.program,
+      channel2.programNumber,
       noteNumber,
       velocity
     );
@@ -3323,32 +3406,27 @@ var MidyGM2 = class {
     if (0.5 <= channel2.state.sustainPedal) {
       channel2.sustainNotes.push(note);
     }
-    const exclusiveClass = note.voiceParams.exclusiveClass;
-    if (exclusiveClass !== 0) {
-      if (this.exclusiveClassMap.has(exclusiveClass)) {
-        const prevEntry = this.exclusiveClassMap.get(exclusiveClass);
-        const [prevNote, prevChannelNumber] = prevEntry;
-        if (prevNote && !prevNote.ending) {
-          this.scheduleNoteOff(
-            prevChannelNumber,
-            prevNote.noteNumber,
-            0,
-            // velocity,
-            startTime,
-            true,
-            // force
-            void 0
-            // portamentoNoteNumber
-          );
-        }
-      }
-      this.exclusiveClassMap.set(exclusiveClass, [note, channelNumber]);
-    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel2.scheduledNotes;
-    if (scheduledNotes.has(noteNumber)) {
-      scheduledNotes.get(noteNumber).push(note);
+    let notes = scheduledNotes.get(noteNumber);
+    if (notes) {
+      notes.push(note);
     } else {
-      scheduledNotes.set(noteNumber, [note]);
+      notes = [note];
+      scheduledNotes.set(noteNumber, notes);
+    }
+    if (this.isDrumNoteOffException(channel2, noteNumber)) {
+      const stopTime = startTime + note.bufferSource.buffer.duration;
+      const index = notes.length - 1;
+      const promise = new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note, scheduledNotes, index);
+          resolve();
+        };
+        note.bufferSource.stop(stopTime);
+      });
+      this.notePromises.push(promise);
     }
   }
   noteOn(channelNumber, noteNumber, velocity, scheduleTime) {
@@ -3362,6 +3440,30 @@ var MidyGM2 = class {
       // portamento,
     );
   }
+  disconnectNote(note, scheduledNotes, index) {
+    scheduledNotes[index] = null;
+    note.bufferSource.disconnect();
+    note.filterNode.disconnect();
+    note.volumeEnvelopeNode.disconnect();
+    note.volumeNode.disconnect();
+    note.gainL.disconnect();
+    note.gainR.disconnect();
+    if (note.modulationDepth) {
+      note.volumeDepth.disconnect();
+      note.modulationDepth.disconnect();
+      note.modulationLFO.stop();
+    }
+    if (note.vibratoDepth) {
+      note.vibratoDepth.disconnect();
+      note.vibratoLFO.stop();
+    }
+    if (note.reverbEffectsSend) {
+      note.reverbEffectsSend.disconnect();
+    }
+    if (note.chorusEffectsSend) {
+      note.chorusEffectsSend.disconnect();
+    }
+  }
   stopNote(endTime, stopTime, scheduledNotes, index) {
     const note = scheduledNotes[index];
     note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, stopTime);
@@ -3371,28 +3473,7 @@ var MidyGM2 = class {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        scheduledNotes[index] = null;
-        note.bufferSource.disconnect();
-        note.filterNode.disconnect();
-        note.volumeEnvelopeNode.disconnect();
-        note.volumeNode.disconnect();
-        note.gainL.disconnect();
-        note.gainR.disconnect();
-        if (note.modulationDepth) {
-          note.volumeDepth.disconnect();
-          note.modulationDepth.disconnect();
-          note.modulationLFO.stop();
-        }
-        if (note.vibratoDepth) {
-          note.vibratoDepth.disconnect();
-          note.vibratoLFO.stop();
-        }
-        if (note.reverbEffectsSend) {
-          note.reverbEffectsSend.disconnect();
-        }
-        if (note.chorusEffectsSend) {
-          note.chorusEffectsSend.disconnect();
-        }
+        this.disconnectNote(note, scheduledNotes, index);
         resolve();
       };
       note.bufferSource.stop(stopTime);
@@ -3400,6 +3481,7 @@ var MidyGM2 = class {
   }
   scheduleNoteOff(channelNumber, noteNumber, _velocity, endTime, force, portamentoNoteNumber) {
     const channel2 = this.channels[channelNumber];
+    if (this.isDrumNoteOffException(channel2, noteNumber)) return;
     const state = channel2.state;
     if (!force) {
       if (0.5 <= state.sustainPedal) return;
@@ -3503,10 +3585,10 @@ var MidyGM2 = class {
         console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
     }
   }
-  handleProgramChange(channelNumber, program, _scheduleTime) {
+  handleProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel2 = this.channels[channelNumber];
     channel2.bank = channel2.bankMSB * 128 + channel2.bankLSB;
-    channel2.program = program;
+    channel2.programNumber = programNumber;
     if (this.mode === "GM2") {
       switch (channel2.bankMSB) {
         case 120:
@@ -4096,16 +4178,30 @@ var MidyGM2 = class {
     scheduleTime ??= this.audioContext.currentTime;
     return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
   }
+  resetAllStates(channelNumber) {
+    const channel2 = this.channels[channelNumber];
+    const state = channel2.state;
+    for (const type of Object.keys(defaultControllerState)) {
+      state[type] = defaultControllerState[type].defaultValue;
+    }
+    for (const type of Object.keys(this.constructor.channelSettings)) {
+      channel2[type] = this.constructor.channelSettings[type];
+    }
+    this.mode = "GM2";
+    this.masterFineTuning = 0;
+    this.masterCoarseTuning = 0;
+  }
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
   resetAllControllers(channelNumber) {
     const stateTypes = [
+      "channelPressure",
+      "pitchWheel",
       "expression",
       "modulationDepth",
       "sustainPedal",
       "portamento",
       "sostenutoPedal",
-      "softPedal",
-      "channelPressure",
-      "pitchWheelSensitivity"
+      "softPedal"
     ];
     const channel2 = this.channels[channelNumber];
     const state = channel2.state;
@@ -4462,7 +4558,7 @@ var MidyGM2 = class {
     return value * 787e-5;
   }
   getChannelBitmap(data) {
-    const bitmap = new Array(16).fill(false);
+    const bitmap = new Array(this.channels.length).fill(false);
     const ff = data[4] & 3;
     const gg = data[5] & 127;
     const hh = data[6] & 127;
@@ -4595,6 +4691,7 @@ var MidyGM2 = class {
         console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
+  // https://github.com/marmooo/js-timer-benchmark
   scheduleTask(callback, scheduleTime) {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext, {
