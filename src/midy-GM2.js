@@ -1367,19 +1367,20 @@ export class MidyGM2 {
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
-    let notes = scheduledNotes.get(noteNumber);
-    if (notes) {
-      notes.push(note);
+    let noteList = scheduledNotes.get(noteNumber);
+    if (noteList) {
+      noteList.push(note);
     } else {
-      notes = [note];
-      scheduledNotes.set(noteNumber, notes);
+      noteList = [note];
+      scheduledNotes.set(noteNumber, noteList);
     }
     if (this.isDrumNoteOffException(channel, noteNumber)) {
       const stopTime = startTime + note.bufferSource.buffer.duration;
-      const index = notes.length - 1;
+      const index = noteList.length - 1;
       const promise = new Promise((resolve) => {
         note.bufferSource.onended = () => {
-          this.disconnectNote(note, scheduledNotes, index);
+          noteList[index] = undefined;
+          this.disconnectNote(note);
           resolve();
         };
         note.bufferSource.stop(stopTime);
@@ -1399,8 +1400,7 @@ export class MidyGM2 {
     );
   }
 
-  disconnectNote(note, scheduledNotes, index) {
-    scheduledNotes[index] = null;
+  disconnectNote(note) {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
@@ -1424,8 +1424,8 @@ export class MidyGM2 {
     }
   }
 
-  stopNote(endTime, stopTime, scheduledNotes, index) {
-    const note = scheduledNotes[index];
+  stopNote(endTime, stopTime, noteList, index) {
+    const note = noteList[index];
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, stopTime);
@@ -1435,7 +1435,8 @@ export class MidyGM2 {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        this.disconnectNote(note, scheduledNotes, index);
+        noteList[index] = undefined;
+        this.disconnectNote(note);
         resolve();
       };
       note.bufferSource.stop(stopTime);
@@ -1458,9 +1459,9 @@ export class MidyGM2 {
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
     if (!channel.scheduledNotes.has(noteNumber)) return;
-    const scheduledNotes = channel.scheduledNotes.get(noteNumber);
-    for (let i = 0; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
+    const noteList = channel.scheduledNotes.get(noteNumber);
+    for (let i = 0; i < noteList.length; i++) {
+      const note = noteList[i];
       if (!note) continue;
       if (note.ending) continue;
       if (portamentoNoteNumber === undefined) {
@@ -1470,7 +1471,7 @@ export class MidyGM2 {
           .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(0, modRelease);
         const stopTime = Math.min(volRelease, modRelease);
-        return this.stopNote(endTime, stopTime, scheduledNotes, i);
+        return this.stopNote(endTime, stopTime, noteList, i);
       } else {
         const portamentoTime = endTime + this.getPortamentoTime(channel);
         const deltaNote = portamentoNoteNumber - noteNumber;
@@ -1479,7 +1480,7 @@ export class MidyGM2 {
         note.bufferSource.playbackRate
           .cancelScheduledValues(endTime)
           .linearRampToValueAtTime(targetRate, portamentoTime);
-        return this.stopNote(endTime, portamentoTime, scheduledNotes, i);
+        return this.stopNote(endTime, portamentoTime, noteList, i);
       }
     }
   }
