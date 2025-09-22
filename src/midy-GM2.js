@@ -1324,8 +1324,8 @@ export class MidyGM2 {
   isDrumNoteOffException(channel, noteNumber) {
     if (!channel.isDrum) return false;
     const programNumber = channel.programNumber;
-    return (programNumber === 48 && noteNumber === 88) ||
-      (programNumber === 56 && 47 <= noteNumber && noteNumber <= 84);
+    return !((programNumber === 48 && noteNumber === 88) ||
+      (programNumber === 56 && 47 <= noteNumber && noteNumber <= 84));
   }
 
   async scheduleNoteOn(
