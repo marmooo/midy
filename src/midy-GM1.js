@@ -385,7 +385,7 @@ export class MidyGM1 {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
-          this.exclusiveClassNotes.flll(undefined);
+          this.exclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
           resolve();
           return;
