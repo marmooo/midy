@@ -1458,6 +1458,15 @@ export class Midy {
     });
   }
 
+  findNoteOffTarget(noteList) {
+    for (let i = 0; i < noteList.length; i++) {
+      const note = noteList[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      return [note, i];
+    }
+  }
+
   scheduleNoteOff(
     channelNumber,
     noteNumber,
@@ -1473,31 +1482,29 @@ export class Midy {
       if (0.5 <= state.sustainPedal) return;
       if (channel.sostenutoNotes.has(noteNumber)) return;
     }
-    if (!channel.scheduledNotes.has(noteNumber)) return;
     const noteList = channel.scheduledNotes.get(noteNumber);
-    for (let i = 0; i < noteList.length; i++) {
-      const note = noteList[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      if (portamentoNoteNumber === undefined) {
-        const volRelease = endTime +
-          note.voiceParams.volRelease * state.releaseTime * 2;
-        const modRelease = endTime + note.voiceParams.modRelease;
-        note.filterNode.frequency
-          .cancelScheduledValues(endTime)
-          .linearRampToValueAtTime(0, modRelease);
-        const stopTime = Math.min(volRelease, modRelease);
-        return this.stopNote(endTime, stopTime, noteList, i);
-      } else {
-        const portamentoTime = endTime + this.getPortamentoTime(channel);
-        const deltaNote = portamentoNoteNumber - noteNumber;
-        const baseRate = note.voiceParams.playbackRate;
-        const targetRate = baseRate * Math.pow(2, deltaNote / 12);
-        note.bufferSource.playbackRate
-          .cancelScheduledValues(endTime)
-          .linearRampToValueAtTime(targetRate, portamentoTime);
-        return this.stopNote(endTime, portamentoTime, noteList, i);
-      }
+    if (!noteList) return; // be careful with drum channel
+    const noteOffTarget = this.findNoteOffTarget(noteList, endTime);
+    if (!noteOffTarget) return;
+    const [note, i] = noteOffTarget;
+    if (portamentoNoteNumber === undefined) {
+      const volRelease = endTime +
+        note.voiceParams.volRelease * state.releaseTime * 2;
+      const modRelease = endTime + note.voiceParams.modRelease;
+      note.filterNode.frequency
+        .cancelScheduledValues(endTime)
+        .linearRampToValueAtTime(0, modRelease);
+      const stopTime = Math.min(volRelease, modRelease);
+      return this.stopNote(endTime, stopTime, noteList, i);
+    } else {
+      const portamentoTime = endTime + this.getPortamentoTime(channel);
+      const deltaNote = portamentoNoteNumber - noteNumber;
+      const baseRate = note.voiceParams.playbackRate;
+      const targetRate = baseRate * Math.pow(2, deltaNote / 12);
+      note.bufferSource.playbackRate
+        .cancelScheduledValues(endTime)
+        .linearRampToValueAtTime(targetRate, portamentoTime);
+      return this.stopNote(endTime, portamentoTime, noteList, i);
     }
   }
 

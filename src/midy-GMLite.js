@@ -910,7 +910,7 @@ export class MidyGMLite {
       noteList = [note];
       scheduledNotes.set(noteNumber, noteList);
     }
-    if (this.isDrumNoteOffException(channel, noteNumber)) {
+    if (channel.isDrum) {
       const stopTime = startTime + note.bufferSource.buffer.duration;
       const index = noteList.length - 1;
       const promise = new Promise((resolve) => {
@@ -965,6 +965,15 @@ export class MidyGMLite {
     });
   }
 
+  findNoteOffTarget(noteList) {
+    for (let i = 0; i < noteList.length; i++) {
+      const note = noteList[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      return [note, i];
+    }
+  }
+
   scheduleNoteOff(
     channelNumber,
     noteNumber,
@@ -977,18 +986,17 @@ export class MidyGMLite {
     if (!force && 0.5 <= channel.state.sustainPedal) return;
     if (!channel.scheduledNotes.has(noteNumber)) return;
     const noteList = channel.scheduledNotes.get(noteNumber);
-    for (let i = 0; i < noteList.length; i++) {
-      const note = noteList[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      const volRelease = endTime + note.voiceParams.volRelease;
-      const modRelease = endTime + note.voiceParams.modRelease;
-      note.filterNode.frequency
-        .cancelScheduledValues(endTime)
-        .linearRampToValueAtTime(0, modRelease);
-      const stopTime = Math.min(volRelease, modRelease);
-      return this.stopNote(endTime, stopTime, noteList, i);
-    }
+    if (!noteList) return; // be careful with drum channel
+    const noteOffTarget = this.findNoteOffTarget(noteList, endTime);
+    if (!noteOffTarget) return;
+    const [note, i] = noteOffTarget;
+    const volRelease = endTime + note.voiceParams.volRelease;
+    const modRelease = endTime + note.voiceParams.modRelease;
+    note.filterNode.frequency
+      .cancelScheduledValues(endTime)
+      .linearRampToValueAtTime(0, modRelease);
+    const stopTime = Math.min(volRelease, modRelease);
+    return this.stopNote(endTime, stopTime, noteList, i);
   }
 
   noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
