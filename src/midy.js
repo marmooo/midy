@@ -2109,7 +2109,7 @@ export class Midy {
     });
   }
 
-  setReleaseTime(channelNumber, releaseTime, _scheduleTime) {
+  setReleaseTime(channelNumber, releaseTime, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
