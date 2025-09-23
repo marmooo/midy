@@ -9,7 +9,8 @@ This library provides several files depending on the implementation level.
   [en](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/gml-v1.pdf),
   [ja](https://amei.or.jp/midistandardcommittee/Recommended_Practice/General_MIDI_Lite_v1.0_japanese.pdf))
 - midy-GM1.js: support minimal GM1 (ref:
-  [en](https://archive.org/details/complete_midi_96-1-3/page/n1/mode/2up),
+  [en](https://midi.org/midi-1-0-detailed-specification),
+  [en full](https://archive.org/details/complete_midi_96-1-3/page/n1/mode/2up),
   [ja](https://amei.or.jp/midistandardcommittee/MIDI1.0.pdf))
 - midy-GM2.js: support minimal GM2 (ref:
   [en v1.2a](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/GM2-v12a.pdf),
