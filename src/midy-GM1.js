@@ -315,7 +315,7 @@ export class MidyGM1 {
       const startTime = event.startTime + this.startDelay - offset;
       switch (event.type) {
         case "noteOn":
-          if (event.velocity !== 0) {
+          if (0 < event.velocity) {
             await this.scheduleNoteOn(
               event.channel,
               event.noteNumber,
