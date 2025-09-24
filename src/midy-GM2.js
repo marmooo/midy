@@ -1601,7 +1601,7 @@ export class MidyGM2 {
     this.getActiveNotes(channel, scheduleTime).forEach((note) => {
       this.setControllerParameters(channel, note, table);
     });
-    // this.applyVoiceParams(channel, 13);
+    this.applyVoiceParams(channel, 13);
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
@@ -1794,6 +1794,7 @@ export class MidyGM2 {
     state.set(channel.state.array);
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
+    state[13] = state.channelPressure / 127;
     return state;
   }
 

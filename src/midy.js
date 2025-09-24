@@ -1607,7 +1607,7 @@ export class Midy {
       const note = activeNotes.get(noteNumber);
       this.setControllerParameters(channel, note, table);
     }
-    // this.applyVoiceParams(channel, 10);
+    this.applyVoiceParams(channel, 10);
   }
 
   handleProgramChange(channelNumber, programNumber, _scheduleTime) {
@@ -1640,7 +1640,7 @@ export class Midy {
     this.getActiveNotes(channel, scheduleTime).forEach((note) => {
       this.setControllerParameters(channel, note, table);
     });
-    // this.applyVoiceParams(channel, 13);
+    this.applyVoiceParams(channel, 13);
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
@@ -1833,6 +1833,8 @@ export class Midy {
     state.set(channel.state.array);
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
+    state[10] = state.polyphonicKeyPressure / 127;
+    state[13] = state.channelPressure / 127;
     return state;
   }
 
