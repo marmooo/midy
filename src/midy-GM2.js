@@ -701,6 +701,25 @@ export class MidyGM2 {
     return { instruments, timeline };
   }
 
+  stopActiveNotes(channelNumber, velocity, force, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    const promises = [];
+    const activeNotes = this.getActiveNotes(channel, scheduleTime);
+    activeNotes.forEach((note) => {
+      const promise = this.scheduleNoteOff(
+        channelNumber,
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        force,
+        undefined, // portamentoNoteNumber
+      );
+      this.notePromises.push(promise);
+      promises.push(promise);
+    });
+    return Promise.all(promises);
+  }
+
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
@@ -2256,7 +2275,7 @@ export class MidyGM2 {
 
   allSoundOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    return this.stopChannelNotes(channelNumber, 0, true, scheduleTime);
+    return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
 
   resetAllStates(channelNumber) {
@@ -2303,7 +2322,7 @@ export class MidyGM2 {
 
   allNotesOff(channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    return this.stopChannelNotes(channelNumber, 0, false, scheduleTime);
+    return this.stopActiveNotes(channelNumber, 0, false, scheduleTime);
   }
 
   omniOff(channelNumber, value, scheduleTime) {
