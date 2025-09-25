@@ -631,6 +631,7 @@ export class MidyGMLite {
       for (let i = 0; i < noteList.length; i++) {
         const note = noteList[i];
         if (!note) continue;
+        if (note.ending) continue;
         callback(note);
       }
     });
