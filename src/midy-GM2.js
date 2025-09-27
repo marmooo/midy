@@ -1485,7 +1485,7 @@ export class MidyGM2 {
     const state = channel.state;
     if (!force) {
       if (0.5 <= state.sustainPedal) return;
-      if (channel.sostenutoNotes.has(noteNumber)) return;
+      if (0.5 <= channel.state.sostenutoPedal) return;
     }
     const noteList = channel.scheduledNotes.get(noteNumber);
     if (!noteList) return; // be careful with drum channel
