@@ -63,6 +63,7 @@ class SparseMap {
 }
 
 class Note {
+  index = -1;
   bufferSource;
   filterNode;
   filterDepth;
@@ -261,7 +262,7 @@ export class MidyGM1 {
         ...this.constructor.channelSettings,
         state: new ControllerState(),
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: new SparseMap(128),
+        scheduledNotes: [],
         sustainNotes: [],
       };
     });
@@ -297,7 +298,7 @@ export class MidyGM1 {
     }
   }
 
-  createBufferSource(audioBuffer, voiceParams) {
+  createBufferSource(voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
@@ -308,34 +309,25 @@ export class MidyGM1 {
     return bufferSource;
   }
 
-  async scheduleTimelineEvents(t, offset, queueIndex) {
+  async scheduleTimelineEvents(t, resumeTime, queueIndex) {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
       if (event.startTime > t + this.lookAhead) break;
-      const startTime = event.startTime + this.startDelay - offset;
+      const delay = this.startDelay - resumeTime;
+      const startTime = event.startTime + delay;
       switch (event.type) {
-        case "noteOn":
-          if (0 < event.velocity) {
-            await this.scheduleNoteOn(
-              event.channel,
-              event.noteNumber,
-              event.velocity,
-              startTime,
-            );
-            break;
-          }
-          /* falls through */
-        case "noteOff": {
-          const notePromise = this.scheduleNoteOff(
+        case "noteOn": {
+          const noteOffEvent = {
+            ...event.noteOffEvent,
+            startTime: event.noteOffEvent.startTime + delay,
+          };
+          await this.scheduleNoteOn(
             event.channel,
             event.noteNumber,
             event.velocity,
             startTime,
-            false, // force
+            noteOffEvent,
           );
-          if (notePromise) {
-            this.notePromises.push(notePromise);
-          }
           break;
         }
         case "controller":
@@ -379,7 +371,7 @@ export class MidyGM1 {
       this.isPaused = false;
       this.startTime = this.audioContext.currentTime;
       let queueIndex = this.getQueueIndex(this.resumeTime);
-      let offset = this.resumeTime - this.startTime;
+      let resumeTime = this.resumeTime - this.startTime;
       this.notePromises = [];
       const schedulePlayback = async () => {
         if (queueIndex >= this.timeline.length) {
@@ -391,8 +383,12 @@ export class MidyGM1 {
           return;
         }
         const now = this.audioContext.currentTime;
-        const t = now + offset;
-        queueIndex = await this.scheduleTimelineEvents(t, offset, queueIndex);
+        const t = now + resumeTime;
+        queueIndex = await this.scheduleTimelineEvents(
+          t,
+          resumeTime,
+          queueIndex,
+        );
         if (this.isPausing) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
@@ -414,7 +410,7 @@ export class MidyGM1 {
           this.exclusiveClassNotes.fill(undefined);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
-          offset = this.resumeTime - this.startTime;
+          resumeTime = this.resumeTime - this.startTime;
           this.isSeeking = false;
           await schedulePlayback();
         } else {
@@ -514,14 +510,37 @@ export class MidyGM1 {
         prevTempoTicks = event.ticks;
       }
     }
+    const activeNotes = new Array(this.channels.length * 128);
+    for (let i = 0; i < activeNotes.length; i++) {
+      activeNotes[i] = [];
+    }
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      switch (event.type) {
+        case "noteOn": {
+          const index = event.channel * 128 + event.noteNumber;
+          activeNotes[index].push(event);
+          break;
+        }
+        case "noteOff": {
+          const index = event.channel * 128 + event.noteNumber;
+          const noteOn = activeNotes[index].pop();
+          if (noteOn) {
+            noteOn.noteOffEvent = event;
+          } else {
+            const eventString = JSON.stringify(event, null, 2);
+            console.warn(`noteOff without matching noteOn: ${eventString}`);
+          }
+        }
+      }
+    }
     return { instruments, timeline };
   }
 
   stopActiveNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    const activeNotes = this.getActiveNotes(channel, scheduleTime);
-    activeNotes.forEach((note) => {
+    this.processActiveNotes(channel, scheduleTime, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
         note.noteNumber,
@@ -542,7 +561,7 @@ export class MidyGM1 {
     this.processScheduledNotes(channel, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
-        note.noteNumber,
+        note,
         velocity,
         scheduleTime,
         force,
@@ -550,7 +569,7 @@ export class MidyGM1 {
       this.notePromises.push(promise);
       promises.push(promise);
     });
-    channel.scheduledNotes.clear();
+    channel.scheduledNotes = [];
     return Promise.all(promises);
   }
 
@@ -612,35 +631,26 @@ export class MidyGM1 {
   }
 
   processScheduledNotes(channel, callback) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        if (note.ending) continue;
-        callback(note);
-      }
-    });
-  }
-
-  getActiveNotes(channel, scheduleTime) {
-    const activeNotes = new SparseMap(128);
-    channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList, scheduleTime);
-      if (activeNote) {
-        activeNotes.set(activeNote.noteNumber, activeNote);
-      }
-    });
-    return activeNotes;
-  }
-
-  getActiveNote(noteList, scheduleTime) {
-    for (let i = noteList.length - 1; i >= 0; i--) {
-      const note = noteList[i];
-      if (!note) return;
-      if (scheduleTime < note.startTime) continue;
-      return (note.ending) ? null : note;
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      callback(note);
     }
-    return noteList[0];
+  }
+
+  processActiveNotes(channel, scheduleTime, callback) {
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      const noteOffEvent = note.noteOffEvent;
+      if (noteOffEvent && noteOffEvent.startTime < scheduleTime) continue;
+      if (scheduleTime < note.startTime) continue;
+      callback(note);
+    }
   }
 
   cbToRatio(cb) {
@@ -822,7 +832,7 @@ export class MidyGM1 {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createBufferSource(audioBuffer, voiceParams);
+    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -849,7 +859,7 @@ export class MidyGM1 {
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
-          prevNote.noteNumber,
+          prevNote,
           0, // velocity,
           startTime,
           true, // force
@@ -859,7 +869,13 @@ export class MidyGM1 {
     this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
 
-  async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
+  async scheduleNoteOn(
+    channelNumber,
+    noteNumber,
+    velocity,
+    startTime,
+    noteOffEvent,
+  ) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
     const soundFontIndex = this.soundFontTable[channel.programNumber].get(
@@ -890,12 +906,19 @@ export class MidyGM1 {
     }
     this.handleExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
-    let noteList = scheduledNotes.get(noteNumber);
-    if (noteList) {
-      noteList.push(note);
-    } else {
-      noteList = [note];
-      scheduledNotes.set(noteNumber, noteList);
+    note.index = scheduledNotes.length;
+    scheduledNotes.push(note);
+    if (noteOffEvent) {
+      const notePromise = this.scheduleNoteOff(
+        channelNumber,
+        note,
+        noteOffEvent.velocity,
+        noteOffEvent.startTime,
+        false,
+      );
+      if (notePromise) {
+        this.notePromises.push(notePromise);
+      }
     }
   }
 
@@ -906,6 +929,7 @@ export class MidyGM1 {
       noteNumber,
       velocity,
       scheduleTime,
+      undefined, // noteOff event
     );
   }
 
@@ -920,8 +944,7 @@ export class MidyGM1 {
     }
   }
 
-  stopNote(endTime, stopTime, noteList, index) {
-    const note = noteList[index];
+  stopNote(channel, note, endTime, stopTime) {
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, stopTime);
@@ -931,7 +954,7 @@ export class MidyGM1 {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        noteList[index] = undefined;
+        channel.scheduledNotes[note.index] = undefined;
         this.disconnectNote(note);
         resolve();
       };
@@ -939,44 +962,42 @@ export class MidyGM1 {
     });
   }
 
-  findNoteOffTarget(noteList) {
-    for (let i = 0; i < noteList.length; i++) {
-      const note = noteList[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      return [note, i];
-    }
-  }
-
   scheduleNoteOff(
     channelNumber,
-    noteNumber,
+    note,
     _velocity,
     endTime,
     force,
   ) {
     const channel = this.channels[channelNumber];
     if (!force && 0.5 <= channel.state.sustainPedal) return;
-    if (!channel.scheduledNotes.has(noteNumber)) return;
-    const noteList = channel.scheduledNotes.get(noteNumber);
-    if (!noteList) return; // be careful with drum channel
-    const noteOffTarget = this.findNoteOffTarget(noteList, endTime);
-    if (!noteOffTarget) return;
-    const [note, i] = noteOffTarget;
     const volRelease = endTime + note.voiceParams.volRelease;
     const modRelease = endTime + note.voiceParams.modRelease;
     note.filterNode.frequency
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, modRelease);
     const stopTime = Math.min(volRelease, modRelease);
-    return this.stopNote(endTime, stopTime, noteList, i);
+    return this.stopNote(channel, note, endTime, stopTime);
+  }
+
+  findNoteOffTarget(channel, noteNumber) {
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      if (note.noteNumber !== noteNumber) continue;
+      return note;
+    }
   }
 
   noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    const note = this.findNoteOffTarget(channel, noteNumber);
     return this.scheduleNoteOff(
       channelNumber,
-      noteNumber,
+      note,
       velocity,
       scheduleTime,
       false, // force
@@ -988,9 +1009,9 @@ export class MidyGM1 {
     const channel = this.channels[channelNumber];
     const promises = [];
     for (let i = 0; i < channel.sustainNotes.length; i++) {
-      const promise = this.noteOff(
+      const promise = this.scheduleNoteOff(
         channelNumber,
-        channel.sustainNotes[i].noteNumber,
+        channel.sustainNotes[i],
         velocity,
         scheduleTime,
       );
