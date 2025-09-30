@@ -2758,7 +2758,7 @@ export class Midy {
   }
 
   getReverbTime(value) {
-    return Math.pow(Math.E, (value - 40) * 0.025);
+    return Math.exp((value - 40) * 0.025);
   }
 
   // mean free path equation
