@@ -1196,20 +1196,19 @@ export class MidyGM1 {
   }
 
   createControlChangeHandlers() {
-    return {
-      1: this.setModulationDepth,
-      6: this.dataEntryMSB,
-      7: this.setVolume,
-      10: this.setPan,
-      11: this.setExpression,
-      38: this.dataEntryLSB,
-      64: this.setSustainPedal,
-      100: this.setRPNLSB,
-      101: this.setRPNMSB,
-      120: this.allSoundOff,
-      121: this.resetAllControllers,
-      123: this.allNotesOff,
-    };
+    const handlers = new Array(128);
+    handlers[1] = this.setModulationDepth;
+    handlers[6] = this.dataEntryMSB;
+    handlers[7] = this.setVolume;
+    handlers[10] = this.setPan;
+    handlers[11] = this.setExpression;
+    handlers[38] = this.dataEntryLSB;
+    handlers[64] = this.setSustainPedal;
+    handlers[100] = this.setRPNLSB;
+    handlers[101] = this.setRPNMSB;
+    handlers[120] = this.allSoundOff;
+    handlers[121] = this.resetAllControllers;
+    return handlers;
   }
 
   handleControlChange(channelNumber, controllerType, value, scheduleTime) {

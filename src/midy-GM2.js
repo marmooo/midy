@@ -1873,32 +1873,32 @@ export class MidyGM2 {
   }
 
   createControlChangeHandlers() {
-    return {
-      0: this.setBankMSB,
-      1: this.setModulationDepth,
-      5: this.setPortamentoTime,
-      6: this.dataEntryMSB,
-      7: this.setVolume,
-      10: this.setPan,
-      11: this.setExpression,
-      32: this.setBankLSB,
-      38: this.dataEntryLSB,
-      64: this.setSustainPedal,
-      65: this.setPortamento,
-      66: this.setSostenutoPedal,
-      67: this.setSoftPedal,
-      91: this.setReverbSendLevel,
-      93: this.setChorusSendLevel,
-      100: this.setRPNLSB,
-      101: this.setRPNMSB,
-      120: this.allSoundOff,
-      121: this.resetAllControllers,
-      123: this.allNotesOff,
-      124: this.omniOff,
-      125: this.omniOn,
-      126: this.monoOn,
-      127: this.polyOn,
-    };
+    const handlers = new Array(128);
+    handlers[0] = this.setBankMSB;
+    handlers[1] = this.setModulationDepth;
+    handlers[5] = this.setPortamentoTime;
+    handlers[6] = this.dataEntryMSB;
+    handlers[7] = this.setVolume;
+    handlers[10] = this.setPan;
+    handlers[11] = this.setExpression;
+    handlers[32] = this.setBankLSB;
+    handlers[38] = this.dataEntryLSB;
+    handlers[64] = this.setSustainPedal;
+    handlers[65] = this.setPortamento;
+    handlers[66] = this.setSostenutoPedal;
+    handlers[67] = this.setSoftPedal;
+    handlers[91] = this.setReverbSendLevel;
+    handlers[93] = this.setChorusSendLevel;
+    handlers[100] = this.setRPNLSB;
+    handlers[101] = this.setRPNMSB;
+    handlers[120] = this.allSoundOff;
+    handlers[121] = this.resetAllControllers;
+    handlers[123] = this.allNotesOff;
+    handlers[124] = this.omniOff;
+    handlers[125] = this.omniOn;
+    handlers[126] = this.monoOn;
+    handlers[127] = this.polyOn;
+    return handlers;
   }
 
   handleControlChange(channelNumber, controllerType, value, scheduleTime) {
