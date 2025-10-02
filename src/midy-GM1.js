@@ -841,6 +841,7 @@ export class MidyGM1 {
     this.setVolumeEnvelope(note, now);
     this.setFilterEnvelope(note, now);
     this.setPitchEnvelope(note, now);
+    this.updateDetune(channel, note, now);
     if (0 < state.modulationDepth) {
       this.startModulation(channel, note, now);
     }
