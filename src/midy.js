@@ -1109,7 +1109,8 @@ export class Midy {
   setPortamentoVolumeEnvelope(channel, note, scheduleTime) {
     const state = channel.state;
     const { voiceParams, startTime } = note;
-    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
+      (1 + this.getAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack * state.attackTime * 2;
@@ -1178,8 +1179,9 @@ export class Midy {
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
-    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
-      softPedalFactor *
+    const baseCent = voiceParams.initialFilterFc +
+      this.getFilterCutoffControl(channel, note);
+    const baseFreq = this.centToHz(baseCent) * softPedalFactor *
       state.brightness * 2;
     const peekFreq = this.centToHz(
       voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
@@ -1690,7 +1692,7 @@ export class Midy {
     channel.state.polyphonicKeyPressure = pressure / 127;
     const table = channel.polyphonicKeyPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      if (note === noteNumber) {
+      if (note.noteNumber === noteNumber) {
         this.setControllerParameters(channel, note, table);
       }
     });
@@ -3091,9 +3093,10 @@ export class Midy {
 
   setControllerParameters(channel, note, table) {
     if (table[0] !== 64) this.updateDetune(channel, note);
-    if (
-      !(0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber)
-    ) {
+    if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+      if (table[1] !== 64) this.setPortamentoFilterEnvelope(channel, note);
+      if (table[2] !== 64) this.setPortamentoVolumeEnvelope(channel, note);
+    } else {
       if (table[1] !== 64) this.setFilterEnvelope(channel, note);
       if (table[2] !== 64) this.setVolumeEnvelope(channel, note);
     }

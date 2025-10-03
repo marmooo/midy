@@ -1087,9 +1087,10 @@ export class MidyGM2 {
     return Math.exp(y);
   }
 
-  setPortamentoVolumeEnvelope(note, scheduleTime) {
+  setPortamentoVolumeEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
-    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
+      (1 + this.getAmplitudeControl(channel));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack;
@@ -1157,8 +1158,9 @@ export class MidyGM2 {
     const { voiceParams, noteNumber, startTime } = note;
     const softPedalFactor = 1 -
       (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
-    const baseFreq = this.centToHz(voiceParams.initialFilterFc) *
-      softPedalFactor;
+    const baseCent = voiceParams.initialFilterFc +
+      this.getFilterCutoffControl(channel);
+    const baseFreq = this.centToHz(baseCent) * softPedalFactor;
     const peekFreq = this.centToHz(
       voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
     ) * softPedalFactor;
@@ -1306,7 +1308,7 @@ export class MidyGM2 {
       note.portamentoNoteNumber = prevNote.noteNumber;
     }
     if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
-      this.setPortamentoVolumeEnvelope(note, now);
+      this.setPortamentoVolumeEnvelope(channel, note, now);
       this.setPortamentoFilterEnvelope(channel, note, now);
       this.setPortamentoPitchEnvelope(note, now);
     } else {
@@ -2154,7 +2156,7 @@ export class MidyGM2 {
     state.softPedal = softPedal / 127;
     this.processScheduledNotes(channel, (note) => {
       if (0.5 <= state.portamento && 0 <= note.portamentoNoteNumber) {
-        this.setPortamentoVolumeEnvelope(note, scheduleTime);
+        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setVolumeEnvelope(channel, note, scheduleTime);
@@ -2856,9 +2858,10 @@ export class MidyGM2 {
 
   setControllerParameters(channel, note, table) {
     if (table[0] !== 64) this.updateDetune(channel, note);
-    if (
-      !(0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber)
-    ) {
+    if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+      if (table[1] !== 64) this.setPortamentoFilterEnvelope(channel, note);
+      if (table[2] !== 64) this.setPortamentoVolumeEnvelope(channel, note);
+    } else {
       if (table[1] !== 64) this.setFilterEnvelope(channel, note);
       if (table[2] !== 64) this.setVolumeEnvelope(channel, note);
     }
