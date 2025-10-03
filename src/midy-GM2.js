@@ -1994,9 +1994,32 @@ export class MidyGM2 {
     this.updateModulation(channel, scheduleTime);
   }
 
-  setPortamentoTime(channelNumber, portamentoTime) {
+  updatePortamento(channel, scheduleTime) {
+    this.processScheduledNotes(channel, (note) => {
+      if (0.5 <= channel.state.portamento) {
+        if (0 <= note.portamentoNoteNumber) {
+          this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
+          this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+          this.setPortamentoPitchEnvelope(note, scheduleTime);
+          this.updateDetune(channel, note, scheduleTime);
+        }
+      } else {
+        if (0 <= note.portamentoNoteNumber) {
+          this.setVolumeEnvelope(channel, note, scheduleTime);
+          this.setFilterEnvelope(channel, note, scheduleTime);
+          this.setPitchEnvelope(note, scheduleTime);
+          this.updateDetune(channel, note, scheduleTime);
+        }
+      }
+    });
+  }
+
+  setPortamentoTime(channelNumber, portamentoTime, scheduleTime) {
     const channel = this.channels[channelNumber];
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.portamentoTime = portamentoTime / 127;
+    if (channel.isDrum) return;
+    this.updatePortamento(channel, scheduleTime);
   }
 
   setKeyBasedVolume(channel, scheduleTime) {
@@ -2099,10 +2122,12 @@ export class MidyGM2 {
     }
   }
 
-  setPortamento(channelNumber, value) {
+  setPortamento(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    scheduleTime ??= this.audioContext.currentTime;
     channel.state.portamento = value / 127;
+    this.updatePortamento(channel, scheduleTime);
   }
 
   setSostenutoPedal(channelNumber, value, scheduleTime) {
