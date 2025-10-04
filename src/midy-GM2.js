@@ -137,7 +137,7 @@ const defaultControllerState = {
   portamentoTime: { type: 128 + 5, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 0.5 },
+  pan: { type: 128 + 10, defaultValue: 64 / 127 },
   expression: { type: 128 + 11, defaultValue: 1 },
   // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
@@ -364,18 +364,25 @@ export class MidyGM2 {
     };
   }
 
+  resetChannelTable(channel) {
+    this.resetControlTable(channel.controlTable);
+    channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
+    channel.channelPressureTable.set([64, 64, 64, 0, 0, 0]);
+    channel.keyBasedInstrumentControlTable.fill(0); // [-64, 63]
+  }
+
   createChannels(audioContext) {
     const channels = Array.from({ length: this.numChannels }, () => {
       return {
         currentBufferSource: null,
         isDrum: false,
-        ...this.constructor.channelSettings,
         state: new ControllerState(),
-        controlTable: this.initControlTable(),
+        ...this.constructor.channelSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: [],
         sostenutoNotes: [],
+        controlTable: this.initControlTable(),
         scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
         channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
         keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
@@ -498,6 +505,9 @@ export class MidyGM2 {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           resolve();
           return;
         }
@@ -511,9 +521,9 @@ export class MidyGM2 {
         if (this.isPausing) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          resolve();
           this.isPausing = false;
           this.isPaused = true;
+          resolve();
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
@@ -521,9 +531,12 @@ export class MidyGM2 {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
-          resolve();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           this.isStopping = false;
           this.isPaused = false;
+          resolve();
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
@@ -748,9 +761,6 @@ export class MidyGM2 {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
-    for (let i = 0; i < this.channels.length; i++) {
-      this.resetAllStates(i);
-    }
   }
 
   pause() {
@@ -2367,22 +2377,34 @@ export class MidyGM2 {
   }
 
   resetAllStates(channelNumber) {
+    const scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (const type of Object.keys(defaultControllerState)) {
-      state[type] = defaultControllerState[type].defaultValue;
+    const entries = Object.entries(defaultControllerState);
+    for (const [key, { type, defaultValue }] of entries) {
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
-    for (const type of Object.keys(this.constructor.channelSettings)) {
-      channel[type] = this.constructor.channelSettings[type];
+    for (const key of Object.keys(this.constructor.channelSettings)) {
+      channel[key] = this.constructor.channelSettings[key];
     }
+    this.resetChannelTable(channel);
     this.mode = "GM2";
     this.masterFineTuning = 0; // cb
     this.masterCoarseTuning = 0; // cb
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-  resetAllControllers(channelNumber) {
-    const stateTypes = [
+  resetAllControllers(channelNumber, _value, scheduleTime) {
+    const keys = [
       "channelPressure",
       "pitchWheel",
       "expression",
@@ -2394,10 +2416,21 @@ export class MidyGM2 {
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (let i = 0; i < stateTypes.length; i++) {
-      const type = stateTypes[i];
-      state[type] = defaultControllerState[type].defaultValue;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
+    this.setPitchBend(channelNumber, 8192, scheduleTime);
     const settingTypes = [
       "rpnMSB",
       "rpnLSB",
@@ -2885,8 +2918,14 @@ export class MidyGM2 {
   initControlTable() {
     const channelCount = 128;
     const slotSize = 6;
-    const defaultValues = [64, 64, 64, 0, 0, 0];
     const table = new Uint8Array(channelCount * slotSize);
+    return this.resetControlTable(table);
+  }
+
+  resetControlTable(table) {
+    const channelCount = 128;
+    const slotSize = 6;
+    const defaultValues = [64, 64, 64, 0, 0, 0];
     for (let ch = 0; ch < channelCount; ch++) {
       const offset = ch * slotSize;
       table.set(defaultValues, offset);

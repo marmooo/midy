@@ -139,7 +139,7 @@ const defaultControllerState = {
   portamentoTime: { type: 128 + 5, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 0.5 },
+  pan: { type: 128 + 10, defaultValue: 64 / 127 },
   expression: { type: 128 + 11, defaultValue: 1 },
   // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
@@ -147,14 +147,14 @@ const defaultControllerState = {
   portamento: { type: 128 + 65, defaultValue: 0 },
   sostenutoPedal: { type: 128 + 66, defaultValue: 0 },
   softPedal: { type: 128 + 67, defaultValue: 0 },
-  filterResonance: { type: 128 + 71, defaultValue: 0.5 },
-  releaseTime: { type: 128 + 72, defaultValue: 0.5 },
-  attackTime: { type: 128 + 73, defaultValue: 0.5 },
-  brightness: { type: 128 + 74, defaultValue: 0.5 },
-  decayTime: { type: 128 + 75, defaultValue: 0.5 },
-  vibratoRate: { type: 128 + 76, defaultValue: 0.5 },
-  vibratoDepth: { type: 128 + 77, defaultValue: 0.5 },
-  vibratoDelay: { type: 128 + 78, defaultValue: 0.5 },
+  filterResonance: { type: 128 + 71, defaultValue: 64 / 127 },
+  releaseTime: { type: 128 + 72, defaultValue: 64 / 127 },
+  attackTime: { type: 128 + 73, defaultValue: 64 / 127 },
+  brightness: { type: 128 + 74, defaultValue: 64 / 127 },
+  decayTime: { type: 128 + 75, defaultValue: 64 / 127 },
+  vibratoRate: { type: 128 + 76, defaultValue: 64 / 127 },
+  vibratoDepth: { type: 128 + 77, defaultValue: 64 / 127 },
+  vibratoDelay: { type: 128 + 78, defaultValue: 64 / 127 },
   reverbSendLevel: { type: 128 + 91, defaultValue: 0 },
   chorusSendLevel: { type: 128 + 93, defaultValue: 0 },
   // dataIncrement: { type: 128 + 96, defaultValue: 0 },
@@ -374,18 +374,26 @@ export class Midy {
     };
   }
 
+  resetChannelTable(channel) {
+    this.resetControlTable(channel.controlTable);
+    channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
+    channel.channelPressureTable.set([64, 64, 64, 0, 0, 0]);
+    channel.polyphonicKeyPressureTable.set([64, 64, 64, 0, 0, 0]);
+    channel.keyBasedInstrumentControlTable.fill(0); // [-64, 63]
+  }
+
   createChannels(audioContext) {
     const channels = Array.from({ length: this.numChannels }, () => {
       return {
         currentBufferSource: null,
         isDrum: false,
-        ...this.constructor.channelSettings,
         state: new ControllerState(),
-        controlTable: this.initControlTable(),
+        ...this.constructor.channelSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: [],
         sostenutoNotes: [],
+        controlTable: this.initControlTable(),
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
         channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
         polyphonicKeyPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
@@ -517,6 +525,9 @@ export class Midy {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           resolve();
           return;
         }
@@ -530,9 +541,9 @@ export class Midy {
         if (this.isPausing) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          resolve();
           this.isPausing = false;
           this.isPaused = true;
+          resolve();
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
@@ -540,9 +551,12 @@ export class Midy {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
-          resolve();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           this.isStopping = false;
           this.isPaused = false;
+          resolve();
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
@@ -767,9 +781,6 @@ export class Midy {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
-    for (let i = 0; i < this.channels.length; i++) {
-      this.resetAllStates(i);
-    }
   }
 
   pause() {
@@ -2307,7 +2318,7 @@ export class Midy {
     }
   }
 
-  setVibratoDelay(channelNumber, vibratoDelay) {
+  setVibratoDelay(channelNumber, vibratoDelay, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
@@ -2535,22 +2546,34 @@ export class Midy {
   }
 
   resetAllStates(channelNumber) {
+    const scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (const type of Object.keys(defaultControllerState)) {
-      state[type] = defaultControllerState[type].defaultValue;
+    const entries = Object.entries(defaultControllerState);
+    for (const [key, { type, defaultValue }] of entries) {
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
-    for (const type of Object.keys(this.constructor.channelSettings)) {
-      channel[type] = this.constructor.channelSettings[type];
+    for (const key of Object.keys(this.constructor.channelSettings)) {
+      channel[key] = this.constructor.channelSettings[key];
     }
+    this.resetChannelTable(channel);
     this.mode = "GM2";
     this.masterFineTuning = 0; // cb
     this.masterCoarseTuning = 0; // cb
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-  resetAllControllers(channelNumber) {
-    const stateTypes = [
+  resetAllControllers(channelNumber, _value, scheduleTime) {
+    const keys = [
       "polyphonicKeyPressure",
       "channelPressure",
       "pitchWheel",
@@ -2563,10 +2586,21 @@ export class Midy {
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (let i = 0; i < stateTypes.length; i++) {
-      const type = stateTypes[i];
-      state[type] = defaultControllerState[type].defaultValue;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
+    this.setPitchBend(channelNumber, 8192, scheduleTime);
     const settingTypes = [
       "rpnMSB",
       "rpnLSB",
@@ -3120,8 +3154,14 @@ export class Midy {
   initControlTable() {
     const channelCount = 128;
     const slotSize = 6;
-    const defaultValues = [64, 64, 64, 0, 0, 0];
     const table = new Uint8Array(channelCount * slotSize);
+    return this.resetControlTable(table);
+  }
+
+  resetControlTable(table) {
+    const channelCount = 128;
+    const slotSize = 6;
+    const defaultValues = [64, 64, 64, 0, 0, 0];
     for (let ch = 0; ch < channelCount; ch++) {
       const offset = ch * slotSize;
       table.set(defaultValues, offset);

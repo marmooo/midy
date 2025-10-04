@@ -106,7 +106,7 @@ const defaultControllerState = {
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 0.5 },
+  pan: { type: 128 + 10, defaultValue: 64 / 127 },
   expression: { type: 128 + 11, defaultValue: 1 },
   // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
@@ -274,8 +274,8 @@ export class MidyGMLite {
       return {
         currentBufferSource: null,
         isDrum: false,
-        ...this.constructor.channelSettings,
         state: new ControllerState(),
+        ...this.constructor.channelSettings,
         ...this.setChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: [],
@@ -395,6 +395,9 @@ export class MidyGMLite {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           resolve();
           return;
         }
@@ -408,9 +411,9 @@ export class MidyGMLite {
         if (this.isPausing) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          resolve();
           this.isPausing = false;
           this.isPaused = true;
+          resolve();
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
@@ -418,9 +421,12 @@ export class MidyGMLite {
           this.exclusiveClassNotes.fill(undefined);
           this.drumExclusiveClassNotes.fill(undefined);
           this.audioBufferCache.clear();
-          resolve();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           this.isStopping = false;
           this.isPaused = false;
+          resolve();
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
@@ -609,9 +615,6 @@ export class MidyGMLite {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
-    for (let i = 0; i < this.channels.length; i++) {
-      this.resetAllStates(i);
-    }
   }
 
   pause() {
@@ -935,6 +938,7 @@ export class MidyGMLite {
       startTime,
       isSF3,
     );
+    note.noteOffEvent = noteOffEvent;
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {
@@ -1421,20 +1425,31 @@ export class MidyGMLite {
   }
 
   resetAllStates(channelNumber) {
+    const scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (const type of Object.keys(defaultControllerState)) {
-      state[type] = defaultControllerState[type].defaultValue;
+    const entries = Object.entries(defaultControllerState);
+    for (const [key, { type, defaultValue }] of entries) {
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
-    for (const type of Object.keys(this.constructor.channelSettings)) {
-      channel[type] = this.constructor.channelSettings[type];
+    for (const key of Object.keys(this.constructor.channelSettings)) {
+      channel[key] = this.constructor.channelSettings[key];
     }
     this.mode = "GM1";
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-  resetAllControllers(channelNumber) {
-    const stateTypes = [
+  resetAllControllers(channelNumber, _value, scheduleTime) {
+    const keys = [
       "pitchWheel",
       "expression",
       "modulationDepth",
@@ -1442,10 +1457,21 @@ export class MidyGMLite {
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (let i = 0; i < stateTypes.length; i++) {
-      const type = stateTypes[i];
-      state[type] = defaultControllerState[type].defaultValue;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime,
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
+    this.setPitchBend(channelNumber, 8192, scheduleTime);
     const settingTypes = [
       "rpnMSB",
       "rpnLSB",
