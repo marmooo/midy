@@ -2229,7 +2229,7 @@ export class Midy {
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
-    state.filterResonance = filterResonance / 64;
+    state.filterResonance = filterResonance / 127;
     this.processScheduledNotes(channel, (note) => {
       const Q = note.voiceParams.initialFilterQ / 5 * state.filterResonance;
       note.filterNode.Q.setValueAtTime(Q, scheduleTime);
@@ -2240,14 +2240,14 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.releaseTime = releaseTime / 64;
+    channel.state.releaseTime = releaseTime / 127;
   }
 
   setAttackTime(channelNumber, attackTime, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.attackTime = attackTime / 64;
+    channel.state.attackTime = attackTime / 127;
     this.processScheduledNotes(channel, (note) => {
       if (note.startTime < scheduleTime) return false;
       this.setVolumeEnvelope(channel, note);
@@ -2259,7 +2259,7 @@ export class Midy {
     if (channel.isDrum) return;
     const state = channel.state;
     scheduleTime ??= this.audioContext.currentTime;
-    state.brightness = brightness / 64;
+    state.brightness = brightness / 127;
     this.processScheduledNotes(channel, (note) => {
       if (0.5 <= state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
@@ -2273,7 +2273,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.decayTime = dacayTime / 64;
+    channel.state.decayTime = dacayTime / 127;
     this.processScheduledNotes(channel, (note) => {
       this.setVolumeEnvelope(channel, note, scheduleTime);
     });
@@ -2283,7 +2283,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.vibratoRate = vibratoRate / 64;
+    channel.state.vibratoRate = vibratoRate / 127;
     if (channel.vibratoDepth <= 0) return;
     this.processScheduledNotes(channel, (note) => {
       this.setVibLfoToPitch(channel, note, scheduleTime);
@@ -2295,7 +2295,7 @@ export class Midy {
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.state.vibratoDepth;
-    channel.state.vibratoDepth = vibratoDepth / 64;
+    channel.state.vibratoDepth = vibratoDepth / 127;
     if (0 < prev) {
       this.processScheduledNotes(channel, (note) => {
         this.setFreqVibLFO(channel, note, scheduleTime);
@@ -2311,7 +2311,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.vibratoDelay = vibratoDelay / 64;
+    channel.state.vibratoDelay = vibratoDelay / 127;
     if (0 < channel.state.vibratoDepth) {
       this.processScheduledNotes(channel, (note) => {
         this.startVibrato(channel, note, scheduleTime);
