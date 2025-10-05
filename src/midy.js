@@ -2165,7 +2165,7 @@ export class Midy {
 
   dataEntryLSB(channelNumber, value, scheduleTime) {
     this.channels[channelNumber].dataLSB = value;
-    this.handleRPN(channelNumber, scheduleTime);
+    this.handleRPN(channelNumber, 0, scheduleTime);
   }
 
   updateChannelVolume(channel, scheduleTime) {
@@ -2443,13 +2443,15 @@ export class Midy {
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-  dataIncrement(channelNumber) {
-    this.handleRPN(channelNumber, 1);
+  dataIncrement(channelNumber, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    this.handleRPN(channelNumber, 1, scheduleTime);
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp18.pdf
-  dataDecrement(channelNumber) {
-    this.handleRPN(channelNumber, -1);
+  dataDecrement(channelNumber, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    this.handleRPN(channelNumber, -1, scheduleTime);
   }
 
   setRPNMSB(channelNumber, value) {
@@ -2462,7 +2464,7 @@ export class Midy {
 
   dataEntryMSB(channelNumber, value, scheduleTime) {
     this.channels[channelNumber].dataMSB = value;
-    this.handleRPN(channelNumber, scheduleTime);
+    this.handleRPN(channelNumber, 0, scheduleTime);
   }
 
   handlePitchBendRangeRPN(channelNumber, scheduleTime) {
