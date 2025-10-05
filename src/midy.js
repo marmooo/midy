@@ -1,67 +1,6 @@
 import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
-// 2-3 times faster than Map
-class SparseMap {
-  constructor(size) {
-    this.data = new Array(size);
-    this.activeIndices = [];
-  }
-
-  set(key, value) {
-    if (this.data[key] === undefined) {
-      this.activeIndices.push(key);
-    }
-    this.data[key] = value;
-  }
-
-  get(key) {
-    return this.data[key];
-  }
-
-  delete(key) {
-    if (this.data[key] !== undefined) {
-      this.data[key] = undefined;
-      const index = this.activeIndices.indexOf(key);
-      if (index !== -1) {
-        this.activeIndices.splice(index, 1);
-      }
-      return true;
-    }
-    return false;
-  }
-
-  has(key) {
-    return this.data[key] !== undefined;
-  }
-
-  get size() {
-    return this.activeIndices.length;
-  }
-
-  clear() {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      this.data[key] = undefined;
-    }
-    this.activeIndices = [];
-  }
-
-  *[Symbol.iterator]() {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      yield [key, this.data[key]];
-    }
-  }
-
-  forEach(callback) {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      callback(this.data[key], key, this);
-    }
-  }
-}
-
 class Note {
   index = -1;
   noteOffEvent;
@@ -320,7 +259,7 @@ export class Midy {
   initSoundFontTable() {
     const table = new Array(128);
     for (let i = 0; i < 128; i++) {
-      table[i] = new SparseMap(128);
+      table[i] = new Map();
     }
     return table;
   }
