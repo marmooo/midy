@@ -2184,58 +2184,8 @@ var SoundFont = class {
 };
 
 // src/midy-GMLite.js
-var SparseMap = class {
-  constructor(size) {
-    this.data = new Array(size);
-    this.activeIndices = [];
-  }
-  set(key, value) {
-    if (this.data[key] === void 0) {
-      this.activeIndices.push(key);
-    }
-    this.data[key] = value;
-  }
-  get(key) {
-    return this.data[key];
-  }
-  delete(key) {
-    if (this.data[key] !== void 0) {
-      this.data[key] = void 0;
-      const index = this.activeIndices.indexOf(key);
-      if (index !== -1) {
-        this.activeIndices.splice(index, 1);
-      }
-      return true;
-    }
-    return false;
-  }
-  has(key) {
-    return this.data[key] !== void 0;
-  }
-  get size() {
-    return this.activeIndices.length;
-  }
-  clear() {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      this.data[key] = void 0;
-    }
-    this.activeIndices = [];
-  }
-  *[Symbol.iterator]() {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      yield [key, this.data[key]];
-    }
-  }
-  forEach(callback) {
-    for (let i = 0; i < this.activeIndices.length; i++) {
-      const key = this.activeIndices[i];
-      callback(this.data[key], key, this);
-    }
-  }
-};
 var Note = class {
+  index = -1;
   bufferSource;
   filterNode;
   filterDepth;
@@ -2274,7 +2224,7 @@ var defaultControllerState = {
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 0.5 },
+  pan: { type: 128 + 10, defaultValue: 64 / 127 },
   expression: { type: 128 + 11, defaultValue: 1 },
   // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
@@ -2378,7 +2328,7 @@ var MidyGMLite = class {
   initSoundFontTable() {
     const table = new Array(128);
     for (let i = 0; i < 128; i++) {
-      table[i] = new SparseMap(128);
+      table[i] = /* @__PURE__ */ new Map();
     }
     return table;
   }
@@ -2432,10 +2382,10 @@ var MidyGMLite = class {
       return {
         currentBufferSource: null,
         isDrum: false,
-        ...this.constructor.channelSettings,
         state: new ControllerState(),
+        ...this.constructor.channelSettings,
         ...this.setChannelAudioNodes(audioContext),
-        scheduledNotes: new SparseMap(128),
+        scheduledNotes: [],
         sustainNotes: []
       };
     });
@@ -2479,35 +2429,25 @@ var MidyGMLite = class {
     }
     return bufferSource;
   }
-  async scheduleTimelineEvents(t, offset, queueIndex) {
+  async scheduleTimelineEvents(t, resumeTime, queueIndex) {
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
       if (event.startTime > t + this.lookAhead) break;
-      const startTime = event.startTime + this.startDelay - offset;
+      const delay = this.startDelay - resumeTime;
+      const startTime = event.startTime + delay;
       switch (event.type) {
-        case "noteOn":
-          if (0 < event.velocity) {
-            await this.scheduleNoteOn(
-              event.channel,
-              event.noteNumber,
-              event.velocity,
-              startTime
-            );
-            break;
-          }
-        /* falls through */
-        case "noteOff": {
-          const notePromise = this.scheduleNoteOff(
+        case "noteOn": {
+          const noteOffEvent = {
+            ...event.noteOffEvent,
+            startTime: event.noteOffEvent.startTime + delay
+          };
+          await this.scheduleNoteOn(
             event.channel,
             event.noteNumber,
             event.velocity,
             startTime,
-            false
-            // force
+            noteOffEvent
           );
-          if (notePromise) {
-            this.notePromises.push(notePromise);
-          }
           break;
         }
         case "controller":
@@ -2549,42 +2489,55 @@ var MidyGMLite = class {
       this.isPaused = false;
       this.startTime = this.audioContext.currentTime;
       let queueIndex = this.getQueueIndex(this.resumeTime);
-      let offset = this.resumeTime - this.startTime;
+      let resumeTime = this.resumeTime - this.startTime;
       this.notePromises = [];
       const schedulePlayback = async () => {
         if (queueIndex >= this.timeline.length) {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.audioBufferCache.clear();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           resolve();
           return;
         }
         const now = this.audioContext.currentTime;
-        const t = now + offset;
-        queueIndex = await this.scheduleTimelineEvents(t, offset, queueIndex);
+        const t = now + resumeTime;
+        queueIndex = await this.scheduleTimelineEvents(
+          t,
+          resumeTime,
+          queueIndex
+        );
         if (this.isPausing) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
-          resolve();
           this.isPausing = false;
           this.isPaused = true;
+          resolve();
           return;
         } else if (this.isStopping) {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.audioBufferCache.clear();
-          resolve();
+          for (let i = 0; i < this.channels.length; i++) {
+            this.resetAllStates(i);
+          }
           this.isStopping = false;
           this.isPaused = false;
+          resolve();
           return;
         } else if (this.isSeeking) {
           this.stopNotes(0, true, now);
           this.exclusiveClassNotes.fill(void 0);
+          this.drumExclusiveClassNotes.fill(void 0);
           this.startTime = this.audioContext.currentTime;
           queueIndex = this.getQueueIndex(this.resumeTime);
-          offset = this.resumeTime - this.startTime;
+          resumeTime = this.resumeTime - this.startTime;
           this.isSeeking = false;
           await schedulePlayback();
         } else {
@@ -2681,13 +2634,36 @@ var MidyGMLite = class {
         prevTempoTicks = event.ticks;
       }
     }
+    const activeNotes = new Array(this.channels.length * 128);
+    for (let i = 0; i < activeNotes.length; i++) {
+      activeNotes[i] = [];
+    }
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      switch (event.type) {
+        case "noteOn": {
+          const index = event.channel * 128 + event.noteNumber;
+          activeNotes[index].push(event);
+          break;
+        }
+        case "noteOff": {
+          const index = event.channel * 128 + event.noteNumber;
+          const noteOn = activeNotes[index].pop();
+          if (noteOn) {
+            noteOn.noteOffEvent = event;
+          } else {
+            const eventString = JSON.stringify(event, null, 2);
+            console.warn(`noteOff without matching noteOn: ${eventString}`);
+          }
+        }
+      }
+    }
     return { instruments, timeline };
   }
   stopActiveNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    const activeNotes = this.getActiveNotes(channel, scheduleTime);
-    activeNotes.forEach((note) => {
+    this.processActiveNotes(channel, scheduleTime, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
         note.noteNumber,
@@ -2708,7 +2684,7 @@ var MidyGMLite = class {
     this.processScheduledNotes(channel, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
-        note.noteNumber,
+        note,
         velocity,
         scheduleTime,
         force
@@ -2716,7 +2692,7 @@ var MidyGMLite = class {
       this.notePromises.push(promise);
       promises.push(promise);
     });
-    channel.scheduledNotes.clear();
+    channel.scheduledNotes = [];
     return Promise.all(promises);
   }
   stopNotes(velocity, force, scheduleTime) {
@@ -2735,9 +2711,6 @@ var MidyGMLite = class {
   stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
-    for (let i = 0; i < this.channels.length; i++) {
-      this.resetAllStates(i);
-    }
   }
   pause() {
     if (!this.isPlaying || this.isPaused) return;
@@ -2769,33 +2742,25 @@ var MidyGMLite = class {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
   processScheduledNotes(channel, callback) {
-    channel.scheduledNotes.forEach((noteList) => {
-      for (let i = 0; i < noteList.length; i++) {
-        const note = noteList[i];
-        if (!note) continue;
-        if (note.ending) continue;
-        callback(note);
-      }
-    });
-  }
-  getActiveNotes(channel, scheduleTime) {
-    const activeNotes = new SparseMap(128);
-    channel.scheduledNotes.forEach((noteList) => {
-      const activeNote = this.getActiveNote(noteList, scheduleTime);
-      if (activeNote) {
-        activeNotes.set(activeNote.noteNumber, activeNote);
-      }
-    });
-    return activeNotes;
-  }
-  getActiveNote(noteList, scheduleTime) {
-    for (let i = noteList.length - 1; i >= 0; i--) {
-      const note = noteList[i];
-      if (!note) return;
-      if (scheduleTime < note.startTime) continue;
-      return note.ending ? null : note;
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      callback(note);
     }
-    return noteList[0];
+  }
+  processActiveNotes(channel, scheduleTime, callback) {
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      const noteOffEvent = note.noteOffEvent;
+      if (noteOffEvent && noteOffEvent.startTime < scheduleTime) continue;
+      if (scheduleTime < note.startTime) continue;
+      callback(note);
+    }
   }
   cbToRatio(cb) {
     return Math.pow(10, cb / 200);
@@ -2936,6 +2901,7 @@ var MidyGMLite = class {
     this.setVolumeEnvelope(note, now);
     this.setFilterEnvelope(note, now);
     this.setPitchEnvelope(note, now);
+    this.updateDetune(channel, note, now);
     if (0 < state.modulationDepth) {
       this.startModulation(channel, note, now);
     }
@@ -2953,7 +2919,7 @@ var MidyGMLite = class {
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
-          prevNote.noteNumber,
+          prevNote,
           0,
           // velocity,
           startTime,
@@ -2974,7 +2940,7 @@ var MidyGMLite = class {
     if (prevNote && !prevNote.ending) {
       this.scheduleNoteOff(
         channelNumber,
-        prevNote.noteNumber,
+        prevNote,
         0,
         // velocity,
         startTime,
@@ -2984,7 +2950,7 @@ var MidyGMLite = class {
     }
     this.drumExclusiveClassNotes[index] = note;
   }
-  async scheduleNoteOn(channelNumber, noteNumber2, velocity, startTime) {
+  async scheduleNoteOn(channelNumber, noteNumber2, velocity, startTime, noteOffEvent) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
     const soundFontIndex = this.soundFontTable[channel.programNumber].get(
@@ -3008,6 +2974,7 @@ var MidyGMLite = class {
       startTime,
       isSF3
     );
+    note.noteOffEvent = noteOffEvent;
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {
@@ -3016,25 +2983,30 @@ var MidyGMLite = class {
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;
-    let noteList = scheduledNotes.get(noteNumber2);
-    if (noteList) {
-      noteList.push(note);
-    } else {
-      noteList = [note];
-      scheduledNotes.set(noteNumber2, noteList);
-    }
+    note.index = scheduledNotes.length;
+    scheduledNotes.push(note);
     if (channel.isDrum) {
       const stopTime = startTime + note.bufferSource.buffer.duration;
-      const index = noteList.length - 1;
       const promise = new Promise((resolve) => {
         note.bufferSource.onended = () => {
-          noteList[index] = void 0;
+          scheduledNotes[note.index] = void 0;
           this.disconnectNote(note);
           resolve();
         };
         note.bufferSource.stop(stopTime);
       });
       this.notePromises.push(promise);
+    } else if (noteOffEvent) {
+      const notePromise = this.scheduleNoteOff(
+        channelNumber,
+        note,
+        noteOffEvent.velocity,
+        noteOffEvent.startTime,
+        false
+      );
+      if (notePromise) {
+        this.notePromises.push(notePromise);
+      }
     }
   }
   noteOn(channelNumber, noteNumber2, velocity, scheduleTime) {
@@ -3043,7 +3015,9 @@ var MidyGMLite = class {
       channelNumber,
       noteNumber2,
       velocity,
-      scheduleTime
+      scheduleTime,
+      void 0
+      // noteOff event
     );
   }
   disconnectNote(note) {
@@ -3056,8 +3030,7 @@ var MidyGMLite = class {
       note.modulationLFO.stop();
     }
   }
-  stopNote(endTime, stopTime, noteList, index) {
-    const note = noteList[index];
+  stopNote(channel, note, endTime, stopTime) {
     note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, stopTime);
     note.ending = true;
     this.scheduleTask(() => {
@@ -3065,42 +3038,40 @@ var MidyGMLite = class {
     }, stopTime);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        noteList[index] = void 0;
+        channel.scheduledNotes[note.index] = void 0;
         this.disconnectNote(note);
         resolve();
       };
       note.bufferSource.stop(stopTime);
     });
   }
-  findNoteOffTarget(noteList) {
-    for (let i = 0; i < noteList.length; i++) {
-      const note = noteList[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      return [note, i];
-    }
-  }
-  scheduleNoteOff(channelNumber, noteNumber2, _velocity, endTime, force) {
+  scheduleNoteOff(channelNumber, note, _velocity, endTime, force) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     if (!force && 0.5 <= channel.state.sustainPedal) return;
-    if (!channel.scheduledNotes.has(noteNumber2)) return;
-    const noteList = channel.scheduledNotes.get(noteNumber2);
-    if (!noteList) return;
-    const noteOffTarget = this.findNoteOffTarget(noteList, endTime);
-    if (!noteOffTarget) return;
-    const [note, i] = noteOffTarget;
     const volRelease = endTime + note.voiceParams.volRelease;
     const modRelease = endTime + note.voiceParams.modRelease;
     note.filterNode.frequency.cancelScheduledValues(endTime).linearRampToValueAtTime(0, modRelease);
     const stopTime = Math.min(volRelease, modRelease);
-    return this.stopNote(endTime, stopTime, noteList, i);
+    return this.stopNote(channel, note, endTime, stopTime);
+  }
+  findNoteOffTarget(channel, noteNumber2) {
+    const scheduledNotes = channel.scheduledNotes;
+    for (let i = 0; i < scheduledNotes.length; i++) {
+      const note = scheduledNotes[i];
+      if (!note) continue;
+      if (note.ending) continue;
+      if (note.noteNumber !== noteNumber2) continue;
+      return note;
+    }
   }
   noteOff(channelNumber, noteNumber2, velocity, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    const note = this.findNoteOffTarget(channel, noteNumber2);
     return this.scheduleNoteOff(
       channelNumber,
-      noteNumber2,
+      note,
       velocity,
       scheduleTime,
       false
@@ -3112,9 +3083,9 @@ var MidyGMLite = class {
     const channel = this.channels[channelNumber];
     const promises = [];
     for (let i = 0; i < channel.sustainNotes.length; i++) {
-      const promise = this.noteOff(
+      const promise = this.scheduleNoteOff(
         channelNumber,
-        channel.sustainNotes[i].noteNumber,
+        channel.sustainNotes[i],
         velocity,
         scheduleTime
       );
@@ -3280,20 +3251,20 @@ var MidyGMLite = class {
     });
   }
   createControlChangeHandlers() {
-    return {
-      1: this.setModulationDepth,
-      6: this.dataEntryMSB,
-      7: this.setVolume,
-      10: this.setPan,
-      11: this.setExpression,
-      38: this.dataEntryLSB,
-      64: this.setSustainPedal,
-      100: this.setRPNLSB,
-      101: this.setRPNMSB,
-      120: this.allSoundOff,
-      121: this.resetAllControllers,
-      123: this.allNotesOff
-    };
+    const handlers = new Array(128);
+    handlers[1] = this.setModulationDepth;
+    handlers[6] = this.dataEntryMSB;
+    handlers[7] = this.setVolume;
+    handlers[10] = this.setPan;
+    handlers[11] = this.setExpression;
+    handlers[38] = this.dataEntryLSB;
+    handlers[64] = this.setSustainPedal;
+    handlers[100] = this.setRPNLSB;
+    handlers[101] = this.setRPNMSB;
+    handlers[120] = this.allSoundOff;
+    handlers[121] = this.resetAllControllers;
+    handlers[123] = this.allNotesOff;
+    return handlers;
   }
   handleControlChange(channelNumber, controllerType, value, scheduleTime) {
     const handler = this.controlChangeHandlers[controllerType];
@@ -3433,19 +3404,30 @@ var MidyGMLite = class {
     return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
   resetAllStates(channelNumber) {
+    const scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (const type of Object.keys(defaultControllerState)) {
-      state[type] = defaultControllerState[type].defaultValue;
+    const entries = Object.entries(defaultControllerState);
+    for (const [key, { type, defaultValue }] of entries) {
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
-    for (const type of Object.keys(this.constructor.channelSettings)) {
-      channel[type] = this.constructor.channelSettings[type];
+    for (const key of Object.keys(this.constructor.channelSettings)) {
+      channel[key] = this.constructor.channelSettings[key];
     }
     this.mode = "GM1";
   }
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-  resetAllControllers(channelNumber) {
-    const stateTypes = [
+  resetAllControllers(channelNumber, _value, scheduleTime) {
+    const keys = [
       "pitchWheel",
       "expression",
       "modulationDepth",
@@ -3453,10 +3435,21 @@ var MidyGMLite = class {
     ];
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    for (let i = 0; i < stateTypes.length; i++) {
-      const type = stateTypes[i];
-      state[type] = defaultControllerState[type].defaultValue;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
+      if (128 <= type) {
+        this.handleControlChange(
+          channelNumber,
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime
+        );
+      } else {
+        state[key] = defaultValue;
+      }
     }
+    this.setPitchBend(channelNumber, 8192, scheduleTime);
     const settingTypes = [
       "rpnMSB",
       "rpnLSB"
