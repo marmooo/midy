@@ -399,6 +399,7 @@ export class MidyGMLite {
   }
 
   extractMidiData(midi) {
+    this.audioBufferCounter.clear();
     const instruments = new Set();
     const timeline = [];
     const tmpChannels = new Array(this.channels.length);
