@@ -1104,10 +1104,8 @@ export class MidyGM2 {
   }
 
   setPortamentoFilterEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
-    const { voiceParams, noteNumber, startTime } = note;
-    const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
+    const { voiceParams, startTime } = note;
+    const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel);
     const baseFreq = this.centToHz(baseCent) * softPedalFactor;
@@ -1128,10 +1126,8 @@ export class MidyGM2 {
   }
 
   setFilterEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
-    const { voiceParams, noteNumber, startTime } = note;
-    const softPedalFactor = 1 -
-      (0.1 + (noteNumber / 127) * 0.2) * state.softPedal;
+    const { voiceParams, startTime } = note;
+    const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel);
     const baseFreq = this.centToHz(baseCent) * softPedalFactor;
@@ -2096,6 +2092,10 @@ export class MidyGM2 {
     } else {
       this.releaseSostenutoPedal(channelNumber, value, scheduleTime);
     }
+  }
+
+  getSoftPedalFactor(channel, note) {
+    return 1 - (0.1 + (note.noteNumber / 127) * 0.2) * channel.state.softPedal;
   }
 
   setSoftPedal(channelNumber, softPedal, scheduleTime) {
