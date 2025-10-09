@@ -489,7 +489,7 @@ export class MidyGM1 {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
-        note.noteNumber,
+        note,
         velocity,
         scheduleTime,
         force,
