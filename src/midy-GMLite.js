@@ -816,15 +816,13 @@ export class MidyGMLite {
     const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
       const [prevNote, prevChannelNumber] = prev;
-      if (prevNote && !prevNote.ending) {
-        this.scheduleNoteOff(
-          prevChannelNumber,
-          prevNote,
-          0, // velocity,
-          startTime,
-          true, // force
-        );
-      }
+      this.scheduleNoteOff(
+        prevChannelNumber,
+        prevNote,
+        0, // velocity,
+        startTime,
+        true, // force
+      );
     }
     this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
@@ -836,7 +834,7 @@ export class MidyGMLite {
     if (drumExclusiveClass === 0) return;
     const index = drumExclusiveClass * this.channels.length + channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
-    if (prevNote && !prevNote.ending) {
+    if (prevNote) {
       this.scheduleNoteOff(
         channelNumber,
         prevNote,

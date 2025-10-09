@@ -578,7 +578,6 @@ export class MidyGM1 {
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
-      if (note.ending) continue;
       callback(note);
     }
   }
@@ -588,7 +587,6 @@ export class MidyGM1 {
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
-      if (note.ending) continue;
       const noteOffEvent = note.noteOffEvent;
       if (noteOffEvent && noteOffEvent.startTime < scheduleTime) continue;
       if (scheduleTime < note.startTime) continue;
@@ -800,15 +798,13 @@ export class MidyGM1 {
     const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
       const [prevNote, prevChannelNumber] = prev;
-      if (prevNote && !prevNote.ending) {
-        this.scheduleNoteOff(
-          prevChannelNumber,
-          prevNote,
-          0, // velocity,
-          startTime,
-          true, // force
-        );
-      }
+      this.scheduleNoteOff(
+        prevChannelNumber,
+        prevNote,
+        0, // velocity,
+        startTime,
+        true, // force
+      );
     }
     this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
@@ -893,7 +889,6 @@ export class MidyGM1 {
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, stopTime);
-    note.ending = true;
     this.scheduleTask(() => {
       note.bufferSource.loop = false;
     }, stopTime);
@@ -930,7 +925,6 @@ export class MidyGM1 {
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
-      if (note.ending) continue;
       if (note.noteNumber !== noteNumber) continue;
       return note;
     }
