@@ -2280,7 +2280,7 @@ export class Midy {
       } else {
         this.processScheduledNotes(channel, (note) => {
           if (note.voiceParams.reverbEffectsSend <= 0) return false;
-          note.reverbEffectsSend.disconnect();
+          if (note.reverbEffectsSend) note.reverbEffectsSend.disconnect();
         });
       }
     } else {
@@ -2310,7 +2310,7 @@ export class Midy {
       } else {
         this.processScheduledNotes(channel, (note) => {
           if (note.voiceParams.chorusEffectsSend <= 0) return false;
-          note.chorusEffectsSend.disconnect();
+          if (note.chorusEffectsSend) note.chorusEffectsSend.disconnect();
         });
       }
     } else {
