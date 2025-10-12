@@ -318,7 +318,7 @@ export class Midy {
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.set([64, 64, 64, 0, 0, 0]);
     channel.polyphonicKeyPressureTable.set([64, 64, 64, 0, 0, 0]);
-    channel.keyBasedInstrumentControlTable.fill(0); // [-64, 63]
+    channel.keyBasedInstrumentControlTable.fill(-1);
   }
 
   createChannels(audioContext) {
@@ -336,7 +336,7 @@ export class Midy {
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
         channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
         polyphonicKeyPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
-        keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
+        keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
       };
     });
     return channels;
@@ -1682,14 +1682,17 @@ export class Midy {
   }
 
   setReverbEffectsSend(channel, note, prevValue, scheduleTime) {
+    const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+      channel,
+      note.noteNumber,
+      91,
+    );
+    let value = note.voiceParams.reverbEffectsSend;
+    if (0 <= keyBasedValue) {
+      value *= keyBasedValue / 127 / channel.state.reverbSendLevel;
+    }
     if (0 < prevValue) {
-      if (0 < note.voiceParams.reverbEffectsSend) {
-        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-          channel,
-          note.noteNumber,
-          91,
-        );
-        const value = note.voiceParams.reverbEffectsSend + keyBasedValue;
+      if (0 < value) {
         note.reverbEffectsSend.gain
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(value, scheduleTime);
@@ -1697,10 +1700,10 @@ export class Midy {
         note.reverbEffectsSend.disconnect();
       }
     } else {
-      if (0 < note.voiceParams.reverbEffectsSend) {
+      if (0 < value) {
         if (!note.reverbEffectsSend) {
           note.reverbEffectsSend = new GainNode(this.audioContext, {
-            gain: note.voiceParams.reverbEffectsSend,
+            gain: value,
           });
           note.volumeNode.connect(note.reverbEffectsSend);
         }
@@ -1710,14 +1713,17 @@ export class Midy {
   }
 
   setChorusEffectsSend(channel, note, prevValue, scheduleTime) {
+    const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+      channel,
+      note.noteNumber,
+      93,
+    );
+    let value = note.voiceParams.chorusEffectsSend;
+    if (0 <= keyBasedValue) {
+      value *= keyBasedValue / 127 / channel.state.chorusSendLevel;
+    }
     if (0 < prevValue) {
-      if (0 < note.voiceParams.chorusEffectsSend) {
-        const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-          channel,
-          note.noteNumber,
-          93,
-        );
-        const value = note.voiceParams.chorusEffectsSend + keyBasedValue;
+      if (0 < vaule) {
         note.chorusEffectsSend.gain
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(value, scheduleTime);
@@ -1725,10 +1731,10 @@ export class Midy {
         note.chorusEffectsSend.disconnect();
       }
     } else {
-      if (0 < note.voiceParams.chorusEffectsSend) {
+      if (0 < value) {
         if (!note.chorusEffectsSend) {
           note.chorusEffectsSend = new GainNode(this.audioContext, {
-            gain: note.voiceParams.chorusEffectsSend,
+            gain: value,
           });
           note.volumeNode.connect(note.chorusEffectsSend);
         }
@@ -1983,10 +1989,10 @@ export class Midy {
         note.noteNumber,
         7,
       );
-      if (keyBasedValue !== 0) {
+      if (0 <= keyBasedValue) {
         note.volumeNode.gain
           .cancelScheduledValues(scheduleTime)
-          .setValueAtTime(1 + keyBasedValue, scheduleTime);
+          .setValueAtTime(keyBasedValue / 127, scheduleTime);
       }
     });
   }
@@ -2014,8 +2020,8 @@ export class Midy {
         note.noteNumber,
         10,
       );
-      if (keyBasedValue !== 0) {
-        const { gainLeft, gainRight } = this.panToGain((keyBasedValue + 1) / 2);
+      if (0 <= keyBasedValue) {
+        const { gainLeft, gainRight } = this.panToGain(keyBasedValue / 127);
         note.gainL.gain
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(gainLeft, scheduleTime);
@@ -3082,7 +3088,7 @@ export class Midy {
   getKeyBasedInstrumentControlValue(channel, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
     const controlValue = channel.keyBasedInstrumentControlTable[index];
-    return (controlValue + 64) / 64;
+    return controlValue;
   }
 
   handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
@@ -3095,7 +3101,7 @@ export class Midy {
       const controllerType = data[i];
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
-      table[index] = value - 64;
+      table[index] = value;
     }
     this.handleChannelPressure(
       channelNumber,
