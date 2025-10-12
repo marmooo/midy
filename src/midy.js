@@ -1283,10 +1283,10 @@ export class Midy {
     note.volumeNode.connect(note.gainL);
     note.volumeNode.connect(note.gainR);
 
-    if (0 < channel.chorusSendLevel) {
+    if (0 < state.chorusSendLevel) {
       this.setChorusEffectsSend(channel, note, 0, now);
     }
-    if (0 < channel.reverbSendLevel) {
+    if (0 < state.reverbSendLevel) {
       this.setReverbEffectsSend(channel, note, 0, now);
     }
 
