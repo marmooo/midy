@@ -307,7 +307,8 @@ export class MidyGM2 {
     this.resetControlTable(channel.controlTable);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.set([64, 64, 64, 0, 0, 0]);
-    channel.keyBasedInstrumentControlTable.fill(0); // [-64, 63]
+    channel.polyphonicKeyPressureTable.set([64, 64, 64, 0, 0, 0]);
+    channel.keyBasedInstrumentControlTable.fill(-1);
   }
 
   createChannels(audioContext) {
@@ -324,7 +325,7 @@ export class MidyGM2 {
         controlTable: this.initControlTable(),
         scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
         channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
-        keyBasedInstrumentControlTable: new Int8Array(128 * 128), // [-64, 63]
+        keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
       };
     });
     return channels;
