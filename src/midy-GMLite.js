@@ -253,7 +253,7 @@ export class MidyGMLite {
     }
   }
 
-  createBufferSource(voiceParams, audioBuffer) {
+  createBufferSource(channel, voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
@@ -771,7 +771,11 @@ export class MidyGMLite {
       voiceParams,
       isSF3,
     );
-    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
+    note.bufferSource = this.createBufferSource(
+      channel,
+      voiceParams,
+      audioBuffer,
+    );
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -893,21 +897,25 @@ export class MidyGMLite {
     }
   }
 
-  stopNote(channel, note, endTime, stopTime) {
+  releaseNote(channel, note, endTime) {
+    const volRelease = endTime + note.voiceParams.volRelease;
+    const modRelease = endTime + note.voiceParams.modRelease;
+    const stopTime = Math.min(volRelease, modRelease);
+    note.filterNode.frequency
+      .cancelScheduledValues(endTime)
+      .linearRampToValueAtTime(0, modRelease);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, stopTime);
-    note.ending = true;
-    this.scheduleTask(() => {
-      note.bufferSource.loop = false;
-    }, stopTime);
+      .linearRampToValueAtTime(0, volRelease);
     return new Promise((resolve) => {
-      note.bufferSource.onended = () => {
-        channel.scheduledNotes[note.index] = undefined;
+      this.scheduleTask(() => {
+        const bufferSource = note.bufferSource;
+        bufferSource.loop = false;
+        bufferSource.stop(stopTime);
         this.disconnectNote(note);
+        channel.scheduledNotes[note.index] = undefined;
         resolve();
-      };
-      note.bufferSource.stop(stopTime);
+      }, stopTime);
     });
   }
 
@@ -925,13 +933,8 @@ export class MidyGMLite {
     }
     const note = this.findNoteOffTarget(channel, noteNumber);
     if (!note) return;
-    const volRelease = endTime + note.voiceParams.volRelease;
-    const modRelease = endTime + note.voiceParams.modRelease;
-    note.filterNode.frequency
-      .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, modRelease);
-    const stopTime = Math.min(volRelease, modRelease);
-    return this.stopNote(channel, note, endTime, stopTime);
+    note.ending = true;
+    this.releaseNote(channel, note, endTime);
   }
 
   findNoteOffTarget(channel, noteNumber) {

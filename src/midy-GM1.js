@@ -856,21 +856,25 @@ export class MidyGM1 {
     }
   }
 
-  stopNote(channel, note, endTime, stopTime) {
+  releaseNote(channel, note, endTime) {
+    const volRelease = endTime + note.voiceParams.volRelease;
+    const modRelease = endTime + note.voiceParams.modRelease;
+    const stopTime = Math.min(volRelease, modRelease);
+    note.filterNode.frequency
+      .cancelScheduledValues(endTime)
+      .linearRampToValueAtTime(0, modRelease);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, stopTime);
-    note.ending = true;
-    this.scheduleTask(() => {
-      note.bufferSource.loop = false;
-    }, stopTime);
+      .linearRampToValueAtTime(0, volRelease);
     return new Promise((resolve) => {
-      note.bufferSource.onended = () => {
-        channel.scheduledNotes[note.index] = undefined;
+      this.scheduleTask(() => {
+        const bufferSource = note.bufferSource;
+        bufferSource.loop = false;
+        bufferSource.stop(stopTime);
         this.disconnectNote(note);
+        channel.scheduledNotes[note.index] = undefined;
         resolve();
-      };
-      note.bufferSource.stop(stopTime);
+      }, stopTime);
     });
   }
 
@@ -885,13 +889,8 @@ export class MidyGM1 {
     if (!force && 0.5 <= channel.state.sustainPedal) return;
     const note = this.findNoteOffTarget(channel, noteNumber);
     if (!note) return;
-    const volRelease = endTime + note.voiceParams.volRelease;
-    const modRelease = endTime + note.voiceParams.modRelease;
-    note.filterNode.frequency
-      .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, modRelease);
-    const stopTime = Math.min(volRelease, modRelease);
-    return this.stopNote(channel, note, endTime, stopTime);
+    note.ending = true;
+    this.releaseNote(channel, note, endTime);
   }
 
   findNoteOffTarget(channel, noteNumber) {
