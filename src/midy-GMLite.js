@@ -257,6 +257,7 @@ export class MidyGMLite {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
+    if (channel.isDrum) bufferSource.loop = false;
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -918,8 +919,10 @@ export class MidyGMLite {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
-    if (!force && 0.5 <= channel.state.sustainPedal) return;
+    if (!force) {
+      if (channel.isDrum) return;
+      if (0.5 <= channel.state.sustainPedal) return;
+    }
     const note = this.findNoteOffTarget(channel, noteNumber);
     if (!note) return;
     const volRelease = endTime + note.voiceParams.volRelease;

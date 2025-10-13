@@ -360,10 +360,19 @@ export class MidyGM2 {
     }
   }
 
-  createBufferSource(voiceParams, audioBuffer) {
+  isLoopDrum(channel, noteNumber) {
+    const programNumber = channel.programNumber;
+    return ((programNumber === 48 && noteNumber === 88) ||
+      (programNumber === 56 && 47 <= noteNumber && noteNumber <= 84));
+  }
+
+  createBufferSource(channel, noteNumber, voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
+    if (channel.isDrum) {
+      bufferSource.loop = this.isLoopDrum(channel, noteNumber);
+    }
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
@@ -1435,11 +1444,14 @@ export class MidyGM2 {
     force,
   ) {
     const channel = this.channels[channelNumber];
-    if (this.isDrumNoteOffException(channel, noteNumber)) return;
     const state = channel.state;
     if (!force) {
-      if (0.5 <= state.sustainPedal) return;
-      if (0.5 <= state.sostenutoPedal) return;
+      if (channel.isDrum) {
+        if (!this.isLoopDrum(channel, noteNumber)) return;
+      } else {
+        if (0.5 <= state.sustainPedal) return;
+        if (0.5 <= state.sostenutoPedal) return;
+      }
     }
     const note = this.findNoteOffTarget(channel, noteNumber);
     if (!note) return;
