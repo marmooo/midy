@@ -158,18 +158,34 @@ export class MidyGM1 {
     }
   }
 
-  async loadSoundFont(soundFontUrl) {
-    const response = await fetch(soundFontUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const parsed = parse(new Uint8Array(arrayBuffer));
+  async loadSoundFont(input) {
+    let uint8Array;
+    if (typeof input === "string") {
+      const response = await fetch(input);
+      const arrayBuffer = await response.arrayBuffer();
+      uint8Array = new Uint8Array(arrayBuffer);
+    } else if (input instanceof Uint8Array) {
+      uint8Array = input;
+    } else {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+    const parsed = parse(uint8Array);
     const soundFont = new SoundFont(parsed);
     this.addSoundFont(soundFont);
   }
 
-  async loadMIDI(midiUrl) {
-    const response = await fetch(midiUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const midi = parseMidi(new Uint8Array(arrayBuffer));
+  async loadMIDI(input) {
+    let uint8Array;
+    if (typeof input === "string") {
+      const response = await fetch(input);
+      const arrayBuffer = await response.arrayBuffer();
+      uint8Array = new Uint8Array(arrayBuffer);
+    } else if (input instanceof Uint8Array) {
+      uint8Array = input;
+    } else {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+    const midi = parseMidi(uint8Array);
     this.ticksPerBeat = midi.header.ticksPerBeat;
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
