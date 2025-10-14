@@ -2186,6 +2186,7 @@ var SoundFont = class {
 // src/midy-GM1.js
 var Note = class {
   index = -1;
+  ending = false;
   bufferSource;
   filterNode;
   filterDepth;
@@ -2332,17 +2333,33 @@ var MidyGM1 = class {
       }
     }
   }
-  async loadSoundFont(soundFontUrl) {
-    const response = await fetch(soundFontUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const parsed = parse(new Uint8Array(arrayBuffer));
+  async loadSoundFont(input) {
+    let uint8Array;
+    if (typeof input === "string") {
+      const response = await fetch(input);
+      const arrayBuffer = await response.arrayBuffer();
+      uint8Array = new Uint8Array(arrayBuffer);
+    } else if (input instanceof Uint8Array) {
+      uint8Array = input;
+    } else {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+    const parsed = parse(uint8Array);
     const soundFont = new SoundFont(parsed);
     this.addSoundFont(soundFont);
   }
-  async loadMIDI(midiUrl) {
-    const response = await fetch(midiUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const midi = (0, import_midi_file.parseMidi)(new Uint8Array(arrayBuffer));
+  async loadMIDI(input) {
+    let uint8Array;
+    if (typeof input === "string") {
+      const response = await fetch(input);
+      const arrayBuffer = await response.arrayBuffer();
+      uint8Array = new Uint8Array(arrayBuffer);
+    } else if (input instanceof Uint8Array) {
+      uint8Array = input;
+    } else {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+    const midi = (0, import_midi_file.parseMidi)(uint8Array);
     this.ticksPerBeat = midi.header.ticksPerBeat;
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
@@ -2424,18 +2441,24 @@ var MidyGM1 = class {
       const delay = this.startDelay - resumeTime;
       const startTime = event.startTime + delay;
       switch (event.type) {
-        case "noteOn": {
-          const noteOffEvent = {
-            ...event.noteOffEvent,
-            startTime: event.noteOffEvent.startTime + delay
-          };
+        case "noteOn":
           await this.scheduleNoteOn(
             event.channel,
             event.noteNumber,
             event.velocity,
-            startTime,
-            noteOffEvent
+            startTime
           );
+          break;
+        case "noteOff": {
+          const notePromise = this.scheduleNoteOff(
+            event.channel,
+            event.noteNumber,
+            event.velocity,
+            startTime,
+            false
+            // force
+          );
+          if (notePromise) this.notePromises.push(notePromise);
           break;
         }
         case "controller":
@@ -2545,6 +2568,7 @@ var MidyGM1 = class {
     return `${programNumber}:${noteNumber}:${velocity}`;
   }
   extractMidiData(midi) {
+    this.audioBufferCounter.clear();
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
     const tmpChannels = new Array(this.channels.length);
@@ -2619,30 +2643,6 @@ var MidyGM1 = class {
         prevTempoTicks = event.ticks;
       }
     }
-    const activeNotes = new Array(this.channels.length * 128);
-    for (let i = 0; i < activeNotes.length; i++) {
-      activeNotes[i] = [];
-    }
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      switch (event.type) {
-        case "noteOn": {
-          const index = event.channel * 128 + event.noteNumber;
-          activeNotes[index].push(event);
-          break;
-        }
-        case "noteOff": {
-          const index = event.channel * 128 + event.noteNumber;
-          const noteOn = activeNotes[index].pop();
-          if (noteOn) {
-            noteOn.noteOffEvent = event;
-          } else {
-            const eventString = JSON.stringify(event, null, 2);
-            console.warn(`noteOff without matching noteOn: ${eventString}`);
-          }
-        }
-      }
-    }
     return { instruments, timeline };
   }
   stopActiveNotes(channelNumber, velocity, force, scheduleTime) {
@@ -2654,9 +2654,7 @@ var MidyGM1 = class {
         note.noteNumber,
         velocity,
         scheduleTime,
-        force,
-        void 0
-        // portamentoNoteNumber
+        force
       );
       this.notePromises.push(promise);
       promises.push(promise);
@@ -2669,7 +2667,7 @@ var MidyGM1 = class {
     this.processScheduledNotes(channel, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
-        note,
+        note.noteNumber,
         velocity,
         scheduleTime,
         force
@@ -2741,8 +2739,6 @@ var MidyGM1 = class {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      const noteOffEvent = note.noteOffEvent;
-      if (noteOffEvent && noteOffEvent.startTime < scheduleTime) continue;
       if (scheduleTime < note.startTime) continue;
       callback(note);
     }
@@ -2906,7 +2902,7 @@ var MidyGM1 = class {
       if (prevNote && !prevNote.ending) {
         this.scheduleNoteOff(
           prevChannelNumber,
-          prevNote,
+          prevNote.noteNumber,
           0,
           // velocity,
           startTime,
@@ -2951,18 +2947,6 @@ var MidyGM1 = class {
     const scheduledNotes = channel.scheduledNotes;
     note.index = scheduledNotes.length;
     scheduledNotes.push(note);
-    if (noteOffEvent) {
-      const notePromise = this.scheduleNoteOff(
-        channelNumber,
-        note,
-        noteOffEvent.velocity,
-        noteOffEvent.startTime,
-        false
-      );
-      if (notePromise) {
-        this.notePromises.push(notePromise);
-      }
-    }
   }
   noteOn(channelNumber, noteNumber, velocity, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
@@ -2985,29 +2969,30 @@ var MidyGM1 = class {
       note.modulationLFO.stop();
     }
   }
-  stopNote(channel, note, endTime, stopTime) {
-    note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, stopTime);
-    note.ending = true;
-    this.scheduleTask(() => {
-      note.bufferSource.loop = false;
-    }, stopTime);
-    return new Promise((resolve) => {
-      note.bufferSource.onended = () => {
-        channel.scheduledNotes[note.index] = void 0;
-        this.disconnectNote(note);
-        resolve();
-      };
-      note.bufferSource.stop(stopTime);
-    });
-  }
-  scheduleNoteOff(channelNumber, note, _velocity, endTime, force) {
-    const channel = this.channels[channelNumber];
-    if (!force && 0.5 <= channel.state.sustainPedal) return;
+  releaseNote(channel, note, endTime) {
     const volRelease = endTime + note.voiceParams.volRelease;
     const modRelease = endTime + note.voiceParams.modRelease;
-    note.filterNode.frequency.cancelScheduledValues(endTime).linearRampToValueAtTime(0, modRelease);
     const stopTime = Math.min(volRelease, modRelease);
-    return this.stopNote(channel, note, endTime, stopTime);
+    note.filterNode.frequency.cancelScheduledValues(endTime).linearRampToValueAtTime(0, modRelease);
+    note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).linearRampToValueAtTime(0, volRelease);
+    return new Promise((resolve) => {
+      this.scheduleTask(() => {
+        const bufferSource = note.bufferSource;
+        bufferSource.loop = false;
+        bufferSource.stop(stopTime);
+        this.disconnectNote(note);
+        channel.scheduledNotes[note.index] = void 0;
+        resolve();
+      }, stopTime);
+    });
+  }
+  scheduleNoteOff(channelNumber, noteNumber, _velocity, endTime, force) {
+    const channel = this.channels[channelNumber];
+    if (!force && 0.5 <= channel.state.sustainPedal) return;
+    const note = this.findNoteOffTarget(channel, noteNumber);
+    if (!note) return;
+    note.ending = true;
+    this.releaseNote(channel, note, endTime);
   }
   findNoteOffTarget(channel, noteNumber) {
     const scheduledNotes = channel.scheduledNotes;
@@ -3021,11 +3006,9 @@ var MidyGM1 = class {
   }
   noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    const channel = this.channels[channelNumber];
-    const note = this.findNoteOffTarget(channel, noteNumber);
     return this.scheduleNoteOff(
       channelNumber,
-      note,
+      noteNumber,
       velocity,
       scheduleTime,
       false
@@ -3039,7 +3022,7 @@ var MidyGM1 = class {
     for (let i = 0; i < channel.sustainNotes.length; i++) {
       const promise = this.scheduleNoteOff(
         channelNumber,
-        channel.sustainNotes[i],
+        channel.sustainNotes[i].noteNumber,
         velocity,
         scheduleTime
       );
