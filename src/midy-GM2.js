@@ -1663,14 +1663,16 @@ export class MidyGM2 {
   }
 
   setReverbEffectsSend(channel, note, prevValue, scheduleTime) {
-    const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-      channel,
-      note.noteNumber,
-      91,
-    );
     let value = note.voiceParams.reverbEffectsSend;
-    if (0 <= keyBasedValue) {
-      value *= keyBasedValue / 127 / channel.state.reverbSendLevel;
+    if (channel.isDrum) {
+      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+        channel,
+        note.noteNumber,
+        91,
+      );
+      if (0 <= keyBasedValue) {
+        value *= keyBasedValue / 127 / channel.state.reverbSendLevel;
+      }
     }
     if (0 < prevValue) {
       if (0 < value) {
@@ -1694,14 +1696,16 @@ export class MidyGM2 {
   }
 
   setChorusEffectsSend(channel, note, prevValue, scheduleTime) {
-    const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-      channel,
-      note.noteNumber,
-      93,
-    );
     let value = note.voiceParams.chorusEffectsSend;
-    if (0 <= keyBasedValue) {
-      value *= keyBasedValue / 127 / channel.state.chorusSendLevel;
+    if (channel.isDrum) {
+      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
+        channel,
+        note.noteNumber,
+        93,
+      );
+      if (0 <= keyBasedValue) {
+        value *= keyBasedValue / 127 / channel.state.chorusSendLevel;
+      }
     }
     if (0 < prevValue) {
       if (0 < vaule) {
@@ -1972,6 +1976,7 @@ export class MidyGM2 {
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
+    if (!channel.isDrum) return;
     this.setKeyBasedVolume(channel, scheduleTime);
   }
 
@@ -2007,6 +2012,7 @@ export class MidyGM2 {
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
+    if (!channel.isDrum) return;
     this.setKeyBasedPan(channel, scheduleTime);
   }
 
@@ -2886,7 +2892,7 @@ export class MidyGM2 {
   handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
-    if (channel.isDrum) return;
+    if (!channel.isDrum) return;
     const keyNumber = data[5];
     const table = channel.keyBasedInstrumentControlTable;
     for (let i = 6; i < data.length - 1; i += 2) {
