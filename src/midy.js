@@ -2019,6 +2019,7 @@ export class Midy {
   }
 
   setKeyBasedVolume(channel, scheduleTime) {
+    const channelVolume = channel.state.volume;
     this.processScheduledNotes(channel, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
@@ -2026,9 +2027,10 @@ export class Midy {
         7,
       );
       if (0 <= keyBasedValue) {
+        const volume = channelVolume * keyBasedValue / 64;
         note.volumeNode.gain
           .cancelScheduledValues(scheduleTime)
-          .setValueAtTime(keyBasedValue / 127, scheduleTime);
+          .setValueAtTime(volume, scheduleTime);
       }
     });
   }
