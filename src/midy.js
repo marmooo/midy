@@ -330,10 +330,10 @@ export class Midy {
   }
 
   resetChannelTable(channel) {
-    this.resetControlTable(channel.controlTable);
+    channel.controlTable.fill(-1);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
-    channel.channelPressureTable.set([64, 64, 64, 0, 0, 0]);
-    channel.polyphonicKeyPressureTable.set([64, 64, 64, 0, 0, 0]);
+    channel.channelPressureTable.fill(-1);
+    channel.polyphonicKeyPressureTable.fill(-1);
     channel.keyBasedInstrumentControlTable.fill(-1);
   }
 
@@ -350,8 +350,8 @@ export class Midy {
         sostenutoNotes: [],
         controlTable: this.initControlTable(),
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
-        channelPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
-        polyphonicKeyPressureTable: new Uint8Array([64, 64, 64, 0, 0, 0]),
+        channelPressureTable: new Int8Array(6).fill(-1),
+        polyphonicKeyPressureTable: new Int8Array(6).fill(-1),
         keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
       };
     });
@@ -966,9 +966,15 @@ export class Midy {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const pressureDepth = (channel.channelPressureTable[0] - 64) / 37.5; // 2400 / 64;
-    const pressure = pressureDepth * channel.state.channelPressure;
-    return tuning + pitch + pressure;
+    const channelPressureRaw = channel.channelPressureTable[0];
+    if (0 <= channelPressureRaw) {
+      const channelPressureDepth = (channelPressureDepth - 64) / 37.5; // 2400 / 64;
+      const channelPressure = channelPressureDepth *
+        channel.state.channelPressure;
+      return tuning + pitch + channelPressure;
+    } else {
+      return tuning + pitch;
+    }
   }
 
   calcNoteDetune(channel, note) {
@@ -1639,9 +1645,10 @@ export class Midy {
     const prev = channel.state.channelPressure;
     const next = value / 127;
     channel.state.channelPressure = next;
-    if (channel.channelPressureTable[0] !== 64) {
-      const pressureDepth = (channel.channelPressureTable[0] - 64) / 37.5; // 2400 / 64;
-      channel.detune += pressureDepth * (next - prev);
+    const channelPressureRaw = channel.channelPressureTable[0];
+    if (0 <= channelPressureRaw) {
+      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
+      channel.detune += channelPressureDepth * (next - prev);
     }
     const table = channel.channelPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
@@ -3005,63 +3012,85 @@ export class Midy {
   }
 
   getPitchControl(channel, note) {
-    const polyphonicKeyPressure = (channel.polyphonicKeyPressureTable[0] - 64) *
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[0];
+    if (polyphonicKeyPressureRaw < 0) return 0;
+    const polyphonicKeyPressure = (polyphonicKeyPressureRaw - 64) *
       note.pressure;
     return polyphonicKeyPressure * note.pressure / 37.5; // 2400 / 64;
   }
 
   getFilterCutoffControl(channel, note) {
-    const channelPressure = (channel.channelPressureTable[1] - 64) *
-      channel.state.channelPressure;
-    const polyphonicKeyPressure = (channel.polyphonicKeyPressureTable[1] - 64) *
-      note.pressure;
+    const channelPressureRaw = channel.channelPressureTable[1];
+    const channelPressure = (0 <= channelPressureRaw)
+      ? (channelPressureRaw - 64) * channel.state.channelPressure
+      : 0;
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[1];
+    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
+      ? (polyphonicKeyPressureRaw - 64) * note.pressure
+      : 0;
     return (channelPressure + polyphonicKeyPressure) * 15;
   }
 
   getAmplitudeControl(channel, note) {
-    const channelPressure = channel.channelPressureTable[2] *
-      channel.state.channelPressure;
-    const polyphonicKeyPressure = channel.polyphonicKeyPressureTable[2] *
-      note.pressure;
+    const channelPressureRaw = channel.channelPressureTable[2];
+    const channelPressure = (0 <= channelPressureRaw)
+      ? channelPressureRaw * channel.state.channelPressure
+      : 0;
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[2];
+    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
+      ? polyphonicKeyPressureRaw * note.pressure
+      : 0;
     return (channelPressure + polyphonicKeyPressure) / 128;
   }
 
   getLFOPitchDepth(channel, note) {
-    const channelPressure = channel.channelPressureTable[3] *
-      channel.state.channelPressure;
-    const polyphonicKeyPressure = channel.polyphonicKeyPressureTable[3] *
-      note.pressure;
+    const channelPressureRaw = channel.channelPressureTable[3];
+    const channelPressure = (0 <= channelPressureRaw)
+      ? channelPressureRaw * channel.state.channelPressure
+      : 0;
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[3];
+    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
+      ? polyphonicKeyPressureRaw * note.pressure
+      : 0;
     return (channelPressure + polyphonicKeyPressure) / 254 * 600;
   }
 
   getLFOFilterDepth(channel, note) {
-    const channelPressure = channel.channelPressureTable[4] *
-      channel.state.channelPressure;
-    const polyphonicKeyPressure = channel.polyphonicKeyPressureTable[4] *
-      note.pressure;
+    const channelPressureRaw = channel.channelPressureTable[4];
+    const channelPressure = (0 <= channelPressureRaw)
+      ? channelPressureRaw * channel.state.channelPressure
+      : 0;
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[4];
+    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
+      ? polyphonicKeyPressureRaw * note.pressure
+      : 0;
     return (channelPressure + polyphonicKeyPressure) / 254 * 2400;
   }
 
   getLFOAmplitudeDepth(channel, note) {
-    const channelPressure = channel.channelPressureTable[5] *
-      channel.state.channelPressure;
-    const polyphonicKeyPressure = channel.polyphonicKeyPressureTable[5] *
-      note.pressure;
+    const channelPressureRaw = channel.channelPressureTable[5];
+    const channelPressure = (0 <= channelPressureRaw)
+      ? channelPressureRaw * channel.state.channelPressure
+      : 0;
+    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[5];
+    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
+      ? polyphonicKeyPressureRaw * note.pressure
+      : 0;
     return (channelPressure + polyphonicKeyPressure) / 254;
   }
 
   setControllerParameters(channel, note, table) {
-    if (table[0] !== 64) this.updateDetune(channel, note);
+    if (0 <= table[0]) this.updateDetune(channel, note);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      if (table[1] !== 64) this.setPortamentoFilterEnvelope(channel, note);
-      if (table[2] !== 64) this.setPortamentoVolumeEnvelope(channel, note);
+      if (0 <= table[1]) this.setPortamentoFilterEnvelope(channel, note);
+      if (0 <= table[2]) this.setPortamentoVolumeEnvelope(channel, note);
     } else {
-      if (table[1] !== 64) this.setFilterEnvelope(channel, note);
-      if (table[2] !== 64) this.setVolumeEnvelope(channel, note);
+      if (0 <= table[1]) this.setFilterEnvelope(channel, note);
+      if (0 <= table[2]) this.setVolumeEnvelope(channel, note);
     }
-    if (table[3] !== 0) this.setModLfoToPitch(channel, note);
-    if (table[4] !== 0) this.setModLfoToFilterFc(channel, note);
-    if (table[5] !== 0) this.setModLfoToVolume(channel, note);
+    if (0 <= table[3]) this.setModLfoToPitch(channel, note);
+    if (0 <= table[4]) this.setModLfoToFilterFc(channel, note);
+    if (0 <= table[5]) this.setModLfoToVolume(channel, note);
   }
 
   handlePressureSysEx(data, tableName) {
@@ -3077,21 +3106,9 @@ export class Midy {
   }
 
   initControlTable() {
-    const channelCount = 128;
+    const ccCount = 128;
     const slotSize = 6;
-    const table = new Uint8Array(channelCount * slotSize);
-    return this.resetControlTable(table);
-  }
-
-  resetControlTable(table) {
-    const channelCount = 128;
-    const slotSize = 6;
-    const defaultValues = [64, 64, 64, 0, 0, 0];
-    for (let ch = 0; ch < channelCount; ch++) {
-      const offset = ch * slotSize;
-      table.set(defaultValues, offset);
-    }
-    return table;
+    return new Int8Array(ccCount * slotSize).fill(-1);
   }
 
   applyControlTable(channel, controllerType) {
