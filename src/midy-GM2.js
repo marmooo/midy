@@ -144,6 +144,7 @@ export class MidyGM2 {
   masterFineTuning = 0; // cb
   masterCoarseTuning = 0; // cb
   reverb = {
+    algorithm: "SchroederReverb",
     time: this.getReverbTime(64),
     feedback: 0.8,
   };
@@ -195,39 +196,8 @@ export class MidyGM2 {
     coarseTuning: 0, // cb
   };
 
-  defaultOptions = {
-    reverbAlgorithm: (audioContext) => {
-      const { time: rt60, feedback } = this.reverb;
-
-      // const delay = this.calcDelay(rt60, feedback);
-      // const impulse = this.createConvolutionReverbImpulse(
-      //   audioContext,
-      //   rt60,
-      //   delay,
-      // );
-      // return this.createConvolutionReverb(audioContext, impulse);
-
-      const combFeedbacks = this.generateDistributedArray(feedback, 4);
-      const combDelays = combFeedbacks.map((feedback) =>
-        this.calcDelay(rt60, feedback)
-      );
-      const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
-      const allpassDelays = allpassFeedbacks.map((feedback) =>
-        this.calcDelay(rt60, feedback)
-      );
-      return this.createSchroederReverb(
-        audioContext,
-        combFeedbacks,
-        combDelays,
-        allpassFeedbacks,
-        allpassDelays,
-      );
-    },
-  };
-
-  constructor(audioContext, options = this.defaultOptions) {
+  constructor(audioContext) {
     this.audioContext = audioContext;
-    this.options = { ...this.defaultOptions, ...options };
     this.masterVolume = new GainNode(audioContext);
     this.scheduler = new GainNode(audioContext, { gain: 0 });
     this.schedulerBuffer = new AudioBuffer({
@@ -237,7 +207,7 @@ export class MidyGM2 {
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
-    this.reverbEffect = this.options.reverbAlgorithm(audioContext);
+    this.reverbEffect = this.createReverbEffect(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
@@ -876,6 +846,37 @@ export class MidyGM2 {
     }
     const output = allpasses.at(-1);
     return { input, output };
+  }
+
+  createReverbEffect(audioContext) {
+    const { algorithm, time: rt60, feedback } = this.reverb;
+    switch (algorithm) {
+      case "ConvolutionReverb": {
+        const impulse = this.createConvolutionReverbImpulse(
+          audioContext,
+          rt60,
+          this.calcDelay(rt60, feedback),
+        );
+        return this.createConvolutionReverb(audioContext, impulse);
+      }
+      case "SchroederReverb": {
+        const combFeedbacks = this.generateDistributedArray(feedback, 4);
+        const combDelays = combFeedbacks.map((feedback) =>
+          this.calcDelay(rt60, feedback)
+        );
+        const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
+        const allpassDelays = allpassFeedbacks.map((feedback) =>
+          this.calcDelay(rt60, feedback)
+        );
+        return this.createSchroederReverb(
+          audioContext,
+          combFeedbacks,
+          combDelays,
+          allpassFeedbacks,
+          allpassDelays,
+        );
+      }
+    }
   }
 
   createChorusEffect(audioContext) {
@@ -2592,8 +2593,7 @@ export class MidyGM2 {
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = (type === 8) ? 0.9 : 0.8;
-    const { audioContext, options } = this;
-    this.reverbEffect = options.reverbAlgorithm(audioContext);
+    this.reverbEffect = this.createReverbEffect(this.audioContext);
   }
 
   getReverbTimeFromType(type) {
@@ -2617,8 +2617,7 @@ export class MidyGM2 {
 
   setReverbTime(value) {
     this.reverb.time = this.getReverbTime(value);
-    const { audioContext, options } = this;
-    this.reverbEffect = options.reverbAlgorithm(audioContext);
+    this.reverbEffect = this.createReverbEffect(this.audioContext);
   }
 
   getReverbTime(value) {
