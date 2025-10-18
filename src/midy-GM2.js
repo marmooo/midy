@@ -355,10 +355,9 @@ export class MidyGM2 {
   createBufferSource(channel, noteNumber, voiceParams, audioBuffer) {
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.loop = voiceParams.sampleModes % 2 !== 0;
-    if (channel.isDrum) {
-      bufferSource.loop = this.isLoopDrum(channel, noteNumber);
-    }
+    bufferSource.loop = channel.isDrum
+      ? this.isLoopDrum(channel, noteNumber)
+      : (voiceParams.sampleModes % 2 !== 0);
     if (bufferSource.loop) {
       bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
       bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
