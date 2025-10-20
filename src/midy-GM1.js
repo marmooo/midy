@@ -584,7 +584,7 @@ export class MidyGM1 {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      if (scheduleTime < note.startTime) continue;
+      if (scheduleTime < note.startTime) break;
       callback(note);
     }
   }
