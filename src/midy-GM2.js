@@ -643,7 +643,7 @@ export class MidyGM2 {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
         note.noteNumber,
@@ -712,12 +712,13 @@ export class MidyGM2 {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
 
-  processScheduledNotes(channel, callback) {
+  processScheduledNotes(channel, scheduleTime, callback) {
     const scheduledNotes = channel.scheduledNotes;
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
+      if (note.startTime < scheduleTime) continue;
       callback(note);
     }
   }
@@ -963,7 +964,7 @@ export class MidyGM2 {
   }
 
   updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       this.updateDetune(channel, note, scheduleTime);
     });
   }
@@ -1818,7 +1819,7 @@ export class MidyGM2 {
   }
 
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,
@@ -1903,7 +1904,7 @@ export class MidyGM2 {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.applyControlTable(channel, controllerType);
+      this.applyControlTable(channel, controllerType, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -1917,7 +1918,7 @@ export class MidyGM2 {
 
   updateModulation(channel, scheduleTime) {
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
@@ -1936,7 +1937,7 @@ export class MidyGM2 {
   }
 
   updatePortamento(channel, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       if (0.5 <= channel.state.portamento) {
         if (0 <= note.portamentoNoteNumber) {
           this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
@@ -1965,7 +1966,7 @@ export class MidyGM2 {
 
   setKeyBasedVolume(channel, scheduleTime) {
     const channelVolume = channel.state.volume;
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
         note.noteNumber,
@@ -1998,7 +1999,7 @@ export class MidyGM2 {
   }
 
   setKeyBasedPan(channel, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const keyBasedValue = this.getKeyBasedInstrumentControlValue(
         channel,
         note.noteNumber,
@@ -2059,7 +2060,7 @@ export class MidyGM2 {
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
-      this.processScheduledNotes(channel, (note) => {
+      this.processScheduledNotes(channel, scheduleTime, (note) => {
         channel.sustainNotes.push(note);
       });
     } else {
@@ -2101,7 +2102,7 @@ export class MidyGM2 {
     const state = channel.state;
     scheduleTime ??= this.audioContext.currentTime;
     state.softPedal = softPedal / 127;
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       if (0.5 <= state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
@@ -2124,14 +2125,14 @@ export class MidyGM2 {
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(state.reverbSendLevel, scheduleTime);
       } else {
-        this.processScheduledNotes(channel, (note) => {
+        this.processScheduledNotes(channel, scheduleTime, (note) => {
           if (note.voiceParams.reverbEffectsSend <= 0) return false;
           if (note.reverbEffectsSend) note.reverbEffectsSend.disconnect();
         });
       }
     } else {
       if (0 < reverbSendLevel) {
-        this.processScheduledNotes(channel, (note) => {
+        this.processScheduledNotes(channel, scheduleTime, (note) => {
           this.setReverbEffectsSend(channel, note, 0, scheduleTime);
         });
         state.reverbSendLevel = reverbSendLevel / 127;
@@ -2154,14 +2155,14 @@ export class MidyGM2 {
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(state.chorusSendLevel, scheduleTime);
       } else {
-        this.processScheduledNotes(channel, (note) => {
+        this.processScheduledNotes(channel, scheduleTime, (note) => {
           if (note.voiceParams.chorusEffectsSend <= 0) return false;
           if (note.chorusEffectsSend) note.chorusEffectsSend.disconnect();
         });
       }
     } else {
       if (0 < chorusSendLevel) {
-        this.processScheduledNotes(channel, (note) => {
+        this.processScheduledNotes(channel, scheduleTime, (note) => {
           this.setChorusEffectsSend(channel, note, 0, scheduleTime);
         });
         state.chorusSendLevel = chorusSendLevel / 127;
@@ -2866,11 +2867,11 @@ export class MidyGM2 {
     return new Int8Array(ccCount * slotSize).fill(-1);
   }
 
-  applyControlTable(channel, controllerType) {
+  applyControlTable(channel, controllerType, scheduleTime) {
     const slotSize = 6;
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       this.setControllerParameters(channel, note, table);
     });
   }
