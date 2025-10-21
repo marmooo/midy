@@ -125,19 +125,6 @@ class ControllerState {
   }
 }
 
-const filterEnvelopeKeys = [
-  "modEnvToPitch",
-  "initialFilterFc",
-  "modEnvToFilterFc",
-  "modDelay",
-  "modAttack",
-  "modHold",
-  "modDecay",
-  "modSustain",
-  "modRelease",
-  "playbackRate",
-];
-const filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
 const volumeEnvelopeKeys = [
   "volDelay",
   "volAttack",
@@ -148,6 +135,27 @@ const volumeEnvelopeKeys = [
   "initialAttenuation",
 ];
 const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
+const filterEnvelopeKeys = [
+  "modEnvToPitch",
+  "initialFilterFc",
+  "modEnvToFilterFc",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain",
+];
+const filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
+const pitchEnvelopeKeys = [
+  "modEnvToPitch",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain",
+  "playbackRate",
+];
+const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
 export class Midy {
   mode = "GM2";
@@ -1871,8 +1879,9 @@ export class Midy {
         note.velocity,
       );
       const voiceParams = note.voice.getParams(controllerType, controllerState);
-      let appliedFilterEnvelope = false;
-      let appliedVolumeEnvelope = false;
+      let applyVolumeEnvelope = false;
+      let applyFilterEnvelope = false;
+      let applyPitchEnvelope = false;
       for (const [key, value] of Object.entries(voiceParams)) {
         const prevValue = note.voiceParams[key];
         if (value === prevValue) continue;
@@ -1884,33 +1893,19 @@ export class Midy {
             prevValue,
             scheduleTime,
           );
-        } else if (filterEnvelopeKeySet.has(key)) {
-          if (appliedFilterEnvelope) continue;
-          appliedFilterEnvelope = true;
-          const noteVoiceParams = note.voiceParams;
-          for (let i = 0; i < filterEnvelopeKeys.length; i++) {
-            const key = filterEnvelopeKeys[i];
-            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-          }
-          if (
-            0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber
-          ) {
-            this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-          } else {
-            this.setFilterEnvelope(channel, note, scheduleTime);
-          }
-          this.setPitchEnvelope(note, scheduleTime);
-        } else if (volumeEnvelopeKeySet.has(key)) {
-          if (appliedVolumeEnvelope) continue;
-          appliedVolumeEnvelope = true;
-          const noteVoiceParams = note.voiceParams;
-          for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
-            const key = volumeEnvelopeKeys[i];
-            if (key in voiceParams) noteVoiceParams[key] = voiceParams[key];
-          }
-          this.setVolumeEnvelope(channel, note, scheduleTime);
+        } else {
+          if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
+          if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
+          if (pitchEnvelopeKeySet.has(key)) applyPitchEnvelope = true;
         }
       }
+      if (applyVolumeEnvelope) {
+        this.setVolumeEnvelope(channel, note, scheduleTime);
+      }
+      if (applyFilterEnvelope) {
+        this.setFilterEnvelope(channel, note, scheduleTime);
+      }
+      if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
     });
   }
 
