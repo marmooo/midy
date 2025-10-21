@@ -860,7 +860,6 @@ export class MidyGMLite {
     noteNumber,
     velocity,
     startTime,
-    noteOffEvent,
   ) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
@@ -885,7 +884,6 @@ export class MidyGMLite {
       startTime,
       isSF3,
     );
-    note.noteOffEvent = noteOffEvent;
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {

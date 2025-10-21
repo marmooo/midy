@@ -1368,19 +1368,11 @@ export class MidyGM2 {
     this.drumExclusiveClassNotes[index] = note;
   }
 
-  isDrumNoteOffException(channel, noteNumber) {
-    if (!channel.isDrum) return false;
-    const programNumber = channel.programNumber;
-    return !((programNumber === 48 && noteNumber === 88) ||
-      (programNumber === 56 && 47 <= noteNumber && noteNumber <= 84));
-  }
-
   async scheduleNoteOn(
     channelNumber,
     noteNumber,
     velocity,
     startTime,
-    noteOffEvent,
   ) {
     const channel = this.channels[channelNumber];
     const bankNumber = this.calcBank(channel, channelNumber);
@@ -1405,7 +1397,6 @@ export class MidyGM2 {
       startTime,
       isSF3,
     );
-    note.noteOffEvent = noteOffEvent;
     note.gainL.connect(channel.gainL);
     note.gainR.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {
@@ -1899,7 +1890,7 @@ export class MidyGM2 {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.applyControlTable(channel, controllerType);
+      this.applyControlTable(channel, controllerType, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,

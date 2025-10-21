@@ -977,7 +977,7 @@ export class Midy {
     const pitch = pitchWheel * pitchWheelSensitivity;
     const channelPressureRaw = channel.channelPressureTable[0];
     if (0 <= channelPressureRaw) {
-      const channelPressureDepth = (channelPressureDepth - 64) / 37.5; // 2400 / 64;
+      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
       const channelPressure = channelPressureDepth *
         channel.state.channelPressure;
       return tuning + pitch + channelPressure;
@@ -1399,7 +1399,6 @@ export class Midy {
     noteNumber,
     velocity,
     startTime,
-    noteOffEvent,
   ) {
     const channel = this.channels[channelNumber];
     const bankNumber = this.calcBank(channel, channelNumber);
@@ -1424,7 +1423,6 @@ export class Midy {
       startTime,
       isSF3,
     );
-    note.noteOffEvent = noteOffEvent;
     note.gainL.connect(channel.gainL);
     note.gainR.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {
