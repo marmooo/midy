@@ -199,7 +199,7 @@ export class MidyGM1 {
     this.totalTime = this.calcTotalTime();
   }
 
-  setChannelAudioNodes(audioContext) {
+  createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
       defaultControllerState.pan.defaultValue,
     );
@@ -223,7 +223,7 @@ export class MidyGM1 {
         isDrum: false,
         state: new ControllerState(),
         ...this.constructor.channelSettings,
-        ...this.setChannelAudioNodes(audioContext),
+        ...this.createChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: [],
       };

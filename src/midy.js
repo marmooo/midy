@@ -9,9 +9,6 @@ class Note {
   filterDepth;
   volumeEnvelopeNode;
   volumeDepth;
-  volumeNode;
-  gainL;
-  gainR;
   modulationLFO;
   modulationDepth;
   vibratoLFO;
@@ -290,7 +287,7 @@ export class Midy {
     this.totalTime = this.calcTotalTime();
   }
 
-  setChannelAudioNodes(audioContext) {
+  createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
       defaultControllerState.pan.defaultValue,
     );
@@ -322,7 +319,7 @@ export class Midy {
         isDrum: false,
         state: new ControllerState(),
         ...this.constructor.channelSettings,
-        ...this.setChannelAudioNodes(audioContext),
+        ...this.createChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: [],
         sostenutoNotes: [],
@@ -331,6 +328,8 @@ export class Midy {
         channelPressureTable: new Int8Array(6).fill(-1),
         polyphonicKeyPressureTable: new Int8Array(6).fill(-1),
         keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
+        keyBasedGainLs: new Array(128),
+        keyBasedGainRs: new Array(128),
       };
     });
     return channels;
@@ -1291,9 +1290,6 @@ export class Midy {
       voiceParams,
       audioBuffer,
     );
-    note.volumeNode = new GainNode(this.audioContext);
-    note.gainL = new GainNode(this.audioContext);
-    note.gainR = new GainNode(this.audioContext);
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -1325,9 +1321,6 @@ export class Midy {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
-    note.volumeEnvelopeNode.connect(note.volumeNode);
-    note.volumeNode.connect(note.gainL);
-    note.volumeNode.connect(note.gainR);
 
     if (0 < state.chorusSendLevel) {
       this.setChorusEffectsSend(channel, note, 0, now);
@@ -1424,8 +1417,17 @@ export class Midy {
       startTime,
       isSF3,
     );
-    note.gainL.connect(channel.gainL);
-    note.gainR.connect(channel.gainR);
+    if (channel.isDrum) {
+      const audioContext = this.audioContext;
+      const { gainL, gainR } = this.createChannelAudioNodes(audioContext);
+      channel.keyBasedGainLs[noteNumber] = gainL;
+      channel.keyBasedGainRs[noteNumber] = gainR;
+      note.volumeEnvelopeNode.connect(gainL);
+      note.volumeEnvelopeNode.connect(gainR);
+    } else {
+      note.volumeEnvelopeNode.connect(channel.gainL);
+      note.volumeEnvelopeNode.connect(channel.gainR);
+    }
     if (0.5 <= channel.state.sustainPedal) {
       channel.sustainNotes.push(note);
     }
@@ -1451,9 +1453,6 @@ export class Midy {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
-    note.volumeNode.disconnect();
-    note.gainL.disconnect();
-    note.gainR.disconnect();
     if (note.modulationDepth) {
       note.volumeDepth.disconnect();
       note.modulationDepth.disconnect();
@@ -1747,7 +1746,7 @@ export class Midy {
           note.reverbEffectsSend = new GainNode(this.audioContext, {
             gain: value,
           });
-          note.volumeNode.connect(note.reverbEffectsSend);
+          note.volumeEnvelopeNode.connect(note.reverbEffectsSend);
         }
         note.reverbEffectsSend.connect(this.reverbEffect.input);
       }
@@ -1780,7 +1779,7 @@ export class Midy {
           note.chorusEffectsSend = new GainNode(this.audioContext, {
             gain: value,
           });
-          note.volumeNode.connect(note.chorusEffectsSend);
+          note.volumeEnvelopeNode.connect(note.chorusEffectsSend);
         }
         note.chorusEffectsSend.connect(this.chorusEffect.input);
       }
@@ -2014,30 +2013,12 @@ export class Midy {
     this.updatePortamento(channel, scheduleTime);
   }
 
-  setKeyBasedVolume(channel, scheduleTime) {
-    const channelVolume = channel.state.volume;
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
-      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-        channel,
-        note.noteNumber,
-        7,
-      );
-      if (0 <= keyBasedValue) {
-        const volume = channelVolume * keyBasedValue / 64;
-        note.volumeNode.gain
-          .cancelScheduledValues(scheduleTime)
-          .setValueAtTime(volume, scheduleTime);
-      }
-    });
-  }
-
   setVolume(channelNumber, volume, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
-    if (!channel.isDrum) return;
-    this.setKeyBasedVolume(channel, scheduleTime);
+    this.updateKeyBasedVolume(channel, scheduleTime);
   }
 
   panToGain(pan) {
@@ -2048,32 +2029,12 @@ export class Midy {
     };
   }
 
-  setKeyBasedPan(channel, scheduleTime) {
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
-      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-        channel,
-        note.noteNumber,
-        10,
-      );
-      if (0 <= keyBasedValue) {
-        const { gainLeft, gainRight } = this.panToGain(keyBasedValue / 127);
-        note.gainL.gain
-          .cancelScheduledValues(scheduleTime)
-          .setValueAtTime(gainLeft, scheduleTime);
-        note.gainR.gain
-          .cancelScheduledValues(scheduleTime)
-          .setValueAtTime(gainRight, scheduleTime);
-      }
-    });
-  }
-
   setPan(channelNumber, pan, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
-    if (!channel.isDrum) return;
-    this.setKeyBasedPan(channel, scheduleTime);
+    this.updateKeyBasedVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
@@ -2102,6 +2063,40 @@ export class Midy {
     channel.gainR.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(volume * gainRight, scheduleTime);
+  }
+
+  updateKeyBasedVolume(channel, scheduleTime) {
+    if (!channel.isDrum) return;
+    const state = channel.state;
+    const defaultVolume = state.volume * state.expression;
+    const defaultPan = state.pan;
+    for (let i = 0; i < 128; i++) {
+      const gainL = channel.keyBasedGainLs[i];
+      const gainR = channel.keyBasedGainLs[i];
+      if (!gainL) continue;
+      if (!gainR) continue;
+      const keyBasedVolume = this.getKeyBasedInstrumentControlValue(
+        channel,
+        i,
+        7,
+      );
+      const volume = (0 <= keyBasedVolume)
+        ? defaultVolume * keyBasedVolume / 64
+        : defaultVolume;
+      const keyBasedPan = this.getKeyBasedInstrumentControlValue(
+        channel,
+        i,
+        10,
+      );
+      const pan = (0 <= keyBasedPan) ? keyBasedPan / 127 : defaultPan;
+      const { gainLeft, gainRight } = this.panToGain(pan);
+      gainL.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(volume * gainLeft, scheduleTime);
+      gainR.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(volume * gainRight, scheduleTime);
+    }
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
