@@ -1274,6 +1274,7 @@ export class Midy {
       channel,
       noteNumber,
       velocity,
+      0, // polyphonicKeyPressure
     );
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
@@ -1620,10 +1621,10 @@ export class Midy {
     scheduleTime,
   ) {
     const channel = this.channels[channelNumber];
-    channel.state.polyphonicKeyPressure = pressure / 127;
     const table = channel.polyphonicKeyPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
+        note.pressure = pressure;
         this.setControllerParameters(channel, note, table);
       }
     });
@@ -1859,12 +1860,12 @@ export class Midy {
     };
   }
 
-  getControllerState(channel, noteNumber, velocity) {
+  getControllerState(channel, noteNumber, velocity, polyphonicKeyPressure) {
     const state = new Float32Array(channel.state.array.length);
     state.set(channel.state.array);
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
-    state[10] = state.polyphonicKeyPressure / 127;
+    state[10] = polyphonicKeyPressure / 127;
     state[13] = state.channelPressure / 127;
     return state;
   }
@@ -1875,6 +1876,7 @@ export class Midy {
         channel,
         note.noteNumber,
         note.velocity,
+        note.pressure,
       );
       const voiceParams = note.voice.getParams(controllerType, controllerState);
       let applyVolumeEnvelope = false;
