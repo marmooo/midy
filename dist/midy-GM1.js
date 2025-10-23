@@ -2208,13 +2208,11 @@ var defaultControllerState = {
   pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
   pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
-  // bankMSB: { type: 128 + 0, defaultValue: 121, },
   modulationDepth: { type: 128 + 1, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
   volume: { type: 128 + 7, defaultValue: 100 / 127 },
   pan: { type: 128 + 10, defaultValue: 64 / 127 },
   expression: { type: 128 + 11, defaultValue: 1 },
-  // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
   sustainPedal: { type: 128 + 64, defaultValue: 0 }
   // rpnLSB: { type: 128 + 100, defaultValue: 127 },
@@ -2238,19 +2236,6 @@ var ControllerState = class {
     }
   }
 };
-var filterEnvelopeKeys = [
-  "modEnvToPitch",
-  "initialFilterFc",
-  "modEnvToFilterFc",
-  "modDelay",
-  "modAttack",
-  "modHold",
-  "modDecay",
-  "modSustain",
-  "modRelease",
-  "playbackRate"
-];
-var filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
 var volumeEnvelopeKeys = [
   "volDelay",
   "volAttack",
@@ -2261,6 +2246,27 @@ var volumeEnvelopeKeys = [
   "initialAttenuation"
 ];
 var volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
+var filterEnvelopeKeys = [
+  "modEnvToPitch",
+  "initialFilterFc",
+  "modEnvToFilterFc",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain"
+];
+var filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
+var pitchEnvelopeKeys = [
+  "modEnvToPitch",
+  "modDelay",
+  "modAttack",
+  "modHold",
+  "modDecay",
+  "modSustain",
+  "playbackRate"
+];
+var pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 var MidyGM1 = class {
   mode = "GM1";
   numChannels = 16;
@@ -2366,7 +2372,7 @@ var MidyGM1 = class {
     this.timeline = midiData.timeline;
     this.totalTime = this.calcTotalTime();
   }
-  setChannelAudioNodes(audioContext) {
+  createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
       defaultControllerState.pan.defaultValue
     );
@@ -2389,7 +2395,7 @@ var MidyGM1 = class {
         isDrum: false,
         state: new ControllerState(),
         ...this.constructor.channelSettings,
-        ...this.setChannelAudioNodes(audioContext),
+        ...this.createChannelAudioNodes(audioContext),
         scheduledNotes: [],
         sustainNotes: []
       };
@@ -2664,7 +2670,7 @@ var MidyGM1 = class {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
         note.noteNumber,
@@ -2724,12 +2730,13 @@ var MidyGM1 = class {
     const now = this.audioContext.currentTime;
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
-  processScheduledNotes(channel, callback) {
+  processScheduledNotes(channel, scheduleTime, callback) {
     const scheduledNotes = channel.scheduledNotes;
     for (let i = 0; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
+      if (note.startTime < scheduleTime) continue;
       callback(note);
     }
   }
@@ -2739,7 +2746,7 @@ var MidyGM1 = class {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      if (scheduleTime < note.startTime) continue;
+      if (scheduleTime < note.startTime) break;
       callback(note);
     }
   }
@@ -2763,7 +2770,7 @@ var MidyGM1 = class {
     return tuning + pitch;
   }
   updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       this.updateDetune(channel, note, scheduleTime);
     });
   }
@@ -2913,7 +2920,7 @@ var MidyGM1 = class {
     }
     this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
-  async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime, noteOffEvent) {
+  async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
     const soundFontIndex = this.soundFontTable[channel.programNumber].get(
@@ -2937,7 +2944,6 @@ var MidyGM1 = class {
       startTime,
       isSF3
     );
-    note.noteOffEvent = noteOffEvent;
     note.volumeEnvelopeNode.connect(channel.gainL);
     note.volumeEnvelopeNode.connect(channel.gainR);
     if (0.5 <= channel.state.sustainPedal) {
@@ -3144,15 +3150,16 @@ var MidyGM1 = class {
     return state;
   }
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,
         note.velocity
       );
       const voiceParams = note.voice.getParams(controllerType, controllerState);
-      let appliedFilterEnvelope = false;
-      let appliedVolumeEnvelope = false;
+      let applyVolumeEnvelope = false;
+      let applyFilterEnvelope = false;
+      let applyPitchEnvelope = false;
       for (const [key, value] of Object.entries(voiceParams)) {
         const prevValue = note.voiceParams[key];
         if (value === prevValue) continue;
@@ -3164,27 +3171,15 @@ var MidyGM1 = class {
             prevValue,
             scheduleTime
           );
-        } else if (filterEnvelopeKeySet.has(key)) {
-          if (appliedFilterEnvelope) continue;
-          appliedFilterEnvelope = true;
-          const noteVoiceParams = note.voiceParams;
-          for (let i = 0; i < filterEnvelopeKeys.length; i++) {
-            const key2 = filterEnvelopeKeys[i];
-            if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
-          }
-          this.setFilterEnvelope(note, scheduleTime);
-          this.setPitchEnvelope(note, scheduleTime);
-        } else if (volumeEnvelopeKeySet.has(key)) {
-          if (appliedVolumeEnvelope) continue;
-          appliedVolumeEnvelope = true;
-          const noteVoiceParams = note.voiceParams;
-          for (let i = 0; i < volumeEnvelopeKeys.length; i++) {
-            const key2 = volumeEnvelopeKeys[i];
-            if (key2 in voiceParams) noteVoiceParams[key2] = voiceParams[key2];
-          }
-          this.setVolumeEnvelope(note, scheduleTime);
+        } else {
+          if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
+          if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
+          if (pitchEnvelopeKeySet.has(key)) applyPitchEnvelope = true;
         }
       }
+      if (applyVolumeEnvelope) this.setVolumeEnvelope(note, scheduleTime);
+      if (applyFilterEnvelope) this.setFilterEnvelope(note, scheduleTime);
+      if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
     });
   }
   createControlChangeHandlers() {
@@ -3216,7 +3211,7 @@ var MidyGM1 = class {
   }
   updateModulation(channel, scheduleTime) {
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    this.processScheduledNotes(channel, (note) => {
+    this.processScheduledNotes(channel, scheduleTime, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
@@ -3272,7 +3267,7 @@ var MidyGM1 = class {
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
-      this.processScheduledNotes(channel, (note) => {
+      this.processScheduledNotes(channel, scheduleTime, (note) => {
         channel.sustainNotes.push(note);
       });
     } else {
