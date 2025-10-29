@@ -1671,11 +1671,7 @@ export class MidyGM2 {
   setReverbEffectsSend(channel, note, prevValue, scheduleTime) {
     let value = note.voiceParams.reverbEffectsSend;
     if (channel.isDrum) {
-      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-        channel,
-        note.noteNumber,
-        91,
-      );
+      const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 91);
       if (0 <= keyBasedValue) {
         value *= keyBasedValue / 127 / channel.state.reverbSendLevel;
       }
@@ -1704,11 +1700,7 @@ export class MidyGM2 {
   setChorusEffectsSend(channel, note, prevValue, scheduleTime) {
     let value = note.voiceParams.chorusEffectsSend;
     if (channel.isDrum) {
-      const keyBasedValue = this.getKeyBasedInstrumentControlValue(
-        channel,
-        note.noteNumber,
-        93,
-      );
+      const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 93);
       if (0 <= keyBasedValue) {
         value *= keyBasedValue / 127 / channel.state.chorusSendLevel;
       }
@@ -2011,19 +2003,11 @@ export class MidyGM2 {
       const gainR = channel.keyBasedGainLs[i];
       if (!gainL) continue;
       if (!gainR) continue;
-      const keyBasedVolume = this.getKeyBasedInstrumentControlValue(
-        channel,
-        i,
-        7,
-      );
+      const keyBasedVolume = this.getKeyBasedValue(channel, i, 7);
       const volume = (0 <= keyBasedVolume)
         ? defaultVolume * keyBasedVolume / 64
         : defaultVolume;
-      const keyBasedPan = this.getKeyBasedInstrumentControlValue(
-        channel,
-        i,
-        10,
-      );
+      const keyBasedPan = this.getKeyBasedValue(channel, i, 10);
       const pan = (0 <= keyBasedPan) ? keyBasedPan / 127 : defaultPan;
       const { gainLeft, gainRight } = this.panToGain(pan);
       gainL.gain
@@ -2870,7 +2854,7 @@ export class MidyGM2 {
     }
   }
 
-  getKeyBasedInstrumentControlValue(channel, keyNumber, controllerType) {
+  getKeyBasedValue(channel, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
     const controlValue = channel.keyBasedInstrumentControlTable[index];
     return controlValue;
