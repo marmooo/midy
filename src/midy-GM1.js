@@ -164,7 +164,7 @@ export class MidyGM1 {
     }
   }
 
-  async loadSoundFont(input) {
+  async toUint8Array(input) {
     let uint8Array;
     if (typeof input === "string") {
       const response = await fetch(input);
@@ -175,22 +175,31 @@ export class MidyGM1 {
     } else {
       throw new TypeError("input must be a URL string or Uint8Array");
     }
-    const parsed = parse(uint8Array);
-    const soundFont = new SoundFont(parsed);
-    this.addSoundFont(soundFont);
+    return uint8Array;
+  }
+
+  async loadSoundFont(input) {
+    if (Array.isArray(input)) {
+      const promises = new Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        promises[i] = this.toUint8Array(input[i]);
+      }
+      const uint8Arrays = await Promise.all(promises);
+      for (let i = 0; i < uint8Arrays.length; i++) {
+        const parsed = parse(uint8Arrays[i]);
+        const soundFont = new SoundFont(parsed);
+        this.addSoundFont(soundFont);
+      }
+    } else {
+      const uint8Array = await this.toUint8Array(input);
+      const parsed = parse(uint8Array);
+      const soundFont = new SoundFont(parsed);
+      this.addSoundFont(soundFont);
+    }
   }
 
   async loadMIDI(input) {
-    let uint8Array;
-    if (typeof input === "string") {
-      const response = await fetch(input);
-      const arrayBuffer = await response.arrayBuffer();
-      uint8Array = new Uint8Array(arrayBuffer);
-    } else if (input instanceof Uint8Array) {
-      uint8Array = input;
-    } else {
-      throw new TypeError("input must be a URL string or Uint8Array");
-    }
+    const uint8Array = await this.toUint8Array(input);
     const midi = parseMidi(uint8Array);
     this.ticksPerBeat = midi.header.ticksPerBeat;
     const midiData = this.extractMidiData(midi);

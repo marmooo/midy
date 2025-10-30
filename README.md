@@ -91,17 +91,25 @@ optimized for playback on the web. The following example loads only the minimum
 presets required for playback.
 
 ```js
-const baseUrl = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
-for (const instrument of midy.instruments) {
-  const [bankNumber, programNumber] = instrument.split(":").map(Number);
-  if (midy.soundFontTable[programNumber].has(bankNumber)) continue;
-  const program = programNumber.toString().padStart(3, "0");
-  if (bankNumber === 128) {
-    await midy.loadSoundFont(`${baseUrl}/128.sf3`);
-  } else {
-    await midy.loadSoundFont(`${baseUrl}/${program}.sf3`);
+const soundFontURL = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
+
+function getSoundFontPaths() {
+  const paths = [];
+  for (const instrument of midy.instruments) {
+    const [bankNumber, programNumber] = instrument.split(":").map(Number);
+    const table = midy.soundFontTable[programNumber];
+    if (table.has(bankNumber)) continue;
+    const program = programNumber.toString().padStart(3, "0");
+    const path = bankNumber === 128
+      ? `${soundFontURL}/128.sf3`
+      : `${soundFontURL}/${program}.sf3`;
+    paths.push(path);
   }
+  return paths;
 }
+
+const paths = this.getSoundFontPaths();
+await midy.loadSoundFont(paths);
 ```
 
 ## Build
