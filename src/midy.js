@@ -335,33 +335,16 @@ export class Midy {
     return channels;
   }
 
-  async createNoteBuffer(voiceParams, isSF3) {
+  async createAudioBuffer(voiceParams) {
+    const sample = voiceParams.sample;
     const sampleStart = voiceParams.start;
-    const sampleEnd = voiceParams.sample.length + voiceParams.end;
-    if (isSF3) {
-      const sample = voiceParams.sample;
-      const start = sample.byteOffset + sampleStart;
-      const end = sample.byteOffset + sampleEnd;
-      const buffer = sample.buffer.slice(start, end);
-      const audioBuffer = await this.audioContext.decodeAudioData(buffer);
-      return audioBuffer;
-    } else {
-      const sample = voiceParams.sample;
-      const start = sample.byteOffset + sampleStart;
-      const end = sample.byteOffset + sampleEnd;
-      const buffer = sample.buffer.slice(start, end);
-      const audioBuffer = new AudioBuffer({
-        numberOfChannels: 1,
-        length: sample.length,
-        sampleRate: voiceParams.sampleRate,
-      });
-      const channelData = audioBuffer.getChannelData(0);
-      const int16Array = new Int16Array(buffer);
-      for (let i = 0; i < int16Array.length; i++) {
-        channelData[i] = int16Array[i] / 32768;
-      }
-      return audioBuffer;
-    }
+    const sampleEnd = sample.data.length + voiceParams.end;
+    const audioBuffer = await sample.toAudioBuffer(
+      this.audioContext,
+      sampleStart,
+      sampleEnd,
+    );
+    return audioBuffer;
   }
 
   isLoopDrum(channel, noteNumber) {
@@ -1236,7 +1219,6 @@ export class Midy {
     noteNumber,
     velocity,
     voiceParams,
-    isSF3,
   ) {
     const audioBufferId = this.getAudioBufferId(
       programNumber,
@@ -1252,7 +1234,7 @@ export class Midy {
       return cache.audioBuffer;
     } else {
       const maxCount = this.audioBufferCounter.get(audioBufferId) ?? 0;
-      const audioBuffer = await this.createNoteBuffer(voiceParams, isSF3);
+      const audioBuffer = await this.createAudioBuffer(voiceParams);
       const cache = { audioBuffer, maxCount, counter: 1 };
       this.audioBufferCache.set(audioBufferId, cache);
       return audioBuffer;
@@ -1265,7 +1247,6 @@ export class Midy {
     noteNumber,
     velocity,
     startTime,
-    isSF3,
   ) {
     const now = this.audioContext.currentTime;
     const state = channel.state;
@@ -1282,7 +1263,6 @@ export class Midy {
       noteNumber,
       velocity,
       voiceParams,
-      isSF3,
     );
     note.bufferSource = this.createBufferSource(
       channel,
@@ -1408,14 +1388,12 @@ export class Midy {
       velocity,
     );
     if (!voice) return;
-    const isSF3 = soundFont.parsed.info.version.major === 3;
     const note = await this.createNote(
       channel,
       voice,
       noteNumber,
       velocity,
       startTime,
-      isSF3,
     );
     if (channel.isDrum) {
       const audioContext = this.audioContext;
