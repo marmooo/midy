@@ -102,8 +102,8 @@ export class MidyGM1 {
   resumeTime = 0;
   soundFonts = [];
   soundFontTable = this.initSoundFontTable();
-  audioBufferCounter = new Map();
-  audioBufferCache = new Map();
+  voiceCounter = new Map();
+  voiceCache = new Map();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -179,6 +179,7 @@ export class MidyGM1 {
   }
 
   async loadSoundFont(input) {
+    this.voiceCounter.clear();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
       for (let i = 0; i < input.length; i++) {
@@ -199,6 +200,7 @@ export class MidyGM1 {
   }
 
   async loadMIDI(input) {
+    this.voiceCounter.clear();
     const uint8Array = await this.toUint8Array(input);
     const midi = parseMidi(uint8Array);
     this.ticksPerBeat = midi.header.ticksPerBeat;
@@ -206,6 +208,60 @@ export class MidyGM1 {
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
     this.totalTime = this.calcTotalTime();
+  }
+
+  cacheVoiceIds() {
+    const timeline = this.timeline;
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      switch (event.type) {
+        case "noteOn": {
+          const audioBufferId = this.getVoiceId(
+            this.channels[event.channel],
+            event.noteNumber,
+            event.velocity,
+          );
+          this.voiceCounter.set(
+            audioBufferId,
+            (this.voiceCounter.get(audioBufferId) ?? 0) + 1,
+          );
+          break;
+        }
+        case "controller":
+          if (event.controllerType === 0) {
+            this.setBankMSB(event.channel, event.value);
+          } else if (event.controllerType === 32) {
+            this.setBankLSB(event.channel, event.value);
+          }
+          break;
+        case "programChange":
+          this.handleProgramChange(
+            event.channel,
+            event.programNumber,
+            event.startTime,
+          );
+      }
+    }
+    for (const [audioBufferId, count] of this.voiceCounter) {
+      if (count === 1) this.voiceCounter.delete(audioBufferId);
+    }
+    this.GM2SystemOn();
+  }
+
+  getVoiceId(channel, noteNumber, velocity) {
+    const bankNumber = this.calcBank(channel);
+    const soundFontIndex = this.soundFontTable[channel.programNumber]
+      .get(bankNumber);
+    if (soundFontIndex === undefined) return;
+    const soundFont = this.soundFonts[soundFontIndex];
+    const voice = soundFont.getVoice(
+      bankNumber,
+      channel.programNumber,
+      noteNumber,
+      velocity,
+    );
+    const { instrument, sampleID } = voice.generators;
+    return `${soundFontIndex}:${instrument}:${sampleID}`;
   }
 
   createChannelAudioNodes(audioContext) {
@@ -337,7 +393,7 @@ export class MidyGM1 {
           await Promise.all(this.notePromises);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(undefined);
-          this.audioBufferCache.clear();
+          this.voiceCache.clear();
           for (let i = 0; i < this.channels.length; i++) {
             this.resetAllStates(i);
           }
@@ -362,7 +418,7 @@ export class MidyGM1 {
           await this.stopNotes(0, true, now);
           this.notePromises = [];
           this.exclusiveClassNotes.fill(undefined);
-          this.audioBufferCache.clear();
+          this.voiceCache.clear();
           for (let i = 0; i < this.channels.length; i++) {
             this.resetAllStates(i);
           }
@@ -396,12 +452,7 @@ export class MidyGM1 {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
 
-  getAudioBufferId(programNumber, noteNumber, velocity) {
-    return `${programNumber}:${noteNumber}:${velocity}`;
-  }
-
   extractMidiData(midi) {
-    this.audioBufferCounter.clear();
     const instruments = new Set();
     const timeline = [];
     const tmpChannels = new Array(this.channels.length);
@@ -421,15 +472,6 @@ export class MidyGM1 {
         switch (event.type) {
           case "noteOn": {
             const channel = tmpChannels[event.channel];
-            const audioBufferId = this.getAudioBufferId(
-              channel.programNumber,
-              event.noteNumber,
-              event.velocity,
-            );
-            this.audioBufferCounter.set(
-              audioBufferId,
-              (this.audioBufferCounter.get(audioBufferId) ?? 0) + 1,
-            );
             if (channel.programNumber < 0) {
               instruments.add(`${channel.bank}:0`);
               channel.programNumber = 0;
@@ -445,9 +487,6 @@ export class MidyGM1 {
         delete event.deltaTime;
         timeline.push(event);
       }
-    }
-    for (const [audioBufferId, count] of this.audioBufferCounter) {
-      if (count === 1) this.audioBufferCounter.delete(audioBufferId);
     }
     const priority = {
       controller: 0,
@@ -525,6 +564,7 @@ export class MidyGM1 {
   async start() {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     await this.playNotes();
     this.isPlaying = false;
   }
@@ -718,28 +758,28 @@ export class MidyGM1 {
   }
 
   async getAudioBuffer(
-    programNumber,
+    channel,
     noteNumber,
     velocity,
     voiceParams,
   ) {
-    const audioBufferId = this.getAudioBufferId(
-      programNumber,
+    const audioBufferId = this.getVoiceId(
+      channel,
       noteNumber,
       velocity,
     );
-    const cache = this.audioBufferCache.get(audioBufferId);
+    const cache = this.voiceCache.get(audioBufferId);
     if (cache) {
       cache.counter += 1;
       if (cache.maxCount <= cache.counter) {
-        this.audioBufferCache.delete(audioBufferId);
+        this.voiceCache.delete(audioBufferId);
       }
       return cache.audioBuffer;
     } else {
-      const maxCount = this.audioBufferCounter.get(audioBufferId) ?? 0;
+      const maxCount = this.voiceCounter.get(audioBufferId) ?? 0;
       const audioBuffer = await this.createAudioBuffer(voiceParams);
       const cache = { audioBuffer, maxCount, counter: 1 };
-      this.audioBufferCache.set(audioBufferId, cache);
+      this.voiceCache.set(audioBufferId, cache);
       return audioBuffer;
     }
   }
@@ -761,7 +801,7 @@ export class MidyGM1 {
     const voiceParams = voice.getAllParams(controllerState);
     const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
     const audioBuffer = await this.getAudioBuffer(
-      channel.programNumber,
+      channel,
       noteNumber,
       velocity,
       voiceParams,
@@ -812,9 +852,8 @@ export class MidyGM1 {
   ) {
     const channel = this.channels[channelNumber];
     const bankNumber = channel.bank;
-    const soundFontIndex = this.soundFontTable[channel.programNumber].get(
-      bankNumber,
-    );
+    const soundFontIndex = this.soundFontTable[channel.programNumber]
+      .get(bankNumber);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
@@ -1116,6 +1155,7 @@ export class MidyGM1 {
     handlers[101] = this.setRPNMSB;
     handlers[120] = this.allSoundOff;
     handlers[121] = this.resetAllControllers;
+    handlers[123] = this.allNotesOff;
     return handlers;
   }
 
