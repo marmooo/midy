@@ -1648,7 +1648,7 @@ export class Midy {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setControllerParameters(channel, note, table);
+        this.setControllerParameters(channel, note, table, scheduleTime);
       }
     });
     this.applyVoiceParams(channel, 10);
@@ -1683,7 +1683,7 @@ export class Midy {
     }
     const table = channel.channelPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setControllerParameters(channel, note, table);
+      this.setControllerParameters(channel, note, table, scheduleTime);
     });
     this.applyVoiceParams(channel, 13);
   }
@@ -3078,18 +3078,22 @@ export class Midy {
     return (channelPressure + polyphonicKeyPressure) / 254;
   }
 
-  setControllerParameters(channel, note, table) {
-    if (0 <= table[0]) this.updateDetune(channel, note);
+  setControllerParameters(channel, note, table, scheduleTime) {
+    if (0 <= table[0]) this.updateDetune(channel, note, scueduleTime);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      if (0 <= table[1]) this.setPortamentoFilterEnvelope(channel, note);
-      if (0 <= table[2]) this.setPortamentoVolumeEnvelope(channel, note);
+      if (0 <= table[1]) {
+        this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+      }
+      if (0 <= table[2]) {
+        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
+      }
     } else {
-      if (0 <= table[1]) this.setFilterEnvelope(channel, note);
-      if (0 <= table[2]) this.setVolumeEnvelope(channel, note);
+      if (0 <= table[1]) this.setFilterEnvelope(channel, note, scheduleTime);
+      if (0 <= table[2]) this.setVolumeEnvelope(channel, note, scheduleTime);
     }
-    if (0 <= table[3]) this.setModLfoToPitch(channel, note);
-    if (0 <= table[4]) this.setModLfoToFilterFc(channel, note);
-    if (0 <= table[5]) this.setModLfoToVolume(channel, note);
+    if (0 <= table[3]) this.setModLfoToPitch(channel, note, scheduleTime);
+    if (0 <= table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
+    if (0 <= table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
   handlePressureSysEx(data, tableName) {
@@ -3115,7 +3119,7 @@ export class Midy {
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
     this.processScheduledNotes(channel, scheduleTime, (note) => {
-      this.setControllerParameters(channel, note, table);
+      this.setControllerParameters(channel, note, table, scheduleTime);
     });
   }
 
