@@ -132,6 +132,7 @@ export class MidyGMLite {
   );
 
   static channelSettings = {
+    scheduleIndex: 0,
     detune: 0,
     programNumber: 0,
     bank: 0,
@@ -555,7 +556,7 @@ export class MidyGMLite {
   stopChannelNotes(channelNumber, velocity, force, scheduleTime) {
     const channel = this.channels[channelNumber];
     const promises = [];
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       const promise = this.scheduleNoteOff(
         channelNumber,
         note.noteNumber,
@@ -566,7 +567,6 @@ export class MidyGMLite {
       this.notePromises.push(promise);
       promises.push(promise);
     });
-    channel.scheduledNotes = [];
     return Promise.all(promises);
   }
 
@@ -625,20 +625,19 @@ export class MidyGMLite {
     return this.resumeTime + now - this.startTime - this.startDelay;
   }
 
-  processScheduledNotes(channel, scheduleTime, callback) {
+  processScheduledNotes(channel, callback) {
     const scheduledNotes = channel.scheduledNotes;
-    for (let i = 0; i < scheduledNotes.length; i++) {
+    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      if (note.startTime < scheduleTime) continue;
       callback(note);
     }
   }
 
   processActiveNotes(channel, scheduleTime, callback) {
     const scheduledNotes = channel.scheduledNotes;
-    for (let i = 0; i < scheduledNotes.length; i++) {
+    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
@@ -670,7 +669,7 @@ export class MidyGMLite {
   }
 
   updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       this.updateDetune(channel, note, scheduleTime);
     });
   }
@@ -972,21 +971,36 @@ export class MidyGMLite {
       if (channel.isDrum) return;
       if (0.5 <= channel.state.sustainPedal) return;
     }
-    const note = this.findNoteOffTarget(channel, noteNumber);
-    if (!note) return;
+    const index = this.findNoteOffIndex(channel, noteNumber);
+    if (index < 0) return;
+    const note = channel.scheduledNotes[index];
     note.ending = true;
+    this.setNoteIndex(channel, index);
     this.releaseNote(channel, note, endTime);
   }
 
-  findNoteOffTarget(channel, noteNumber) {
+  setNoteIndex(channel, index) {
+    let allEnds = true;
+    for (let i = channel.scheduleIndex; i < index; i++) {
+      const note = channel.scheduledNotes[i];
+      if (note && !note.ending) {
+        allEnds = false;
+        break;
+      }
+    }
+    if (allEnds) channel.scheduleIndex = index + 1;
+  }
+
+  findNoteOffIndex(channel, noteNumber) {
     const scheduledNotes = channel.scheduledNotes;
-    for (let i = 0; i < scheduledNotes.length; i++) {
+    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
       if (note.noteNumber !== noteNumber) continue;
-      return note;
+      return i;
     }
+    return -1;
   }
 
   noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
@@ -1147,7 +1161,7 @@ export class MidyGMLite {
   }
 
   applyVoiceParams(channel, controllerType, scheduleTime) {
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,
@@ -1212,7 +1226,7 @@ export class MidyGMLite {
 
   updateModulation(channel, scheduleTime) {
     const depth = channel.state.modulationDepth * channel.modulationDepthRange;
-    this.processScheduledNotes(channel, scheduleTime, (note) => {
+    this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
@@ -1280,7 +1294,7 @@ export class MidyGMLite {
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
-      this.processScheduledNotes(channel, scheduleTime, (note) => {
+      this.processScheduledNotes(channel, (note) => {
         channel.sustainNotes.push(note);
       });
     } else {
