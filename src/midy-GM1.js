@@ -243,7 +243,7 @@ export class MidyGM1 {
     for (const [audioBufferId, count] of this.voiceCounter) {
       if (count === 1) this.voiceCounter.delete(audioBufferId);
     }
-    this.GM2SystemOn();
+    this.GM1SystemOn();
   }
 
   getVoiceId(channel, noteNumber, velocity) {
