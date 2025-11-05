@@ -2208,7 +2208,7 @@ export class Midy {
     channel.state.attackTime = attackTime / 127;
     this.processScheduledNotes(channel, (note) => {
       if (note.startTime < scheduleTime) return false;
-      this.setVolumeEnvelope(channel, note);
+      this.setVolumeEnvelope(channel, note, scheduleTime);
     });
   }
 
@@ -2222,7 +2222,7 @@ export class Midy {
       if (0.5 <= state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
-        this.setFilterEnvelope(channel, note);
+        this.setFilterEnvelope(channel, note, scheduleTime);
       }
     });
   }
