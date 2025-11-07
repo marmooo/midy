@@ -1798,7 +1798,7 @@ export class Midy {
       }
     }
     if (0 < prevValue) {
-      if (0 < vaule) {
+      if (0 < value) {
         note.chorusEffectsSend.gain
           .cancelScheduledValues(scheduleTime)
           .setValueAtTime(value, scheduleTime);
