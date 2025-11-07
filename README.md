@@ -53,7 +53,7 @@ functions.
 ```js
 midy.handleMIDIMessage(statusByte, data1, data2, scheduleTime);
 midy.noteOn(channelNumber, noteNumber, velocity);
-midy.handleProgramChange(channelNumber, program);
+midy.setProgramChange(channelNumber, program);
 ```
 
 ### Control Change
@@ -62,7 +62,7 @@ There are functions that handle control changes as they are, as well as
 simplified functions.
 
 ```js
-midy.handleControlChange(
+midy.setControlChange(
   channelNumber,
   controller,
   value,
