@@ -322,7 +322,7 @@ export class Midy {
           }
           break;
         case "programChange":
-          this.handleProgramChange(
+          this.setProgramChange(
             event.channel,
             event.programNumber,
             event.startTime,
@@ -457,7 +457,7 @@ export class Midy {
           break;
         }
         case "noteAftertouch":
-          this.handlePolyphonicKeyPressure(
+          this.setPolyphonicKeyPressure(
             event.channel,
             event.noteNumber,
             event.amount,
@@ -465,7 +465,7 @@ export class Midy {
           );
           break;
         case "controller":
-          this.handleControlChange(
+          this.setControlChange(
             event.channel,
             event.controllerType,
             event.value,
@@ -473,14 +473,14 @@ export class Midy {
           );
           break;
         case "programChange":
-          this.handleProgramChange(
+          this.setProgramChange(
             event.channel,
             event.programNumber,
             startTime,
           );
           break;
         case "channelAftertouch":
-          this.handleChannelPressure(event.channel, event.amount, startTime);
+          this.setChannelPressure(event.channel, event.amount, startTime);
           break;
         case "pitchBend":
           this.setPitchBend(event.channel, event.value + 8192, startTime);
@@ -1624,23 +1624,23 @@ export class Midy {
       case 0x90:
         return this.noteOn(channelNumber, data1, data2, scheduleTime);
       case 0xA0:
-        return this.handlePolyphonicKeyPressure(
+        return this.setPolyphonicKeyPressure(
           channelNumber,
           data1,
           data2,
           scheduleTime,
         );
       case 0xB0:
-        return this.handleControlChange(
+        return this.setControlChange(
           channelNumber,
           data1,
           data2,
           scheduleTime,
         );
       case 0xC0:
-        return this.handleProgramChange(channelNumber, data1, scheduleTime);
+        return this.setProgramChange(channelNumber, data1, scheduleTime);
       case 0xD0:
-        return this.handleChannelPressure(channelNumber, data1, scheduleTime);
+        return this.setChannelPressure(channelNumber, data1, scheduleTime);
       case 0xE0:
         return this.handlePitchBendMessage(
           channelNumber,
@@ -1653,7 +1653,7 @@ export class Midy {
     }
   }
 
-  handlePolyphonicKeyPressure(
+  setPolyphonicKeyPressure(
     channelNumber,
     noteNumber,
     pressure,
@@ -1670,7 +1670,7 @@ export class Midy {
     this.applyVoiceParams(channel, 10);
   }
 
-  handleProgramChange(channelNumber, programNumber, _scheduleTime) {
+  setProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.bank = channel.bankMSB * 128 + channel.bankLSB;
     channel.programNumber = programNumber;
@@ -1686,7 +1686,7 @@ export class Midy {
     }
   }
 
-  handleChannelPressure(channelNumber, value, scheduleTime) {
+  setChannelPressure(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     const prev = channel.state.channelPressure;
@@ -1979,7 +1979,7 @@ export class Midy {
     return handlers;
   }
 
-  handleControlChange(channelNumber, controllerType, value, scheduleTime) {
+  setControlChange(channelNumber, controllerType, value, scheduleTime) {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value, scheduleTime);
@@ -2501,7 +2501,7 @@ export class Midy {
     const entries = Object.entries(defaultControllerState);
     for (const [key, { type, defaultValue }] of entries) {
       if (128 <= type) {
-        this.handleControlChange(
+        this.setControlChange(
           channelNumber,
           type - 128,
           Math.ceil(defaultValue * 127),
@@ -2539,7 +2539,7 @@ export class Midy {
       const key = keys[i];
       const { type, defaultValue } = defaultControllerState[key];
       if (128 <= type) {
-        this.handleControlChange(
+        this.setControlChange(
           channelNumber,
           type - 128,
           Math.ceil(defaultValue * 127),
@@ -3170,7 +3170,7 @@ export class Midy {
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
     }
-    this.handleChannelPressure(
+    this.setChannelPressure(
       channelNumber,
       channel.state.channelPressure * 127,
       scheduleTime,

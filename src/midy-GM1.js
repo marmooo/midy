@@ -233,7 +233,7 @@ export class MidyGM1 {
           }
           break;
         case "programChange":
-          this.handleProgramChange(
+          this.setProgramChange(
             event.channel,
             event.programNumber,
             event.startTime,
@@ -344,7 +344,7 @@ export class MidyGM1 {
           break;
         }
         case "controller":
-          this.handleControlChange(
+          this.setControlChange(
             event.channel,
             event.controllerType,
             event.value,
@@ -352,7 +352,7 @@ export class MidyGM1 {
           );
           break;
         case "programChange":
-          this.handleProgramChange(
+          this.setProgramChange(
             event.channel,
             event.programNumber,
             startTime,
@@ -1001,14 +1001,14 @@ export class MidyGM1 {
       case 0x90:
         return this.noteOn(channelNumber, data1, data2, scheduleTime);
       case 0xB0:
-        return this.handleControlChange(
+        return this.setControlChange(
           channelNumber,
           data1,
           data2,
           scheduleTime,
         );
       case 0xC0:
-        return this.handleProgramChange(channelNumber, data1, scheduleTime);
+        return this.setProgramChange(channelNumber, data1, scheduleTime);
       case 0xE0:
         return this.handlePitchBendMessage(
           channelNumber,
@@ -1021,7 +1021,7 @@ export class MidyGM1 {
     }
   }
 
-  handleProgramChange(channelNumber, programNumber, _scheduleTime) {
+  setProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.programNumber = programNumber;
   }
@@ -1172,7 +1172,7 @@ export class MidyGM1 {
     return handlers;
   }
 
-  handleControlChange(channelNumber, controllerType, value, scheduleTime) {
+  setControlChange(channelNumber, controllerType, value, scheduleTime) {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value, scheduleTime);
@@ -1386,7 +1386,7 @@ export class MidyGM1 {
     const entries = Object.entries(defaultControllerState);
     for (const [key, { type, defaultValue }] of entries) {
       if (128 <= type) {
-        this.handleControlChange(
+        this.setControlChange(
           channelNumber,
           type - 128,
           Math.ceil(defaultValue * 127),
@@ -1416,7 +1416,7 @@ export class MidyGM1 {
       const key = keys[i];
       const { type, defaultValue } = defaultControllerState[key];
       if (128 <= type) {
-        this.handleControlChange(
+        this.setControlChange(
           channelNumber,
           type - 128,
           Math.ceil(defaultValue * 127),
