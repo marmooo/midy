@@ -338,7 +338,7 @@ export class MidyGM2 {
       velocity,
     );
     const { instrument, sampleID } = voice.generators;
-    return `${soundFontIndex}:${instrument}:${sampleID}`;
+    return soundFontIndex * (2 ** 32) + (instrument << 16) + sampleID;
   }
 
   createChannelAudioNodes(audioContext) {
