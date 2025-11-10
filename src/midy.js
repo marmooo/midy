@@ -188,8 +188,8 @@ export class Midy {
   isStopping = false;
   isSeeking = false;
   timeline = [];
-  instruments = [];
   notePromises = [];
+  instruments = new Set();
   exclusiveClassNotes = new Array(128);
   drumExclusiveClassNotes = new Array(
     this.numChannels * drumExclusiveClassCount,

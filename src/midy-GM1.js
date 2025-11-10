@@ -110,8 +110,8 @@ export class MidyGM1 {
   isStopping = false;
   isSeeking = false;
   timeline = [];
-  instruments = [];
   notePromises = [];
+  instruments = new Set();
   exclusiveClassNotes = new Array(128);
 
   static channelSettings = {
