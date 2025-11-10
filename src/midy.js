@@ -3095,7 +3095,7 @@ export class Midy {
   }
 
   setControllerParameters(channel, note, table, scheduleTime) {
-    if (0 <= table[0]) this.updateDetune(channel, note, scueduleTime);
+    if (0 <= table[0]) this.updateDetune(channel, note, scheduleTime);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
       if (0 <= table[1]) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
