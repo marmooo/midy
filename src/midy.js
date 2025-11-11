@@ -2696,9 +2696,17 @@ export class Midy {
       case 9:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handlePressureSysEx(data, "channelPressureTable");
+            return this.handlePressureSysEx(
+              data,
+              "channelPressureTable",
+              scheduleTime,
+            );
           case 2: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handlePressureSysEx(data, "polyphonicKeyPressureTable");
+            return this.handlePressureSysEx(
+              data,
+              "polyphonicKeyPressureTable",
+              scheduleTime,
+            );
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
             return this.handleControlChangeSysEx(data);
           default:
@@ -3112,7 +3120,7 @@ export class Midy {
     if (0 <= table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
-  handlePressureSysEx(data, tableName) {
+  handlePressureSysEx(data, tableName, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
@@ -3122,6 +3130,9 @@ export class Midy {
       const rr = data[i + 1];
       table[pp] = rr;
     }
+    this.processActiveNotes(channel, scheduleTime, (note) => {
+      this.setControllerParameters(channel, note, table, scheduleTime);
+    });
   }
 
   initControlTable() {
