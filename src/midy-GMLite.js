@@ -1083,13 +1083,16 @@ export class MidyGMLite {
   }
 
   setModLfoToPitch(channel, note, scheduleTime) {
-    const modLfoToPitch = note.voiceParams.modLfoToPitch;
-    const baseDepth = Math.abs(modLfoToPitch) +
-      channel.state.modulationDepth;
-    const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
-    note.modulationDepth.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(modulationDepth, scheduleTime);
+    if (note.modulationDepth) {
+      const modLfoToPitch = note.voiceParams.modLfoToPitch;
+      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      note.modulationDepth.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(modulationDepth, scheduleTime);
+    } else {
+      this.startModulation(channel, note, scheduleTime);
+    }
   }
 
   setModLfoToFilterFc(note, scheduleTime) {
@@ -1230,7 +1233,6 @@ export class MidyGMLite {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
-        this.setPitchEnvelope(note, scheduleTime);
         this.startModulation(channel, note, scheduleTime);
       }
     });
