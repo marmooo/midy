@@ -1989,7 +1989,7 @@ export class Midy {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.applyControlTable(channel, controllerType, scheduleTime);
+      this.setControlChangeEffects(channel, controllerType, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -3144,7 +3144,7 @@ export class Midy {
     return new Int8Array(ccCount * slotSize).fill(-1);
   }
 
-  applyControlTable(channel, controllerType, scheduleTime) {
+  setControlChangeEffects(channel, controllerType, scheduleTime) {
     const slotSize = 6;
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
