@@ -1664,7 +1664,7 @@ export class Midy {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setControllerParameters(channel, note, table, scheduleTime);
+        this.setEffects(channel, note, table, scheduleTime);
       }
     });
     this.applyVoiceParams(channel, 10);
@@ -1699,7 +1699,7 @@ export class Midy {
     }
     const table = channel.channelPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setControllerParameters(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, table, scheduleTime);
     });
     this.applyVoiceParams(channel, 13);
   }
@@ -3105,7 +3105,7 @@ export class Midy {
     return (channelPressure + polyphonicKeyPressure) / 254;
   }
 
-  setControllerParameters(channel, note, table, scheduleTime) {
+  setEffects(channel, note, table, scheduleTime) {
     if (0 <= table[0]) this.updateDetune(channel, note, scheduleTime);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
       if (0 <= table[1]) {
@@ -3134,7 +3134,7 @@ export class Midy {
       table[pp] = rr;
     }
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setControllerParameters(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, table, scheduleTime);
     });
   }
 
@@ -3149,7 +3149,7 @@ export class Midy {
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
     this.processScheduledNotes(channel, (note) => {
-      this.setControllerParameters(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, table, scheduleTime);
     });
   }
 
