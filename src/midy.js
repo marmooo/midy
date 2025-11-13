@@ -2711,7 +2711,7 @@ export class Midy {
               scheduleTime,
             );
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handleControlChangeSysEx(data);
+            return this.handleControlChangeSysEx(data, scheduleTime);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -3153,7 +3153,7 @@ export class Midy {
     });
   }
 
-  handleControlChangeSysEx(data) {
+  handleControlChangeSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
@@ -3166,6 +3166,7 @@ export class Midy {
       const rr = data[i + 1];
       table[offset + pp] = rr;
     }
+    this.setControlChangeEffects(channel, controllerType, scheduleTime);
   }
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
