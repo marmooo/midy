@@ -2899,12 +2899,14 @@ export class MidyGM2 {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    const slotSize = 6;
     const controllerType = data[5];
-    const table = channel.controlTable[controllerType];
-    for (let i = 6; i < data.length - 1; i += 2) {
+    const offset = controllerType * slotSize;
+    const table = channel.controlTable;
+    for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
-      table[pp] = rr;
+      table[offset + pp] = rr;
     }
   }
 
