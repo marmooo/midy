@@ -1416,10 +1416,14 @@ export class MidyGM2 {
       startTime,
     );
     if (channel.isDrum) {
-      const audioContext = this.audioContext;
-      const { gainL, gainR } = this.createChannelAudioNodes(audioContext);
-      channel.keyBasedGainLs[noteNumber] = gainL;
-      channel.keyBasedGainRs[noteNumber] = gainR;
+      const { keyBasedGainLs, keyBasedGainRs } = channel;
+      let gainL = keyBasedGainLs[noteNumber];
+      let gainR = keyBasedGainRs[noteNumber];
+      if (!gainL) {
+        const audioNodes = this.createChannelAudioNodes(this.audioContext);
+        gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
+        gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
+      }
       note.volumeEnvelopeNode.connect(gainL);
       note.volumeEnvelopeNode.connect(gainR);
     } else {
