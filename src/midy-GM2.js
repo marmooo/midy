@@ -2923,17 +2923,13 @@ export class MidyGM2 {
     if (!channel.isDrum) return;
     const keyNumber = data[5];
     const table = channel.keyBasedInstrumentControlTable;
-    for (let i = 6; i < data.length - 1; i += 2) {
+    for (let i = 6; i < data.length; i += 2) {
       const controllerType = data[i];
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
+      this.setControlChange(channelNumber, controllerType, value, scheduleTime);
     }
-    this.setChannelPressure(
-      channelNumber,
-      channel.state.channelPressure * 127,
-      scheduleTime,
-    );
   }
 
   handleSysEx(data, scheduleTime) {
