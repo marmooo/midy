@@ -1992,8 +1992,13 @@ export class MidyGM2 {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
-    this.updateChannelVolume(channel, scheduleTime);
-    this.updateKeyBasedVolume(channel, scheduleTime);
+    if (channel.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        this.updateKeyBasedVolume(channel, i, scheduleTime);
+      }
+    } else {
+      this.updateChannelVolume(channel, scheduleTime);
+    }
   }
 
   panToGain(pan) {
@@ -2008,8 +2013,13 @@ export class MidyGM2 {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
-    this.updateChannelVolume(channel, scheduleTime);
-    this.updateKeyBasedVolume(channel, scheduleTime);
+    if (channel.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        this.updateKeyBasedVolume(channel, i, scheduleTime);
+      }
+    } else {
+      this.updateChannelVolume(channel, scheduleTime);
+    }
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
@@ -2040,30 +2050,26 @@ export class MidyGM2 {
       .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
-  updateKeyBasedVolume(channel, scheduleTime) {
-    if (!channel.isDrum) return;
+  updateKeyBasedVolume(channel, keyNumber, scheduleTime) {
     const state = channel.state;
     const defaultVolume = state.volume * state.expression;
     const defaultPan = state.pan;
-    for (let i = 0; i < 128; i++) {
-      const gainL = channel.keyBasedGainLs[i];
-      const gainR = channel.keyBasedGainLs[i];
-      if (!gainL) continue;
-      if (!gainR) continue;
-      const keyBasedVolume = this.getKeyBasedValue(channel, i, 7);
-      const volume = (0 <= keyBasedVolume)
-        ? defaultVolume * keyBasedVolume / 64
-        : defaultVolume;
-      const keyBasedPan = this.getKeyBasedValue(channel, i, 10);
-      const pan = (0 <= keyBasedPan) ? keyBasedPan / 127 : defaultPan;
-      const { gainLeft, gainRight } = this.panToGain(pan);
-      gainL.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(volume * gainLeft, scheduleTime);
-      gainR.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(volume * gainRight, scheduleTime);
-    }
+    const gainL = channel.keyBasedGainLs[keyNumber];
+    const gainR = channel.keyBasedGainRs[keyNumber];
+    if (!gainL) return;
+    const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
+    const volume = (0 <= keyBasedVolume)
+      ? defaultVolume * keyBasedVolume / 64
+      : defaultVolume;
+    const keyBasedPan = this.getKeyBasedValue(channel, keyNumber, 10);
+    const pan = (0 <= keyBasedPan) ? keyBasedPan / 127 : defaultPan;
+    const { gainLeft, gainRight } = this.panToGain(pan);
+    gainL.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(volume * gainLeft, scheduleTime);
+    gainR.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(volume * gainRight, scheduleTime);
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
@@ -2932,7 +2938,19 @@ export class MidyGM2 {
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
-      this.setControlChange(channelNumber, controllerType, value, scheduleTime);
+      switch (controllerType) {
+        case 7:
+        case 10:
+          this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+          break;
+        default: // TODO
+          this.setControlChange(
+            channelNumber,
+            controllerType,
+            value,
+            scheduleTime,
+          );
+      }
     }
   }
 
