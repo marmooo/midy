@@ -627,7 +627,7 @@ var require_midi_file = __commonJS({
 // src/midy-GM2.js
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Stream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Stream.js
 var Stream = class {
   constructor(data, offset) {
     Object.defineProperty(this, "data", {
@@ -691,7 +691,7 @@ var Stream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
 function parseChunk(input, offset, bigEndian) {
   const stream = new Stream(input, offset);
   const type = stream.readString(4);
@@ -735,7 +735,7 @@ var Chunk = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -803,7 +803,7 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
 var ModulatorSource = class _ModulatorSource {
   constructor(type, polarity, direction, cc, index) {
     Object.defineProperty(this, "type", {
@@ -878,7 +878,7 @@ var ModulatorSource = class _ModulatorSource {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1198,6 +1198,10 @@ var GeneratorList = class _GeneratorList {
       case "velRange":
         value = RangeValue.parse(stream);
         break;
+      case "instrument":
+      case "sampleID":
+        value = stream.readUInt16();
+        break;
       default:
         value = stream.readInt16();
         break;
@@ -1343,7 +1347,7 @@ var BoundedValue = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
 var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
 var AudioTypesSet = new Set(AudioDataTypes);
 var AudioData = class {
@@ -1416,7 +1420,7 @@ var AudioData = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Parser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Parser.js
 function parse(input, option = {}) {
   const chunkList = parseRiff(input, 0, input.length, option);
   if (chunkList.length !== 1) {
@@ -1530,7 +1534,7 @@ function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB,
   return result;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
 for (let i = 0; i < GeneratorKeys.length; i++) {
   generatorKeyToIndex.set(GeneratorKeys[i], i);
@@ -1658,6 +1662,8 @@ function createInstrumentGeneratorObject(generators) {
 }
 var int16min = -32768;
 var int16max = 32767;
+var uint16min = 0;
+var uint16max = 65535;
 var DefaultInstrumentZone = {
   startAddrsOffset: new BoundedValue(0, 0, int16max),
   endAddrsOffset: new BoundedValue(int16min, 0, 0),
@@ -1696,7 +1702,7 @@ var DefaultInstrumentZone = {
   releaseVolEnv: new BoundedValue(-12e3, -12e3, 8e3),
   keynumToVolEnvHold: new BoundedValue(-1200, 0, 1200),
   keynumToVolEnvDecay: new BoundedValue(-1200, 0, 1200),
-  instrument: new BoundedValue(-1, -1, int16max),
+  instrument: new BoundedValue(uint16min, uint16max, uint16max),
   keyRange: new RangeValue(0, 127),
   velRange: new RangeValue(0, 127),
   startloopAddrsCoarseOffset: new BoundedValue(int16min, 0, int16max),
@@ -1706,14 +1712,14 @@ var DefaultInstrumentZone = {
   endloopAddrsCoarseOffset: new BoundedValue(int16min, 0, int16max),
   coarseTune: new BoundedValue(-120, 0, 120),
   fineTune: new BoundedValue(-99, 0, 99),
-  sampleID: new BoundedValue(-1, -1, int16max),
+  sampleID: new BoundedValue(uint16min, uint16max, uint16max),
   sampleModes: new BoundedValue(0, 0, 3),
   scaleTuning: new BoundedValue(0, 100, 100),
   exclusiveClass: new BoundedValue(0, 0, 127),
   overridingRootKey: new BoundedValue(-1, -1, 127)
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Voice.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Voice.js
 function timecentToSecond(value) {
   return Math.pow(2, value / 1200);
 }
@@ -2052,7 +2058,7 @@ var Voice = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
 var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
   new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
@@ -2067,7 +2073,7 @@ var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
 var InstrumentZone = class {
   constructor(generators, modulators) {
     Object.defineProperty(this, "generators", {
@@ -2269,8 +2275,8 @@ var Note = class {
   modulationDepth;
   vibratoLFO;
   vibratoDepth;
-  reverbEffectsSend;
-  chorusEffectsSend;
+  reverbSend;
+  chorusSend;
   portamentoNoteNumber = -1;
   constructor(noteNumber, velocity, startTime, voice, voiceParams) {
     this.noteNumber = noteNumber;
@@ -2429,8 +2435,8 @@ var MidyGM2 = class {
   isStopping = false;
   isSeeking = false;
   timeline = [];
-  instruments = [];
   notePromises = [];
+  instruments = /* @__PURE__ */ new Set();
   exclusiveClassNotes = new Array(128);
   drumExclusiveClassNotes = new Array(
     this.numChannels * drumExclusiveClassCount
@@ -2583,7 +2589,7 @@ var MidyGM2 = class {
       velocity
     );
     const { instrument, sampleID } = voice.generators;
-    return `${soundFontIndex}:${instrument}:${sampleID}`;
+    return soundFontIndex * 2 ** 32 + (instrument << 16) + sampleID;
   }
   createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
@@ -3017,13 +3023,11 @@ var MidyGM2 = class {
     return impulse;
   }
   createConvolutionReverb(audioContext, impulse) {
-    const input = new GainNode(audioContext);
     const convolverNode = new ConvolverNode(audioContext, {
       buffer: impulse
     });
-    input.connect(convolverNode);
     return {
-      input,
+      input: convolverNode,
       output: convolverNode,
       convolverNode
     };
@@ -3451,12 +3455,8 @@ var MidyGM2 = class {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
-    if (0 < state.chorusSendLevel) {
-      this.setChorusEffectsSend(channel, note, 0, now);
-    }
-    if (0 < state.reverbSendLevel) {
-      this.setReverbEffectsSend(channel, note, 0, now);
-    }
+    this.setChorusSend(channel, note, now);
+    this.setReverbSend(channel, note, now);
     note.bufferSource.start(startTime);
     return note;
   }
@@ -3536,10 +3536,14 @@ var MidyGM2 = class {
       startTime
     );
     if (channel.isDrum) {
-      const audioContext = this.audioContext;
-      const { gainL, gainR } = this.createChannelAudioNodes(audioContext);
-      channel.keyBasedGainLs[noteNumber] = gainL;
-      channel.keyBasedGainRs[noteNumber] = gainR;
+      const { keyBasedGainLs, keyBasedGainRs } = channel;
+      let gainL = keyBasedGainLs[noteNumber];
+      let gainR = keyBasedGainRs[noteNumber];
+      if (!gainL) {
+        const audioNodes = this.createChannelAudioNodes(this.audioContext);
+        gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
+        gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
+      }
       note.volumeEnvelopeNode.connect(gainL);
       note.volumeEnvelopeNode.connect(gainR);
     } else {
@@ -3579,11 +3583,11 @@ var MidyGM2 = class {
       note.vibratoDepth.disconnect();
       note.vibratoLFO.stop();
     }
-    if (note.reverbEffectsSend) {
-      note.reverbEffectsSend.disconnect();
+    if (note.reverbSend) {
+      note.reverbSend.disconnect();
     }
-    if (note.chorusEffectsSend) {
-      note.chorusEffectsSend.disconnect();
+    if (note.chorusSend) {
+      note.chorusSend.disconnect();
     }
   }
   releaseNote(channel, note, endTime) {
@@ -3747,7 +3751,7 @@ var MidyGM2 = class {
     }
     const table = channel.channelPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setControllerParameters(channel, note, table);
+      this.setEffects(channel, note, table);
     });
     this.applyVoiceParams(channel, 13);
   }
@@ -3768,10 +3772,14 @@ var MidyGM2 = class {
     this.applyVoiceParams(channel, 14, scheduleTime);
   }
   setModLfoToPitch(channel, note, scheduleTime) {
-    const modLfoToPitch = note.voiceParams.modLfoToPitch + this.getLFOPitchDepth(channel);
-    const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-    const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
-    note.modulationDepth.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modulationDepth, scheduleTime);
+    if (note.modulationDepth) {
+      const modLfoToPitch = note.voiceParams.modLfoToPitch + this.getLFOPitchDepth(channel, note);
+      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      note.modulationDepth.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modulationDepth, scheduleTime);
+    } else {
+      this.startModulation(channel, note, scheduleTime);
+    }
   }
   setVibLfoToPitch(channel, note, scheduleTime) {
     const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
@@ -3789,55 +3797,51 @@ var MidyGM2 = class {
     const volumeDepth = baseDepth * Math.sign(modLfoToVolume) * (1 + this.getLFOAmplitudeDepth(channel));
     note.volumeDepth.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volumeDepth, scheduleTime);
   }
-  setReverbEffectsSend(channel, note, prevValue, scheduleTime) {
-    let value = note.voiceParams.reverbEffectsSend;
+  setReverbSend(channel, note, scheduleTime) {
+    let value = note.voiceParams.reverbEffectsSend * channel.state.reverbSendLevel;
     if (channel.isDrum) {
       const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 91);
-      if (0 <= keyBasedValue) {
-        value *= keyBasedValue / 127 / channel.state.reverbSendLevel;
-      }
+      if (0 <= keyBasedValue) value = keyBasedValue / 127;
     }
-    if (0 < prevValue) {
+    if (!note.reverbSend) {
       if (0 < value) {
-        note.reverbEffectsSend.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value, scheduleTime);
-      } else {
-        note.reverbEffectsSend.disconnect();
+        note.reverbSend = new GainNode(this.audioContext, { gain: value });
+        note.volumeEnvelopeNode.connect(note.reverbSend);
+        note.reverbSend.connect(this.reverbEffect.input);
       }
     } else {
+      note.reverbSend.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value, scheduleTime);
       if (0 < value) {
-        if (!note.reverbEffectsSend) {
-          note.reverbEffectsSend = new GainNode(this.audioContext, {
-            gain: value
-          });
-          note.volumeNode.connect(note.reverbEffectsSend);
+        note.volumeEnvelopeNode.connect(note.reverbSend);
+      } else {
+        try {
+          note.volumeEnvelopeNode.disconnect(note.reverbSend);
+        } catch {
         }
-        note.reverbEffectsSend.connect(this.reverbEffect.input);
       }
     }
   }
-  setChorusEffectsSend(channel, note, prevValue, scheduleTime) {
-    let value = note.voiceParams.chorusEffectsSend;
+  setChorusSend(channel, note, scheduleTime) {
+    let value = note.voiceParams.chorusEffectsSend * channel.state.chorusSendLevel;
     if (channel.isDrum) {
       const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 93);
-      if (0 <= keyBasedValue) {
-        value *= keyBasedValue / 127 / channel.state.chorusSendLevel;
-      }
+      if (0 <= keyBasedValue) value = keyBasedValue / 127;
     }
-    if (0 < prevValue) {
+    if (!note.chorusSend) {
       if (0 < value) {
-        note.chorusEffectsSend.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value, scheduleTime);
-      } else {
-        note.chorusEffectsSend.disconnect();
+        note.chorusSend = new GainNode(this.audioContext, { gain: value });
+        note.volumeEnvelopeNode.connect(note.chorusSend);
+        note.chorusSend.connect(this.chorusEffect.input);
       }
     } else {
+      note.chorusSend.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value, scheduleTime);
       if (0 < value) {
-        if (!note.chorusEffectsSend) {
-          note.chorusEffectsSend = new GainNode(this.audioContext, {
-            gain: value
-          });
-          note.volumeEnvelopeNode.connect(note.chorusEffectsSend);
+        note.volumeEnvelopeNode.connect(note.chorusSend);
+      } else {
+        try {
+          note.volumeEnvelopeNode.disconnect(note.chorusSend);
+        } catch {
         }
-        note.chorusEffectsSend.connect(this.chorusEffect.input);
       }
     }
   }
@@ -3983,7 +3987,7 @@ var MidyGM2 = class {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.applyControlTable(channel, controllerType, scheduleTime);
+      this.setControlChangeEffects(channel, controllerType, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`
@@ -3999,7 +4003,6 @@ var MidyGM2 = class {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
-        this.setPitchEnvelope(note, scheduleTime);
         this.startModulation(channel, note, scheduleTime);
       }
     });
@@ -4041,8 +4044,13 @@ var MidyGM2 = class {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
-    this.updateChannelVolume(channel, scheduleTime);
-    this.updateKeyBasedVolume(channel, scheduleTime);
+    if (channel.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        this.updateKeyBasedVolume(channel, i, scheduleTime);
+      }
+    } else {
+      this.updateChannelVolume(channel, scheduleTime);
+    }
   }
   panToGain(pan) {
     const theta = Math.PI / 2 * Math.max(0, pan * 127 - 1) / 126;
@@ -4055,8 +4063,13 @@ var MidyGM2 = class {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
-    this.updateChannelVolume(channel, scheduleTime);
-    this.updateKeyBasedVolume(channel, scheduleTime);
+    if (channel.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        this.updateKeyBasedVolume(channel, i, scheduleTime);
+      }
+    } else {
+      this.updateChannelVolume(channel, scheduleTime);
+    }
   }
   setExpression(channelNumber, expression, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
@@ -4078,24 +4091,20 @@ var MidyGM2 = class {
     channel.gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainLeft, scheduleTime);
     channel.gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainRight, scheduleTime);
   }
-  updateKeyBasedVolume(channel, scheduleTime) {
-    if (!channel.isDrum) return;
+  updateKeyBasedVolume(channel, keyNumber, scheduleTime) {
     const state = channel.state;
     const defaultVolume = state.volume * state.expression;
     const defaultPan = state.pan;
-    for (let i = 0; i < 128; i++) {
-      const gainL = channel.keyBasedGainLs[i];
-      const gainR = channel.keyBasedGainLs[i];
-      if (!gainL) continue;
-      if (!gainR) continue;
-      const keyBasedVolume = this.getKeyBasedValue(channel, i, 7);
-      const volume = 0 <= keyBasedVolume ? defaultVolume * keyBasedVolume / 64 : defaultVolume;
-      const keyBasedPan = this.getKeyBasedValue(channel, i, 10);
-      const pan = 0 <= keyBasedPan ? keyBasedPan / 127 : defaultPan;
-      const { gainLeft, gainRight } = this.panToGain(pan);
-      gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainLeft, scheduleTime);
-      gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainRight, scheduleTime);
-    }
+    const gainL = channel.keyBasedGainLs[keyNumber];
+    const gainR = channel.keyBasedGainRs[keyNumber];
+    if (!gainL) return;
+    const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
+    const volume = 0 <= keyBasedVolume ? defaultVolume * keyBasedVolume / 64 : defaultVolume;
+    const keyBasedPan = this.getKeyBasedValue(channel, keyNumber, 10);
+    const pan = 0 <= keyBasedPan ? keyBasedPan / 127 : defaultPan;
+    const { gainLeft, gainRight } = this.panToGain(pan);
+    gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainLeft, scheduleTime);
+    gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * gainRight, scheduleTime);
   }
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
@@ -4155,51 +4164,19 @@ var MidyGM2 = class {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const reverbEffect = this.reverbEffect;
-    if (0 < state.reverbSendLevel) {
-      if (0 < reverbSendLevel) {
-        state.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.input.gain.cancelScheduledValues(scheduleTime).setValueAtTime(state.reverbSendLevel, scheduleTime);
-      } else {
-        this.processScheduledNotes(channel, (note) => {
-          if (note.voiceParams.reverbEffectsSend <= 0) return false;
-          if (note.reverbEffectsSend) note.reverbEffectsSend.disconnect();
-        });
-      }
-    } else {
-      if (0 < reverbSendLevel) {
-        this.processScheduledNotes(channel, (note) => {
-          this.setReverbEffectsSend(channel, note, 0, scheduleTime);
-        });
-        state.reverbSendLevel = reverbSendLevel / 127;
-        reverbEffect.input.gain.cancelScheduledValues(scheduleTime).setValueAtTime(state.reverbSendLevel, scheduleTime);
-      }
-    }
+    state.reverbSendLevel = reverbSendLevel / 127;
+    this.processScheduledNotes(channel, (note) => {
+      this.setReverbSend(channel, note, scheduleTime);
+    });
   }
   setChorusSendLevel(channelNumber, chorusSendLevel, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
-    const chorusEffect = this.chorusEffect;
-    if (0 < state.chorusSendLevel) {
-      if (0 < chorusSendLevel) {
-        state.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.input.gain.cancelScheduledValues(scheduleTime).setValueAtTime(state.chorusSendLevel, scheduleTime);
-      } else {
-        this.processScheduledNotes(channel, (note) => {
-          if (note.voiceParams.chorusEffectsSend <= 0) return false;
-          if (note.chorusEffectsSend) note.chorusEffectsSend.disconnect();
-        });
-      }
-    } else {
-      if (0 < chorusSendLevel) {
-        this.processScheduledNotes(channel, (note) => {
-          this.setChorusEffectsSend(channel, note, 0, scheduleTime);
-        });
-        state.chorusSendLevel = chorusSendLevel / 127;
-        chorusEffect.input.gain.cancelScheduledValues(scheduleTime).setValueAtTime(state.chorusSendLevel, scheduleTime);
-      }
-    }
+    state.chorusSendLevel = chorusSendLevel / 127;
+    this.processScheduledNotes(channel, (note) => {
+      this.setChorusSend(channel, note, scheduleTime);
+    });
   }
   limitData(channel, minMSB, maxMSB, minLSB, maxLSB) {
     if (maxLSB < channel.dataLSB) {
@@ -4491,9 +4468,13 @@ var MidyGM2 = class {
       case 9:
         switch (data[3]) {
           case 1:
-            return this.handlePressureSysEx(data, "channelPressureTable");
+            return this.handlePressureSysEx(
+              data,
+              "channelPressureTable",
+              scheduleTime
+            );
           case 3:
-            return this.handleControlChangeSysEx(data);
+            return this.handleControlChangeSysEx(data, scheduleTime);
           default:
             console.warn(`Unsupported Exclusive Message: ${data}`);
         }
@@ -4785,8 +4766,8 @@ var MidyGM2 = class {
     const channelPressure = 0 <= channelPressureRaw ? channelPressureRaw * channel.state.channelPressure : 0;
     return channelPressure / 127;
   }
-  setControllerParameters(channel, note, table, scheduleTime) {
-    if (0 <= table[0]) this.updateDetune(channel, note, scueduleTime);
+  setEffects(channel, note, table, scheduleTime) {
+    if (0 <= table[0]) this.updateDetune(channel, note, scheduleTime);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
       if (0 <= table[1]) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
@@ -4802,7 +4783,7 @@ var MidyGM2 = class {
     if (0 <= table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
     if (0 <= table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
   }
-  handlePressureSysEx(data, tableName) {
+  handlePressureSysEx(data, tableName, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
@@ -4812,31 +4793,37 @@ var MidyGM2 = class {
       const rr = data[i + 1];
       table[pp] = rr;
     }
+    this.processActiveNotes(channel, scheduleTime, (note) => {
+      this.setEffects(channel, note, table, scheduleTime);
+    });
   }
   initControlTable() {
     const ccCount = 128;
     const slotSize = 6;
     return new Int8Array(ccCount * slotSize).fill(-1);
   }
-  applyControlTable(channel, controllerType, scheduleTime) {
+  setControlChangeEffects(channel, controllerType, scheduleTime) {
     const slotSize = 6;
     const offset = controllerType * slotSize;
     const table = channel.controlTable.subarray(offset, offset + slotSize);
     this.processScheduledNotes(channel, (note) => {
-      this.setControllerParameters(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, table, scheduleTime);
     });
   }
-  handleControlChangeSysEx(data) {
+  handleControlChangeSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    const slotSize = 6;
     const controllerType = data[5];
-    const table = channel.controlTable[controllerType];
-    for (let i = 6; i < data.length - 1; i += 2) {
+    const offset = controllerType * slotSize;
+    const table = channel.controlTable;
+    for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
-      table[pp] = rr;
+      table[offset + pp] = rr;
     }
+    this.setControlChangeEffects(channel, controllerType, scheduleTime);
   }
   getKeyBasedValue(channel, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
@@ -4849,17 +4836,25 @@ var MidyGM2 = class {
     if (!channel.isDrum) return;
     const keyNumber = data[5];
     const table = channel.keyBasedInstrumentControlTable;
-    for (let i = 6; i < data.length - 1; i += 2) {
+    for (let i = 6; i < data.length; i += 2) {
       const controllerType = data[i];
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
+      switch (controllerType) {
+        case 7:
+        case 10:
+          this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+          break;
+        default:
+          this.setControlChange(
+            channelNumber,
+            controllerType,
+            value,
+            scheduleTime
+          );
+      }
     }
-    this.setChannelPressure(
-      channelNumber,
-      channel.state.channelPressure * 127,
-      scheduleTime
-    );
   }
   handleSysEx(data, scheduleTime) {
     switch (data[0]) {

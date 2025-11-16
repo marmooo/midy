@@ -627,7 +627,7 @@ var require_midi_file = __commonJS({
 // src/midy-GM1.js
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Stream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Stream.js
 var Stream = class {
   constructor(data, offset) {
     Object.defineProperty(this, "data", {
@@ -691,7 +691,7 @@ var Stream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
 function parseChunk(input, offset, bigEndian) {
   const stream = new Stream(input, offset);
   const type = stream.readString(4);
@@ -735,7 +735,7 @@ var Chunk = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -803,7 +803,7 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
 var ModulatorSource = class _ModulatorSource {
   constructor(type, polarity, direction, cc, index) {
     Object.defineProperty(this, "type", {
@@ -878,7 +878,7 @@ var ModulatorSource = class _ModulatorSource {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1198,6 +1198,10 @@ var GeneratorList = class _GeneratorList {
       case "velRange":
         value = RangeValue.parse(stream);
         break;
+      case "instrument":
+      case "sampleID":
+        value = stream.readUInt16();
+        break;
       default:
         value = stream.readInt16();
         break;
@@ -1343,7 +1347,7 @@ var BoundedValue = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
 var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
 var AudioTypesSet = new Set(AudioDataTypes);
 var AudioData = class {
@@ -1416,7 +1420,7 @@ var AudioData = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Parser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Parser.js
 function parse(input, option = {}) {
   const chunkList = parseRiff(input, 0, input.length, option);
   if (chunkList.length !== 1) {
@@ -1530,7 +1534,7 @@ function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB,
   return result;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
 for (let i = 0; i < GeneratorKeys.length; i++) {
   generatorKeyToIndex.set(GeneratorKeys[i], i);
@@ -1658,6 +1662,8 @@ function createInstrumentGeneratorObject(generators) {
 }
 var int16min = -32768;
 var int16max = 32767;
+var uint16min = 0;
+var uint16max = 65535;
 var DefaultInstrumentZone = {
   startAddrsOffset: new BoundedValue(0, 0, int16max),
   endAddrsOffset: new BoundedValue(int16min, 0, 0),
@@ -1696,7 +1702,7 @@ var DefaultInstrumentZone = {
   releaseVolEnv: new BoundedValue(-12e3, -12e3, 8e3),
   keynumToVolEnvHold: new BoundedValue(-1200, 0, 1200),
   keynumToVolEnvDecay: new BoundedValue(-1200, 0, 1200),
-  instrument: new BoundedValue(-1, -1, int16max),
+  instrument: new BoundedValue(uint16min, uint16max, uint16max),
   keyRange: new RangeValue(0, 127),
   velRange: new RangeValue(0, 127),
   startloopAddrsCoarseOffset: new BoundedValue(int16min, 0, int16max),
@@ -1706,14 +1712,14 @@ var DefaultInstrumentZone = {
   endloopAddrsCoarseOffset: new BoundedValue(int16min, 0, int16max),
   coarseTune: new BoundedValue(-120, 0, 120),
   fineTune: new BoundedValue(-99, 0, 99),
-  sampleID: new BoundedValue(-1, -1, int16max),
+  sampleID: new BoundedValue(uint16min, uint16max, uint16max),
   sampleModes: new BoundedValue(0, 0, 3),
   scaleTuning: new BoundedValue(0, 100, 100),
   exclusiveClass: new BoundedValue(0, 0, 127),
   overridingRootKey: new BoundedValue(-1, -1, 127)
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/Voice.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Voice.js
 function timecentToSecond(value) {
   return Math.pow(2, value / 1200);
 }
@@ -2052,7 +2058,7 @@ var Voice = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
 var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
   new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
@@ -2067,7 +2073,7 @@ var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.2/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
 var InstrumentZone = class {
   constructor(generators, modulators) {
     Object.defineProperty(this, "generators", {
@@ -2360,8 +2366,8 @@ var MidyGM1 = class {
   isStopping = false;
   isSeeking = false;
   timeline = [];
-  instruments = [];
   notePromises = [];
+  instruments = /* @__PURE__ */ new Set();
   exclusiveClassNotes = new Array(128);
   static channelSettings = {
     detune: 0,
@@ -2502,7 +2508,7 @@ var MidyGM1 = class {
       velocity
     );
     const { instrument, sampleID } = voice.generators;
-    return `${soundFontIndex}:${instrument}:${sampleID}`;
+    return soundFontIndex * 2 ** 32 + (instrument << 16) + sampleID;
   }
   createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
@@ -3194,10 +3200,14 @@ var MidyGM1 = class {
     this.applyVoiceParams(channel, 14, scheduleTime);
   }
   setModLfoToPitch(channel, note, scheduleTime) {
-    const modLfoToPitch = note.voiceParams.modLfoToPitch;
-    const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-    const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
-    note.modulationDepth.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modulationDepth, scheduleTime);
+    if (note.modulationDepth) {
+      const modLfoToPitch = note.voiceParams.modLfoToPitch;
+      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      note.modulationDepth.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modulationDepth, scheduleTime);
+    } else {
+      this.startModulation(channel, note, scheduleTime);
+    }
   }
   setModLfoToFilterFc(note, scheduleTime) {
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
@@ -3325,7 +3335,6 @@ var MidyGM1 = class {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
       } else {
-        this.setPitchEnvelope(note, scheduleTime);
         this.startModulation(channel, note, scheduleTime);
       }
     });
