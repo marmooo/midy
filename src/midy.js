@@ -3151,13 +3151,20 @@ export class Midy {
         case 10:
           this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
           break;
-        default: // TODO
-          this.setControlChange(
-            channelNumber,
-            controllerType,
-            value,
-            scheduleTime,
-          );
+        case 91:
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setReverbSend(channel, note, scheduleTime);
+            }
+          });
+          break;
+        case 93:
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setChorusSend(channel, note, scheduleTime);
+            }
+          });
+          break;
       }
     }
   }
