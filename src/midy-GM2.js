@@ -177,6 +177,7 @@ export class MidyGM2 {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
+  playPromise;
   timeline = [];
   notePromises = [];
   instruments = new Set();
@@ -708,13 +709,15 @@ export class MidyGM2 {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    await this.playNotes();
+    this.playPromise = this.playNotes();
+    await this.playPromise;
     this.isPlaying = false;
   }
 
-  stop() {
+  async stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
+    await this.playPromise;
   }
 
   pause() {
@@ -726,7 +729,8 @@ export class MidyGM2 {
 
   async resume() {
     if (!this.isPaused) return;
-    await this.playNotes();
+    this.playPromise = this.playNotes();
+    await this.playPromise;
     this.isPlaying = false;
   }
 
