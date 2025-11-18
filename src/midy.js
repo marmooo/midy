@@ -503,13 +503,13 @@ export class Midy {
     return 0;
   }
 
-  resetAll() {
+  resetAllStates() {
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
     for (let i = 0; i < this.channels.length; i++) {
       this.channels[i].scheduledNotes = [];
-      this.resetAllStates(i);
+      this.resetChannelStates(i);
     }
   }
 
@@ -551,7 +551,7 @@ export class Midy {
     }
     if (finished) {
       this.notePromises = [];
-      this.resetAll();
+      this.resetAllStates();
     }
     this.isPlaying = false;
   }
@@ -2448,7 +2448,7 @@ export class Midy {
     return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
 
-  resetAllStates(channelNumber) {
+  resetChannelStates(channelNumber) {
     const scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const state = channel.state;
