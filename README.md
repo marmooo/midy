@@ -39,8 +39,8 @@ await midy.start();
 
 ```js
 await midy.start();
-midy.stop();
-midy.pause();
+await midy.stop();
+await midy.pause();
 await midy.resume();
 midy.seekTo(second);
 ```

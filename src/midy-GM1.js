@@ -379,70 +379,57 @@ export class MidyGM1 {
     return 0;
   }
 
-  playNotes() {
-    return new Promise((resolve) => {
-      this.isPlaying = true;
-      this.isPaused = false;
-      this.startTime = this.audioContext.currentTime;
-      let queueIndex = this.getQueueIndex(this.resumeTime);
-      let resumeTime = this.resumeTime - this.startTime;
+  resetAll() {
+    this.exclusiveClassNotes.fill(undefined);
+    this.drumExclusiveClassNotes.fill(undefined);
+    this.voiceCache.clear();
+    for (let i = 0; i < this.channels.length; i++) {
+      this.channels[i].scheduledNotes = [];
+      this.resetAllStates(i);
+    }
+  }
+
+  async playNotes() {
+    this.isPlaying = true;
+    this.isPaused = false;
+    this.startTime = this.audioContext.currentTime;
+    let queueIndex = this.getQueueIndex(this.resumeTime);
+    let resumeTime = this.resumeTime - this.startTime;
+    let finished = false;
+    this.notePromises = [];
+    while (queueIndex < this.timeline.length) {
+      const now = this.audioContext.currentTime;
+      const t = now + resumeTime;
+      queueIndex = await this.scheduleTimelineEvents(
+        t,
+        resumeTime,
+        queueIndex,
+      );
+      if (this.isPausing) {
+        await this.stopNotes(0, true, now);
+        this.notePromises = [];
+        break;
+      } else if (this.isStopping) {
+        await this.stopNotes(0, true, now);
+        finished = true;
+        break;
+      } else if (this.isSeeking) {
+        await this.stopNotes(0, true, now);
+        // TODO: reset & recover states
+        this.startTime = this.audioContext.currentTime;
+        queueIndex = this.getQueueIndex(this.resumeTime);
+        resumeTime = this.resumeTime - this.startTime;
+        this.isSeeking = false;
+        continue;
+      }
+      const waitTime = now + this.noteCheckInterval;
+      await this.scheduleTask(() => {}, waitTime);
+    }
+    if (finished) {
       this.notePromises = [];
-      const schedulePlayback = async () => {
-        if (queueIndex >= this.timeline.length) {
-          await Promise.all(this.notePromises);
-          this.notePromises = [];
-          this.exclusiveClassNotes.fill(undefined);
-          this.voiceCache.clear();
-          for (let i = 0; i < this.channels.length; i++) {
-            this.channels[i].scheduledNotes = [];
-            this.resetAllStates(i);
-          }
-          resolve();
-          return;
-        }
-        const now = this.audioContext.currentTime;
-        const t = now + resumeTime;
-        queueIndex = await this.scheduleTimelineEvents(
-          t,
-          resumeTime,
-          queueIndex,
-        );
-        if (this.isPausing) {
-          await this.stopNotes(0, true, now);
-          this.notePromises = [];
-          this.isPausing = false;
-          this.isPaused = true;
-          resolve();
-          return;
-        } else if (this.isStopping) {
-          await this.stopNotes(0, true, now);
-          this.notePromises = [];
-          this.exclusiveClassNotes.fill(undefined);
-          this.voiceCache.clear();
-          for (let i = 0; i < this.channels.length; i++) {
-            this.channels[i].scheduledNotes = [];
-            this.resetAllStates(i);
-          }
-          this.isStopping = false;
-          this.isPaused = false;
-          resolve();
-          return;
-        } else if (this.isSeeking) {
-          this.stopNotes(0, true, now);
-          this.exclusiveClassNotes.fill(undefined);
-          this.startTime = this.audioContext.currentTime;
-          queueIndex = this.getQueueIndex(this.resumeTime);
-          resumeTime = this.resumeTime - this.startTime;
-          this.isSeeking = false;
-          await schedulePlayback();
-        } else {
-          const waitTime = now + this.noteCheckInterval;
-          await this.scheduleTask(() => {}, waitTime);
-          await schedulePlayback();
-        }
-      };
-      schedulePlayback();
-    });
+      this.resetAll();
+    }
+    this.isPlaying = false;
   }
 
   ticksToSecond(ticks, secondsPerBeat) {
@@ -567,27 +554,30 @@ export class MidyGM1 {
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     this.playPromise = this.playNotes();
     await this.playPromise;
-    this.isPlaying = false;
   }
 
   async stop() {
     if (!this.isPlaying) return;
     this.isStopping = true;
     await this.playPromise;
+    this.isStopping = false;
   }
 
-  pause() {
+  async pause() {
     if (!this.isPlaying || this.isPaused) return;
     const now = this.audioContext.currentTime;
     this.resumeTime += now - this.startTime - this.startDelay;
     this.isPausing = true;
+    await this.playPromise;
+    this.isPausing = false;
+    this.isPaused = true;
   }
 
   async resume() {
     if (!this.isPaused) return;
     this.playPromise = this.playNotes();
     await this.playPromise;
-    this.isPlaying = false;
+    this.isPaused = false;
   }
 
   seekTo(second) {
