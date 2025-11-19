@@ -407,6 +407,9 @@ export class MidyGMLite {
   }
 
   async playNotes() {
+    if (this.audioContext.state === "suspended") {
+      await this.audioContext.resume();
+    }
     this.isPlaying = true;
     this.isPaused = false;
     this.startTime = this.audioContext.currentTime;
@@ -424,10 +427,12 @@ export class MidyGMLite {
       );
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
+        await this.audioContext.suspend();
         this.notePromises = [];
         break;
       } else if (this.isStopping) {
         await this.stopNotes(0, true, now);
+        await this.audioContext.suspend();
         finished = true;
         break;
       } else if (this.isSeeking) {
