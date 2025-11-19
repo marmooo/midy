@@ -2032,12 +2032,12 @@ export class MidyGM2 {
   }
 
   updateKeyBasedVolume(channel, keyNumber, scheduleTime) {
+    const gainL = channel.keyBasedGainLs[keyNumber];
+    if (!gainL) return;
+    const gainR = channel.keyBasedGainRs[keyNumber];
     const state = channel.state;
     const defaultVolume = state.volume * state.expression;
     const defaultPan = state.pan;
-    const gainL = channel.keyBasedGainLs[keyNumber];
-    const gainR = channel.keyBasedGainRs[keyNumber];
-    if (!gainL) return;
     const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
     const volume = (0 <= keyBasedVolume)
       ? defaultVolume * keyBasedVolume / 64
