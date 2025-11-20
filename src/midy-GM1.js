@@ -389,6 +389,35 @@ export class MidyGM1 {
     }
   }
 
+  updateStates(queueIndex, nextQueueIndex) {
+    if (nextQueueIndex < queueIndex) queueIndex = 0;
+    for (let i = queueIndex; i < nextQueueIndex; i++) {
+      const event = this.timeline[i];
+      switch (event.type) {
+        case "controller":
+          this.setControlChange(
+            event.channel,
+            event.controllerType,
+            event.value,
+            0,
+          );
+          break;
+        case "programChange":
+          this.setProgramChange(
+            event.channel,
+            event.programNumber,
+            0,
+          );
+          break;
+        case "pitchBend":
+          this.setPitchBend(event.channel, event.value + 8192, 0);
+          break;
+        case "sysEx":
+          this.handleSysEx(event.data, 0);
+      }
+    }
+  }
+
   async playNotes() {
     if (this.audioContext.state === "suspended") {
       await this.audioContext.resume();
@@ -420,9 +449,10 @@ export class MidyGM1 {
         break;
       } else if (this.isSeeking) {
         await this.stopNotes(0, true, now);
-        // TODO: reset & recover states
         this.startTime = this.audioContext.currentTime;
-        queueIndex = this.getQueueIndex(this.resumeTime);
+        const nextQueueIndex = this.getQueueIndex(this.resumeTime);
+        this.updateStates(queueIndex, nextQueueIndex);
+        queueIndex = nextQueueIndex;
         resumeTime = this.resumeTime - this.startTime;
         this.isSeeking = false;
         continue;
