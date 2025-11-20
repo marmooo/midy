@@ -1656,6 +1656,7 @@ export class MidyGM2 {
           break;
       }
     }
+    channel.keyBasedInstrumentControlTable.fill(-1);
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {

@@ -1708,6 +1708,7 @@ export class Midy {
           break;
       }
     }
+    channel.keyBasedInstrumentControlTable.fill(-1);
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
