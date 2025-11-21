@@ -374,7 +374,7 @@ export class Midy {
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.fill(-1);
     channel.polyphonicKeyPressureTable.fill(-1);
-    channel.keyBasedInstrumentControlTable.fill(-1);
+    channel.keyBasedTable.fill(-1);
   }
 
   createChannels(audioContext) {
@@ -392,7 +392,7 @@ export class Midy {
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
         channelPressureTable: new Int8Array(6).fill(-1),
         polyphonicKeyPressureTable: new Int8Array(6).fill(-1),
-        keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
+        keyBasedTable: new Int8Array(128 * 128).fill(-1),
         keyBasedGainLs: new Array(128),
         keyBasedGainRs: new Array(128),
       };
@@ -1708,7 +1708,7 @@ export class Midy {
           break;
       }
     }
-    channel.keyBasedInstrumentControlTable.fill(-1);
+    channel.keyBasedTable.fill(-1);
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
@@ -3158,7 +3158,7 @@ export class Midy {
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
-    const controlValue = channel.keyBasedInstrumentControlTable[index];
+    const controlValue = channel.keyBasedTable[index];
     return controlValue;
   }
 
@@ -3167,7 +3167,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
     const keyNumber = data[5];
-    const table = channel.keyBasedInstrumentControlTable;
+    const table = channel.keyBasedTable;
     for (let i = 6; i < data.length; i += 2) {
       const controllerType = data[i];
       const value = data[i + 1];

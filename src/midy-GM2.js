@@ -363,7 +363,7 @@ export class MidyGM2 {
     channel.controlTable.fill(-1);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.fill(-1);
-    channel.keyBasedInstrumentControlTable.fill(-1);
+    channel.keyBasedTable.fill(-1);
   }
 
   createChannels(audioContext) {
@@ -381,7 +381,7 @@ export class MidyGM2 {
         scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
         channelPressureTable: new Int8Array(6).fill(-1),
 
-        keyBasedInstrumentControlTable: new Int8Array(128 * 128).fill(-1),
+        keyBasedTable: new Int8Array(128 * 128).fill(-1),
         keyBasedGainLs: new Array(128),
         keyBasedGainRs: new Array(128),
       };
@@ -1656,7 +1656,7 @@ export class MidyGM2 {
           break;
       }
     }
-    channel.keyBasedInstrumentControlTable.fill(-1);
+    channel.keyBasedTable.fill(-1);
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
@@ -2900,7 +2900,7 @@ export class MidyGM2 {
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
-    const controlValue = channel.keyBasedInstrumentControlTable[index];
+    const controlValue = channel.keyBasedTable[index];
     return controlValue;
   }
 
@@ -2909,7 +2909,7 @@ export class MidyGM2 {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
     const keyNumber = data[5];
-    const table = channel.keyBasedInstrumentControlTable;
+    const table = channel.keyBasedTable;
     for (let i = 6; i < data.length; i += 2) {
       const controllerType = data[i];
       const value = data[i + 1];
