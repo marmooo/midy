@@ -2237,8 +2237,9 @@ export class Midy {
     scheduleTime ??= this.audioContext.currentTime;
     channel.state.attackTime = attackTime / 127;
     this.processScheduledNotes(channel, (note) => {
-      if (note.startTime < scheduleTime) return false;
-      this.setVolumeEnvelope(channel, note, scheduleTime);
+      if (scheduleTime < note.startTime) {
+        this.setVolumeEnvelope(channel, note, scheduleTime);
+      }
     });
   }
 
