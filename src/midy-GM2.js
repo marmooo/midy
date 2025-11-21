@@ -1813,50 +1813,59 @@ export class MidyGM2 {
       .setValueAtTime(freqVibLFO * channel.state.vibratoRate * 2, scheduleTime);
   }
 
+  setDelayVibLFO(channel, note) {
+    const vibratoDelay = channel.state.vibratoDelay * 2;
+    const value = note.voiceParams.delayVibLFO;
+    const startTime = note.startTime + value * vibratoDelay;
+    try {
+      note.vibratoLFO.start(startTime);
+    } catch { /* empty */ }
+  }
+
   createVoiceParamsHandlers() {
     return {
-      modLfoToPitch: (channel, note, _prevValue, scheduleTime) => {
+      modLfoToPitch: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
-      vibLfoToPitch: (channel, note, _prevValue, scheduleTime) => {
+      vibLfoToPitch: (channel, note, scheduleTime) => {
         if (0 < channel.state.vibratoDepth) {
           this.setVibLfoToPitch(channel, note, scheduleTime);
         }
       },
-      modLfoToFilterFc: (channel, note, _prevValue, scheduleTime) => {
+      modLfoToFilterFc: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToFilterFc(channel, note, scheduleTime);
         }
       },
-      modLfoToVolume: (channel, note, _prevValue, scheduleTime) => {
+      modLfoToVolume: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToVolume(channel, note, scheduleTime);
         }
       },
-      chorusEffectsSend: (channel, note, prevValue, scheduleTime) => {
-        this.setChorusEffectsSend(channel, note, prevValue, scheduleTime);
+      chorusEffectsSend: (channel, note, scheduleTime) => {
+        this.setChorusSend(channel, note, scheduleTime);
       },
-      reverbEffectsSend: (channel, note, prevValue, scheduleTime) => {
-        this.setReverbEffectsSend(channel, note, prevValue, scheduleTime);
+      reverbEffectsSend: (channel, note, scheduleTime) => {
+        this.setReverbSend(channel, note, scheduleTime);
       },
-      delayModLFO: (_channel, note, _prevValue, scheduleTime) =>
-        this.setDelayModLFO(note, scheduleTime),
-      freqModLFO: (_channel, note, _prevValue, scheduleTime) =>
-        this.setFreqModLFO(note, scheduleTime),
-      delayVibLFO: (channel, note, prevValue, scheduleTime) => {
-        if (0 < channel.state.vibratoDepth) {
-          const vibratoDelay = channel.state.vibratoDelay * 2;
-          const prevStartTime = note.startTime + prevValue * vibratoDelay;
-          if (scheduleTime < prevStartTime) return;
-          const value = note.voiceParams.delayVibLFO;
-          const startTime = note.startTime + value * vibratoDelay;
-          note.vibratoLFO.stop(scheduleTime);
-          note.vibratoLFO.start(startTime);
+      delayModLFO: (_channel, note, _scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setDelayModLFO(note);
         }
       },
-      freqVibLFO: (channel, note, _prevValue, scheduleTime) => {
+      freqModLFO: (_channel, note, scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setFreqModLFO(note, scheduleTime);
+        }
+      },
+      delayVibLFO: (channel, note, _scheduleTime) => {
+        if (0 < channel.state.vibratoDepth) {
+          setDelayVibLFO(channel, note);
+        }
+      },
+      freqVibLFO: (channel, note, scheduleTime) => {
         if (0 < channel.state.vibratoDepth) {
           this.setFreqVibLFO(channel, note, scheduleTime);
         }
@@ -1889,12 +1898,7 @@ export class MidyGM2 {
         if (value === prevValue) continue;
         note.voiceParams[key] = value;
         if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](
-            channel,
-            note,
-            prevValue,
-            scheduleTime,
-          );
+          this.voiceParamsHandlers[key](channel, note, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;

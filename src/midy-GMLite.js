@@ -1156,30 +1156,36 @@ export class MidyGMLite {
 
   createVoiceParamsHandlers() {
     return {
-      modLfoToPitch: (channel, note, _prevValue, scheduleTime) => {
+      modLfoToPitch: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
-      vibLfoToPitch: (_channel, _note, _prevValue, _scheduleTime) => {},
-      modLfoToFilterFc: (channel, note, _prevValue, scheduleTime) => {
+      vibLfoToPitch: (_channel, _note, _scheduleTime) => {},
+      modLfoToFilterFc: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToFilterFc(note, scheduleTime);
         }
       },
-      modLfoToVolume: (channel, note, _prevValue, scheduleTime) => {
+      modLfoToVolume: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setModLfoToVolume(note, scheduleTime);
         }
       },
-      chorusEffectsSend: (_channel, _note, _prevValue, _scheduleTime) => {},
-      reverbEffectsSend: (_channel, _note, _prevValue, _scheduleTime) => {},
-      delayModLFO: (_channel, note, _prevValue, scheduleTime) =>
-        this.setDelayModLFO(note, scheduleTime),
-      freqModLFO: (_channel, note, _prevValue, scheduleTime) =>
-        this.setFreqModLFO(note, scheduleTime),
-      delayVibLFO: (_channel, _note, _prevValue, _scheduleTime) => {},
-      freqVibLFO: (_channel, _note, _prevValue, _scheduleTime) => {},
+      chorusEffectsSend: (_channel, _note, _scheduleTime) => {},
+      reverbEffectsSend: (_channel, _note, _scheduleTime) => {},
+      delayModLFO: (_channel, note, scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setDelayModLFO(note, scheduleTime);
+        }
+      },
+      freqModLFO: (_channel, note, scheduleTime) => {
+        if (0 < channel.state.modulationDepth) {
+          this.setFreqModLFO(note, scheduleTime);
+        }
+      },
+      delayVibLFO: (_channel, _note, _scheduleTime) => {},
+      freqVibLFO: (_channel, _note, _scheduleTime) => {},
     };
   }
 
@@ -1207,12 +1213,7 @@ export class MidyGMLite {
         if (value === prevValue) continue;
         note.voiceParams[key] = value;
         if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](
-            channel,
-            note,
-            prevValue,
-            scheduleTime,
-          );
+          this.voiceParamsHandlers[key](channel, note, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
