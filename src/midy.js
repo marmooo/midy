@@ -1130,13 +1130,13 @@ export class Midy {
   }
 
   setPortamentoVolumeEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
-    const volAttack = volDelay + voiceParams.volAttack * state.attackTime * 2;
+    const attackTime = this.getRelativeKeyBasedValue(channel, note, 73) * 2;
+    const volAttack = volDelay + voiceParams.volAttack * attackTime;
     const volHold = volAttack + voiceParams.volHold;
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
@@ -1144,15 +1144,16 @@ export class Midy {
   }
 
   setVolumeEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
     const { voiceParams, startTime } = note;
     const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
-    const volAttack = volDelay + voiceParams.volAttack * state.attackTime * 2;
+    const attackTime = this.getRelativeKeyBasedValue(channel, note, 73) * 2;
+    const volAttack = volDelay + voiceParams.volAttack * attackTime;
     const volHold = volAttack + voiceParams.volHold;
-    const volDecay = volHold + voiceParams.volDecay * state.decayTime * 2;
+    const decayTime = this.getRelativeKeyBasedValue(channel, note, 75) * 2;
+    const volDecay = volHold + voiceParams.volDecay * decayTime;
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
@@ -1198,16 +1199,15 @@ export class Midy {
   }
 
   setPortamentoFilterEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
     const { voiceParams, startTime } = note;
     const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel, note);
-    const baseFreq = this.centToHz(baseCent) * softPedalFactor *
-      state.brightness * 2;
+    const brightness = this.getRelativeKeyBasedValue(channel, note, 74) * 2;
+    const baseFreq = this.centToHz(baseCent) * softPedalFactor * brightness;
     const peekFreq = this.centToHz(
       voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
-    ) * softPedalFactor * state.brightness * 2;
+    ) * brightness;
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
@@ -1222,15 +1222,14 @@ export class Midy {
   }
 
   setFilterEnvelope(channel, note, scheduleTime) {
-    const state = channel.state;
     const { voiceParams, startTime } = note;
     const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel, note);
-    const baseFreq = this.centToHz(baseCent) * softPedalFactor *
-      state.brightness * 2;
+    const brightness = this.getRelativeKeyBasedValue(channel, note, 74) * 2;
+    const baseFreq = this.centToHz(baseCent) * softPedalFactor * brightness;
     const peekFreq = this.centToHz(baseCent + voiceParams.modEnvToFilterFc) *
-      softPedalFactor * state.brightness * 2;
+      softPedalFactor * brightness;
     const sustainFreq = baseFreq +
       (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
@@ -1273,12 +1272,13 @@ export class Midy {
 
   startVibrato(channel, note, scheduleTime) {
     const { voiceParams } = note;
-    const state = channel.state;
+    const vibratoRate = this.getRelativeKeyBasedValue(channel, note, 76) * 2;
+    const vibratoDelay = this.getRelativeKeyBasedValue(channel, note, 78) * 2;
     note.vibratoLFO = new OscillatorNode(this.audioContext, {
-      frequency: this.centToHz(voiceParams.freqVibLFO) * state.vibratoRate * 2,
+      frequency: this.centToHz(voiceParams.freqVibLFO) * vibratoRate,
     });
     note.vibratoLFO.start(
-      note.startTime + voiceParams.delayVibLFO * state.vibratoDelay * 2,
+      note.startTime + voiceParams.delayVibLFO * vibratoDelay,
     );
     note.vibratoDepth = new GainNode(this.audioContext);
     this.setVibLfoToPitch(channel, note, scheduleTime);
@@ -1343,9 +1343,10 @@ export class Midy {
       audioBuffer,
     );
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
+    const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: voiceParams.initialFilterQ / 5 * state.filterResonance, // dB
+      Q: voiceParams.initialFilterQ / 5 * filterResonance, // dB
     });
     const prevNote = channel.scheduledNotes.at(-1);
     if (prevNote && prevNote.noteNumber !== noteNumber) {
@@ -1520,8 +1521,8 @@ export class Midy {
   }
 
   releaseNote(channel, note, endTime) {
-    const volRelease = endTime +
-      note.voiceParams.volRelease * channel.state.releaseTime * 2;
+    const releaseTime = this.getRelativeKeyBasedValue(channel, note, 72) * 2;
+    const volRelease = endTime + note.voiceParams.volRelease * releaseTime;
     const modRelease = endTime + note.voiceParams.modRelease;
     const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
@@ -1752,23 +1753,28 @@ export class Midy {
       const modLfoToPitch = note.voiceParams.modLfoToPitch +
         this.getLFOPitchDepth(channel, note);
       const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      const depth = baseDepth * Math.sign(modLfoToPitch);
       note.modulationDepth.gain
         .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(modulationDepth, scheduleTime);
+        .setValueAtTime(depth, scheduleTime);
     } else {
       this.startModulation(channel, note, scheduleTime);
     }
   }
 
   setVibLfoToPitch(channel, note, scheduleTime) {
-    const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
-    const vibratoDepth = Math.abs(vibLfoToPitch) * channel.state.vibratoDepth *
-      2;
-    const vibratoDepthSign = 0 < vibLfoToPitch;
-    note.vibratoDepth.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(vibratoDepth * vibratoDepthSign, scheduleTime);
+    if (note.vibratoDepth) {
+      const vibratoDepth = this.getKeyBasedValue(channel, note.noteNumber, 77) *
+        2;
+      const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
+      const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
+      const depth = baseDepth * Math.sign(vibLfoToPitch);
+      note.vibratoDepth.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(depth, scheduleTime);
+    } else {
+      this.startVibrato(channel, note, scheduleTime);
+    }
   }
 
   setModLfoToFilterFc(channel, note, scheduleTime) {
@@ -1858,14 +1864,15 @@ export class Midy {
   }
 
   setFreqVibLFO(channel, note, scheduleTime) {
+    const vibratoRate = this.getRelativeKeyBasedValue(channel, note, 76) * 2;
     const freqVibLFO = note.voiceParams.freqVibLFO;
     note.vibratoLFO.frequency
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(freqVibLFO * channel.state.vibratoRate * 2, scheduleTime);
+      .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
 
   setDelayVibLFO(channel, note) {
-    const vibratoDelay = channel.state.vibratoDelay * 2;
+    const vibratoDelay = this.getRelativeKeyBasedValue(channel, note, 78) * 2;
     const value = note.voiceParams.delayVibLFO;
     const startTime = note.startTime + value * vibratoDelay;
     try {
@@ -2215,16 +2222,29 @@ export class Midy {
     });
   }
 
-  setFilterResonance(channelNumber, filterResonance, scheduleTime) {
+  setFilterResonance(channelNumber, ccValue, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
-    state.filterResonance = filterResonance / 127;
+    state.filterResonance = ccValue / 127;
+    const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
     this.processScheduledNotes(channel, (note) => {
-      const Q = note.voiceParams.initialFilterQ / 5 * state.filterResonance;
+      const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
       note.filterNode.Q.setValueAtTime(Q, scheduleTime);
     });
+  }
+
+  getRelativeKeyBasedValue(channel, note, controllerType) {
+    const ccState = channel.state.array[128 + controllerType];
+    const keyBasedValue = this.getKeyBasedValue(
+      channel,
+      note.noteNumber,
+      controllerType,
+    );
+    if (keyBasedValue < 0) return ccState;
+    const keyValue = ccState + keyBasedValue / 127 - 0.5;
+    return keyValue < 0 ? keyValue : 0;
   }
 
   setReleaseTime(channelNumber, releaseTime, scheduleTime) {
@@ -3181,6 +3201,78 @@ export class Midy {
         case 7:
         case 10:
           this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+          break;
+        case 71:
+          this.processScheduledNotes(channel, (note) => {
+            const filterResonance = this.getRelativeKeyBasedValue(
+              channel,
+              note,
+              71,
+            );
+            if (note.noteNumber === keyNumber) {
+              const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
+              note.filterNode.Q.setValueAtTime(Q, scheduleTime);
+            }
+          });
+          break;
+        case 73:
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              if (
+                0.5 <= channel.state.portamento &&
+                0 <= note.portamentoNoteNumber
+              ) {
+                this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
+              } else {
+                this.setVolumeEnvelope(channel, note, scheduleTime);
+              }
+            }
+          });
+          break;
+        case 74:
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              if (
+                0.5 <= channel.state.portamento &&
+                0 <= note.portamentoNoteNumber
+              ) {
+                this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+              } else {
+                this.setFilterEnvelope(channel, note, scheduleTime);
+              }
+            }
+          });
+          break;
+        case 75:
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setVolumeEnvelope(channel, note, scheduleTime);
+            }
+          });
+          break;
+        case 76:
+          if (channel.state.vibratoDepth <= 0) break;
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setFreqVibLFO(channel, note, scheduleTime);
+            }
+          });
+          break;
+        case 77:
+          if (channel.state.vibratoDepth <= 0) break;
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setVibLfoToPitch(channel, note, scheduleTime);
+            }
+          });
+          break;
+        case 78:
+          if (channel.state.vibratoDepth <= 0) break;
+          this.processScheduledNotes(channel, (note) => {
+            if (note.noteNumber === keyNumber) {
+              this.setDelayVibLFO(channel, note);
+            }
+          });
           break;
         case 91:
           this.processScheduledNotes(channel, (note) => {
