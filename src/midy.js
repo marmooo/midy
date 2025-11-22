@@ -2410,8 +2410,8 @@ export class Midy {
 
   handlePitchBendRangeRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
-    this.limitData(channel, 0, 127, 0, 99);
-    const pitchBendRange = channel.dataMSB + channel.dataLSB / 100;
+    this.limitData(channel, 0, 127, 0, 127);
+    const pitchBendRange = channel.dataMSB + channel.dataLSB / 128;
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
