@@ -18,6 +18,11 @@ This library provides several files depending on the implementation level.
   [ja v1.0](https://amei.or.jp/midistandardcommittee/Recommended_Practice/GM2_japanese.pdf))
 - midy.js: full implementation (in progress)
 
+## Demo
+
+- [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
+- [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
+
 ## Usage
 
 ### Initialization
@@ -117,13 +122,6 @@ await midy.loadSoundFont(paths);
 ```
 deno task build
 ```
-
-## Test
-
-WebAudio only works on web browsers currently, so we are testing this library
-using the following GUI libraries.
-
-- [@marmooo/midi-player](https://github.com/marmooo/midi-player)
 
 ## License
 
