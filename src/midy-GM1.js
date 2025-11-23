@@ -124,8 +124,8 @@ export class MidyGM1 {
     rpnMSB: 127,
     rpnLSB: 127,
     modulationDepthRange: 50, // cent
-    fineTuning: 0, // cb
-    coarseTuning: 0, // cb
+    fineTuning: 0, // cent
+    coarseTuning: 0, // cent
   };
 
   constructor(audioContext) {
@@ -1356,16 +1356,16 @@ export class MidyGM1 {
   handlePitchBendRangeRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
-    const pitchBendRange = channel.dataMSB + channel.dataLSB / 128;
+    const pitchBendRange = (channel.dataMSB + channel.dataLSB / 128) * 100;
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
-  setPitchBendRange(channelNumber, value, scheduleTime) {
+  setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
-    const next = value / 128;
+    const next = value / 12800;
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
     this.updateChannelDetune(channel, scheduleTime);
@@ -1375,15 +1375,16 @@ export class MidyGM1 {
   handleFineTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
-    const fineTuning = channel.dataMSB * 128 + channel.dataLSB;
+    const value = channel.dataMSB * 128 + channel.dataLSB;
+    const fineTuning = (value - 8192) / 8192 * 100;
     this.setFineTuning(channelNumber, fineTuning, scheduleTime);
   }
 
-  setFineTuning(channelNumber, value, scheduleTime) { // [0, 16383]
+  setFineTuning(channelNumber, value, scheduleTime) { // [-100, 100] cent
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.fineTuning;
-    const next = (value - 8192) / 8.192; // cent
+    const next = value;
     channel.fineTuning = next;
     channel.detune += next - prev;
     this.updateChannelDetune(channel, scheduleTime);
@@ -1392,15 +1393,15 @@ export class MidyGM1 {
   handleCoarseTuningRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitDataMSB(channel, 0, 127);
-    const coarseTuning = channel.dataMSB;
+    const coarseTuning = (channel.dataMSB - 64) * 100;
     this.setCoarseTuning(channelNumber, coarseTuning, scheduleTime);
   }
 
-  setCoarseTuning(channelNumber, value, scheduleTime) { // [0, 127]
+  setCoarseTuning(channelNumber, value, scheduleTime) { // [-6400, 6300] cent
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
     const prev = channel.coarseTuning;
-    const next = (value - 64) * 100; // cent
+    const next = value;
     channel.coarseTuning = next;
     channel.detune += next - prev;
     this.updateChannelDetune(channel, scheduleTime);

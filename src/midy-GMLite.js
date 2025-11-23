@@ -1380,7 +1380,7 @@ export class MidyGMLite {
   handlePitchBendRangeRPN(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
     this.limitData(channel, 0, 127, 0, 127);
-    const pitchBendRange = channel.dataMSB + channel.dataLSB / 128;
+    const pitchBendRange = (channel.dataMSB + channel.dataLSB / 128) * 100;
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
@@ -1389,7 +1389,7 @@ export class MidyGMLite {
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
-    const next = value / 128;
+    const next = value / 12800;
     state.pitchWheelSensitivity = next;
     channel.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
     this.updateChannelDetune(channel, scheduleTime);
