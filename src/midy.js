@@ -1444,7 +1444,7 @@ export class Midy {
     startTime,
   ) {
     const channel = this.channels[channelNumber];
-    const bankNumber = this.calcBank(channel, channelNumber);
+    const bankNumber = this.calcBank(channel);
     const soundFontIndex = this.soundFontTable[channel.programNumber]
       .get(bankNumber);
     if (soundFontIndex === undefined) return;
