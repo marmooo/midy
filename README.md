@@ -34,6 +34,7 @@ This library provides several files depending on the implementation level.
 import { Midy } from "midy.js";
 
 const audioContext = new AudioContext();
+await audioContext.suspend();
 const midy = new Midy(audioContext);
 await midy.loadMIDI("test.mid");
 await midy.loadSoundFont("test.sf3");
