@@ -163,6 +163,8 @@ export class MidyGM2 {
   numChannels = 16;
   ticksPerBeat = 120;
   totalTime = 0;
+  lastActiveSensing = 0;
+  activeSensingThreshold = 0.3;
   noteCheckInterval = 0.1;
   lookAhead = 1;
   startDelay = 0.1;
@@ -536,6 +538,15 @@ export class MidyGM2 {
     this.notePromises = [];
     while (queueIndex < this.timeline.length) {
       const now = this.audioContext.currentTime;
+      if (
+        0 < this.lastActiveSensing &&
+        this.activeSensingThreshold < performance.now() - this.lastActiveSensing
+      ) {
+        await this.stopNotes(0, true, now);
+        await this.audioContext.suspend();
+        finished = true;
+        break;
+      }
       const t = now + resumeTime;
       queueIndex = await this.scheduleTimelineEvents(
         t,
@@ -568,6 +579,7 @@ export class MidyGM2 {
     if (finished) {
       this.notePromises = [];
       this.resetAllStates();
+      this.lastActiveSensing = 0;
     }
     this.isPlaying = false;
   }
@@ -1613,7 +1625,15 @@ export class MidyGM2 {
     return promises;
   }
 
-  handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
+  handleMessage(data, scheduleTime) {
+    if (data[0] < 0xF0) {
+      this.handleChannelMessage(data[0], data[1], data[2], scheduleTime);
+    } else {
+      this.handleSystemMessage(data[0], data.subarray(1));
+    }
+  }
+
+  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
     const channelNumber = statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {
@@ -1642,6 +1662,53 @@ export class MidyGM2 {
       default:
         console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
     }
+  }
+
+  handleSystemMessage(messageType, data, scheduleTime) {
+    switch (messageType) {
+      case 0xF0:
+        return this.handleSysEx(data, scheduleTime);
+      case 0xF1:
+        // MIDI Time Code Quarter Frame
+        break;
+      case 0xF2:
+        // Song Position Pointer
+        break;
+      case 0xF3:
+        // Song Select
+        break;
+      case 0xF6:
+        // Tune Request
+        break;
+      case 0xF7:
+        // EOX (End of Exclusive)
+        break;
+      case 0xF8:
+        // Timing Clock
+        break;
+      case 0xFA:
+        // Start
+        break;
+      case 0xFB:
+        // Continue
+        break;
+      case 0xFC:
+        // Stop
+        break;
+      case 0xFE:
+        // Active Sensing
+        this.activeSensing();
+        break;
+      case 0xFF:
+        // System Reset
+        break;
+      default:
+        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
+    }
+  }
+
+  activeSensing() {
+    this.lastActiveSensing = performance.now();
   }
 
   setProgramChange(channelNumber, programNumber, _scheduleTime) {

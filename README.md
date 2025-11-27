@@ -57,9 +57,9 @@ There are functions that handle MIDI messages as they are, as well as simplified
 functions.
 
 ```js
-midy.handleMIDIMessage(statusByte, data1, data2, scheduleTime);
+midy.handleMessage(data, scheduleTime);
 midy.noteOn(channelNumber, noteNumber, velocity);
-midy.setProgramChange(channelNumber, program);
+midy.setProgramChange(channelNumber, programNumber);
 ```
 
 ### Control Change

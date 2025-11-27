@@ -1059,7 +1059,13 @@ export class MidyGMLite {
     return promises;
   }
 
-  handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
+  handleMessage(data, scheduleTime) {
+    if (data[0] < 0xF0) {
+      this.handleChannelMessage(data[0], data[1], data[2], scheduleTime);
+    }
+  }
+
+  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
     const channelNumber = statusByte & 0x0F;
     const messageType = statusByte & 0xF0;
     switch (messageType) {
