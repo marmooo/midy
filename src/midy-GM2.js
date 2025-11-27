@@ -213,6 +213,7 @@ export class MidyGM2 {
       length: 1,
       sampleRate: audioContext.sampleRate,
     });
+    this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
@@ -1625,86 +1626,38 @@ export class MidyGM2 {
     return promises;
   }
 
+  createMessageHandlers() {
+    const handlers = new Array(256);
+    // Channel Message
+    handlers[0x80] = (data, scheduleTime) =>
+      this.noteOff(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0x90] = (data, scheduleTime) =>
+      this.noteOn(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xB0] = (data, scheduleTime) =>
+      this.setControlChange(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xC0] = (data, scheduleTime) =>
+      this.setProgramChange(data[0] & 0x0F, data[1], scheduleTime);
+    handlers[0xD0] = (data, scheduleTime) =>
+      this.setChannelPressure(data[0] & 0x0F, data[1], scheduleTime);
+    handlers[0xE0] = (data, scheduleTime) =>
+      this.handlePitchBendMessage(
+        data[0] & 0x0F,
+        data[1],
+        data[2],
+        scheduleTime,
+      );
+    // System Real Time Message
+    handlers[0xFE] = (_data, _scheduleTime) => this.activeSensing();
+    return handlers;
+  }
+
   handleMessage(data, scheduleTime) {
-    if (data[0] < 0xF0) {
-      this.handleChannelMessage(data[0], data[1], data[2], scheduleTime);
-    } else {
-      this.handleSystemMessage(data[0], data.subarray(1));
+    const status = data[0];
+    if (status === 0xF0) {
+      return this.handleSysEx(data.subarray(1), scheduleTime);
     }
-  }
-
-  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
-    const channelNumber = statusByte & 0x0F;
-    const messageType = statusByte & 0xF0;
-    switch (messageType) {
-      case 0x80:
-        return this.noteOff(channelNumber, data1, data2, scheduleTime);
-      case 0x90:
-        return this.noteOn(channelNumber, data1, data2, scheduleTime);
-      case 0xB0:
-        return this.setControlChange(
-          channelNumber,
-          data1,
-          data2,
-          scheduleTime,
-        );
-      case 0xC0:
-        return this.setProgramChange(channelNumber, data1, scheduleTime);
-      case 0xD0:
-        return this.setChannelPressure(channelNumber, data1, scheduleTime);
-      case 0xE0:
-        return this.handlePitchBendMessage(
-          channelNumber,
-          data1,
-          data2,
-          scheduleTime,
-        );
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
-  }
-
-  handleSystemMessage(messageType, data, scheduleTime) {
-    switch (messageType) {
-      case 0xF0:
-        return this.handleSysEx(data, scheduleTime);
-      case 0xF1:
-        // MIDI Time Code Quarter Frame
-        break;
-      case 0xF2:
-        // Song Position Pointer
-        break;
-      case 0xF3:
-        // Song Select
-        break;
-      case 0xF6:
-        // Tune Request
-        break;
-      case 0xF7:
-        // EOX (End of Exclusive)
-        break;
-      case 0xF8:
-        // Timing Clock
-        break;
-      case 0xFA:
-        // Start
-        break;
-      case 0xFB:
-        // Continue
-        break;
-      case 0xFC:
-        // Stop
-        break;
-      case 0xFE:
-        // Active Sensing
-        this.activeSensing();
-        break;
-      case 0xFF:
-        // System Reset
-        break;
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
+    const handler = this.messageHandlers[status];
+    if (handler) handler(data, scheduleTime);
   }
 
   activeSensing() {

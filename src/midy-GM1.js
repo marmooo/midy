@@ -137,6 +137,7 @@ export class MidyGM1 {
       length: 1,
       sampleRate: audioContext.sampleRate,
     });
+    this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
@@ -1022,10 +1023,34 @@ export class MidyGM1 {
     return promises;
   }
 
+  createMessageHandlers() {
+    const handlers = new Array(256);
+    // Channel Message
+    handlers[0x80] = (data, scheduleTime) =>
+      this.noteOff(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0x90] = (data, scheduleTime) =>
+      this.noteOn(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xB0] = (data, scheduleTime) =>
+      this.setControlChange(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xC0] = (data, scheduleTime) =>
+      this.setProgramChange(data[0] & 0x0F, data[1], scheduleTime);
+    handlers[0xE0] = (data, scheduleTime) =>
+      this.handlePitchBendMessage(
+        data[0] & 0x0F,
+        data[1],
+        data[2],
+        scheduleTime,
+      );
+    return handlers;
+  }
+
   handleMessage(data, scheduleTime) {
-    if (data[0] < 0xF0) {
-      this.handleChannelMessage(data[0], data[1], data[2], scheduleTime);
+    const status = data[0];
+    if (status === 0xF0) {
+      return this.handleSysEx(data.subarray(1), scheduleTime);
     }
+    const handler = this.messageHandlers[status];
+    if (handler) handler(data, scheduleTime);
   }
 
   handleChannelMessage(statusByte, data1, data2, scheduleTime) {

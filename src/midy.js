@@ -223,6 +223,7 @@ export class Midy {
       length: 1,
       sampleRate: audioContext.sampleRate,
     });
+    this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
@@ -1652,93 +1653,56 @@ export class Midy {
     return promises;
   }
 
+  createMessageHandlers() {
+    const handlers = new Array(256);
+    // Channel Message
+    handlers[0x80] = (data, scheduleTime) =>
+      this.noteOff(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0x90] = (data, scheduleTime) =>
+      this.noteOn(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xA0] = (data, scheduleTime) =>
+      this.setPolyphonicKeyPressure(
+        data[0] & 0x0F,
+        data[1],
+        data[2],
+        scheduleTime,
+      );
+    handlers[0xB0] = (data, scheduleTime) =>
+      this.setControlChange(data[0] & 0x0F, data[1], data[2], scheduleTime);
+    handlers[0xC0] = (data, scheduleTime) =>
+      this.setProgramChange(data[0] & 0x0F, data[1], scheduleTime);
+    handlers[0xD0] = (data, scheduleTime) =>
+      this.setChannelPressure(data[0] & 0x0F, data[1], scheduleTime);
+    handlers[0xE0] = (data, scheduleTime) =>
+      this.handlePitchBendMessage(
+        data[0] & 0x0F,
+        data[1],
+        data[2],
+        scheduleTime,
+      );
+    // System Common Message
+    // handlers[0xF1] = (_data, _scheduleTime) => {}; // MTC Quarter Frame
+    // handlers[0xF2] = (_data, _scheduleTime) => {}; // Song Position Pointer
+    // handlers[0xF3] = (_data, _scheduleTime) => {}; // Song Select
+    // handlers[0xF6] = (_data, _scheduleTime) => {}; // Tune Request
+    // handlers[0xF7] = (_data, _scheduleTime) => {}; // End of Exclusive (EOX)
+    // System Real Time Message
+    // handlers[0xF8] = (_data, _scheduleTime) => {}; // Timing Clock
+    // handlers[0xFA] = (_data, _scheduleTime) => {}; // Start
+    // handlers[0xFB] = (_data, _scheduleTime) => {}; // Continue
+    // handlers[0xFC] = (_data, _scheduleTime) => {}; // Stop
+    handlers[0xFE] = (_data, _scheduleTime) => this.activeSensing();
+    // handlers[0xFF] = (_data, _scheduleTime) => {}; // Reset
+    return handlers;
+  }
+
   handleMessage(data, scheduleTime) {
-    if (data[0] < 0xF0) {
-      this.handleChannelMessage(data[0], data[1], data[2], scheduleTime);
-    } else {
-      this.handleSystemMessage(data[0], data.subarray(1));
+    const status = data[0];
+    if (status === 0xF0) {
+      return this.handleSysEx(data.subarray(1), scheduleTime);
     }
-  }
-
-  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
-    const channelNumber = statusByte & 0x0F;
-    const messageType = statusByte & 0xF0;
-    switch (messageType) {
-      case 0x80:
-        return this.noteOff(channelNumber, data1, data2, scheduleTime);
-      case 0x90:
-        return this.noteOn(channelNumber, data1, data2, scheduleTime);
-      case 0xA0:
-        return this.setPolyphonicKeyPressure(
-          channelNumber,
-          data1,
-          data2,
-          scheduleTime,
-        );
-      case 0xB0:
-        return this.setControlChange(
-          channelNumber,
-          data1,
-          data2,
-          scheduleTime,
-        );
-      case 0xC0:
-        return this.setProgramChange(channelNumber, data1, scheduleTime);
-      case 0xD0:
-        return this.setChannelPressure(channelNumber, data1, scheduleTime);
-      case 0xE0:
-        return this.handlePitchBendMessage(
-          channelNumber,
-          data1,
-          data2,
-          scheduleTime,
-        );
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
-  }
-
-  handleSystemMessage(messageType, data, scheduleTime) {
-    switch (messageType) {
-      case 0xF0:
-        return this.handleSysEx(data, scheduleTime);
-      case 0xF1:
-        // MIDI Time Code Quarter Frame
-        break;
-      case 0xF2:
-        // Song Position Pointer
-        break;
-      case 0xF3:
-        // Song Select
-        break;
-      case 0xF6:
-        // Tune Request
-        break;
-      case 0xF7:
-        // EOX (End of Exclusive)
-        break;
-      case 0xF8:
-        // Timing Clock
-        break;
-      case 0xFA:
-        // Start
-        break;
-      case 0xFB:
-        // Continue
-        break;
-      case 0xFC:
-        // Stop
-        break;
-      case 0xFE:
-        // Active Sensing
-        this.activeSensing();
-        break;
-      case 0xFF:
-        // System Reset
-        break;
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
+    const handler = this.messageHandlers[status];
+    if (handler) handler(data, scheduleTime);
   }
 
   activeSensing() {
