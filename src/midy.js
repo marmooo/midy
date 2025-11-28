@@ -226,6 +226,7 @@ export class Midy {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
+    this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.channels = this.createChannels(audioContext);
     this.reverbEffect = this.createReverbEffect(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
@@ -3215,6 +3216,91 @@ export class Midy {
     return controlValue;
   }
 
+  createKeyBasedControllerHandlers() {
+    const handlers = new Array(128);
+    handlers[7] = (channel, keyNumber, scheduleTime) =>
+      this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+    handlers[10] = (channel, keyNumber, scheduleTime) =>
+      this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+    handlers[71] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          const filterResonance = this.getRelativeKeyBasedValue(
+            channel,
+            note,
+            71,
+          );
+          const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
+          note.filterNode.Q.setValueAtTime(Q, scheduleTime);
+        }
+      });
+    handlers[73] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          if (
+            0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber
+          ) {
+            this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
+          } else {
+            this.setVolumeEnvelope(channel, note, scheduleTime);
+          }
+        }
+      });
+    handlers[74] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          if (
+            0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber
+          ) {
+            this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+          } else {
+            this.setFilterEnvelope(channel, note, scheduleTime);
+          }
+        }
+      });
+    handlers[75] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setVolumeEnvelope(channel, note, scheduleTime);
+        }
+      });
+    handlers[76] = (channel, keyNumber, scheduleTime) => {
+      if (channel.state.vibratoDepth <= 0) return;
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setFreqVibLFO(channel, note, scheduleTime);
+        }
+      });
+    };
+    handlers[77] = (channel, keyNumber, scheduleTime) => {
+      if (channel.state.vibratoDepth <= 0) return;
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setVibLfoToPitch(channel, note, scheduleTime);
+        }
+      });
+    };
+    handlers[78] = (channel, keyNumber) => {
+      if (channel.state.vibratoDepth <= 0) return;
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) this.setDelayVibLFO(channel, note);
+      });
+    };
+    handlers[91] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setReverbSend(channel, note, scheduleTime);
+        }
+      });
+    handlers[93] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setChorusSend(channel, note, scheduleTime);
+        }
+      });
+    return handlers;
+  }
+
   handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
@@ -3226,98 +3312,8 @@ export class Midy {
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
-      switch (controllerType) {
-        case 7:
-        case 10:
-          this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
-          break;
-        case 71:
-          this.processScheduledNotes(channel, (note) => {
-            const filterResonance = this.getRelativeKeyBasedValue(
-              channel,
-              note,
-              71,
-            );
-            if (note.noteNumber === keyNumber) {
-              const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
-              note.filterNode.Q.setValueAtTime(Q, scheduleTime);
-            }
-          });
-          break;
-        case 73:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              if (
-                0.5 <= channel.state.portamento &&
-                0 <= note.portamentoNoteNumber
-              ) {
-                this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-              } else {
-                this.setVolumeEnvelope(channel, note, scheduleTime);
-              }
-            }
-          });
-          break;
-        case 74:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              if (
-                0.5 <= channel.state.portamento &&
-                0 <= note.portamentoNoteNumber
-              ) {
-                this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-              } else {
-                this.setFilterEnvelope(channel, note, scheduleTime);
-              }
-            }
-          });
-          break;
-        case 75:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setVolumeEnvelope(channel, note, scheduleTime);
-            }
-          });
-          break;
-        case 76:
-          if (channel.state.vibratoDepth <= 0) break;
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setFreqVibLFO(channel, note, scheduleTime);
-            }
-          });
-          break;
-        case 77:
-          if (channel.state.vibratoDepth <= 0) break;
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setVibLfoToPitch(channel, note, scheduleTime);
-            }
-          });
-          break;
-        case 78:
-          if (channel.state.vibratoDepth <= 0) break;
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setDelayVibLFO(channel, note);
-            }
-          });
-          break;
-        case 91:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setReverbSend(channel, note, scheduleTime);
-            }
-          });
-          break;
-        case 93:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setChorusSend(channel, note, scheduleTime);
-            }
-          });
-          break;
-      }
+      const handler = this.keyBasedControllerHandlers[controllerType];
+      if (handler) handler(channel, keyNumber, scheduleTime);
     }
   }
 

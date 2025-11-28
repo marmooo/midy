@@ -155,6 +155,7 @@ export class MidyGMLite {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
+    this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterVolume.connect(audioContext.destination);
     this.scheduler.connect(audioContext.destination);

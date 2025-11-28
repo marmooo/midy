@@ -216,6 +216,7 @@ export class MidyGM2 {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
+    this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.channels = this.createChannels(audioContext);
     this.reverbEffect = this.createReverbEffect(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
@@ -2932,6 +2933,27 @@ export class MidyGM2 {
     return controlValue;
   }
 
+  createKeyBasedControllerHandlers() {
+    const handlers = new Array(128);
+    handlers[7] = (channel, keyNumber, scheduleTime) =>
+      this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+    handlers[10] = (channel, keyNumber, scheduleTime) =>
+      this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
+    handlers[91] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setReverbSend(channel, note, scheduleTime);
+        }
+      });
+    handlers[93] = (channel, keyNumber, scheduleTime) =>
+      this.processScheduledNotes(channel, (note) => {
+        if (note.noteNumber === keyNumber) {
+          this.setChorusSend(channel, note, scheduleTime);
+        }
+      });
+    return handlers;
+  }
+
   handleKeyBasedInstrumentControlSysEx(data, scheduleTime) {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
@@ -2943,26 +2965,8 @@ export class MidyGM2 {
       const value = data[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
-      switch (controllerType) {
-        case 7:
-        case 10:
-          this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
-          break;
-        case 91:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setReverbSend(channel, note, scheduleTime);
-            }
-          });
-          break;
-        case 93:
-          this.processScheduledNotes(channel, (note) => {
-            if (note.noteNumber === keyNumber) {
-              this.setChorusSend(channel, note, scheduleTime);
-            }
-          });
-          break;
-      }
+      const handler = this.keyBasedControllerHandlers[controllerType];
+      if (handler) handler(channel, keyNumber, scheduleTime);
     }
   }
 
