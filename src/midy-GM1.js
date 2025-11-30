@@ -1559,15 +1559,11 @@ export class MidyGM1 {
     this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(volume, scheduleTime) {
+  setMasterVolume(value, scheduleTime) { // [0-1]
     scheduleTime ??= this.audioContext.currentTime;
-    if (volume < 0 && 1 < volume) {
-      console.error("Master Volume is out of range");
-    } else {
-      this.masterVolume.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(volume * volume, scheduleTime);
-    }
+    this.masterVolume.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(value * value, scheduleTime);
   }
 
   handleSysEx(data, scheduleTime) {

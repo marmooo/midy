@@ -2778,15 +2778,11 @@ export class Midy {
     this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(volume, scheduleTime) { // [0-1]
+  setMasterVolume(value, scheduleTime) { // [0-1]
     scheduleTime ??= this.audioContext.currentTime;
-    if (volume < 0 && 1 < volume) {
-      console.error("Master Volume is out of range");
-    } else {
-      this.masterVolume.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(volume * volume, scheduleTime);
-    }
+    this.masterVolume.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(value * value, scheduleTime);
   }
 
   handleMasterFineTuningSysEx(data, scheduleTime) {
