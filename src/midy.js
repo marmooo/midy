@@ -3238,21 +3238,13 @@ export class Midy {
     handlers[73] = (channel, keyNumber, scheduleTime) =>
       this.processScheduledNotes(channel, (note) => {
         if (note.noteNumber === keyNumber) {
-          if (!channel.isDrum && this.isPortamento(channel, note)) {
-            this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-          } else {
-            this.setVolumeEnvelope(channel, note, scheduleTime);
-          }
+          this.setVolumeEnvelope(channel, note, scheduleTime);
         }
       });
     handlers[74] = (channel, keyNumber, scheduleTime) =>
       this.processScheduledNotes(channel, (note) => {
         if (note.noteNumber === keyNumber) {
-          if (!channel.isDrum && this.isPortamento(channel, note)) {
-            this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-          } else {
-            this.setFilterEnvelope(channel, note, scheduleTime);
-          }
+          this.setFilterEnvelope(channel, note, scheduleTime);
         }
       });
     handlers[75] = (channel, keyNumber, scheduleTime) =>
