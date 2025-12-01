@@ -27,21 +27,21 @@ This library provides several files depending on the implementation level.
 
 All implementations follow the specification.
 
-| Message                  | Support | Notes       |
-| :----------------------- | :-----: | :---------- |
-| Note Off                 |   ✔️    |             |
-| Note On                  |   ✔️    |             |
-| Polyphonic Key Pressure  |   ✔️    | full GM2    |
-| Controller Change        |   ✔️    | full GM2    |
-| Program Change           |   ✔️    | full GM2    |
-| Channel Pressure         |   ✔️    | full GM2    |
-| Pitch Bend               |   ✔️    |             |
-| System Exclusive Message |   ✔️    | full GM2    |
-| System Common Message    |   ❌    |             |
-| System Real Time Message |   ✔️    | minimal GM2 |
-| MIDI Time Code           |   ❌    |             |
-| MIDI Show Control        |   ❌    |             |
-| MIDI Machine Control     |   ❌    |             |
+| Message                  | Support | Notes    |
+| :----------------------- | :-----: | :------- |
+| Note Off                 |   ✔️    |          |
+| Note On                  |   ✔️    |          |
+| Polyphonic Key Pressure  |   ✔️    | full GM2 |
+| Controller Change        |   ✔️    | full GM2 |
+| Program Change           |   ✔️    | full GM2 |
+| Channel Pressure         |   ✔️    | full GM2 |
+| Pitch Bend               |   ✔️    |          |
+| System Exclusive Message |   ✔️    | full GM2 |
+| System Common Message    |   ❌    |          |
+| System Real Time Message |   ✔️    | full GM2 |
+| MIDI Time Code           |   ❌    |          |
+| MIDI Show Control        |   ❌    |          |
+| MIDI Machine Control     |   ❌    |          |
 
 ## Usage
 
