@@ -202,7 +202,6 @@ export class Midy {
     scheduleIndex: 0,
     detune: 0,
     programNumber: 0,
-    bank: 121 * 128,
     bankMSB: 121,
     bankLSB: 0,
     dataMSB: 0,
@@ -238,8 +237,8 @@ export class Midy {
   }
 
   initSoundFontTable() {
-    const table = new Array(128);
-    for (let i = 0; i < 128; i++) {
+    const table = new Array(129);
+    for (let i = 0; i < 129; i++) {
       table[i] = new Map();
     }
     return table;
@@ -341,13 +340,13 @@ export class Midy {
   }
 
   getVoiceId(channel, noteNumber, velocity) {
-    const bankNumber = this.calcBank(channel);
-    const soundFontIndex = this.soundFontTable[channel.programNumber]
-      .get(bankNumber);
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const bankLSB = channel.bankLSB;
+    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
-      bankNumber,
+      bankLSB,
       channel.programNumber,
       noteNumber,
       velocity,
@@ -613,17 +612,17 @@ export class Midy {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
 
+  getSoundFontId(channel) {
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const bankLSB = channel.bankLSB.toString().padStart(3, "0");
+    const program = programNumber.toString().padStart(3, "0");
+    return `${bankLSB}:${program}`;
+  }
+
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
-    const tmpChannels = new Array(this.channels.length);
-    for (let i = 0; i < tmpChannels.length; i++) {
-      tmpChannels[i] = {
-        programNumber: -1,
-        bankMSB: this.channels[i].bankMSB,
-        bankLSB: this.channels[i].bankLSB,
-      };
-    }
+    const channels = this.channels;
     for (let i = 0; i < midi.tracks.length; i++) {
       const track = midi.tracks[i];
       let currentTicks = 0;
@@ -633,48 +632,40 @@ export class Midy {
         event.ticks = currentTicks;
         switch (event.type) {
           case "noteOn": {
-            const channel = tmpChannels[event.channel];
-            if (channel.programNumber < 0) {
-              channel.programNumber = event.programNumber;
-              switch (channel.bankMSB) {
-                case 120:
-                  instruments.add(`128:0`);
-                  break;
-                case 121:
-                  instruments.add(`${channel.bankLSB}:0`);
-                  break;
-                default: {
-                  const bankNumber = channel.bankMSB * 128 + channel.bankLSB;
-                  instruments.add(`${bankNumber}:0`);
-                }
-              }
-              channel.programNumber = 0;
-            }
+            const channel = channels[event.channel];
+            instruments.add(this.getSoundFontId(channel));
             break;
           }
           case "controller":
             switch (event.controllerType) {
               case 0:
-                tmpChannels[event.channel].bankMSB = event.value;
+                this.setBankMSB(event.channel, event.value);
                 break;
               case 32:
-                tmpChannels[event.channel].bankLSB = event.value;
+                this.setBankLSB(event.channel, event.value);
                 break;
             }
             break;
           case "programChange": {
-            const channel = tmpChannels[event.channel];
-            channel.programNumber = event.programNumber;
-            switch (channel.bankMSB) {
-              case 120:
-                instruments.add(`128:${channel.programNumber}`);
-                break;
-              case 121:
-                instruments.add(`${channel.bankLSB}:${channel.programNumber}`);
-                break;
-              default: {
-                const bankNumber = channel.bankMSB * 128 + channel.bankLSB;
-                instruments.add(`${bankNumber}:${channel.programNumber}`);
+            const channel = channels[event.channel];
+            this.setProgramChange(event.channel, event.programNumber);
+            instruments.add(this.getSoundFontId(channel));
+            break;
+          }
+          case "sysEx": {
+            const data = event.data;
+            if (data[0] === 126 && data[1] === 9 && data[2] === 3) {
+              switch (data[3]) {
+                case 1:
+                  this.GM1SystemOn(scheduleTime);
+                  break;
+                case 2: // GM System Off
+                  break;
+                case 3:
+                  this.GM2SystemOn(scheduleTime);
+                  break;
+                default:
+                  console.warn(`Unsupported Exclusive Message: ${data}`);
               }
             }
           }
@@ -1396,20 +1387,6 @@ export class Midy {
     return note;
   }
 
-  calcBank(channel) {
-    switch (this.mode) {
-      case "GM1":
-        if (channel.isDrum) return 128;
-        return 0;
-      case "GM2":
-        if (channel.bankMSB === 121) return 0;
-        if (channel.isDrum) return 128;
-        return channel.bank;
-      default:
-        return channel.bank;
-    }
-  }
-
   handleExclusiveClass(note, channelNumber, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
@@ -1458,13 +1435,13 @@ export class Midy {
     startTime,
   ) {
     const channel = this.channels[channelNumber];
-    const bankNumber = this.calcBank(channel);
-    const soundFontIndex = this.soundFontTable[channel.programNumber]
-      .get(bankNumber);
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const bankLSB = channel.bankLSB;
+    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
-      bankNumber,
+      bankLSB,
       channel.programNumber,
       noteNumber,
       velocity,
@@ -1729,19 +1706,18 @@ export class Midy {
 
   setProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
-    channel.bank = channel.bankMSB * 128 + channel.bankLSB;
     channel.programNumber = programNumber;
     if (this.mode === "GM2") {
       switch (channel.bankMSB) {
         case 120:
           channel.isDrum = true;
+          channel.keyBasedTable.fill(-1);
           break;
         case 121:
           channel.isDrum = false;
           break;
       }
     }
-    channel.keyBasedTable.fill(-1);
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
@@ -2678,11 +2654,9 @@ export class Midy {
       const channel = this.channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
-      channel.bank = 0;
       channel.isDrum = false;
     }
     this.channels[9].bankMSB = 1;
-    this.channels[9].bank = 128;
     this.channels[9].isDrum = true;
   }
 
@@ -2694,11 +2668,9 @@ export class Midy {
       const channel = this.channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
-      channel.bank = 121 * 128;
       channel.isDrum = false;
     }
     this.channels[9].bankMSB = 120;
-    this.channels[9].bank = 120 * 128;
     this.channels[9].isDrum = true;
   }
 

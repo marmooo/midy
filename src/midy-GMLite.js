@@ -136,7 +136,6 @@ export class MidyGMLite {
     scheduleIndex: 0,
     detune: 0,
     programNumber: 0,
-    bank: 0,
     dataMSB: 0,
     dataLSB: 0,
     rpnMSB: 127,
@@ -155,7 +154,6 @@ export class MidyGMLite {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
-    this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.channels = this.createChannels(audioContext);
     this.masterVolume.connect(audioContext.destination);
     this.scheduler.connect(audioContext.destination);
@@ -163,8 +161,8 @@ export class MidyGMLite {
   }
 
   initSoundFontTable() {
-    const table = new Array(128);
-    for (let i = 0; i < 128; i++) {
+    const table = new Array(129);
+    for (let i = 0; i < 129; i++) {
       table[i] = new Map();
     }
     return table;
@@ -266,13 +264,13 @@ export class MidyGMLite {
   }
 
   getVoiceId(channel, noteNumber, velocity) {
-    const bankNumber = this.calcBank(channel);
-    const soundFontIndex = this.soundFontTable[channel.programNumber]
-      .get(bankNumber);
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const bankLSB = 0;
+    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
-      bankNumber,
+      bankLSB,
       channel.programNumber,
       noteNumber,
       velocity,
@@ -494,16 +492,16 @@ export class MidyGMLite {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
 
+  getSoundFontId(channel) {
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const program = programNumber.toString().padStart(3, "0");
+    return `000:${program}`;
+  }
+
   extractMidiData(midi) {
     const instruments = new Set();
     const timeline = [];
-    const tmpChannels = new Array(this.channels.length);
-    for (let i = 0; i < tmpChannels.length; i++) {
-      tmpChannels[i] = {
-        programNumber: -1,
-        bank: this.channels[i].bank,
-      };
-    }
+    const channels = this.channels;
     for (let i = 0; i < midi.tracks.length; i++) {
       const track = midi.tracks[i];
       let currentTicks = 0;
@@ -513,17 +511,15 @@ export class MidyGMLite {
         event.ticks = currentTicks;
         switch (event.type) {
           case "noteOn": {
-            const channel = tmpChannels[event.channel];
-            if (channel.programNumber < 0) {
-              instruments.add(`${channel.bank}:0`);
-              channel.programNumber = 0;
-            }
+            const channel = channels[event.channel];
+            instruments.add(this.getSoundFontId(channel));
             break;
           }
           case "programChange": {
-            const channel = tmpChannels[event.channel];
-            channel.programNumber = event.programNumber;
-            instruments.add(`${channel.bankNumber}:${channel.programNumber}`);
+            const channel = channels[event.channel];
+            this.setProgramChange(event.channel, event.programNumber);
+            instruments.add(this.getSoundFontId(channel));
+            break;
           }
         }
         delete event.deltaTime;
@@ -850,7 +846,11 @@ export class MidyGMLite {
       velocity,
       voiceParams,
     );
-    note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
+    note.bufferSource = this.createBufferSource(
+      channel,
+      voiceParams,
+      audioBuffer,
+    );
     note.volumeEnvelopeNode = new GainNode(this.audioContext);
     note.filterNode = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
@@ -914,13 +914,13 @@ export class MidyGMLite {
     startTime,
   ) {
     const channel = this.channels[channelNumber];
-    const bankNumber = channel.bank;
-    const soundFontIndex = this.soundFontTable[channel.programNumber]
-      .get(bankNumber);
+    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const bankLSB = 0;
+    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(
-      bankNumber,
+      bankLSB,
       channel.programNumber,
       noteNumber,
       velocity,
@@ -1416,7 +1416,7 @@ export class MidyGMLite {
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
-  setPitchBendRange(channelNumber, value, scheduleTime) {
+  setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
@@ -1520,10 +1520,8 @@ export class MidyGMLite {
     for (let i = 0; i < this.channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
       const channel = this.channels[i];
-      channel.bank = 0;
       channel.isDrum = false;
     }
-    this.channels[9].bank = 128;
     this.channels[9].isDrum = true;
   }
 
