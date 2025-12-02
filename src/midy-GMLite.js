@@ -335,12 +335,12 @@ export class MidyGMLite {
     return bufferSource;
   }
 
-  async scheduleTimelineEvents(t, resumeTime, queueIndex) {
+  async scheduleTimelineEvents(scheduleTime, queueIndex) {
+    const offsetTime = this.resumeTime - this.startTime;
     while (queueIndex < this.timeline.length) {
       const event = this.timeline[queueIndex];
-      if (event.startTime > t + this.lookAhead) break;
-      const delay = this.startDelay - resumeTime;
-      const startTime = event.startTime + delay;
+      if (scheduleTime + offsetTime + this.lookAhead < event.startTime) break;
+      const startTime = event.startTime + this.startDelay;
       switch (event.type) {
         case "noteOn":
           await this.scheduleNoteOn(
@@ -443,17 +443,11 @@ export class MidyGMLite {
     this.isPaused = false;
     this.startTime = this.audioContext.currentTime;
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    let resumeTime = this.resumeTime - this.startTime;
     let finished = false;
     this.notePromises = [];
     while (queueIndex < this.timeline.length) {
       const now = this.audioContext.currentTime;
-      const t = now + resumeTime;
-      queueIndex = await this.scheduleTimelineEvents(
-        t,
-        resumeTime,
-        queueIndex,
-      );
+      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
@@ -470,7 +464,6 @@ export class MidyGMLite {
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        resumeTime = this.resumeTime - this.startTime;
         this.isSeeking = false;
         continue;
       }
