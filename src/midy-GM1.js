@@ -101,7 +101,7 @@ export class MidyGM1 {
   startTime = 0;
   resumeTime = 0;
   soundFonts = [];
-  soundFontTable = this.initSoundFontTable();
+  soundFontTable = new Array(128);
   voiceCounter = new Map();
   voiceCache = new Map();
   isPlaying = false;
@@ -145,22 +145,15 @@ export class MidyGM1 {
     this.GM1SystemOn();
   }
 
-  initSoundFontTable() {
-    const table = new Array(129);
-    for (let i = 0; i < 129; i++) {
-      table[i] = new Map();
-    }
-    return table;
-  }
-
   addSoundFont(soundFont) {
     const index = this.soundFonts.length;
     this.soundFonts.push(soundFont);
     const presetHeaders = soundFont.parsed.presetHeaders;
+    const soundFontTable = this.soundFontTable;
     for (let i = 0; i < presetHeaders.length; i++) {
-      const presetHeader = presetHeaders[i];
-      const banks = this.soundFontTable[presetHeader.preset];
-      banks.set(presetHeader.bank, index);
+      const { preset, bank } = presetHeaders[i];
+      soundFontTable[preset] ??= [];
+      soundFontTable[preset][bank] = index;
     }
   }
 
@@ -249,17 +242,14 @@ export class MidyGM1 {
   }
 
   getVoiceId(channel, noteNumber, velocity) {
-    const programNumber = channel.isDrum ? 128 : channel.programNumber;
-    const bankLSB = 0;
-    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
+    const programNumber = channel.programNumber;
+    const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return;
+    const bank = channel.isDrum ? 128 : 0;
+    const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(
-      bankLSB,
-      channel.programNumber,
-      noteNumber,
-      velocity,
-    );
+    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     const { instrument, sampleID } = voice.generators;
     return soundFontIndex * (2 ** 32) + (instrument << 16) + sampleID;
   }
@@ -870,17 +860,14 @@ export class MidyGM1 {
     startTime,
   ) {
     const channel = this.channels[channelNumber];
-    const programNumber = channel.isDrum ? 128 : channel.programNumber;
-    const bankLSB = 0;
-    const soundFontIndex = this.soundFontTable[programNumber].get(bankLSB);
+    const programNumber = channel.programNumber;
+    const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return;
+    const bank = channel.isDrum ? 128 : 0;
+    const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(
-      bankLSB,
-      channel.programNumber,
-      noteNumber,
-      velocity,
-    );
+    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     if (!voice) return;
     const note = await this.createNote(
       channel,
