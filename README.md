@@ -119,17 +119,17 @@ presets required for playback.
 ```js
 const soundFontURL = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
 
-getSoundFontPaths() {
-const paths = [];
-const { midy, soundFontURL } = this;
-for (const instrument of midy.instruments) {
-  const [_bank, program] = instrument.split(":");
-  const programNumber = Number(program);
-  const table = midy.soundFontTable[programNumber];
-  if (table) continue;
-  paths.push(`${soundFontURL}/${program}.sf3`);
-}
-return paths;
+function getSoundFontPaths() {
+  const paths = [];
+  const { midy, soundFontURL } = this;
+  for (const instrument of midy.instruments) {
+    const [_bank, program] = instrument.split(":");
+    const programNumber = Number(program);
+    const table = midy.soundFontTable[programNumber];
+    if (table) continue;
+    paths.push(`${soundFontURL}/${program}.sf3`);
+  }
+  return paths;
 }
 
 const paths = this.getSoundFontPaths();
