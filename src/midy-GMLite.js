@@ -874,7 +874,7 @@ export class MidyGMLite {
   handleDrumExclusiveClass(note, channelNumber, startTime) {
     const channel = this.channels[channelNumber];
     if (!channel.isDrum) return;
-    const drumExclusiveClass = drumExclusiveClasses[noteNumber];
+    const drumExclusiveClass = drumExclusiveClasses[note.noteNumber];
     if (drumExclusiveClass === 0) return;
     const index = drumExclusiveClass * this.channels.length + channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
