@@ -115,7 +115,7 @@ export class MidyGMLite {
   startTime = 0;
   resumeTime = 0;
   soundFonts = [];
-  soundFontTable = new Array(128);
+  soundFontTable = Array.from({ length: 128 }, () => []);
   voiceCounter = new Map();
   voiceCache = new Map();
   isPlaying = false;
@@ -167,7 +167,6 @@ export class MidyGMLite {
     const soundFontTable = this.soundFontTable;
     for (let i = 0; i < presetHeaders.length; i++) {
       const { preset, bank } = presetHeaders[i];
-      soundFontTable[preset] ??= [];
       soundFontTable[preset][bank] = index;
     }
   }
@@ -476,9 +475,10 @@ export class MidyGMLite {
   }
 
   getSoundFontId(channel) {
-    const programNumber = channel.isDrum ? 128 : channel.programNumber;
+    const programNumber = channel.programNumber;
+    const bank = channel.isDrum ? "128" : "000";
     const program = programNumber.toString().padStart(3, "0");
-    return `000:${program}`;
+    return `${bank}:${program}`;
   }
 
   extractMidiData(midi) {
