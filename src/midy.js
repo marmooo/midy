@@ -425,11 +425,14 @@ export class Midy {
   }
 
   async scheduleTimelineEvents(scheduleTime, queueIndex) {
-    const offsetTime = this.resumeTime - this.startTime;
-    while (queueIndex < this.timeline.length) {
-      const event = this.timeline[queueIndex];
-      if (scheduleTime + offsetTime + this.lookAhead < event.startTime) break;
-      const startTime = event.startTime + this.startDelay;
+    const timeOffset = this.resumeTime - this.startTime;
+    const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const timeline = this.timeline;
+    while (queueIndex < timeline.length) {
+      const event = timeline[queueIndex];
+      if (lookAheadCheckTime < event.startTime) break;
+      const startTime = event.startTime + schedulingOffset;
       switch (event.type) {
         case "noteOn":
           await this.scheduleNoteOn(
