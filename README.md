@@ -123,11 +123,13 @@ function getSoundFontPaths() {
   const paths = [];
   const { midy, soundFontURL } = this;
   for (const instrument of midy.instruments) {
-    const [_bank, program] = instrument.split(":");
+    const [bank, program] = instrument.split(":");
+    const bankNumber = Number(bank);
     const programNumber = Number(program);
-    const table = midy.soundFontTable[programNumber];
-    if (table) continue;
-    paths.push(`${soundFontURL}/${program}.sf3`);
+    const index = midy.soundFontTable[programNumber][bankNumber];
+    if (index !== undefined) continue;
+    const baseName = bankNumber === 128 ? "128" : program;
+    paths.push(`${soundFontURL}/${baseName}.sf3`);
   }
   return paths;
 }
