@@ -627,7 +627,7 @@ var require_midi_file = __commonJS({
 // src/midy-GM1.js
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Stream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Stream.js
 var Stream = class {
   constructor(data, offset) {
     Object.defineProperty(this, "data", {
@@ -691,7 +691,7 @@ var Stream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
 function parseChunk(input, offset, bigEndian) {
   const stream = new Stream(input, offset);
   const type = stream.readString(4);
@@ -735,7 +735,7 @@ var Chunk = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -803,7 +803,7 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
 var ModulatorSource = class _ModulatorSource {
   constructor(type, polarity, direction, cc, index) {
     Object.defineProperty(this, "type", {
@@ -878,7 +878,7 @@ var ModulatorSource = class _ModulatorSource {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1074,7 +1074,7 @@ var PresetHeader = class _PresetHeader {
   }
   get isEnd() {
     const { presetName, preset, bank, library, genre, morphology } = this;
-    return (presetName === "" || presetName === "EOP") && preset + bank + library + genre + morphology === 0;
+    return presetName === "EOP" || presetName === "" && preset + bank + library + genre + morphology === 0;
   }
   static parse(stream) {
     const presetName = stream.readString(20);
@@ -1347,7 +1347,7 @@ var BoundedValue = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
 var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
 var AudioTypesSet = new Set(AudioDataTypes);
 var AudioData = class {
@@ -1420,7 +1420,7 @@ var AudioData = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Parser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Parser.js
 function parse(input, option = {}) {
   const chunkList = parseRiff(input, 0, input.length, option);
   if (chunkList.length !== 1) {
@@ -1534,7 +1534,7 @@ function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB,
   return result;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
 for (let i = 0; i < GeneratorKeys.length; i++) {
   generatorKeyToIndex.set(GeneratorKeys[i], i);
@@ -1719,7 +1719,7 @@ var DefaultInstrumentZone = {
   overridingRootKey: new BoundedValue(-1, -1, 127)
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/Voice.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/Voice.js
 function timecentToSecond(value) {
   return Math.pow(2, value / 1200);
 }
@@ -2058,7 +2058,7 @@ var Voice = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
 var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
   new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
@@ -2073,7 +2073,7 @@ var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.3/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.4/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
 var InstrumentZone = class {
   constructor(generators, modulators) {
     Object.defineProperty(this, "generators", {
@@ -2357,7 +2357,7 @@ var MidyGM1 = class {
   startTime = 0;
   resumeTime = 0;
   soundFonts = [];
-  soundFontTable = this.initSoundFontTable();
+  soundFontTable = Array.from({ length: 128 }, () => []);
   voiceCounter = /* @__PURE__ */ new Map();
   voiceCache = /* @__PURE__ */ new Map();
   isPlaying = false;
@@ -2371,9 +2371,9 @@ var MidyGM1 = class {
   instruments = /* @__PURE__ */ new Set();
   exclusiveClassNotes = new Array(128);
   static channelSettings = {
+    scheduleIndex: 0,
     detune: 0,
     programNumber: 0,
-    bank: 0,
     dataMSB: 0,
     dataLSB: 0,
     rpnMSB: 127,
@@ -2393,6 +2393,7 @@ var MidyGM1 = class {
       length: 1,
       sampleRate: audioContext.sampleRate
     });
+    this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.channels = this.createChannels(audioContext);
@@ -2400,21 +2401,14 @@ var MidyGM1 = class {
     this.scheduler.connect(audioContext.destination);
     this.GM1SystemOn();
   }
-  initSoundFontTable() {
-    const table = new Array(128);
-    for (let i = 0; i < 128; i++) {
-      table[i] = /* @__PURE__ */ new Map();
-    }
-    return table;
-  }
   addSoundFont(soundFont) {
     const index = this.soundFonts.length;
     this.soundFonts.push(soundFont);
     const presetHeaders = soundFont.parsed.presetHeaders;
+    const soundFontTable = this.soundFontTable;
     for (let i = 0; i < presetHeaders.length; i++) {
-      const presetHeader = presetHeaders[i];
-      const banks = this.soundFontTable[presetHeader.preset];
-      banks.set(presetHeader.bank, index);
+      const { preset, bank } = presetHeaders[i];
+      soundFontTable[preset][bank] = index;
     }
   }
   async toUint8Array(input) {
@@ -2498,16 +2492,14 @@ var MidyGM1 = class {
     this.GM1SystemOn();
   }
   getVoiceId(channel2, noteNumber, velocity) {
-    const bankNumber = this.calcBank(channel2);
-    const soundFontIndex = this.soundFontTable[channel2.programNumber].get(bankNumber);
+    const programNumber = channel2.programNumber;
+    const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return;
+    const bank = channel2.isDrum ? 128 : 0;
+    const soundFontIndex = bankTable[bank];
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(
-      bankNumber,
-      channel2.programNumber,
-      noteNumber,
-      velocity
-    );
+    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     const { instrument, sampleID } = voice.generators;
     return soundFontIndex * 2 ** 32 + (instrument << 16) + sampleID;
   }
@@ -2562,12 +2554,15 @@ var MidyGM1 = class {
     }
     return bufferSource;
   }
-  async scheduleTimelineEvents(t, resumeTime, queueIndex) {
-    while (queueIndex < this.timeline.length) {
-      const event = this.timeline[queueIndex];
-      if (event.startTime > t + this.lookAhead) break;
-      const delay = this.startDelay - resumeTime;
-      const startTime = event.startTime + delay;
+  async scheduleTimelineEvents(scheduleTime, queueIndex) {
+    const timeOffset = this.resumeTime - this.startTime;
+    const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const timeline = this.timeline;
+    while (queueIndex < timeline.length) {
+      const event = timeline[queueIndex];
+      if (lookAheadCheckTime < event.startTime) break;
+      const startTime = event.startTime + schedulingOffset;
       switch (event.type) {
         case "noteOn":
           await this.scheduleNoteOn(
@@ -2667,17 +2662,11 @@ var MidyGM1 = class {
     this.isPaused = false;
     this.startTime = this.audioContext.currentTime;
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    let resumeTime = this.resumeTime - this.startTime;
     let finished = false;
     this.notePromises = [];
     while (queueIndex < this.timeline.length) {
       const now = this.audioContext.currentTime;
-      const t = now + resumeTime;
-      queueIndex = await this.scheduleTimelineEvents(
-        t,
-        resumeTime,
-        queueIndex
-      );
+      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
@@ -2694,7 +2683,6 @@ var MidyGM1 = class {
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        resumeTime = this.resumeTime - this.startTime;
         this.isSeeking = false;
         continue;
       }
@@ -2714,16 +2702,16 @@ var MidyGM1 = class {
   secondToTicks(second, secondsPerBeat) {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
+  getSoundFontId(channel2) {
+    const programNumber = channel2.programNumber;
+    const bank = channel2.isDrum ? "128" : "000";
+    const program = programNumber.toString().padStart(3, "0");
+    return `${bank}:${program}`;
+  }
   extractMidiData(midi) {
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
-    const tmpChannels = new Array(this.channels.length);
-    for (let i = 0; i < tmpChannels.length; i++) {
-      tmpChannels[i] = {
-        programNumber: -1,
-        bank: this.channels[i].bank
-      };
-    }
+    const channels = this.channels;
     for (let i = 0; i < midi.tracks.length; i++) {
       const track = midi.tracks[i];
       let currentTicks = 0;
@@ -2733,17 +2721,15 @@ var MidyGM1 = class {
         event.ticks = currentTicks;
         switch (event.type) {
           case "noteOn": {
-            const channel2 = tmpChannels[event.channel];
-            if (channel2.programNumber < 0) {
-              instruments.add(`${channel2.bank}:0`);
-              channel2.programNumber = 0;
-            }
+            const channel2 = channels[event.channel];
+            instruments.add(this.getSoundFontId(channel2));
             break;
           }
           case "programChange": {
-            const channel2 = tmpChannels[event.channel];
-            channel2.programNumber = event.programNumber;
-            instruments.add(`${channel2.bankNumber}:${channel2.programNumber}`);
+            const channel2 = channels[event.channel];
+            this.setProgramChange(event.channel, event.programNumber);
+            instruments.add(this.getSoundFontId(channel2));
+            break;
           }
         }
         delete event.deltaTime;
@@ -3054,16 +3040,14 @@ var MidyGM1 = class {
   }
   async scheduleNoteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel2 = this.channels[channelNumber];
-    const bankNumber = channel2.bank;
-    const soundFontIndex = this.soundFontTable[channel2.programNumber].get(bankNumber);
+    const programNumber = channel2.programNumber;
+    const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return;
+    const bank = channel2.isDrum ? 128 : 0;
+    const soundFontIndex = bankTable[bank];
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(
-      bankNumber,
-      channel2.programNumber,
-      noteNumber,
-      velocity
-    );
+    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     if (!voice) return;
     const note = await this.createNote(
       channel2,
@@ -3179,7 +3163,29 @@ var MidyGM1 = class {
     channel2.sustainNotes = [];
     return promises;
   }
-  handleMIDIMessage(statusByte, data1, data2, scheduleTime) {
+  createMessageHandlers() {
+    const handlers = new Array(256);
+    handlers[128] = (data, scheduleTime) => this.noteOff(data[0] & 15, data[1], data[2], scheduleTime);
+    handlers[144] = (data, scheduleTime) => this.noteOn(data[0] & 15, data[1], data[2], scheduleTime);
+    handlers[176] = (data, scheduleTime) => this.setControlChange(data[0] & 15, data[1], data[2], scheduleTime);
+    handlers[192] = (data, scheduleTime) => this.setProgramChange(data[0] & 15, data[1], scheduleTime);
+    handlers[224] = (data, scheduleTime) => this.handlePitchBendMessage(
+      data[0] & 15,
+      data[1],
+      data[2],
+      scheduleTime
+    );
+    return handlers;
+  }
+  handleMessage(data, scheduleTime) {
+    const status = data[0];
+    if (status === 240) {
+      return this.handleSysEx(data.subarray(1), scheduleTime);
+    }
+    const handler = this.messageHandlers[status];
+    if (handler) handler(data, scheduleTime);
+  }
+  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
     const channelNumber = statusByte & 15;
     const messageType = statusByte & 240;
     switch (messageType) {
@@ -3610,10 +3616,8 @@ var MidyGM1 = class {
     for (let i = 0; i < this.channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
       const channel2 = this.channels[i];
-      channel2.bank = 0;
       channel2.isDrum = false;
     }
-    this.channels[9].bank = 128;
     this.channels[9].isDrum = true;
   }
   handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {
@@ -3634,13 +3638,9 @@ var MidyGM1 = class {
     const volume = (data[5] * 128 + data[4]) / 16383;
     this.setMasterVolume(volume, scheduleTime);
   }
-  setMasterVolume(volume, scheduleTime) {
+  setMasterVolume(value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    if (volume < 0 && 1 < volume) {
-      console.error("Master Volume is out of range");
-    } else {
-      this.masterVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(volume * volume, scheduleTime);
-    }
+    this.masterVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value * value, scheduleTime);
   }
   handleSysEx(data, scheduleTime) {
     switch (data[0]) {
