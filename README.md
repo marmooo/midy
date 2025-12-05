@@ -121,7 +121,6 @@ const soundFontURL = "https://soundfonts.pages.dev/GeneralUser_GS_v1.471";
 
 function getSoundFontPaths() {
   const paths = [];
-  const { midy, soundFontURL } = this;
   for (const instrument of midy.instruments) {
     const [bank, program] = instrument.split(":");
     const bankNumber = Number(bank);
@@ -134,7 +133,7 @@ function getSoundFontPaths() {
   return paths;
 }
 
-const paths = this.getSoundFontPaths();
+const paths = getSoundFontPaths();
 await midy.loadSoundFont(paths);
 ```
 
