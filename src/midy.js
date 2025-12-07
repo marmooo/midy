@@ -1471,7 +1471,6 @@ export class Midy {
       noteNumber,
       velocity,
       scheduleTime,
-      undefined, // noteOff event
     );
   }
 

@@ -935,7 +935,6 @@ export class MidyGMLite {
       noteNumber,
       velocity,
       scheduleTime,
-      undefined, // noteOff event
     );
   }
 

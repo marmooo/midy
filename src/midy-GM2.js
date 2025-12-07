@@ -1445,7 +1445,6 @@ export class MidyGM2 {
       noteNumber,
       velocity,
       scheduleTime,
-      undefined, // noteOff event
     );
   }
 
