@@ -423,7 +423,6 @@ export class MidyGM1 {
     this.notePromises = [];
     while (queueIndex < this.timeline.length) {
       const now = this.audioContext.currentTime;
-      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
@@ -443,6 +442,7 @@ export class MidyGM1 {
         this.isSeeking = false;
         continue;
       }
+      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }

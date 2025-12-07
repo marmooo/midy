@@ -559,7 +559,6 @@ export class Midy {
         finished = true;
         break;
       }
-      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
@@ -579,6 +578,7 @@ export class Midy {
         this.isSeeking = false;
         continue;
       }
+      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
