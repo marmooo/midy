@@ -602,7 +602,7 @@ export class MidyGMLite {
   async pause() {
     if (!this.isPlaying || this.isPaused) return;
     const now = this.audioContext.currentTime;
-    this.resumeTime += now - this.startTime - this.startDelay;
+    this.resumeTime = now - this.startTime - this.startDelay;
     this.isPausing = true;
     await this.playPromise;
     this.isPausing = false;
