@@ -761,12 +761,13 @@ export class MidyGM2 {
       const event = this.timeline[i];
       if (totalTime < event.startTime) totalTime = event.startTime;
     }
-    return totalTime;
+    return totalTime + this.startDelay;
   }
 
   currentTime() {
+    if (!this.isPlaying) return this.resumeTime;
     const now = this.audioContext.currentTime;
-    return this.resumeTime + now - this.startTime - this.startDelay;
+    return now + this.resumeTime - this.startTime;
   }
 
   processScheduledNotes(channel, callback) {
