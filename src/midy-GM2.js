@@ -174,6 +174,7 @@ export class MidyGM2 {
   soundFontTable = Array.from({ length: 128 }, () => []);
   voiceCounter = new Map();
   voiceCache = new Map();
+  realtimeVoiceCache = new Map();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -484,6 +485,7 @@ export class MidyGM2 {
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
+    this.realtimeVoiceCache.clear();
     for (let i = 0; i < this.channels.length; i++) {
       this.channels[i].scheduledNotes = [];
       this.resetChannelStates(i);
@@ -1260,25 +1262,34 @@ export class MidyGM2 {
     noteNumber,
     velocity,
     voiceParams,
+    realtime,
   ) {
     const audioBufferId = this.getVoiceId(
       channel,
       noteNumber,
       velocity,
     );
-    const cache = this.voiceCache.get(audioBufferId);
-    if (cache) {
-      cache.counter += 1;
-      if (cache.maxCount <= cache.counter) {
-        this.voiceCache.delete(audioBufferId);
-      }
-      return cache.audioBuffer;
-    } else {
-      const maxCount = this.voiceCounter.get(audioBufferId) ?? 0;
+    if (realtime) {
+      const cachedAudioBuffer = this.realtimeVoiceCache.get(audioBufferId);
+      if (cachedAudioBuffer) return cachedAudioBuffer;
       const audioBuffer = await this.createAudioBuffer(voiceParams);
-      const cache = { audioBuffer, maxCount, counter: 1 };
-      this.voiceCache.set(audioBufferId, cache);
+      this.realtimeVoiceCache.set(audioBufferId, audioBuffer);
       return audioBuffer;
+    } else {
+      const cache = this.voiceCache.get(audioBufferId);
+      if (cache) {
+        cache.counter += 1;
+        if (cache.maxCount <= cache.counter) {
+          this.voiceCache.delete(audioBufferId);
+        }
+        return cache.audioBuffer;
+      } else {
+        const maxCount = this.voiceCounter.get(audioBufferId) ?? 0;
+        const audioBuffer = await this.createAudioBuffer(voiceParams);
+        const cache = { audioBuffer, maxCount, counter: 1 };
+        this.voiceCache.set(audioBufferId, cache);
+        return audioBuffer;
+      }
     }
   }
 
@@ -1288,6 +1299,7 @@ export class MidyGM2 {
     noteNumber,
     velocity,
     startTime,
+    realtime,
   ) {
     const now = this.audioContext.currentTime;
     const state = channel.state;
@@ -1303,6 +1315,7 @@ export class MidyGM2 {
       noteNumber,
       velocity,
       voiceParams,
+      realtime,
     );
     note.bufferSource = this.createBufferSource(
       channel,
@@ -1407,12 +1420,15 @@ export class MidyGM2 {
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     if (!voice) return;
+    const realtime = startTime === undefined;
+    if (realtime) startTime = this.audioContext.currentTime;
     const note = await this.createNote(
       channel,
       voice,
       noteNumber,
       velocity,
       startTime,
+      realtime,
     );
     if (channel.isDrum) {
       const { keyBasedGainLs, keyBasedGainRs } = channel;
