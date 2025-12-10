@@ -435,7 +435,7 @@ export class Midy {
       const startTime = event.startTime + schedulingOffset;
       switch (event.type) {
         case "noteOn":
-          await this.scheduleNoteOn(
+          await this.noteOn(
             event.channel,
             event.noteNumber,
             event.velocity,
@@ -443,7 +443,7 @@ export class Midy {
           );
           break;
         case "noteOff": {
-          const notePromise = this.scheduleNoteOff(
+          const notePromise = this.noteOff(
             event.channel,
             event.noteNumber,
             event.velocity,
@@ -697,7 +697,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     const promises = [];
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      const promise = this.scheduleNoteOff(
+      const promise = this.noteOff(
         channelNumber,
         note.noteNumber,
         velocity,
@@ -714,7 +714,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     const promises = [];
     this.processScheduledNotes(channel, (note) => {
-      const promise = this.scheduleNoteOff(
+      const promise = this.noteOff(
         channelNumber,
         note.noteNumber,
         velocity,
@@ -1382,7 +1382,7 @@ export class Midy {
     if (prev) {
       const [prevNote, prevChannelNumber] = prev;
       if (prevNote && !prevNote.ending) {
-        this.scheduleNoteOff(
+        this.noteOff(
           prevChannelNumber,
           prevNote.noteNumber,
           0, // velocity,
@@ -1405,7 +1405,7 @@ export class Midy {
       channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
     if (prevNote && !prevNote.ending) {
-      this.scheduleNoteOff(
+      this.noteOff(
         channelNumber,
         prevNote.noteNumber,
         0, // velocity,
@@ -1416,7 +1416,7 @@ export class Midy {
     this.drumExclusiveClassNotes[index] = note;
   }
 
-  async scheduleNoteOn(
+  async noteOn(
     channelNumber,
     noteNumber,
     velocity,
@@ -1465,16 +1465,6 @@ export class Midy {
     scheduledNotes.push(note);
   }
 
-  noteOn(channelNumber, noteNumber, velocity, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
-    return this.scheduleNoteOn(
-      channelNumber,
-      noteNumber,
-      velocity,
-      scheduleTime,
-    );
-  }
-
   disconnectNote(note) {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
@@ -1519,7 +1509,7 @@ export class Midy {
     });
   }
 
-  scheduleNoteOff(
+  noteOff(
     channelNumber,
     noteNumber,
     _velocity,
@@ -1568,23 +1558,12 @@ export class Midy {
     return -1;
   }
 
-  noteOff(channelNumber, noteNumber, velocity, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
-    return this.scheduleNoteOff(
-      channelNumber,
-      noteNumber,
-      velocity,
-      scheduleTime,
-      false, // force
-    );
-  }
-
   releaseSustainPedal(channelNumber, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
     const channel = this.channels[channelNumber];
     const promises = [];
     for (let i = 0; i < channel.sustainNotes.length; i++) {
-      const promise = this.scheduleNoteOff(
+      const promise = this.noteOff(
         channelNumber,
         channel.sustainNotes[i].noteNumber,
         velocity,
@@ -1604,7 +1583,7 @@ export class Midy {
     channel.state.sostenutoPedal = 0;
     for (let i = 0; i < sostenutoNotes.length; i++) {
       const note = sostenutoNotes[i];
-      const promise = this.scheduleNoteOff(
+      const promise = this.noteOff(
         channelNumber,
         note.noteNumber,
         velocity,
