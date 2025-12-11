@@ -1429,6 +1429,31 @@ export class Midy {
     this.drumExclusiveClassNotes[index] = note;
   }
 
+  setNoteRouting(channelNumber, note, startTime) {
+    const channel = this.channels[channelNumber];
+    const { noteNumber, volumeEnvelopeNode } = note;
+    if (channel.isDrum) {
+      const { keyBasedGainLs, keyBasedGainRs } = channel;
+      let gainL = keyBasedGainLs[noteNumber];
+      let gainR = keyBasedGainRs[noteNumber];
+      if (!gainL) {
+        const audioNodes = this.createChannelAudioNodes(this.audioContext);
+        gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
+        gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
+      }
+      volumeEnvelopeNode.connect(gainL);
+      volumeEnvelopeNode.connect(gainR);
+    } else {
+      volumeEnvelopeNode.connect(channel.gainL);
+      volumeEnvelopeNode.connect(channel.gainR);
+    }
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.handleDrumExclusiveClass(note, channelNumber, startTime);
+  }
+
   async noteOn(
     channelNumber,
     noteNumber,
@@ -1456,24 +1481,7 @@ export class Midy {
       startTime,
       realtime,
     );
-    if (channel.isDrum) {
-      const { keyBasedGainLs, keyBasedGainRs } = channel;
-      let gainL = keyBasedGainLs[noteNumber];
-      let gainR = keyBasedGainRs[noteNumber];
-      if (!gainL) {
-        const audioNodes = this.createChannelAudioNodes(this.audioContext);
-        gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
-        gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
-      }
-      note.volumeEnvelopeNode.connect(gainL);
-      note.volumeEnvelopeNode.connect(gainR);
-    } else {
-      note.volumeEnvelopeNode.connect(channel.gainL);
-      note.volumeEnvelopeNode.connect(channel.gainR);
-    }
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
+    this.setNoteRouting(channelNumber, note, startTime);
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
     const scheduledNotes = channel.scheduledNotes;

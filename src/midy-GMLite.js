@@ -907,6 +907,18 @@ export class MidyGMLite {
     this.drumExclusiveClassNotes[index] = note;
   }
 
+  setNoteRouting(channelNumber, note, startTime) {
+    const channel = this.channels[channelNumber];
+    const volumeEnvelopeNode = node.volumeEnvelopeNode;
+    volumeEnvelopeNode.connect(channel.gainL);
+    volumeEnvelopeNode.connect(channel.gainR);
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.handleDrumExclusiveClass(note, channelNumber, startTime);
+  }
+
   async noteOn(
     channelNumber,
     noteNumber,
@@ -933,13 +945,7 @@ export class MidyGMLite {
       startTime,
       realtime,
     );
-    note.volumeEnvelopeNode.connect(channel.gainL);
-    note.volumeEnvelopeNode.connect(channel.gainR);
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
-    this.handleExclusiveClass(note, channelNumber, startTime);
-    this.handleDrumExclusiveClass(note, channelNumber, startTime);
+    this.setNoteRouting(channelNumber, ntoe, startTime);
     const scheduledNotes = channel.scheduledNotes;
     note.index = scheduledNotes.length;
     scheduledNotes.push(note);

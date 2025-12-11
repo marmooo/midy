@@ -870,6 +870,17 @@ export class MidyGM1 {
     this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
   }
 
+  setNoteRouting(channelNumber, note, startTime) {
+    const channel = this.channels[channelNumber];
+    const volumeEnvelopeNode = node.volumeEnvelopeNode;
+    volumeEnvelopeNode.connect(channel.gainL);
+    volumeEnvelopeNode.connect(channel.gainR);
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
+    this.handleExclusiveClass(note, channelNumber, startTime);
+  }
+
   async noteOn(
     channelNumber,
     noteNumber,
@@ -896,12 +907,7 @@ export class MidyGM1 {
       startTime,
       realtime,
     );
-    note.volumeEnvelopeNode.connect(channel.gainL);
-    note.volumeEnvelopeNode.connect(channel.gainR);
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
-    this.handleExclusiveClass(note, channelNumber, startTime);
+    this.setNoteRouting(channelNumber, note, startTime);
     const scheduledNotes = channel.scheduledNotes;
     note.index = scheduledNotes.length;
     scheduledNotes.push(note);
