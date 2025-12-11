@@ -1477,6 +1477,7 @@ export class MidyGM2 {
   }
 
   releaseNote(channel, note, endTime) {
+    endTime ??= this.audioContext.currentTime;
     const volRelease = endTime + note.voiceParams.volRelease;
     const modRelease = endTime + note.voiceParams.modRelease;
     const stopTime = Math.min(volRelease, modRelease);

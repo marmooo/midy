@@ -1503,6 +1503,7 @@ export class Midy {
   }
 
   releaseNote(channel, note, endTime) {
+    endTime ??= this.audioContext.currentTime;
     const releaseTime = this.getRelativeKeyBasedValue(channel, note, 72) * 2;
     const volRelease = endTime + note.voiceParams.volRelease * releaseTime;
     const modRelease = endTime + note.voiceParams.modRelease;
