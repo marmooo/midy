@@ -7,7 +7,6 @@
     "midi-file": "npm:midi-file@^1.2.4"
   },
   "tasks": {
-    "build": "deno run -RWE --allow-run build.js",
-    "watch": "deno run -RWE --allow-run watch.js"
+    "build": "deno run -RWE --allow-run build.js"
   }
 }
