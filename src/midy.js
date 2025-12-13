@@ -2,8 +2,11 @@ import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
 class Note {
+  voice;
+  voiceParams;
   index = -1;
   ending = false;
+  pending = true;
   bufferSource;
   filterNode;
   filterDepth;
@@ -18,12 +21,10 @@ class Note {
   portamentoNoteNumber = -1;
   pressure = 0;
 
-  constructor(noteNumber, velocity, startTime, voice, voiceParams) {
+  constructor(noteNumber, velocity, startTime) {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
     this.startTime = startTime;
-    this.voice = voice;
-    this.voiceParams = voiceParams;
   }
 }
 
@@ -1317,15 +1318,9 @@ export class Midy {
     }
   }
 
-  async createNote(
-    channel,
-    voice,
-    noteNumber,
-    velocity,
-    startTime,
-    realtime,
-  ) {
+  async setNoteAudioNode(channel, note, realtime) {
     const now = this.audioContext.currentTime;
+    const { noteNumber, velocity, startTime } = note;
     const state = channel.state;
     const controllerState = this.getControllerState(
       channel,
@@ -1333,8 +1328,8 @@ export class Midy {
       velocity,
       0, // polyphonicKeyPressure
     );
-    const voiceParams = voice.getAllParams(controllerState);
-    const note = new Note(noteNumber, velocity, startTime, voice, voiceParams);
+    const voiceParams = note.voice.getAllParams(controllerState);
+    note.voiceParams = voiceParams;
     const audioBuffer = await this.getAudioBuffer(
       channel,
       noteNumber,
@@ -1380,10 +1375,8 @@ export class Midy {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
-
     this.setChorusSend(channel, note, now);
     this.setReverbSend(channel, note, now);
-
     note.bufferSource.start(startTime);
     return note;
   }
@@ -1454,13 +1447,14 @@ export class Midy {
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
   }
 
-  async noteOn(
-    channelNumber,
-    noteNumber,
-    velocity,
-    startTime,
-  ) {
+  async noteOn(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
+    const realtime = startTime === undefined;
+    if (realtime) startTime = this.audioContext.currentTime;
+    const note = new Note(noteNumber, velocity, startTime);
+    const scheduledNotes = channel.scheduledNotes;
+    note.index = scheduledNotes.length;
+    scheduledNotes.push(note);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
@@ -1469,24 +1463,15 @@ export class Midy {
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
-    if (!voice) return;
-    const realtime = startTime === undefined;
-    if (realtime) startTime = this.audioContext.currentTime;
-    const note = await this.createNote(
-      channel,
-      voice,
-      noteNumber,
-      velocity,
-      startTime,
-      realtime,
-    );
+    note.voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
+    if (!note.voice) return;
+    await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
-    this.handleExclusiveClass(note, channelNumber, startTime);
-    this.handleDrumExclusiveClass(note, channelNumber, startTime);
-    const scheduledNotes = channel.scheduledNotes;
-    note.index = scheduledNotes.length;
-    scheduledNotes.push(note);
+    note.pending = false;
+    const off = note.offEvent;
+    if (off) {
+      this.noteOff(channelNumber, noteNumber, off.velocity, off.startTime);
+    }
   }
 
   disconnectNote(note) {
@@ -1537,7 +1522,7 @@ export class Midy {
   noteOff(
     channelNumber,
     noteNumber,
-    _velocity,
+    velocity,
     endTime,
     force,
   ) {
@@ -1554,6 +1539,10 @@ export class Midy {
     const index = this.findNoteOffIndex(channel, noteNumber);
     if (index < 0) return;
     const note = channel.scheduledNotes[index];
+    if (note.pending) {
+      note.offEvent = { velocity, startTime: endTime };
+      return;
+    }
     note.ending = true;
     this.setNoteIndex(channel, index);
     this.releaseNote(channel, note, endTime);
