@@ -1,5 +1,6 @@
 import { parseMidi } from "midi-file";
-import { parse, SoundFont } from "@marmooo/soundfont-parser";
+// import { parse, SoundFont } from "@marmooo/soundfont-parser";
+import { parse, SoundFont } from "../../soundfont-parser/src/mod.ts";
 
 class Note {
   voice;
@@ -396,12 +397,11 @@ export class Midy {
   }
 
   async createAudioBuffer(voiceParams) {
-    const sample = voiceParams.sample;
-    const sampleStart = voiceParams.start;
-    const sampleEnd = sample.data.length + voiceParams.end;
+    const { sample, start, end } = voiceParams;
+    const sampleEnd = sample.data.length + end;
     const audioBuffer = await sample.toAudioBuffer(
       this.audioContext,
-      sampleStart,
+      start,
       sampleEnd,
     );
     return audioBuffer;
@@ -1377,7 +1377,12 @@ export class Midy {
     note.filterNode.connect(note.volumeEnvelopeNode);
     this.setChorusSend(channel, note, now);
     this.setReverbSend(channel, note, now);
-    note.bufferSource.start(startTime);
+    if (voiceParams.sample.type === "compressed") {
+      const offset = voiceParams.start / audioBuffer.sampleRate;
+      note.bufferSource.start(startTime, offset);
+    } else {
+      note.bufferSource.start(startTime);
+    }
     return note;
   }
 

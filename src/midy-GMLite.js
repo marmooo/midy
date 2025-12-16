@@ -303,12 +303,11 @@ export class MidyGMLite {
   }
 
   async createAudioBuffer(voiceParams) {
-    const sample = voiceParams.sample;
-    const sampleStart = voiceParams.start;
-    const sampleEnd = sample.data.length + voiceParams.end;
+    const { sample, start, end } = voiceParams;
+    const sampleEnd = sample.data.length + end;
     const audioBuffer = await sample.toAudioBuffer(
       this.audioContext,
-      sampleStart,
+      start,
       sampleEnd,
     );
     return audioBuffer;
@@ -860,7 +859,12 @@ export class MidyGMLite {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
-    note.bufferSource.start(startTime);
+    if (voiceParams.sample.type === "compressed") {
+      const offset = voiceParams.start / audioBuffer.sampleRate;
+      note.bufferSource.start(startTime, offset);
+    } else {
+      note.bufferSource.start(startTime);
+    }
     return note;
   }
 
