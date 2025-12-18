@@ -29,11 +29,11 @@ const defaultControllerState = {
   pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
   pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
-  modulationDepth: { type: 128 + 1, defaultValue: 0 },
+  modulationDepthMSB: { type: 128 + 1, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
-  volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 64 / 127 },
-  expression: { type: 128 + 11, defaultValue: 1 },
+  volumeMSB: { type: 128 + 7, defaultValue: 100 / 127 },
+  panMSB: { type: 128 + 10, defaultValue: 64 / 127 },
+  expressionMSB: { type: 128 + 11, defaultValue: 1 },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
   sustainPedal: { type: 128 + 64, defaultValue: 0 },
   // rpnLSB: { type: 128 + 100, defaultValue: 127 },
@@ -257,7 +257,7 @@ export class MidyGM1 {
 
   createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      defaultControllerState.pan.defaultValue,
+      defaultControllerState.panMSB.defaultValue,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -1086,11 +1086,12 @@ export class MidyGM1 {
   setModLfoToPitch(channel, note, scheduleTime) {
     if (note.modulationDepth) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch;
-      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      const baseDepth = Math.abs(modLfoToPitch) +
+        channel.state.modulationDepthMSB;
+      const depth = baseDepth * Math.sign(modLfoToPitch);
       note.modulationDepth.gain
         .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(modulationDepth, scheduleTime);
+        .setValueAtTime(depth, scheduleTime);
     } else {
       this.startModulation(channel, note, scheduleTime);
     }
@@ -1130,18 +1131,18 @@ export class MidyGM1 {
   createVoiceParamsHandlers() {
     return {
       modLfoToPitch: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
       vibLfoToPitch: (_channel, _note, _scheduleTime) => {},
       modLfoToFilterFc: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToFilterFc(note, scheduleTime);
         }
       },
       modLfoToVolume: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToVolume(note, scheduleTime);
         }
       },
@@ -1153,7 +1154,7 @@ export class MidyGM1 {
         }
       },
       freqModLFO: (_channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setFreqModLFO(note, scheduleTime);
         }
       },
@@ -1230,7 +1231,8 @@ export class MidyGM1 {
   }
 
   updateModulation(channel, scheduleTime) {
-    const depth = channel.state.modulationDepth * channel.modulationDepthRange;
+    const depth = channel.state.modulationDepthMSB *
+      channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
@@ -1243,14 +1245,14 @@ export class MidyGM1 {
   setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.modulationDepth = modulation / 127;
+    channel.state.modulationDepthMSB = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.volume = volume / 127;
+    channel.state.volumeMSB = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
@@ -1265,14 +1267,14 @@ export class MidyGM1 {
   setPan(channelNumber, pan, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.pan = pan / 127;
+    channel.state.panMSB = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.expression = expression / 127;
+    channel.state.expressionMSB = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
@@ -1283,8 +1285,8 @@ export class MidyGM1 {
 
   updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
-    const volume = state.volume * state.expression;
-    const { gainLeft, gainRight } = this.panToGain(state.pan);
+    const volume = state.volumeMSB * state.expressionMSB;
+    const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     channel.gainL.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(volume * gainLeft, scheduleTime);

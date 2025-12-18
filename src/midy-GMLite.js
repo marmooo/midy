@@ -43,11 +43,11 @@ const defaultControllerState = {
   pitchWheel: { type: 14, defaultValue: 8192 / 16383 },
   pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
-  modulationDepth: { type: 128 + 1, defaultValue: 0 },
+  modulationDepthMSB: { type: 128 + 1, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
-  volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 64 / 127 },
-  expression: { type: 128 + 11, defaultValue: 1 },
+  volumeMSB: { type: 128 + 7, defaultValue: 100 / 127 },
+  panMSB: { type: 128 + 10, defaultValue: 64 / 127 },
+  expressionMSB: { type: 128 + 11, defaultValue: 1 },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
   sustainPedal: { type: 128 + 64, defaultValue: 0 },
   // rpnLSB: { type: 128 + 100, defaultValue: 127 },
@@ -272,7 +272,7 @@ export class MidyGMLite {
 
   createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      defaultControllerState.pan.defaultValue,
+      defaultControllerState.panMSB.defaultValue,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -854,7 +854,7 @@ export class MidyGMLite {
     this.setFilterEnvelope(note, now);
     this.setPitchEnvelope(note, now);
     this.updateDetune(channel, note, now);
-    if (0 < state.modulationDepth) {
+    if (0 < state.modulationDepthMSB) {
       this.startModulation(channel, note, now);
     }
     note.bufferSource.connect(note.filterNode);
@@ -1127,11 +1127,12 @@ export class MidyGMLite {
   setModLfoToPitch(channel, note, scheduleTime) {
     if (note.modulationDepth) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch;
-      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
-      const modulationDepth = baseDepth * Math.sign(modLfoToPitch);
+      const baseDepth = Math.abs(modLfoToPitch) +
+        channel.state.modulationDepthMSB;
+      const depth = baseDepth * Math.sign(modLfoToPitch);
       note.modulationDepth.gain
         .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(modulationDepth, scheduleTime);
+        .setValueAtTime(depth, scheduleTime);
     } else {
       this.startModulation(channel, note, scheduleTime);
     }
@@ -1171,18 +1172,18 @@ export class MidyGMLite {
   createVoiceParamsHandlers() {
     return {
       modLfoToPitch: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
       vibLfoToPitch: (_channel, _note, _scheduleTime) => {},
       modLfoToFilterFc: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToFilterFc(note, scheduleTime);
         }
       },
       modLfoToVolume: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToVolume(note, scheduleTime);
         }
       },

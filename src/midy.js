@@ -1,6 +1,5 @@
 import { parseMidi } from "midi-file";
-// import { parse, SoundFont } from "@marmooo/soundfont-parser";
-import { parse, SoundFont } from "../../soundfont-parser/src/mod.ts";
+import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
 class Note {
   voice;
@@ -73,12 +72,12 @@ const defaultControllerState = {
   pitchWheelSensitivity: { type: 16, defaultValue: 2 / 128 },
   link: { type: 127, defaultValue: 0 },
   // bankMSB: { type: 128 + 0, defaultValue: 121, },
-  modulationDepth: { type: 128 + 1, defaultValue: 0 },
-  portamentoTime: { type: 128 + 5, defaultValue: 0 },
+  modulationDepthMSB: { type: 128 + 1, defaultValue: 0 },
+  portamentoTimeMSB: { type: 128 + 5, defaultValue: 0 },
   // dataMSB: { type: 128 + 6, defaultValue: 0, },
-  volume: { type: 128 + 7, defaultValue: 100 / 127 },
-  pan: { type: 128 + 10, defaultValue: 64 / 127 },
-  expression: { type: 128 + 11, defaultValue: 1 },
+  volumeMSB: { type: 128 + 7, defaultValue: 100 / 127 },
+  panMSB: { type: 128 + 10, defaultValue: 64 / 127 },
+  expressionMSB: { type: 128 + 11, defaultValue: 1 },
   // bankLSB: { type: 128 + 32, defaultValue: 0, },
   // dataLSB: { type: 128 + 38, defaultValue: 0, },
   sustainPedal: { type: 128 + 64, defaultValue: 0 },
@@ -350,7 +349,7 @@ export class Midy {
 
   createChannelAudioNodes(audioContext) {
     const { gainLeft, gainRight } = this.panToGain(
-      defaultControllerState.pan.defaultValue,
+      defaultControllerState.panMSB.defaultValue,
     );
     const gainL = new GainNode(audioContext, { gain: gainLeft });
     const gainR = new GainNode(audioContext, { gain: gainRight });
@@ -1067,7 +1066,7 @@ export class Midy {
 
   getPortamentoTime(channel, note) {
     const deltaSemitone = Math.abs(note.noteNumber - note.portamentoNoteNumber);
-    const value = Math.ceil(channel.state.portamentoTime * 127);
+    const value = Math.ceil(channel.state.portamentoTimeMSB * 127);
     return deltaSemitone / this.getPitchIncrementSpeed(value) / 10;
   }
 
@@ -1366,7 +1365,7 @@ export class Midy {
     if (0 < state.vibratoDepth) {
       this.startVibrato(channel, note, now);
     }
-    if (0 < state.modulationDepth) {
+    if (0 < state.modulationDepthMSB) {
       this.startModulation(channel, note, now);
     }
     if (channel.mono && channel.currentBufferSource) {
@@ -1743,7 +1742,8 @@ export class Midy {
     if (note.modulationDepth) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch +
         this.getLFOPitchDepth(channel, note);
-      const baseDepth = Math.abs(modLfoToPitch) + channel.state.modulationDepth;
+      const baseDepth = Math.abs(modLfoToPitch) +
+        channel.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
       note.modulationDepth.gain
         .cancelScheduledValues(scheduleTime)
@@ -1874,7 +1874,7 @@ export class Midy {
   createVoiceParamsHandlers() {
     return {
       modLfoToPitch: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToPitch(channel, note, scheduleTime);
         }
       },
@@ -1884,12 +1884,12 @@ export class Midy {
         }
       },
       modLfoToFilterFc: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToFilterFc(channel, note, scheduleTime);
         }
       },
       modLfoToVolume: (channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setModLfoToVolume(channel, note, scheduleTime);
         }
       },
@@ -1900,12 +1900,12 @@ export class Midy {
         this.setReverbSend(channel, note, scheduleTime);
       },
       delayModLFO: (_channel, note, _scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setDelayModLFO(note);
         }
       },
       freqModLFO: (_channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepth) {
+        if (0 < channel.state.modulationDepthMSB) {
           this.setFreqModLFO(note, scheduleTime);
         }
       },
@@ -2024,7 +2024,8 @@ export class Midy {
   }
 
   updateModulation(channel, scheduleTime) {
-    const depth = channel.state.modulationDepth * channel.modulationDepthRange;
+    const depth = channel.state.modulationDepthMSB *
+      channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
       if (note.modulationDepth) {
         note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
@@ -2038,7 +2039,7 @@ export class Midy {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.modulationDepth = modulation / 127;
+    channel.state.modulationDepthMSB = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
@@ -2062,7 +2063,7 @@ export class Midy {
   setPortamentoTime(channelNumber, portamentoTime, scheduleTime) {
     const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
-    channel.state.portamentoTime = portamentoTime / 127;
+    channel.state.portamentoTimeMSB = portamentoTime / 127;
     if (channel.isDrum) return;
     this.updatePortamento(channel, scheduleTime);
   }
@@ -2070,7 +2071,7 @@ export class Midy {
   setVolume(channelNumber, volume, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.volume = volume / 127;
+    channel.state.volumeMSB = volume / 127;
     if (channel.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel, i, scheduleTime);
@@ -2091,7 +2092,7 @@ export class Midy {
   setPan(channelNumber, pan, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.pan = pan / 127;
+    channel.state.panMSB = pan / 127;
     if (channel.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel, i, scheduleTime);
@@ -2104,7 +2105,7 @@ export class Midy {
   setExpression(channelNumber, expression, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.expression = expression / 127;
+    channel.state.expressionMSB = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
@@ -2119,8 +2120,8 @@ export class Midy {
 
   updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
-    const volume = state.volume * state.expression;
-    const { gainLeft, gainRight } = this.panToGain(state.pan);
+    const volume = state.volumeMSB * state.expressionMSB;
+    const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     channel.gainL.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(volume * gainLeft, scheduleTime);
@@ -2134,8 +2135,8 @@ export class Midy {
     if (!gainL) return;
     const gainR = channel.keyBasedGainRs[keyNumber];
     const state = channel.state;
-    const defaultVolume = state.volume * state.expression;
-    const defaultPan = state.pan;
+    const defaultVolume = state.volumeMSB * state.expressionMSB;
+    const defaultPan = state.panMSB;
     const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
     const volume = (0 <= keyBasedVolume)
       ? defaultVolume * keyBasedVolume / 64
