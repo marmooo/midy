@@ -1452,8 +1452,8 @@ export class MidyGM1 {
   resetAllControllers(channelNumber, _value, scheduleTime) {
     const keys = [
       "pitchWheel",
-      "expression",
-      "modulationDepth",
+      "expressionMSB",
+      "modulationDepthMSB",
       "sustainPedal",
     ];
     const channel = this.channels[channelNumber];

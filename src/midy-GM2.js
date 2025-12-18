@@ -2329,8 +2329,8 @@ export class MidyGM2 {
     const keys = [
       "channelPressure",
       "pitchWheel",
-      "expression",
-      "modulationDepth",
+      "expressionMSB",
+      "modulationDepthMSB",
       "sustainPedal",
       "portamento",
       "sostenutoPedal",
