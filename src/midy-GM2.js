@@ -1986,8 +1986,8 @@ export class MidyGM2 {
   }
 
   setPortamentoTime(channelNumber, portamentoTime, scheduleTime) {
-    const channel = this.channels[channelNumber];
     scheduleTime ??= this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
     channel.state.portamentoTimeMSB = portamentoTime / 127;
     if (channel.isDrum) return;
     this.updatePortamento(channel, scheduleTime);
