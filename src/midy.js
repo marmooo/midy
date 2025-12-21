@@ -2274,8 +2274,8 @@ export class Midy {
     scheduleTime ??= this.audioContext.currentTime;
     const state = channel.state;
     state.filterResonance = ccValue / 127;
-    const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
     this.processScheduledNotes(channel, (note) => {
+      const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
       const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
       note.filterNode.Q.setValueAtTime(Q, scheduleTime);
     });
