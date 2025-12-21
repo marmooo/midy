@@ -97,6 +97,7 @@ const defaultControllerState = {
   vibratoRate: { type: 128 + 76, defaultValue: 64 / 127 },
   vibratoDepth: { type: 128 + 77, defaultValue: 64 / 127 },
   vibratoDelay: { type: 128 + 78, defaultValue: 64 / 127 },
+  portamentoNoteNumber: { type: 128 + 84, defaultValue: 0 },
   reverbSendLevel: { type: 128 + 91, defaultValue: 0 },
   chorusSendLevel: { type: 128 + 93, defaultValue: 0 },
   // dataIncrement: { type: 128 + 96, defaultValue: 0 },
@@ -219,6 +220,7 @@ export class Midy {
     modulationDepthRange: 50, // cent
     fineTuning: 0, // cent
     coarseTuning: 0, // cent
+    portamentoControl: false,
   };
 
   constructor(audioContext) {
@@ -1054,6 +1056,13 @@ export class Midy {
     const noteDetune = this.calcNoteDetune(channel, note);
     const pitchControl = this.getPitchControl(channel, note);
     const detune = channel.detune + noteDetune + pitchControl;
+    if (channel.portamentoControl) {
+      const state = channel.state;
+      const portamentoNoteNumber = Math.ceil(state.portamentoNoteNumber * 127);
+      note.portamentoNoteNumber = portamentoNoteNumber;
+      channel.portamentoControl = false;
+      state.portamentoNoteNumber = 0;
+    }
     if (this.isPortamento(channel, note)) {
       const startTime = note.startTime;
       const deltaCent = (note.noteNumber - note.portamentoNoteNumber) * 100;
@@ -2007,6 +2016,7 @@ export class Midy {
     handlers[76] = this.setVibratoRate;
     handlers[77] = this.setVibratoDepth;
     handlers[78] = this.setVibratoDelay;
+    handlers[84] = this.setPortamentoNoteNumber;
     handlers[91] = this.setReverbSendLevel;
     handlers[93] = this.setChorusSendLevel;
     handlers[96] = this.dataIncrement;
@@ -2375,6 +2385,13 @@ export class Midy {
         this.startVibrato(channel, note, scheduleTime);
       });
     }
+  }
+
+  setPortamentoNoteNumber(channelNumber, value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    const channel = this.channels[channelNumber];
+    channel.portamentoControl = true;
+    channel.state.portamentoNoteNumber = value / 127;
   }
 
   setReverbSendLevel(channelNumber, reverbSendLevel, scheduleTime) {
