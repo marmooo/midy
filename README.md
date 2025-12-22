@@ -55,7 +55,7 @@ All implementations follow the specification.
 import { Midy } from "midy.js";
 
 const audioContext = new AudioContext();
-await audioContext.suspend();
+if (audioContext.state === "running") await audioContext.suspend();
 const midy = new Midy(audioContext);
 await midy.loadMIDI("test.mid");
 await midy.loadSoundFont("test.sf3");
