@@ -591,6 +591,7 @@ export class Midy {
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
+    if (this.timeline.length <= queueIndex) finished = true;
     if (finished) {
       this.notePromises = [];
       this.resetAllStates();
