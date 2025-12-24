@@ -591,7 +591,12 @@ export class Midy {
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
-    if (this.timeline.length <= queueIndex) finished = true;
+    if (this.timeline.length <= queueIndex) {
+      const now = this.audioContext.currentTime;
+      await this.stopNotes(0, true, now);
+      await this.audioContext.suspend();
+      finished = true;
+    }
     if (finished) {
       this.notePromises = [];
       this.resetAllStates();
@@ -1566,7 +1571,7 @@ export class Midy {
     }
     note.ending = true;
     this.setNoteIndex(channel, index);
-    this.releaseNote(channel, note, endTime);
+    return this.releaseNote(channel, note, endTime);
   }
 
   setNoteIndex(channel, index) {
