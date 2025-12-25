@@ -328,14 +328,13 @@ export class MidyGM1 {
           );
           break;
         case "noteOff": {
-          const notePromise = this.noteOff(
+          this.noteOff(
             event.channel,
             event.noteNumber,
             event.velocity,
             startTime,
             false, // force
           );
-          if (notePromise) this.notePromises.push(notePromise);
           break;
         }
         case "controller":
@@ -964,7 +963,9 @@ export class MidyGM1 {
     }
     note.ending = true;
     this.setNoteIndex(channel, index);
-    return this.releaseNote(channel, note, endTime);
+    const promise = this.releaseNote(channel, note, endTime);
+    this.notePromises.push(promise);
+    return promise;
   }
 
   setNoteIndex(channel, index) {
