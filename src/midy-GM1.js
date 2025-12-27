@@ -435,7 +435,7 @@ export class MidyGM1 {
         finished = true;
         break;
       } else if (this.isSeeking) {
-        await this.stopNotes(0, true, now);
+        this.stopNotes(0, true, now);
         this.startTime = this.audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
