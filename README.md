@@ -65,6 +65,7 @@ await midy.start();
 ### Playback
 
 ```js
+midy.loop = true;
 await midy.start();
 await midy.stop();
 await midy.pause();

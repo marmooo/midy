@@ -125,6 +125,7 @@ export class MidyGMLite {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
+  loop = true;
   playPromise;
   timeline = [];
   notePromises = [];
@@ -438,8 +439,23 @@ export class MidyGMLite {
     let queueIndex = this.getQueueIndex(this.resumeTime);
     let finished = false;
     this.notePromises = [];
-    while (queueIndex < this.timeline.length) {
+    while (true) {
       const now = this.audioContext.currentTime;
+      if (this.timeline.length <= queueIndex) {
+        await this.stopNotes(0, true, now);
+        if (this.loop) {
+          this.notePromises = [];
+          this.resetAllStates();
+          queueIndex = 0;
+          this.startTime = this.audioContext.currentTime;
+          this.resumeTime = 0;
+          continue;
+        } else {
+          await this.audioContext.suspend();
+          finished = true;
+          break;
+        }
+      }
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
@@ -462,12 +478,6 @@ export class MidyGMLite {
       queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
-    }
-    if (this.timeline.length <= queueIndex) {
-      const now = this.audioContext.currentTime;
-      await this.stopNotes(0, true, now);
-      await this.audioContext.suspend();
-      finished = true;
     }
     if (finished) {
       this.notePromises = [];
