@@ -73,6 +73,17 @@ await midy.resume();
 midy.seekTo(second);
 ```
 
+### Events
+
+```js
+midy.addEventListener("looped", func);
+midy.addEventListener("started", func);
+midy.addEventListener("stopped", func);
+midy.addEventListener("paused", func);
+midy.addEventListener("resumed", func);
+midy.addEventListener("seeked", func);
+```
+
 ### MIDI Message
 
 There are functions that handle MIDI messages as they are, as well as simplified

@@ -91,7 +91,7 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
-export class MidyGM1 {
+export class MidyGM1 extends EventTarget {
   mode = "GM1";
   numChannels = 16;
   ticksPerBeat = 120;
@@ -132,6 +132,7 @@ export class MidyGM1 {
   };
 
   constructor(audioContext) {
+    super();
     this.audioContext = audioContext;
     this.masterVolume = new GainNode(audioContext);
     this.scheduler = new GainNode(audioContext, { gain: 0 });
@@ -417,11 +418,17 @@ export class MidyGM1 {
     if (this.audioContext.state === "suspended") {
       await this.audioContext.resume();
     }
+    const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
     this.startTime = this.audioContext.currentTime;
+    if (paused) {
+      this.dispatchEvent(new Event("resumed"));
+    } else {
+      this.dispatchEvent(new Event("started"));
+    }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    let finished = false;
+    let exitReason;
     this.notePromises = [];
     while (true) {
       const now = this.audioContext.currentTime;
@@ -433,10 +440,11 @@ export class MidyGM1 {
           queueIndex = 0;
           this.startTime = this.audioContext.currentTime;
           this.resumeTime = 0;
+          this.dispatchEvent(new Event("looped"));
           continue;
         } else {
           await this.audioContext.suspend();
-          finished = true;
+          exitReason = "ended";
           break;
         }
       }
@@ -444,11 +452,14 @@ export class MidyGM1 {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
         this.notePromises = [];
+        this.isPausing = false;
+        exitReason = "paused";
         break;
       } else if (this.isStopping) {
         await this.stopNotes(0, true, now);
         await this.audioContext.suspend();
-        finished = true;
+        this.isStopping = false;
+        exitReason = "stopped";
         break;
       } else if (this.isSeeking) {
         this.stopNotes(0, true, now);
@@ -457,17 +468,25 @@ export class MidyGM1 {
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
         this.isSeeking = false;
+        this.dispatchEvent(new Event("seeked"));
         continue;
       }
       queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
-    if (finished) {
+    if (exitReason !== "paused") {
       this.notePromises = [];
       this.resetAllStates();
     }
     this.isPlaying = false;
+    if (exitReason === "paused") {
+      this.isPaused = true;
+      this.dispatchEvent(new Event("paused"));
+    } else {
+      this.isPaused = false;
+      this.dispatchEvent(new Event(exitReason));
+    }
   }
 
   ticksToSecond(ticks, secondsPerBeat) {
@@ -597,7 +616,6 @@ export class MidyGM1 {
     if (!this.isPlaying) return;
     this.isStopping = true;
     await this.playPromise;
-    this.isStopping = false;
   }
 
   async pause() {
@@ -606,15 +624,12 @@ export class MidyGM1 {
     this.resumeTime = now - this.startTime - this.startDelay;
     this.isPausing = true;
     await this.playPromise;
-    this.isPausing = false;
-    this.isPaused = true;
   }
 
   async resume() {
     if (!this.isPaused) return;
     this.playPromise = this.playNotes();
     await this.playPromise;
-    this.isPaused = false;
   }
 
   seekTo(second) {
