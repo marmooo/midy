@@ -621,7 +621,7 @@ export class MidyGM1 extends EventTarget {
   async pause() {
     if (!this.isPlaying || this.isPaused) return;
     const now = this.audioContext.currentTime;
-    this.resumeTime = now - this.startTime - this.startDelay;
+    this.resumeTime = now + this.resumeTime - this.startTime;
     this.isPausing = true;
     await this.playPromise;
   }
