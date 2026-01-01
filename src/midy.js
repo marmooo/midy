@@ -104,6 +104,7 @@ const defaultControllerState = {
   // dataDecrement: { type: 128 + 97, defaultValue: 0 },
   // rpnLSB: { type: 128 + 100, defaultValue: 127 },
   // rpnMSB: { type: 128 + 101, defaultValue: 127 },
+  // rpgMakerLoop: { type: 128 + 111, defaultValue: 0 },
   // allSoundOff: { type: 128 + 120, defaultValue: 0 },
   // resetAllControllers: { type: 128 + 121, defaultValue: 0 },
   // allNotesOff: { type: 128 + 123, defaultValue: 0 },
@@ -197,7 +198,9 @@ export class Midy extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
-  loop = true;
+  loop = false;
+  rpgMakerLoop = true;
+  rpgMakerLoopStart = 0;
   playPromise;
   timeline = [];
   notePromises = [];
@@ -520,6 +523,7 @@ export class Midy extends EventTarget {
   }
 
   updateStates(queueIndex, nextQueueIndex) {
+    const now = this.audioContext.currentTime;
     if (nextQueueIndex < queueIndex) queueIndex = 0;
     for (let i = queueIndex; i < nextQueueIndex; i++) {
       const event = this.timeline[i];
@@ -529,21 +533,21 @@ export class Midy extends EventTarget {
             event.channel,
             event.controllerType,
             event.value,
-            0,
+            now,
           );
           break;
         case "programChange":
           this.setProgramChange(
             event.channel,
             event.programNumber,
-            0,
+            now,
           );
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192, 0);
+          this.setPitchBend(event.channel, event.value + 8192, now);
           break;
         case "sysEx":
-          this.handleSysEx(event.data, 0);
+          this.handleSysEx(event.data, now);
       }
     }
   }
@@ -580,9 +584,17 @@ export class Midy extends EventTarget {
         if (this.loop) {
           this.notePromises = [];
           this.resetAllStates();
-          queueIndex = 0;
-          this.startTime = this.audioContext.currentTime;
-          this.resumeTime = 0;
+          if (this.rpgMakerLoop) {
+            this.startTime = this.audioContext.currentTime;
+            this.resumeTime = this.rpgMakerLoopStart;
+            const nextQueueIndex = this.getQueueIndex(this.resumeTime);
+            this.updateStates(queueIndex, nextQueueIndex);
+            queueIndex = nextQueueIndex;
+          } else {
+            this.startTime = this.audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+          }
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
@@ -2055,6 +2067,7 @@ export class Midy extends EventTarget {
     handlers[97] = this.dataDecrement;
     handlers[100] = this.setRPNLSB;
     handlers[101] = this.setRPNMSB;
+    handlers[111] = this.setRPGMakerLoop;
     handlers[120] = this.allSoundOff;
     handlers[121] = this.resetAllControllers;
     handlers[123] = this.allNotesOff;
@@ -2593,6 +2606,11 @@ export class Midy extends EventTarget {
     scheduleTime ??= this.audioContext.currentTime;
     channel.modulationDepthRange = value;
     this.updateModulation(channel, scheduleTime);
+  }
+
+  setRPGMakerLoop(_channelNumber, _value, scheduleTime) {
+    scheduleTime ??= this.audioContext.currentTime;
+    this.rpgMakerLoopStart = scheduleTime + this.resumeTime - this.startTime;
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {

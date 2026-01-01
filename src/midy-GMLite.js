@@ -125,7 +125,7 @@ export class MidyGMLite extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
-  loop = true;
+  loop = false;
   playPromise;
   timeline = [];
   notePromises = [];
@@ -402,6 +402,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   updateStates(queueIndex, nextQueueIndex) {
+    const now = this.audioContext.currentTime;
     if (nextQueueIndex < queueIndex) queueIndex = 0;
     for (let i = queueIndex; i < nextQueueIndex; i++) {
       const event = this.timeline[i];
@@ -411,21 +412,21 @@ export class MidyGMLite extends EventTarget {
             event.channel,
             event.controllerType,
             event.value,
-            0,
+            now,
           );
           break;
         case "programChange":
           this.setProgramChange(
             event.channel,
             event.programNumber,
-            0,
+            now,
           );
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192, 0);
+          this.setPitchBend(event.channel, event.value + 8192, now);
           break;
         case "sysEx":
-          this.handleSysEx(event.data, 0);
+          this.handleSysEx(event.data, now);
       }
     }
   }
@@ -453,9 +454,9 @@ export class MidyGMLite extends EventTarget {
         if (this.loop) {
           this.notePromises = [];
           this.resetAllStates();
-          queueIndex = 0;
           this.startTime = this.audioContext.currentTime;
           this.resumeTime = 0;
+          queueIndex = 0;
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
