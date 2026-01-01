@@ -198,9 +198,8 @@ export class Midy extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
-  loop = false;
-  rpgMakerLoop = true;
-  rpgMakerLoopStart = 0;
+  loop = true;
+  loopStart = 0;
   playPromise;
   timeline = [];
   notePromises = [];
@@ -584,15 +583,13 @@ export class Midy extends EventTarget {
         if (this.loop) {
           this.notePromises = [];
           this.resetAllStates();
-          if (this.rpgMakerLoop) {
-            this.startTime = this.audioContext.currentTime;
-            this.resumeTime = this.rpgMakerLoopStart;
+          this.startTime = this.audioContext.currentTime;
+          this.resumeTime = this.loopStart;
+          if (0 < this.loopStart) {
             const nextQueueIndex = this.getQueueIndex(this.resumeTime);
             this.updateStates(queueIndex, nextQueueIndex);
             queueIndex = nextQueueIndex;
           } else {
-            this.startTime = this.audioContext.currentTime;
-            this.resumeTime = 0;
             queueIndex = 0;
           }
           this.dispatchEvent(new Event("looped"));
@@ -2610,7 +2607,7 @@ export class Midy extends EventTarget {
 
   setRPGMakerLoop(_channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
-    this.rpgMakerLoopStart = scheduleTime + this.resumeTime - this.startTime;
+    this.loopStart = scheduleTime + this.resumeTime - this.startTime;
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
