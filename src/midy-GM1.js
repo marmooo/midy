@@ -1106,7 +1106,7 @@ export class MidyGM1 extends EventTarget {
 
   setPitchBend(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
@@ -1277,13 +1277,13 @@ export class MidyGM1 extends EventTarget {
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     channel.state.modulationDepthMSB = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volumeMSB = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1298,14 +1298,14 @@ export class MidyGM1 extends EventTarget {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.panMSB = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expressionMSB = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1330,7 +1330,7 @@ export class MidyGM1 extends EventTarget {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
       this.processScheduledNotes(channel, (note) => {
@@ -1408,7 +1408,7 @@ export class MidyGM1 extends EventTarget {
 
   setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 12800;
@@ -1428,7 +1428,7 @@ export class MidyGM1 extends EventTarget {
 
   setFineTuning(channelNumber, value, scheduleTime) { // [-100, 100] cent
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const prev = channel.fineTuning;
     const next = value;
     channel.fineTuning = next;
@@ -1445,7 +1445,7 @@ export class MidyGM1 extends EventTarget {
 
   setCoarseTuning(channelNumber, value, scheduleTime) { // [-6400, 6300] cent
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const prev = channel.coarseTuning;
     const next = value;
     channel.coarseTuning = next;
@@ -1454,7 +1454,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
 
@@ -1517,7 +1517,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   allNotesOff(channelNumber, _value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     return this.stopActiveNotes(channelNumber, 0, false, scheduleTime);
   }
 
@@ -1540,7 +1540,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
@@ -1571,7 +1571,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   setMasterVolume(value, scheduleTime) { // [0-1]
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.masterVolume.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(value * value, scheduleTime);

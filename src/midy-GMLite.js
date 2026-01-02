@@ -1147,7 +1147,7 @@ export class MidyGMLite extends EventTarget {
 
   setPitchBend(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
@@ -1317,13 +1317,13 @@ export class MidyGMLite extends EventTarget {
 
   setModulationDepth(channelNumber, modulation, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     channel.state.modulationDepth = modulation / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
   setVolume(channelNumber, volume, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volume = volume / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1338,14 +1338,14 @@ export class MidyGMLite extends EventTarget {
   }
 
   setPan(channelNumber, pan, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.pan = pan / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
   setExpression(channelNumber, expression, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.expression = expression / 127;
     this.updateChannelVolume(channel, scheduleTime);
@@ -1370,7 +1370,7 @@ export class MidyGMLite extends EventTarget {
 
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     channel.state.sustainPedal = value / 127;
     if (64 <= value) {
       this.processScheduledNotes(channel, (note) => {
@@ -1434,7 +1434,7 @@ export class MidyGMLite extends EventTarget {
 
   setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
     const channel = this.channels[channelNumber];
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const state = channel.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 12800;
@@ -1445,7 +1445,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   allSoundOff(channelNumber, _value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
 
@@ -1508,7 +1508,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   allNotesOff(channelNumber, _value, scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     return this.stopActiveNotes(channelNumber, 0, false, scheduleTime);
   }
 
@@ -1531,7 +1531,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime) {
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
     for (let i = 0; i < this.channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
@@ -1562,7 +1562,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   setMasterVolume(value, scheduleTime) { // [0-1]
-    scheduleTime ??= this.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.masterVolume.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(value * value, scheduleTime);
