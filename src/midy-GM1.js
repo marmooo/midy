@@ -396,21 +396,25 @@ export class MidyGM1 extends EventTarget {
             event.channel,
             event.controllerType,
             event.value,
-            now,
+            now - this.resumeTime + event.startTime,
           );
           break;
         case "programChange":
           this.setProgramChange(
             event.channel,
             event.programNumber,
-            now,
+            now - this.resumeTime + event.startTime,
           );
           break;
         case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192, now);
+          this.setPitchBend(
+            event.channel,
+            event.value + 8192,
+            now - this.resumeTime + event.startTime,
+          );
           break;
         case "sysEx":
-          this.handleSysEx(event.data, now);
+          this.handleSysEx(event.data, now - this.resumeTime + event.startTime);
       }
     }
   }
