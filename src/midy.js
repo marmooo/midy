@@ -1744,7 +1744,7 @@ export class Midy extends EventTarget {
         this.setEffects(channel, note, table, scheduleTime);
       }
     });
-    this.applyVoiceParams(channel, 10);
+    this.applyVoiceParams(channel, 10, scheduleTime);
   }
 
   setProgramChange(channelNumber, programNumber, _scheduleTime) {
@@ -1778,7 +1778,7 @@ export class Midy extends EventTarget {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       this.setEffects(channel, note, table, scheduleTime);
     });
-    this.applyVoiceParams(channel, 13);
+    this.applyVoiceParams(channel, 13, scheduleTime);
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {

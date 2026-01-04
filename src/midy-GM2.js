@@ -1692,7 +1692,7 @@ export class MidyGM2 extends EventTarget {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       this.setEffects(channel, note, table, scheduleTime);
     });
-    this.applyVoiceParams(channel, 13);
+    this.applyVoiceParams(channel, 13, scheduleTime);
   }
 
   handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
