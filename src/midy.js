@@ -6,7 +6,6 @@ class Note {
   voiceParams;
   index = -1;
   ending = false;
-  pending = true;
   bufferSource;
   filterNode;
   filterDepth;
@@ -25,6 +24,9 @@ class Note {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
     this.startTime = startTime;
+    this.ready = new Promise((resolve) => {
+      this.resolveReady = resolve;
+    });
   }
 }
 
@@ -1530,11 +1532,7 @@ export class Midy extends EventTarget {
     if (!note.voice) return;
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
-    note.pending = false;
-    const off = note.offEvent;
-    if (off) {
-      this.noteOff(channelNumber, noteNumber, off.velocity, off.startTime);
-    }
+    note.resolveReady();
   }
 
   disconnectNote(note) {
@@ -1582,10 +1580,10 @@ export class Midy extends EventTarget {
     });
   }
 
-  noteOff(
+  async noteOff(
     channelNumber,
     noteNumber,
-    velocity,
+    _velocity,
     endTime,
     force,
   ) {
@@ -1602,10 +1600,7 @@ export class Midy extends EventTarget {
     const index = this.findNoteOffIndex(channel, noteNumber);
     if (index < 0) return;
     const note = channel.scheduledNotes[index];
-    if (note.pending) {
-      note.offEvent = { velocity, startTime: endTime };
-      return;
-    }
+    await note.ready;
     note.ending = true;
     this.setNoteIndex(channel, index);
     const promise = this.releaseNote(channel, note, endTime);
