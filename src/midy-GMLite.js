@@ -677,23 +677,25 @@ export class MidyGMLite extends EventTarget {
     return now + this.resumeTime - this.startTime;
   }
 
-  processScheduledNotes(channel, callback) {
+  async processScheduledNotes(channel, callback) {
     const scheduledNotes = channel.scheduledNotes;
     for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
+      await note.ready;
       callback(note);
     }
   }
 
-  processActiveNotes(channel, scheduleTime, callback) {
+  async processActiveNotes(channel, scheduleTime, callback) {
     const scheduledNotes = channel.scheduledNotes;
     for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
       if (scheduleTime < note.startTime) break;
+      await note.ready;
       callback(note);
     }
   }
