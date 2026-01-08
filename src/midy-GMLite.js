@@ -679,25 +679,29 @@ export class MidyGMLite extends EventTarget {
 
   async processScheduledNotes(channel, callback) {
     const scheduledNotes = channel.scheduledNotes;
+    const tasks = [];
     for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
-      await note.ready;
-      callback(note);
+      const task = note.ready.then(() => callback(note));
+      tasks.push(task);
     }
+    await Promise.all(tasks);
   }
 
   async processActiveNotes(channel, scheduleTime, callback) {
     const scheduledNotes = channel.scheduledNotes;
+    const tasks = [];
     for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
       const note = scheduledNotes[i];
       if (!note) continue;
       if (note.ending) continue;
       if (scheduleTime < note.startTime) break;
-      await note.ready;
-      callback(note);
+      const task = note.ready.then(() => callback(note));
+      tasks.push(task);
     }
+    await Promise.all(tasks);
   }
 
   cbToRatio(cb) {
@@ -1028,10 +1032,11 @@ export class MidyGMLite extends EventTarget {
     const index = this.findNoteOffIndex(channel, noteNumber);
     if (index < 0) return;
     const note = channel.scheduledNotes[index];
-    await note.ready;
     note.ending = true;
     this.setNoteIndex(channel, index);
-    const promise = this.releaseNote(channel, note, endTime);
+    const promise = note.ready.then(() => {
+      return this.releaseNote(channel, note, endTime);
+    });
     this.notePromises.push(promise);
     return promise;
   }
