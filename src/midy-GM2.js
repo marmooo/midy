@@ -418,7 +418,7 @@ export class MidyGM2 extends EventTarget {
     return bufferSource;
   }
 
-  async scheduleTimelineEvents(scheduleTime, queueIndex) {
+  scheduleTimelineEvents(scheduleTime, queueIndex) {
     const timeOffset = this.resumeTime - this.startTime;
     const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
     const schedulingOffset = this.startDelay - timeOffset;
@@ -429,7 +429,7 @@ export class MidyGM2 extends EventTarget {
       const startTime = event.startTime + schedulingOffset;
       switch (event.type) {
         case "noteOn":
-          await this.noteOn(
+          this.noteOn(
             event.channel,
             event.noteNumber,
             event.velocity,
@@ -595,7 +595,7 @@ export class MidyGM2 extends EventTarget {
         this.dispatchEvent(new Event("seeked"));
         continue;
       }
-      queueIndex = await this.scheduleTimelineEvents(now, queueIndex);
+      queueIndex = this.scheduleTimelineEvents(now, queueIndex);
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
