@@ -164,6 +164,8 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
+const defaultPressureValues = new Int8Array([64, 64, 64, 0, 0, 0]);
+
 export class Midy extends EventTarget {
   mode = "GM2";
   masterFineTuning = 0; // cent
@@ -380,8 +382,8 @@ export class Midy extends EventTarget {
   resetChannelTable(channel) {
     channel.controlTable.fill(-1);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
-    channel.channelPressureTable.fill(-1);
-    channel.polyphonicKeyPressureTable.fill(-1);
+    channel.channelPressureTable.set(defaultPressureValues);
+    channel.polyphonicKeyPressureTable.set(defaultPressureValues);
     channel.keyBasedTable.fill(-1);
   }
 
@@ -398,8 +400,8 @@ export class Midy extends EventTarget {
         sostenutoNotes: [],
         controlTable: this.initControlTable(),
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
-        channelPressureTable: new Int8Array(6).fill(-1),
-        polyphonicKeyPressureTable: new Int8Array(6).fill(-1),
+        channelPressureTable: new Int8Array(defaultPressureValues),
+        polyphonicKeyPressureTable: new Int8Array(defaultPressureValues),
         keyBasedTable: new Int8Array(128 * 128).fill(-1),
         keyBasedGainLs: new Array(128),
         keyBasedGainRs: new Array(128),
@@ -1738,6 +1740,7 @@ export class Midy extends EventTarget {
     pressure,
     scheduleTime,
   ) {
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     const table = channel.polyphonicKeyPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
@@ -1766,6 +1769,7 @@ export class Midy extends EventTarget {
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     const prev = channel.state.channelPressure;
@@ -3158,7 +3162,7 @@ export class Midy extends EventTarget {
 
   getPitchControl(channel, note) {
     const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[0];
-    if (polyphonicKeyPressureRaw < 0) return 0;
+    if (polyphonicKeyPressureRaw <= 0) return 0;
     const polyphonicKeyPressure = (polyphonicKeyPressureRaw - 64) *
       note.pressure;
     return polyphonicKeyPressure * note.pressure / 37.5; // 2400 / 64;
@@ -3179,13 +3183,13 @@ export class Midy extends EventTarget {
   getAmplitudeControl(channel, note) {
     const channelPressureRaw = channel.channelPressureTable[2];
     const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
+      ? channel.state.channelPressure * 127 / channelPressureRaw
       : 0;
     const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[2];
     const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? polyphonicKeyPressureRaw * note.pressure
+      ? note.pressure / polyphonicKeyPressureRaw
       : 0;
-    return (channelPressure + polyphonicKeyPressure) / 128;
+    return channelPressure + polyphonicKeyPressure;
   }
 
   getLFOPitchDepth(channel, note) {
@@ -3225,21 +3229,21 @@ export class Midy extends EventTarget {
   }
 
   setEffects(channel, note, table, scheduleTime) {
-    if (0 <= table[0]) this.updateDetune(channel, note, scheduleTime);
+    if (0 < table[0]) this.updateDetune(channel, note, scheduleTime);
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      if (0 <= table[1]) {
+      if (0 < table[1]) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       }
-      if (0 <= table[2]) {
+      if (0 < table[2]) {
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
       }
     } else {
-      if (0 <= table[1]) this.setFilterEnvelope(channel, note, scheduleTime);
-      if (0 <= table[2]) this.setVolumeEnvelope(channel, note, scheduleTime);
+      if (0 < table[1]) this.setFilterEnvelope(channel, note, scheduleTime);
+      if (0 < table[2]) this.setVolumeEnvelope(channel, note, scheduleTime);
     }
-    if (0 <= table[3]) this.setModLfoToPitch(channel, note, scheduleTime);
-    if (0 <= table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
-    if (0 <= table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
+    if (0 < table[3]) this.setModLfoToPitch(channel, note, scheduleTime);
+    if (0 < table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
+    if (0 < table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {
