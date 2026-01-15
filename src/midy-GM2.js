@@ -293,19 +293,19 @@ export class MidyGM2 extends EventTarget {
   }
 
   cacheVoiceIds() {
-    const timeline = this.timeline;
+    const { channels, timeline, voiceCounter } = this;
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       switch (event.type) {
         case "noteOn": {
           const audioBufferId = this.getVoiceId(
-            this.channels[event.channel],
+            channels[event.channel],
             event.noteNumber,
             event.velocity,
           );
-          this.voiceCounter.set(
+          voiceCounter.set(
             audioBufferId,
-            (this.voiceCounter.get(audioBufferId) ?? 0) + 1,
+            (voiceCounter.get(audioBufferId) ?? 0) + 1,
           );
           break;
         }
@@ -324,8 +324,8 @@ export class MidyGM2 extends EventTarget {
           );
       }
     }
-    for (const [audioBufferId, count] of this.voiceCounter) {
-      if (count === 1) this.voiceCounter.delete(audioBufferId);
+    for (const [audioBufferId, count] of voiceCounter) {
+      if (count === 1) voiceCounter.delete(audioBufferId);
     }
     this.GM2SystemOn();
   }
@@ -496,58 +496,61 @@ export class MidyGM2 extends EventTarget {
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
-    for (let i = 0; i < this.channels.length; i++) {
-      this.channels[i].scheduledNotes = [];
+    const channels = this.channels;
+    for (let i = 0; i < channels.length; i++) {
+      channels[i].scheduledNotes = [];
       this.resetChannelStates(i);
     }
   }
 
   updateStates(queueIndex, nextQueueIndex) {
+    const { timeline, resumeTime } = this;
     const inverseTempo = 1 / this.tempo;
     const now = this.audioContext.currentTime;
     if (nextQueueIndex < queueIndex) queueIndex = 0;
     for (let i = queueIndex; i < nextQueueIndex; i++) {
-      const event = this.timeline[i];
+      const event = timeline[i];
       switch (event.type) {
         case "controller":
           this.setControlChange(
             event.channel,
             event.controllerType,
             event.value,
-            now - this.resumeTime + event.startTime * inverseTempo,
+            now - resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "programChange":
           this.setProgramChange(
             event.channel,
             event.programNumber,
-            now - this.resumeTime + event.startTime * inverseTempo,
+            now - resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "pitchBend":
           this.setPitchBend(
             event.channel,
             event.value + 8192,
-            now - this.resumeTime + event.startTime * inverseTempo,
+            now - resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "sysEx":
           this.handleSysEx(
             event.data,
-            now - this.resumeTime + event.startTime * inverseTempo,
+            now - resumeTime + event.startTime * inverseTempo,
           );
       }
     }
   }
 
   async playNotes() {
-    if (this.audioContext.state === "suspended") {
-      await this.audioContext.resume();
+    const audioContext = this.audioContext;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
     }
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
-    this.startTime = this.audioContext.currentTime;
+    this.startTime = audioContext.currentTime;
     if (paused) {
       this.dispatchEvent(new Event("resumed"));
     } else {
@@ -557,13 +560,13 @@ export class MidyGM2 extends EventTarget {
     let exitReason;
     this.notePromises = [];
     while (true) {
-      const now = this.audioContext.currentTime;
+      const now = audioContext.currentTime;
       if (
         0 < this.lastActiveSensing &&
         this.activeSensingThreshold < performance.now() - this.lastActiveSensing
       ) {
         await this.stopNotes(0, true, now);
-        await this.audioContext.suspend();
+        await audioContext.suspend();
         exitReason = "aborted";
         break;
       }
@@ -572,33 +575,33 @@ export class MidyGM2 extends EventTarget {
         if (this.loop) {
           this.notePromises = [];
           this.resetAllStates();
-          this.startTime = this.audioContext.currentTime;
+          this.startTime = audioContext.currentTime;
           this.resumeTime = 0;
           queueIndex = 0;
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
-          await this.audioContext.suspend();
+          await audioContext.suspend();
           exitReason = "ended";
           break;
         }
       }
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
-        await this.audioContext.suspend();
+        await audioContext.suspend();
         this.notePromises = [];
         this.isPausing = false;
         exitReason = "paused";
         break;
       } else if (this.isStopping) {
         await this.stopNotes(0, true, now);
-        await this.audioContext.suspend();
+        await audioContext.suspend();
         this.isStopping = false;
         exitReason = "stopped";
         break;
       } else if (this.isSeeking) {
         this.stopNotes(0, true, now);
-        this.startTime = this.audioContext.currentTime;
+        this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
@@ -764,7 +767,8 @@ export class MidyGM2 extends EventTarget {
 
   stopNotes(velocity, force, scheduleTime) {
     const promises = [];
-    for (let i = 0; i < this.channels.length; i++) {
+    const channels = this.channels;
+    for (let i = 0; i < channels.length; i++) {
       promises.push(this.stopChannelNotes(i, velocity, force, scheduleTime));
     }
     return Promise.all(this.notePromises);
@@ -1351,7 +1355,8 @@ export class MidyGM2 extends EventTarget {
   }
 
   async setNoteAudioNode(channel, note, realtime) {
-    const now = this.audioContext.currentTime;
+    const audioContext = this.audioContext;
+    const now = audioContext.currentTime;
     const { noteNumber, velocity, startTime } = note;
     const state = channel.state;
     const controllerState = this.getControllerState(
@@ -1374,8 +1379,8 @@ export class MidyGM2 extends EventTarget {
       voiceParams,
       audioBuffer,
     );
-    note.volumeEnvelopeNode = new GainNode(this.audioContext);
-    note.filterNode = new BiquadFilterNode(this.audioContext, {
+    note.volumeEnvelopeNode = new GainNode(audioContext);
+    note.filterNode = new BiquadFilterNode(audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10, // dB
     });
@@ -2477,31 +2482,33 @@ export class MidyGM2 extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime) {
+    const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
-    for (let i = 0; i < this.channels.length; i++) {
+    for (let i = 0; i < channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
-      const channel = this.channels[i];
+      const channel = channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
       channel.isDrum = false;
     }
-    this.channels[9].bankMSB = 1;
-    this.channels[9].isDrum = true;
+    channels[9].bankMSB = 1;
+    channels[9].isDrum = true;
   }
 
   GM2SystemOn(scheduleTime) {
+    const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM2";
-    for (let i = 0; i < this.channels.length; i++) {
+    for (let i = 0; i < channels.length; i++) {
       this.allSoundOff(i, 0, scheduleTime);
-      const channel = this.channels[i];
+      const channel = channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
       channel.isDrum = false;
     }
-    this.channels[9].bankMSB = 120;
-    this.channels[9].isDrum = true;
+    channels[9].bankMSB = 120;
+    channels[9].isDrum = true;
   }
 
   handleUniversalRealTimeExclusiveMessage(data, scheduleTime) {
