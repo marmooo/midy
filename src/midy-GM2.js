@@ -185,6 +185,7 @@ export class MidyGM2 extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
+  tempo = 1;
   loop = false;
   playPromise;
   timeline = [];
@@ -425,10 +426,12 @@ export class MidyGM2 extends EventTarget {
     const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
     const schedulingOffset = this.startDelay - timeOffset;
     const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
-      if (lookAheadCheckTime < event.startTime) break;
-      const startTime = event.startTime + schedulingOffset;
+      const t = event.startTime * inverseTempo;
+      if (lookAheadCheckTime < t) break;
+      const startTime = t + schedulingOffset;
       switch (event.type) {
         case "noteOn":
           this.noteOn(
@@ -478,8 +481,10 @@ export class MidyGM2 extends EventTarget {
   }
 
   getQueueIndex(second) {
-    for (let i = 0; i < this.timeline.length; i++) {
-      if (second <= this.timeline[i].startTime) {
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    for (let i = 0; i < timeline.length; i++) {
+      if (second <= timeline[i].startTime * inverseTempo) {
         return i;
       }
     }
@@ -498,6 +503,7 @@ export class MidyGM2 extends EventTarget {
   }
 
   updateStates(queueIndex, nextQueueIndex) {
+    const inverseTempo = 1 / this.tempo;
     const now = this.audioContext.currentTime;
     if (nextQueueIndex < queueIndex) queueIndex = 0;
     for (let i = queueIndex; i < nextQueueIndex; i++) {
@@ -508,25 +514,28 @@ export class MidyGM2 extends EventTarget {
             event.channel,
             event.controllerType,
             event.value,
-            now - this.resumeTime + event.startTime,
+            now - this.resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "programChange":
           this.setProgramChange(
             event.channel,
             event.programNumber,
-            now - this.resumeTime + event.startTime,
+            now - this.resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "pitchBend":
           this.setPitchBend(
             event.channel,
             event.value + 8192,
-            now - this.resumeTime + event.startTime,
+            now - this.resumeTime + event.startTime * inverseTempo,
           );
           break;
         case "sysEx":
-          this.handleSysEx(event.data, now - this.resumeTime + event.startTime);
+          this.handleSysEx(
+            event.data,
+            now - this.resumeTime + event.startTime * inverseTempo,
+          );
       }
     }
   }
@@ -797,10 +806,13 @@ export class MidyGM2 extends EventTarget {
   }
 
   calcTotalTime() {
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
     let totalTime = 0;
-    for (let i = 0; i < this.timeline.length; i++) {
-      const event = this.timeline[i];
-      if (totalTime < event.startTime) totalTime = event.startTime;
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const t = event.startTime * inverseTempo;
+      if (totalTime < t) totalTime = t;
     }
     return totalTime + this.startDelay;
   }
