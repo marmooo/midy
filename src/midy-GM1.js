@@ -454,7 +454,6 @@ export class MidyGM1 extends EventTarget {
       if (this.timeline.length <= queueIndex) {
         await this.stopNotes(0, true, now);
         if (this.loop) {
-          this.notePromises = [];
           this.resetAllStates();
           this.startTime = audioContext.currentTime;
           this.resumeTime = 0;
@@ -470,7 +469,6 @@ export class MidyGM1 extends EventTarget {
       if (this.isPausing) {
         await this.stopNotes(0, true, now);
         await audioContext.suspend();
-        this.notePromises = [];
         this.isPausing = false;
         exitReason = "paused";
         break;
@@ -495,7 +493,6 @@ export class MidyGM1 extends EventTarget {
       await this.scheduleTask(() => {}, waitTime);
     }
     if (exitReason !== "paused") {
-      this.notePromises = [];
       this.resetAllStates();
     }
     this.isPlaying = false;
@@ -616,12 +613,13 @@ export class MidyGM1 extends EventTarget {
   }
 
   stopNotes(velocity, force, scheduleTime) {
-    const promises = [];
     const channels = this.channels;
     for (let i = 0; i < channels.length; i++) {
-      promises.push(this.stopChannelNotes(i, velocity, force, scheduleTime));
+      this.stopChannelNotes(i, velocity, force, scheduleTime);
     }
-    return Promise.all(this.notePromises);
+    const stopPromise = Promise.all(this.notePromises);
+    this.notePromises = [];
+    return stopPromise;
   }
 
   async start() {
