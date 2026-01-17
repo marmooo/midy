@@ -202,6 +202,9 @@ export class Midy extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
+  totalTimeEventTypes = new Set([
+    "noteOff",
+  ]);
   tempo = 1;
   loop = false;
   loopStart = 0;
@@ -598,7 +601,10 @@ export class Midy extends EventTarget {
         exitReason = "aborted";
         break;
       }
-      if (this.timeline.length <= queueIndex) {
+      if (
+        this.totalTime < this.currentTime() ||
+        this.timeline.length <= queueIndex
+      ) {
         await this.stopNotes(0, true, now);
         if (this.loop) {
           this.resetAllStates();
@@ -842,11 +848,13 @@ export class Midy extends EventTarget {
   }
 
   calcTotalTime() {
+    const totalTimeEventTypes = this.totalTimeEventTypes;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     let totalTime = 0;
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
+      if (!totalTimeEventTypes.has(event.type)) continue;
       const t = event.startTime * inverseTempo;
       if (totalTime < t) totalTime = t;
     }
