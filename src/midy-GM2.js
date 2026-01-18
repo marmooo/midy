@@ -1261,14 +1261,16 @@ export class MidyGM2 extends EventTarget {
 
   setFilterEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
-    const softPedalFactor = this.getSoftPedalFactor(channel, note);
+    const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel);
+    const peekCent = baseCent + modEnvToFilterFc;
+    const sustainCent = baseCent +
+      modEnvToFilterFc * (1 - voiceParams.modSustain);
+    const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseFreq = this.centToHz(baseCent) * softPedalFactor;
-    const peekFreq = this.centToHz(baseCent + voiceParams.modEnvToFilterFc) *
-      softPedalFactor;
-    const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
+    const peekFreq = this.centToHz(peekCent) * softPedalFactor;
+    const sustainFreq = this.centToHz(sustainCent) * softPedalFactor;
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);

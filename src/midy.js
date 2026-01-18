@@ -1309,15 +1309,18 @@ export class Midy extends EventTarget {
 
   setFilterEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
-    const softPedalFactor = this.getSoftPedalFactor(channel, note);
+    const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel, note);
+    const peekCent = baseCent + modEnvToFilterFc;
+    const sustainCent = baseCent +
+      modEnvToFilterFc * (1 - voiceParams.modSustain);
+    const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const brightness = this.getRelativeKeyBasedValue(channel, note, 74) * 2;
-    const baseFreq = this.centToHz(baseCent) * softPedalFactor * brightness;
-    const peekFreq = this.centToHz(baseCent + voiceParams.modEnvToFilterFc) *
-      softPedalFactor * brightness;
-    const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
+    const scale = softPedalFactor * brightness;
+    const baseFreq = this.centToHz(baseCent) * scale;
+    const peekFreq = this.centToHz(peekCent) * scale;
+    const sustainFreq = this.centToHz(sustainCent) * scale;
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
