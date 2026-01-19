@@ -4,6 +4,7 @@ import { parse, SoundFont } from "@marmooo/soundfont-parser";
 class Note {
   voice;
   voiceParams;
+  adjustedBaseFreq = 20000;
   index = -1;
   ending = false;
   bufferSource;
@@ -1300,6 +1301,7 @@ export class Midy extends EventTarget {
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     const modDelay = startTime + voiceParams.modDelay;
+    note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -1328,6 +1330,7 @@ export class Midy extends EventTarget {
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
+    note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -1598,7 +1601,7 @@ export class Midy extends EventTarget {
     const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
       .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, modRelease);
+      .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, volRelease);

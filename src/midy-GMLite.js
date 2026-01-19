@@ -4,6 +4,7 @@ import { parse, SoundFont } from "@marmooo/soundfont-parser";
 class Note {
   voice;
   voiceParams;
+  adjustedBaseFreq = 20000;
   index = -1;
   ending = false;
   bufferSource;
@@ -822,6 +823,7 @@ export class MidyGMLite extends EventTarget {
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const modDecay = modHold + voiceParams.modDecay;
+    note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -1026,7 +1028,7 @@ export class MidyGMLite extends EventTarget {
     const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
       .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(0, modRelease);
+      .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(0, volRelease);
@@ -1042,7 +1044,7 @@ export class MidyGMLite extends EventTarget {
     });
   }
 
-  async noteOff(
+  noteOff(
     channelNumber,
     noteNumber,
     _velocity,
