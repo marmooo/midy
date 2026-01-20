@@ -1600,10 +1600,10 @@ export class Midy extends EventTarget {
     const modRelease = endTime + note.voiceParams.modRelease;
     const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
-      .cancelScheduledValues(endTime)
+      .cancelAndHoldAtTime(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
-      .cancelScheduledValues(endTime)
+      .cancelAndHoldAtTime(endTime)
       .linearRampToValueAtTime(0, volRelease);
     return new Promise((resolve) => {
       this.scheduleTask(() => {
