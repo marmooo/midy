@@ -270,7 +270,11 @@ export class MidyGMLite extends EventTarget {
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
-    const bank = channel.isDrum ? 128 : 0;
+    let bank = channel.isDrum ? 128 : 0;
+    if (bankTable[bank] === undefined) {
+      if (channel.isDrum) return;
+      bank = 0;
+    }
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
@@ -1000,7 +1004,11 @@ export class MidyGMLite extends EventTarget {
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
-    const bank = channel.isDrum ? 128 : 0;
+    let bank = channel.isDrum ? 128 : 0;
+    if (bankTable[bank] === undefined) {
+      if (channel.isDrum) return;
+      bank = 0;
+    }
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];

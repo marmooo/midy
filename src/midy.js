@@ -357,8 +357,11 @@ export class Midy extends EventTarget {
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
-    const bankLSB = channel.isDrum ? 128 : channel.bankLSB;
-    const bank = bankTable[bankLSB] !== undefined ? bankLSB : 0;
+    let bank = channel.isDrum ? 128 : channel.bankLSB;
+    if (bankTable[bank] === undefined) {
+      if (channel.isDrum) return;
+      bank = 0;
+    }
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
@@ -1560,9 +1563,11 @@ export class Midy extends EventTarget {
     scheduledNotes.push(note);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return;
-    const bankLSB = channel.isDrum ? 128 : channel.bankLSB;
-    const bank = bankTable[bankLSB] !== undefined ? bankLSB : 0;
+    let bank = channel.isDrum ? 128 : channel.bankLSB;
+    if (bankTable[bank] === undefined) {
+      if (channel.isDrum) return;
+      bank = 0;
+    }
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
