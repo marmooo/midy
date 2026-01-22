@@ -108,6 +108,13 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
+function cbToRatio(cb) {
+  return Math.pow(10, cb / 200);
+}
+
+const targetAttenuationCb = -600;
+const releaseCurve = 1 / (-Math.log(cbToRatio(targetAttenuationCb)));
+
 export class MidyGMLite extends EventTarget {
   mode = "GM1";
   numChannels = 16;
@@ -731,10 +738,6 @@ export class MidyGMLite extends EventTarget {
     await Promise.all(tasks);
   }
 
-  cbToRatio(cb) {
-    return Math.pow(10, cb / 200);
-  }
-
   rateToCent(rate) {
     return 1200 * Math.log2(rate);
   }
@@ -767,7 +770,7 @@ export class MidyGMLite extends EventTarget {
 
   setVolumeEnvelope(note, scheduleTime) {
     const { voiceParams, startTime } = note;
-    const attackVolume = this.cbToRatio(-voiceParams.initialAttenuation);
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack;
@@ -1032,14 +1035,15 @@ export class MidyGMLite extends EventTarget {
 
   releaseNote(channel, note, endTime) {
     endTime ??= this.audioContext.currentTime;
-    const volRelease = endTime + note.voiceParams.volRelease;
+    const duration = note.voiceParams.volRelease;
+    const volRelease = endTime + duration;
     const modRelease = endTime + note.voiceParams.modRelease;
     note.filterNode.frequency
       .cancelAndHoldAtTime(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
       .cancelAndHoldAtTime(endTime)
-      .linearRampToValueAtTime(0, volRelease);
+      .setTargetAtTime(0, endTime, duration * releaseCurve);
     return new Promise((resolve) => {
       this.scheduleTask(() => {
         const bufferSource = note.bufferSource;
@@ -1221,7 +1225,7 @@ export class MidyGMLite extends EventTarget {
 
   setModLfoToVolume(note, scheduleTime) {
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
-    const baseDepth = this.cbToRatio(Math.abs(modLfoToVolume)) - 1;
+    const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
     const volumeDepth = baseDepth * Math.sign(modLfoToVolume);
     note.volumeDepth.gain
       .cancelScheduledValues(scheduleTime)
