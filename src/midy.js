@@ -171,8 +171,8 @@ function cbToRatio(cb) {
   return Math.pow(10, cb / 200);
 }
 
-const targetAttenuationCb = -600;
-const releaseCurve = 1 / (-Math.log(cbToRatio(targetAttenuationCb)));
+const decayCurve = 1 / (-Math.log(cbToRatio(-1000)));
+const releaseCurve = 1 / (-Math.log(cbToRatio(-600)));
 
 export class Midy extends EventTarget {
   mode = "GM2";
@@ -1246,14 +1246,14 @@ export class Midy extends EventTarget {
     const volAttack = volDelay + voiceParams.volAttack * attackTime;
     const volHold = volAttack + voiceParams.volHold;
     const decayTime = this.getRelativeKeyBasedValue(channel, note, 75) * 2;
-    const volDecay = volHold + voiceParams.volDecay * decayTime;
+    const decayDuration = voiceParams.volDecay * decayTime;
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(1e-6, volDelay) // exponentialRampToValueAtTime() requires a non-zero value
-      .exponentialRampToValueAtTime(attackVolume, volAttack)
+      .setValueAtTime(0, volDelay)
+      .linearRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
-      .linearRampToValueAtTime(sustainVolume, volDecay);
+      .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
 
   setPortamentoPitchEnvelope(note, scheduleTime) {
