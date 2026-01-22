@@ -834,16 +834,17 @@ export class MidyGMLite extends EventTarget {
   }
 
   startModulation(channel, note, scheduleTime) {
+    const audioContext = this.audioContext;
     const { voiceParams } = note;
-    note.modulationLFO = new OscillatorNode(this.audioContext, {
+    note.modulationLFO = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
-    note.filterDepth = new GainNode(this.audioContext, {
+    note.filterDepth = new GainNode(audioContext, {
       gain: voiceParams.modLfoToFilterFc,
     });
-    note.modulationDepth = new GainNode(this.audioContext);
+    note.modulationDepth = new GainNode(audioContext);
     this.setModLfoToPitch(channel, note, scheduleTime);
-    note.volumeDepth = new GainNode(this.audioContext);
+    note.volumeDepth = new GainNode(audioContext);
     this.setModLfoToVolume(note, scheduleTime);
 
     note.modulationLFO.start(note.startTime + voiceParams.delayModLFO);
