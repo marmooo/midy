@@ -1207,7 +1207,7 @@ export class MidyGM2 extends EventTarget {
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
 
-  setPortamentoPitchEnvelope(note, scheduleTime) {
+  setPortamentoPitchEnvelope(channel, note, scheduleTime) {
     const baseRate = note.voiceParams.playbackRate;
     const portamentoTime = note.startTime +
       this.getPortamentoTime(channel, note);
@@ -1411,7 +1411,7 @@ export class MidyGM2 extends EventTarget {
     if (!channel.isDrum && this.isPortamento(channel, note)) {
       this.setPortamentoVolumeEnvelope(channel, note, now);
       this.setPortamentoFilterEnvelope(channel, note, now);
-      this.setPortamentoPitchEnvelope(note, now);
+      this.setPortamentoPitchEnvelope(channel, note, now);
     } else {
       this.setVolumeEnvelope(channel, note, now);
       this.setFilterEnvelope(channel, note, now);
@@ -2056,7 +2056,7 @@ export class MidyGM2 extends EventTarget {
       if (this.isPortamento(channel, note)) {
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-        this.setPortamentoPitchEnvelope(note, scheduleTime);
+        this.setPortamentoPitchEnvelope(channel, note, scheduleTime);
         this.updateDetune(channel, note, scheduleTime);
       } else {
         this.setVolumeEnvelope(channel, note, scheduleTime);
