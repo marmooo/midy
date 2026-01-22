@@ -790,7 +790,7 @@ export class MidyGMLite extends EventTarget {
     const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseRate, scheduleTime);
+      .setValueAtTime(baseRate, note.startTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const basePitch = this.rateToCent(baseRate);
@@ -799,12 +799,12 @@ export class MidyGMLite extends EventTarget {
     const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
-    const modDecay = modHold + voiceParams.modDecay;
+    const decayDuration = voiceParams.modDecay;
     note.bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
-      .exponentialRampToValueAtTime(peekRate, modAttack)
+      .linearRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
-      .linearRampToValueAtTime(baseRate, modDecay);
+      .setTargetAtTime(baseRate, modHold, decayDuration * decayCurve);
   }
 
   clampCutoffFrequency(frequency) {
@@ -829,15 +829,19 @@ export class MidyGMLite extends EventTarget {
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
-    const modDecay = modHold + voiceParams.modDecay;
+    const decayDuration = voiceParams.modDecay;
     note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
-      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .linearRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
-      .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
+      .setTargetAtTime(
+        adjustedSustainFreq,
+        modHold,
+        decayDuration * decayCurve,
+      );
   }
 
   startModulation(channel, note, scheduleTime) {
@@ -1039,10 +1043,10 @@ export class MidyGMLite extends EventTarget {
     const volRelease = endTime + duration;
     const modRelease = endTime + note.voiceParams.modRelease;
     note.filterNode.frequency
-      .cancelAndHoldAtTime(endTime)
+      .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
-      .cancelAndHoldAtTime(endTime)
+      .cancelScheduledValues(endTime)
       .setTargetAtTime(0, endTime, duration * releaseCurve);
     return new Promise((resolve) => {
       this.scheduleTask(() => {

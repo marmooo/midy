@@ -1227,13 +1227,10 @@ export class Midy extends EventTarget {
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
-    const volDelay = startTime + voiceParams.volDelay;
-    const attackTime = this.getRelativeKeyBasedValue(channel, note, 73) * 2;
-    const volAttack = volDelay + voiceParams.volAttack * attackTime;
-    const volHold = volAttack + voiceParams.volHold;
+    const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(sustainVolume, volHold);
+      .linearRampToValueAtTime(sustainVolume, portamentoTime);
   }
 
   setVolumeEnvelope(channel, note, scheduleTime) {
@@ -1258,9 +1255,11 @@ export class Midy extends EventTarget {
 
   setPortamentoPitchEnvelope(note, scheduleTime) {
     const baseRate = note.voiceParams.playbackRate;
+    const portamentoTime = note.startTime +
+      this.getPortamentoTime(channel, note);
     note.bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseRate, scheduleTime);
+      .linearRampToValueAtTime(baseRate, portamentoTime);
   }
 
   setPitchEnvelope(note, scheduleTime) {
@@ -1268,7 +1267,7 @@ export class Midy extends EventTarget {
     const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseRate, scheduleTime);
+      .setValueAtTime(baseRate, note.startTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const basePitch = this.rateToCent(baseRate);
@@ -1277,12 +1276,12 @@ export class Midy extends EventTarget {
     const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
-    const modDecay = modHold + voiceParams.modDecay;
+    const decayDuration = voiceParams.modDecay;
     note.bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
-      .exponentialRampToValueAtTime(peekRate, modAttack)
+      .linearRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
-      .linearRampToValueAtTime(baseRate, modDecay);
+      .setTargetAtTime(baseRate, modHold, decayDuration * decayCurve);
   }
 
   clampCutoffFrequency(frequency) {
@@ -1294,20 +1293,19 @@ export class Midy extends EventTarget {
   setPortamentoFilterEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const softPedalFactor = this.getSoftPedalFactor(channel, note);
+    const brightness = this.getRelativeKeyBasedValue(channel, note, 74) * 2;
+    const scale = softPedalFactor * brightness;
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel, note);
-    const brightness = this.getRelativeKeyBasedValue(channel, note, 74) * 2;
-    const baseFreq = this.centToHz(baseCent) * softPedalFactor * brightness;
-    const peekFreq = this.centToHz(
-      voiceParams.initialFilterFc + voiceParams.modEnvToFilterFc,
-    ) * brightness;
-    const sustainFreq = baseFreq +
-      (peekFreq - baseFreq) * (1 - voiceParams.modSustain);
-    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
-    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
+    const sustainCent = baseCent +
+      voiceParams.modEnvToFilterFc * (1 - voiceParams.modSustain);
+    const baseFreq = this.centToHz(baseCent);
+    const sustainFreq = this.centToHz(sustainCent);
+    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq * scale);
+    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq * scale);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     const modDelay = startTime + voiceParams.modDelay;
-    note.adjustedBaseFreq = adjustedBaseFreq;
+    note.adjustedBaseFreq = adjustedSustainFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
@@ -1335,15 +1333,19 @@ export class Midy extends EventTarget {
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
-    const modDecay = modHold + voiceParams.modDecay;
+    const decayDuration = modHold + voiceParams.modDecay;
     note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
-      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .linearRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
-      .linearRampToValueAtTime(adjustedSustainFreq, modDecay);
+      .setTargetAtTime(
+        adjustedSustainFreq,
+        modHold,
+        decayDuration * decayCurve,
+      );
   }
 
   startModulation(channel, note, scheduleTime) {
@@ -1609,10 +1611,10 @@ export class Midy extends EventTarget {
     const volRelease = endTime + duration;
     const modRelease = endTime + note.voiceParams.modRelease;
     note.filterNode.frequency
-      .cancelAndHoldAtTime(endTime)
+      .cancelScheduledValues(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
     note.volumeEnvelopeNode.gain
-      .cancelAndHoldAtTime(endTime)
+      .cancelScheduledValues(endTime)
       .setTargetAtTime(0, endTime, duration * releaseCurve);
     return new Promise((resolve) => {
       this.scheduleTask(() => {
