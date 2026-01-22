@@ -1604,7 +1604,6 @@ export class Midy extends EventTarget {
     const releaseTime = this.getRelativeKeyBasedValue(channel, note, 72) * 2;
     const volRelease = endTime + note.voiceParams.volRelease * releaseTime;
     const modRelease = endTime + note.voiceParams.modRelease;
-    const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
       .cancelAndHoldAtTime(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
@@ -1615,11 +1614,11 @@ export class Midy extends EventTarget {
       this.scheduleTask(() => {
         const bufferSource = note.bufferSource;
         bufferSource.loop = false;
-        bufferSource.stop(stopTime);
+        bufferSource.stop(volRelease);
         this.disconnectNote(note);
         channel.scheduledNotes[note.index] = undefined;
         resolve();
-      }, stopTime);
+      }, volRelease);
     });
   }
 

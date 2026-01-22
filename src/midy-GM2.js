@@ -1553,7 +1553,6 @@ export class MidyGM2 extends EventTarget {
     endTime ??= this.audioContext.currentTime;
     const volRelease = endTime + note.voiceParams.volRelease;
     const modRelease = endTime + note.voiceParams.modRelease;
-    const stopTime = Math.min(volRelease, modRelease);
     note.filterNode.frequency
       .cancelAndHoldAtTime(endTime)
       .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
@@ -1564,11 +1563,11 @@ export class MidyGM2 extends EventTarget {
       this.scheduleTask(() => {
         const bufferSource = note.bufferSource;
         bufferSource.loop = false;
-        bufferSource.stop(stopTime);
+        bufferSource.stop(volRelease);
         this.disconnectNote(note);
         channel.scheduledNotes[note.index] = undefined;
         resolve();
-      }, stopTime);
+      }, volRelease);
     });
   }
 
