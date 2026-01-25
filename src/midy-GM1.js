@@ -776,7 +776,7 @@ export class MidyGM1 extends EventTarget {
     const baseRate = voiceParams.playbackRate;
     note.bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseRate, note.startTime);
+      .setValueAtTime(baseRate, scheduleTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const basePitch = this.rateToCent(baseRate);
