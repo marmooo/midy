@@ -858,6 +858,14 @@ export class Midy extends EventTarget {
     }
   }
 
+  tempoChange(tempo) {
+    const timeScale = this.tempo / tempo;
+    this.resumeTime = this.resumeTime * timeScale;
+    this.tempo = tempo;
+    this.totalTime = this.calcTotalTime();
+    this.seekTo(this.currentTime() * timeScale);
+  }
+
   calcTotalTime() {
     const totalTimeEventTypes = this.totalTimeEventTypes;
     const timeline = this.timeline;
