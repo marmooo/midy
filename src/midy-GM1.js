@@ -759,7 +759,7 @@ export class MidyGM1 extends EventTarget {
   updateDetune(channel, note, scheduleTime) {
     note.bufferSource.detune
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(channel.detune, scheduleTime);
+      .exponentialRampToValueAtTime(sustainVolume, portamentoTime);
   }
 
   setVolumeEnvelope(note, scheduleTime) {
@@ -773,8 +773,8 @@ export class MidyGM1 extends EventTarget {
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(0, volDelay)
-      .linearRampToValueAtTime(attackVolume, volAttack)
+      .setValueAtTime(1e-6, volDelay)
+      .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
@@ -796,7 +796,7 @@ export class MidyGM1 extends EventTarget {
     const decayDuration = voiceParams.modDecay;
     note.bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
-      .linearRampToValueAtTime(peekRate, modAttack)
+      .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
       .setTargetAtTime(baseRate, modHold, decayDuration * decayCurve);
   }
@@ -829,7 +829,7 @@ export class MidyGM1 extends EventTarget {
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
-      .linearRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
       .setTargetAtTime(
         adjustedSustainFreq,

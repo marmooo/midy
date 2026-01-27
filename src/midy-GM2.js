@@ -1194,7 +1194,7 @@ export class MidyGM2 extends EventTarget {
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
-      .linearRampToValueAtTime(sustainVolume, portamentoTime);
+      .exponentialRampToValueAtTime(sustainVolume, portamentoTime);
   }
 
   setVolumeEnvelope(channel, note, scheduleTime) {
@@ -1209,8 +1209,8 @@ export class MidyGM2 extends EventTarget {
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(0, volDelay)
-      .linearRampToValueAtTime(attackVolume, volAttack)
+      .setValueAtTime(1e-6, volDelay)
+      .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
@@ -1221,7 +1221,7 @@ export class MidyGM2 extends EventTarget {
       this.getPortamentoTime(channel, note);
     note.bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
-      .linearRampToValueAtTime(baseRate, portamentoTime);
+      .exponentialRampToValueAtTime(baseRate, portamentoTime);
   }
 
   setPitchEnvelope(note, scheduleTime) {
@@ -1241,7 +1241,7 @@ export class MidyGM2 extends EventTarget {
     const decayDuration = voiceParams.modDecay;
     note.bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
-      .linearRampToValueAtTime(peekRate, modAttack)
+      .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
       .setTargetAtTime(baseRate, modHold, decayDuration * decayCurve);
   }
@@ -1270,7 +1270,7 @@ export class MidyGM2 extends EventTarget {
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
-      .linearRampToValueAtTime(adjustedSustainFreq, portamentoTime);
+      .exponentialRampToValueAtTime(adjustedSustainFreq, portamentoTime);
   }
 
   setFilterEnvelope(channel, note, scheduleTime) {
@@ -1297,7 +1297,7 @@ export class MidyGM2 extends EventTarget {
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
-      .linearRampToValueAtTime(adjustedPeekFreq, modAttack)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
       .setTargetAtTime(
         adjustedSustainFreq,
