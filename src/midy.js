@@ -2562,6 +2562,8 @@ export class Midy extends EventTarget {
         channel.dataLSB += value;
         this.handleModulationDepthRangeRPN(channelNumber, scheduleTime);
         break;
+      case 16383: // NULL
+        break;
       default:
         console.warn(
           `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,

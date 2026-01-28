@@ -1436,6 +1436,8 @@ export class MidyGM1 extends EventTarget {
       case 2:
         this.handleCoarseTuningRPN(channelNumber, scheduleTime);
         break;
+      case 16383: // NULL
+        break;
       default:
         console.warn(
           `Channel ${channelNumber}: Unsupported RPN MSB=${channel.rpnMSB} LSB=${channel.rpnLSB}`,
