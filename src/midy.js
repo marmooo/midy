@@ -1307,10 +1307,10 @@ export class Midy extends EventTarget {
       this.getFilterCutoffControl(channel, note);
     const sustainCent = baseCent +
       voiceParams.modEnvToFilterFc * (1 - voiceParams.modSustain);
-    const baseFreq = this.centToHz(baseCent);
-    const sustainFreq = this.centToHz(sustainCent);
-    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq * scale);
-    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq * scale);
+    const baseFreq = this.centToHz(baseCent) * scale;
+    const sustainFreq = this.centToHz(sustainCent) * scale;
+    const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
+    const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     const modDelay = startTime + voiceParams.modDelay;
     note.adjustedBaseFreq = adjustedSustainFreq;
