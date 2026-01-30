@@ -771,9 +771,16 @@ export class MidyGMLite extends EventTarget {
   }
 
   updateDetune(channel, note, scheduleTime) {
+    // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
+    // https://pubmed.ncbi.nlm.nih.gov/12488797/
+    // Humans can detect temporal changes of 2–3 ms.
+    // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
+    // For safety, a smoothing time of around 3–5 ms is recommended.
+    const smoothingTime = 0.004;
+    const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
     note.bufferSource.detune
-      .cancelScheduledValues(scheduleTime)
-      .exponentialRampToValueAtTime(sustainVolume, portamentoTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(channel.detune, scheduleTime, timeConstant);
   }
 
   setVolumeEnvelope(note, scheduleTime) {
