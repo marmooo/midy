@@ -72,6 +72,7 @@ await midy.stop();
 await midy.pause();
 await midy.resume();
 midy.seekTo(second);
+midy.tempoChange(tempo);
 ```
 
 ### Events
