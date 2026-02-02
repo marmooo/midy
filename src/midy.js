@@ -224,6 +224,13 @@ export class Midy extends EventTarget {
   drumExclusiveClassNotes = new Array(
     this.numChannels * drumExclusiveClassCount,
   );
+  mpeEnabled = false;
+  lowerMPEMembers = 0;
+  upperMPEMembers = 0;
+  mpeState = {
+    channelToNote: new Map(),
+    noteToChannel: new Map(),
+  };
 
   static channelSettings = {
     scheduleIndex: 0,
@@ -240,6 +247,8 @@ export class Midy extends EventTarget {
     fineTuning: 0, // cent
     coarseTuning: 0, // cent
     portamentoControl: false,
+    isMPEMember: false,
+    isMPEManager: false,
   };
 
   constructor(audioContext) {
@@ -1574,6 +1583,21 @@ export class Midy extends EventTarget {
   }
 
   async noteOn(channelNumber, noteNumber, velocity, startTime) {
+    if (this.mpeEnabled) {
+      const note = await this.startNote(
+        channelNumber,
+        noteNumber,
+        velocity,
+        startTime,
+      );
+      this.mpeState.channelToNote.set(channelNumber, note.index);
+      this.mpeState.noteToChannel.set(note.index, channelNumber);
+    } else {
+      await this.startNote(channelNumber, noteNumber, velocity, startTime);
+    }
+  }
+
+  async startNote(channelNumber, noteNumber, velocity, startTime) {
     const channel = this.channels[channelNumber];
     const realtime = startTime === undefined;
     if (realtime) startTime = this.audioContext.currentTime;
@@ -1596,6 +1620,7 @@ export class Midy extends EventTarget {
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
+    return note;
   }
 
   disconnectNote(note) {
@@ -1647,6 +1672,36 @@ export class Midy extends EventTarget {
   }
 
   noteOff(
+    channelNumber,
+    noteNumber,
+    velocity,
+    endTime,
+    force,
+  ) {
+    if (this.mpeEnabled) {
+      const noteIndex = this.mpeState.channelToNote.get(channelNumber);
+      if (noteIndex === undefined) return;
+      const channel = this.channels[channelNumber];
+      const note = channel.scheduledNotes[noteIndex];
+      note.ending = true;
+      const promise = note.ready.then(() => {
+        return this.releaseNote(channel, note, endTime);
+      });
+      this.mpeState.channelToNote.delete(channelNumber);
+      this.mpeState.noteToChannel.delete(noteIndex);
+      return promise;
+    } else {
+      return this.stopNote(
+        channelNumber,
+        noteNumber,
+        velocity,
+        endTime,
+        force,
+      );
+    }
+  }
+
+  stopNote(
     channelNumber,
     noteNumber,
     _velocity,
@@ -1798,8 +1853,9 @@ export class Midy extends EventTarget {
     pressure,
     scheduleTime,
   ) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
+    if (channel.isMPEMember) return;
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const table = channel.polyphonicKeyPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
@@ -2144,6 +2200,35 @@ export class Midy extends EventTarget {
   }
 
   setControlChange(channelNumber, controllerType, value, scheduleTime) {
+    const channel = this.channels[channelNumber];
+    if (channel.isMPEMember) {
+      this.applyControlChange(
+        channelNumber,
+        controllerType,
+        value,
+        scheduleTime,
+      );
+    } else if (channel.isMPEManager) {
+      channel.state[controllerType] = value / 127;
+      for (const memberChannel of this.mpeState.channelToNote.keys()) {
+        this.applyControlChange(
+          memberChannel,
+          controllerType,
+          value,
+          scheduleTime,
+        );
+      }
+    } else {
+      this.applyControlChange(
+        channelNumber,
+        controllerType,
+        value,
+        scheduleTime,
+      );
+    }
+  }
+
+  applyControlChange(channelNumber, controllerType, value, scheduleTime) {
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value, scheduleTime);
@@ -2569,6 +2654,10 @@ export class Midy extends EventTarget {
         channel.dataLSB += value;
         this.handleModulationDepthRangeRPN(channelNumber, scheduleTime);
         break;
+      case 6:
+        channel.dataLSB += value;
+        this.handleMIDIPolyphonicExpressionRPN(channelNumber, scheduleTime);
+        break;
       case 16383: // NULL
         break;
       default:
@@ -2675,12 +2764,44 @@ export class Midy extends EventTarget {
     this.updateModulation(channel, scheduleTime);
   }
 
+  // https://midi.org/mpe-midi-polyphonic-expression
+  handleMIDIPolyphonicExpressionRPN(channelNumber, _scheduleTime) {
+    this.setMIDIPolyphonicExpression(channelNumber, channel.dataMSB);
+  }
+
+  setMIDIPolyphonicExpression(channelNumber, value) {
+    if (channelNumber !== 0 && channelNumber !== 15) return;
+    const members = value & 15;
+    if (channelNumber === 0) {
+      this.lowerMPEMembers = members;
+    } else {
+      this.upperMPEMembers = members;
+    }
+    this.mpeEnabled = this.lowerMPEMembers > 0 || this.upperMPEMembers > 0;
+    const lowerStart = 1;
+    const lowerEnd = this.lowerMPEMembers;
+    const upperStart = 16 - this.upperMPEMembers;
+    const upperEnd = 14;
+    for (let i = 0; i < 16; i++) {
+      const isLower = this.lowerMPEMembers && lowerStart <= i && i <= lowerEnd;
+      const isUpper = this.upperMPEMembers && upperStart <= i && i <= upperEnd;
+      this.channels[i].isMPEMember = this.mpeEnabled && (isLower || isUpper);
+      this.channels[i].isMPEManager = this.mpeEnabled && (i === 0 || i === 15);
+    }
+  }
+
   setRPGMakerLoop(_channelNumber, _value, scheduleTime) {
     scheduleTime ??= this.audioContext.currentTime;
     this.loopStart = scheduleTime + this.resumeTime - this.startTime;
   }
 
-  allSoundOff(channelNumber, _value, scheduleTime) {
+  allSoundOff(channelNumber, value, scheduleTime) {
+    if (this.channels[channelNumber].isMPEManager) return;
+    this.applyAllSoundOff(channelNumber, value, scheduleTime);
+  }
+
+  applyAllSoundOff(channelNumber, _value, scheduleTime) {
+    if (this.channels[channelNumber].isMPEManager) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     return this.stopActiveNotes(channelNumber, 0, true, scheduleTime);
   }
@@ -2763,17 +2884,20 @@ export class Midy extends EventTarget {
   }
 
   omniOn(channelNumber, value, scheduleTime) {
+    if (this.mpeEnabled) return;
     this.allNotesOff(channelNumber, value, scheduleTime);
   }
 
   monoOn(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isMPEManager) return;
     this.allNotesOff(channelNumber, value, scheduleTime);
     channel.mono = true;
   }
 
   polyOn(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
+    if (channel.isMPEManager) return;
     this.allNotesOff(channelNumber, value, scheduleTime);
     channel.mono = false;
   }
@@ -2824,7 +2948,7 @@ export class Midy extends EventTarget {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
     for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime);
+      this.applyAllSoundOff(i, 0, scheduleTime);
       const channel = channels[i];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
@@ -2839,7 +2963,7 @@ export class Midy extends EventTarget {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM2";
     for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime);
+      this.applyAllSoundOff(i, 0, scheduleTime);
       const channel = channels[i];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
