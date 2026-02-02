@@ -2654,7 +2654,7 @@ export class Midy extends EventTarget {
         channel.dataLSB += value;
         this.handleModulationDepthRangeRPN(channelNumber, scheduleTime);
         break;
-      case 6:
+      case 6: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp053.pdf
         channel.dataLSB += value;
         this.handleMIDIPolyphonicExpressionRPN(channelNumber, scheduleTime);
         break;
@@ -2764,7 +2764,6 @@ export class Midy extends EventTarget {
     this.updateModulation(channel, scheduleTime);
   }
 
-  // https://midi.org/mpe-midi-polyphonic-expression
   handleMIDIPolyphonicExpressionRPN(channelNumber, _scheduleTime) {
     this.setMIDIPolyphonicExpression(channelNumber, channel.dataMSB);
   }
