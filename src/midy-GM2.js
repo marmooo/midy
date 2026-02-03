@@ -145,6 +145,7 @@ const pitchEnvelopeKeys = [
   "modDecay",
   "modSustain",
   "playbackRate",
+  "detune",
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
@@ -1098,7 +1099,7 @@ export class MidyGM2 extends EventTarget {
     }
   }
 
-  calcNoteDetune(channel, note) {
+  calcScaleOctaveTuning(channel, note) {
     return channel.scaleOctaveTuningTable[note.noteNumber % 12];
   }
 
@@ -1109,7 +1110,8 @@ export class MidyGM2 extends EventTarget {
   }
 
   updateDetune(channel, note, scheduleTime) {
-    const noteDetune = this.calcNoteDetune(channel, note);
+    const noteDetune = note.voiceParams.detune +
+      this.calcScaleOctaveTuning(channel, note);
     const detune = channel.detune + noteDetune;
     if (this.isPortamento(channel, note)) {
       const startTime = note.startTime;
@@ -1232,21 +1234,23 @@ export class MidyGM2 extends EventTarget {
   }
 
   setPitchEnvelope(note, scheduleTime) {
-    const { voiceParams } = note;
+    const { bufferSource, voiceParams } = note;
+    const baseDetune = voiceParams.detune;
+    bufferSource.detune
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(baseDetune, scheduleTime);
     const baseRate = voiceParams.playbackRate;
-    note.bufferSource.playbackRate
+    bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(baseRate, scheduleTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
-    const basePitch = this.rateToCent(baseRate);
-    const peekPitch = basePitch + modEnvToPitch;
-    const peekRate = this.centToRate(peekPitch);
+    const peekRate = baseRate * this.centToRate(modEnvToPitch);
     const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = voiceParams.modDecay;
-    note.bufferSource.playbackRate
+    bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
       .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)

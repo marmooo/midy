@@ -105,6 +105,7 @@ const pitchEnvelopeKeys = [
   "modDecay",
   "modSustain",
   "playbackRate",
+  "detune",
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
@@ -771,6 +772,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   updateDetune(channel, note, scheduleTime) {
+    const detune = channel.detune + note.voiceParams.detune;
     // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
     // https://pubmed.ncbi.nlm.nih.gov/12488797/
     // Humans can detect temporal changes of 2–3 ms.
@@ -780,7 +782,7 @@ export class MidyGMLite extends EventTarget {
     const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
     note.bufferSource.detune
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(channel.detune, scheduleTime, timeConstant);
+      .setTargetAtTime(detune, scheduleTime, timeConstant);
   }
 
   setVolumeEnvelope(note, scheduleTime) {
@@ -801,21 +803,23 @@ export class MidyGMLite extends EventTarget {
   }
 
   setPitchEnvelope(note, scheduleTime) {
-    const { voiceParams } = note;
+    const { bufferSource, voiceParams } = note;
+    const baseDetune = voiceParams.detune;
+    bufferSource.playbackRate
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(baseDetune, scheduleTime);
     const baseRate = voiceParams.playbackRate;
-    note.bufferSource.playbackRate
+    bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(baseRate, scheduleTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
-    const basePitch = this.rateToCent(baseRate);
-    const peekPitch = basePitch + modEnvToPitch;
-    const peekRate = this.centToRate(peekPitch);
+    const peekRate = baseRate * this.centToRate(modEnvToPitch);
     const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = voiceParams.modDecay;
-    note.bufferSource.playbackRate
+    bufferSource.playbackRate
       .setValueAtTime(baseRate, modDelay)
       .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
