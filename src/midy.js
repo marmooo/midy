@@ -1,6 +1,5 @@
 import { parseMidi } from "midi-file";
-// import { parse, SoundFont } from "@marmooo/soundfont-parser";
-import { parse, SoundFont } from "../../soundfont-parser/src/mod.ts";
+import { parse, SoundFont } from "@marmooo/soundfont-parser";
 
 class Note {
   voice;
@@ -163,7 +162,6 @@ const pitchEnvelopeKeys = [
   "modDecay",
   "modSustain",
   "playbackRate",
-  "detune",
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
@@ -1143,48 +1141,25 @@ export class Midy extends EventTarget {
     }
   }
 
+  updateChannelDetune(channel, scheduleTime) {
+    this.processScheduledNotes(channel, (note) => {
+      if (this.isPortamento(channel, note)) {
+        this.setPortamentoDetune(channel, note, scheduleTime);
+      } else {
+        this.setDetune(channel, note, scheduleTime);
+      }
+    });
+  }
+
   calcScaleOctaveTuning(channel, note) {
     return channel.scaleOctaveTuningTable[note.noteNumber % 12];
   }
 
-  updateChannelDetune(channel, scheduleTime) {
-    this.processScheduledNotes(channel, (note) => {
-      this.updateDetune(channel, note, scheduleTime);
-    });
-  }
-
-  updateDetune(channel, note, scheduleTime) {
+  calcNoteDetune(channel, note) {
     const noteDetune = note.voiceParams.detune +
       this.calcScaleOctaveTuning(channel, note);
     const pitchControl = this.getPitchControl(channel, note);
-    const detune = channel.detune + noteDetune + pitchControl;
-    if (channel.portamentoControl) {
-      const state = channel.state;
-      const portamentoNoteNumber = Math.ceil(state.portamentoNoteNumber * 127);
-      note.portamentoNoteNumber = portamentoNoteNumber;
-      channel.portamentoControl = false;
-      state.portamentoNoteNumber = 0;
-    }
-    if (this.isPortamento(channel, note)) {
-      const startTime = note.startTime;
-      const deltaCent = (note.noteNumber - note.portamentoNoteNumber) * 100;
-      const portamentoTime = startTime + this.getPortamentoTime(channel, note);
-      note.bufferSource.detune
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(detune - deltaCent, scheduleTime)
-        .linearRampToValueAtTime(detune, portamentoTime);
-    } else {
-      // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
-      // https://pubmed.ncbi.nlm.nih.gov/12488797/
-      // Humans can detect temporal changes of 2–3 ms.
-      // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
-      // For safety, a smoothing time of around 3–5 ms is recommended.
-      const smoothingTime = 0.004;
-      const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
-      note.bufferSource.detune
-        .cancelAndHoldAtTime(scheduleTime)
-        .setTargetAtTime(detune, scheduleTime, timeConstant);
-    }
+    return channel.detune + noteDetune + pitchControl;
   }
 
   getPortamentoTime(channel, note) {
@@ -1280,6 +1255,41 @@ export class Midy extends EventTarget {
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
 
+  setPortamentoDetune(channel, note, scheduleTime) {
+    if (channel.portamentoControl) {
+      const state = channel.state;
+      const portamentoNoteNumber = Math.ceil(state.portamentoNoteNumber * 127);
+      note.portamentoNoteNumber = portamentoNoteNumber;
+      channel.portamentoControl = false;
+      state.portamentoNoteNumber = 0;
+    }
+    const detune = this.calcNoteDetune(channel, note);
+    const startTime = note.startTime;
+    const deltaCent = (note.noteNumber - note.portamentoNoteNumber) * 100;
+    const portamentoTime = startTime + this.getPortamentoTime(channel, note);
+    note.bufferSource.detune
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(detune - deltaCent, scheduleTime)
+      .linearRampToValueAtTime(detune, portamentoTime);
+  }
+
+  setDetune(channel, note, scheduleTime) {
+    const detune = this.calcNoteDetune(channel, note);
+    note.bufferSource.detune
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(detune, scheduleTime);
+    // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
+    // https://pubmed.ncbi.nlm.nih.gov/12488797/
+    // Humans can detect temporal changes of 2–3 ms.
+    // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
+    // For safety, a smoothing time of around 3–5 ms is recommended.
+    const smoothingTime = 0.004;
+    const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
+    note.bufferSource.detune
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(detune, scheduleTime, timeConstant);
+  }
+
   setPortamentoPitchEnvelope(channel, note, scheduleTime) {
     const baseRate = note.voiceParams.playbackRate;
     const portamentoTime = note.startTime +
@@ -1291,10 +1301,6 @@ export class Midy extends EventTarget {
 
   setPitchEnvelope(note, scheduleTime) {
     const { bufferSource, voiceParams } = note;
-    const baseDetune = voiceParams.detune;
-    bufferSource.detune
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseDetune, scheduleTime);
     const baseRate = voiceParams.playbackRate;
     bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
@@ -1492,12 +1498,13 @@ export class Midy extends EventTarget {
       this.setPortamentoVolumeEnvelope(channel, note, now);
       this.setPortamentoFilterEnvelope(channel, note, now);
       this.setPortamentoPitchEnvelope(channel, note, now);
+      this.setPortamentoDetune(channel, note, now);
     } else {
       this.setVolumeEnvelope(channel, note, now);
       this.setFilterEnvelope(channel, note, now);
       this.setPitchEnvelope(note, now);
+      this.setDetune(channel, note, now);
     }
-    this.updateDetune(channel, note, now);
     if (0 < state.vibratoDepth) {
       this.startVibrato(channel, note, now);
     }
@@ -2041,14 +2048,6 @@ export class Midy extends EventTarget {
       .setValueAtTime(freqModLFO, scheduleTime);
   }
 
-  setFreqVibLFO(channel, note, scheduleTime) {
-    const vibratoRate = this.getRelativeKeyBasedValue(channel, note, 76) * 2;
-    const freqVibLFO = note.voiceParams.freqVibLFO;
-    note.vibratoLFO.frequency
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
-  }
-
   setDelayVibLFO(channel, note) {
     const vibratoDelay = this.getRelativeKeyBasedValue(channel, note, 78) * 2;
     const value = note.voiceParams.delayVibLFO;
@@ -2056,6 +2055,14 @@ export class Midy extends EventTarget {
     try {
       note.vibratoLFO.start(startTime);
     } catch { /* empty */ }
+  }
+
+  setFreqVibLFO(channel, note, scheduleTime) {
+    const vibratoRate = this.getRelativeKeyBasedValue(channel, note, 76) * 2;
+    const freqVibLFO = note.voiceParams.freqVibLFO;
+    note.vibratoLFO.frequency
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
 
   createVoiceParamsHandlers() {
@@ -2109,6 +2116,13 @@ export class Midy extends EventTarget {
       freqVibLFO: (channel, note, scheduleTime) => {
         if (0 < channel.state.vibratoDepth) {
           this.setFreqVibLFO(channel, note, scheduleTime);
+        }
+      },
+      detune: (channel, note, scheduleTime) => {
+        if (this.isPortamento(channel, note)) {
+          this.setPortamentoDetune(channel, note, scheduleTime);
+        } else {
+          this.setDetune(channel, note, scheduleTime);
         }
       },
     };
@@ -2282,12 +2296,12 @@ export class Midy extends EventTarget {
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
         this.setPortamentoPitchEnvelope(channel, note, scheduleTime);
-        this.updateDetune(channel, note, scheduleTime);
+        this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
         this.setVolumeEnvelope(channel, note, scheduleTime);
         this.setFilterEnvelope(channel, note, scheduleTime);
         this.setPitchEnvelope(note, scheduleTime);
-        this.updateDetune(channel, note, scheduleTime);
+        this.setDetune(channel, note, scheduleTime);
       }
     });
   }
@@ -3419,7 +3433,13 @@ export class Midy extends EventTarget {
   }
 
   setEffects(channel, note, table, scheduleTime) {
-    if (0 < table[0]) this.updateDetune(channel, note, scheduleTime);
+    if (0 < table[0]) {
+      if (this.isPortamento(channel, note)) {
+        this.setPortamentoDetune(channel, note, scheduleTime);
+      } else {
+        this.setDetune(channel, note, scheduleTime);
+      }
+    }
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
       if (0 < table[1]) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);

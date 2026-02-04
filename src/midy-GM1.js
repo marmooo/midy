@@ -91,7 +91,6 @@ const pitchEnvelopeKeys = [
   "modDecay",
   "modSustain",
   "playbackRate",
-  "detune",
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
@@ -753,22 +752,12 @@ export class MidyGM1 extends EventTarget {
 
   updateChannelDetune(channel, scheduleTime) {
     this.processScheduledNotes(channel, (note) => {
-      this.updateDetune(channel, note, scheduleTime);
+      this.setDetune(channel, note, scheduleTime);
     });
   }
 
-  updateDetune(channel, note, scheduleTime) {
-    const detune = channel.detune + note.voiceParams.detune;
-    // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
-    // https://pubmed.ncbi.nlm.nih.gov/12488797/
-    // Humans can detect temporal changes of 2–3 ms.
-    // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
-    // For safety, a smoothing time of around 3–5 ms is recommended.
-    const smoothingTime = 0.004;
-    const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
-    note.bufferSource.detune
-      .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(detune, scheduleTime, timeConstant);
+  calcNoteDetune(channel, note) {
+    return channel.detune + note.voiceParams.detune;
   }
 
   setVolumeEnvelope(note, scheduleTime) {
@@ -788,12 +777,25 @@ export class MidyGM1 extends EventTarget {
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
 
+  setDetune(channel, note, scheduleTime) {
+    const detune = this.calcNoteDetune(channel, note);
+    note.bufferSource.detune
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(detune, scheduleTime);
+    // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
+    // https://pubmed.ncbi.nlm.nih.gov/12488797/
+    // Humans can detect temporal changes of 2–3 ms.
+    // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
+    // For safety, a smoothing time of around 3–5 ms is recommended.
+    const smoothingTime = 0.004;
+    const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
+    note.bufferSource.detune
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(detune, scheduleTime, timeConstant);
+  }
+
   setPitchEnvelope(note, scheduleTime) {
     const { bufferSource, voiceParams } = note;
-    const baseDetune = voiceParams.detune;
-    bufferSource.detune
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(baseDetune, scheduleTime);
     const baseRate = voiceParams.playbackRate;
     bufferSource.playbackRate
       .cancelScheduledValues(scheduleTime)
@@ -936,8 +938,8 @@ export class MidyGM1 extends EventTarget {
     this.setVolumeEnvelope(note, now);
     this.setFilterEnvelope(note, now);
     this.setPitchEnvelope(note, now);
-    this.updateDetune(channel, note, now);
-    if (0 < state.modulationDepth) {
+    this.setDetune(channel, note, now);
+    if (0 < state.modulationDepthMSB) {
       this.startModulation(channel, note, now);
     }
     note.bufferSource.connect(note.filterNode);
@@ -1020,15 +1022,18 @@ export class MidyGM1 extends EventTarget {
 
   releaseNote(channel, note, endTime) {
     endTime ??= this.audioContext.currentTime;
-    const duration = note.voiceParams.volRelease * releaseTime;
-    const volRelease = endTime + duration;
-    const modRelease = endTime + note.voiceParams.modRelease;
+    const volDuration = note.voiceParams.volRelease;
+    const volRelease = endTime + volDuration;
     note.filterNode.frequency
       .cancelScheduledValues(endTime)
-      .linearRampToValueAtTime(note.adjustedBaseFreq, modRelease);
+      .setTargetAtTime(
+        note.adjustedBaseFreq,
+        endTime,
+        note.voiceParams.modRelease * releaseCurve,
+      );
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(endTime)
-      .setTargetAtTime(0, endTime, duration * releaseCurve);
+      .setTargetAtTime(0, endTime, volDuration * releaseCurve);
     return new Promise((resolve) => {
       this.scheduleTask(() => {
         const bufferSource = note.bufferSource;
@@ -1261,6 +1266,9 @@ export class MidyGM1 extends EventTarget {
       },
       delayVibLFO: (_channel, _note, _scheduleTime) => {},
       freqVibLFO: (_channel, _note, _scheduleTime) => {},
+      detune: (channel, note, scheduleTime) => {
+        this.setDetune(channel, note, scheduleTime);
+      },
     };
   }
 
@@ -1343,17 +1351,17 @@ export class MidyGM1 extends EventTarget {
     });
   }
 
-  setModulationDepth(channelNumber, modulation, scheduleTime) {
+  setModulationDepth(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    channel.state.modulationDepthMSB = modulation / 127;
+    channel.state.modulationDepthMSB = value / 127;
     this.updateModulation(channel, scheduleTime);
   }
 
-  setVolume(channelNumber, volume, scheduleTime) {
+  setVolume(channelNumber, value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.volumeMSB = volume / 127;
+    channel.state.volumeMSB = value / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
@@ -1365,17 +1373,17 @@ export class MidyGM1 extends EventTarget {
     };
   }
 
-  setPan(channelNumber, pan, scheduleTime) {
+  setPan(channelNumber, value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.panMSB = pan / 127;
+    channel.state.panMSB = value / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
-  setExpression(channelNumber, expression, scheduleTime) {
+  setExpression(channelNumber, value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
-    channel.state.expressionMSB = expression / 127;
+    channel.state.expressionMSB = value / 127;
     this.updateChannelVolume(channel, scheduleTime);
   }
 
@@ -1386,14 +1394,14 @@ export class MidyGM1 extends EventTarget {
 
   updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
-    const volume = state.volumeMSB * state.expressionMSB;
+    const gain = state.volumeMSB * state.expressionMSB;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     channel.gainL.gain
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(volume * gainLeft, scheduleTime);
+      .setValueAtTime(gain * gainLeft, scheduleTime);
     channel.gainR.gain
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(volume * gainRight, scheduleTime);
+      .setValueAtTime(gain * gainRight, scheduleTime);
   }
 
   setSustainPedal(channelNumber, value, scheduleTime) {
