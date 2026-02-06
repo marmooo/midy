@@ -102,6 +102,11 @@ const decayCurve = 1 / (-Math.log(cbToRatio(-1000)));
 const releaseCurve = 1 / (-Math.log(cbToRatio(-600)));
 
 export class MidyGM1 extends EventTarget {
+  // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
+  // https://pubmed.ncbi.nlm.nih.gov/12488797/
+  // Gap detection studies indicate humans detect temporal discontinuities
+  // around 2–3 ms. Smoothing over ~4 ms is perceived as continuous.
+  perceptualSmoothingTime = 0.004;
   mode = "GM1";
   numChannels = 16;
   ticksPerBeat = 120;
@@ -782,13 +787,7 @@ export class MidyGM1 extends EventTarget {
     note.bufferSource.detune
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(detune, scheduleTime);
-    // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
-    // https://pubmed.ncbi.nlm.nih.gov/12488797/
-    // Humans can detect temporal changes of 2–3 ms.
-    // By smoothing pitch changes over shorter intervals, the result is perceived as "continuous".
-    // For safety, a smoothing time of around 3–5 ms is recommended.
-    const smoothingTime = 0.004;
-    const timeConstant = smoothingTime / 5; // 99.3% convergence (5 * tau)
+    const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     note.bufferSource.detune
       .cancelAndHoldAtTime(scheduleTime)
       .setTargetAtTime(detune, scheduleTime, timeConstant);
