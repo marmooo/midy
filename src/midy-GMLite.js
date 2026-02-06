@@ -1511,7 +1511,7 @@ export class MidyGMLite extends EventTarget {
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
-  setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
+  setPitchBendRange(channelNumber, value, scheduleTime) { // [0, 12800] cent
     const channel = this.channels[channelNumber];
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const state = channel.state;

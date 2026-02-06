@@ -2718,7 +2718,7 @@ export class Midy extends EventTarget {
     this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
   }
 
-  setPitchBendRange(channelNumber, value, scheduleTime) { // [0-12800] cent
+  setPitchBendRange(channelNumber, value, scheduleTime) { // [0, 12800] cent
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
@@ -2775,7 +2775,7 @@ export class Midy extends EventTarget {
     this.setModulationDepthRange(channelNumber, value, scheduleTime);
   }
 
-  setModulationDepthRange(channelNumber, value, scheduleTime) { // [0-12800]
+  setModulationDepthRange(channelNumber, value, scheduleTime) { // [0, 12800] cent
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
