@@ -1892,7 +1892,13 @@ export class Midy extends EventTarget {
     this.applyVoiceParams(channel, 10, scheduleTime);
   }
 
-  setProgramChange(channelNumber, programNumber, _scheduleTime) {
+  setProgramChange(channelNumber, programNumber, scheduleTime) {
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      this.applyProgramChange(ch, programNumber, scheduleTime);
+    });
+  }
+
+  applyProgramChange(channelNumber, programNumber, _scheduleTime) {
     const channel = this.channels[channelNumber];
     channel.programNumber = programNumber;
     if (this.mode === "GM2") {
