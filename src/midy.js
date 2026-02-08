@@ -927,6 +927,21 @@ export class Midy extends EventTarget {
     await Promise.all(tasks);
   }
 
+  applyToMPEChannels(channelNumber, fn) {
+    fn(channelNumber);
+    const channel = this.channels[channelNumber];
+    if (!channel.isMPEManager) return;
+    if (channelNumber === 0) {
+      for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
+        fn(ch);
+      }
+    } else if (channelNumber === 15) {
+      for (let ch = 15 - this.upperMPEMembers; ch <= 14; ch++) {
+        fn(ch);
+      }
+    }
+  }
+
   createConvolutionReverbImpulse(audioContext, decay, preDecay) {
     const sampleRate = audioContext.sampleRate;
     const length = sampleRate * decay;
@@ -2218,32 +2233,9 @@ export class Midy extends EventTarget {
   }
 
   setControlChange(channelNumber, controllerType, value, scheduleTime) {
-    const channel = this.channels[channelNumber];
-    if (channel.isMPEMember) {
-      this.applyControlChange(
-        channelNumber,
-        controllerType,
-        value,
-        scheduleTime,
-      );
-    } else if (channel.isMPEManager) {
-      channel.state[controllerType] = value / 127;
-      for (const memberChannel of this.mpeState.channelToNote.keys()) {
-        this.applyControlChange(
-          memberChannel,
-          controllerType,
-          value,
-          scheduleTime,
-        );
-      }
-    } else {
-      this.applyControlChange(
-        channelNumber,
-        controllerType,
-        value,
-        scheduleTime,
-      );
-    }
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      this.applyControlChange(ch, controllerType, value, scheduleTime);
+    });
   }
 
   applyControlChange(channelNumber, controllerType, value, scheduleTime) {
