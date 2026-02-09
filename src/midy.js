@@ -1915,6 +1915,12 @@ export class Midy extends EventTarget {
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      this.applyChannelPressure(ch, value, scheduleTime);
+    });
+  }
+
+  applyChannelPressure(channelNumber, value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
