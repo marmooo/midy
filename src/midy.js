@@ -1945,6 +1945,12 @@ export class Midy extends EventTarget {
   }
 
   setPitchBend(channelNumber, value, scheduleTime) {
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      this.applyPitchBend(ch, value, scheduleTime);
+    });
+  }
+
+  applyPitchBend(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
