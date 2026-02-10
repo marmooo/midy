@@ -2907,6 +2907,7 @@ export class Midy extends EventTarget {
   }
 
   omniOff(channelNumber, value, scheduleTime) {
+    if (this.mpeEnabled) return;
     this.allNotesOff(channelNumber, value, scheduleTime);
   }
 
