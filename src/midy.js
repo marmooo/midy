@@ -233,7 +233,7 @@ export class Midy extends EventTarget {
   lowerMPEMembers = 0;
   upperMPEMembers = 0;
   mpeState = {
-    channelToNote: new Map(),
+    channelToNotes: new Map(),
     noteToChannel: new Map(),
   };
 
@@ -1616,7 +1616,10 @@ export class Midy extends EventTarget {
         velocity,
         startTime,
       );
-      this.mpeState.channelToNote.set(channelNumber, note.index);
+      if (!this.mpeState.channelToNotes.has(channelNumber)) {
+        this.mpeState.channelToNotes.set(channelNumber, new Set());
+      }
+      this.mpeState.channelToNotes.get(channelNumber).add(note.index);
       this.mpeState.noteToChannel.set(note.index, channelNumber);
     } else {
       await this.startNote(channelNumber, noteNumber, velocity, startTime);
@@ -1705,16 +1708,28 @@ export class Midy extends EventTarget {
     force,
   ) {
     if (this.mpeEnabled) {
-      const noteIndex = this.mpeState.channelToNote.get(channelNumber);
-      if (noteIndex === undefined) return;
+      const noteIndices = this.mpeState.channelToNotes.get(channelNumber);
+      if (!noteIndices || noteIndices.size === 0) return;
       const channel = this.channels[channelNumber];
-      const note = channel.scheduledNotes[noteIndex];
+      let targetNoteIndex = undefined;
+      for (const noteIndex of noteIndices) {
+        const note = channel.scheduledNotes[noteIndex];
+        if (note && note.noteNumber === noteNumber && !note.ending) {
+          targetNoteIndex = noteIndex;
+          break;
+        }
+      }
+      if (targetNoteIndex === undefined) return;
+      const note = channel.scheduledNotes[targetNoteIndex];
       note.ending = true;
       const promise = note.ready.then(() => {
         return this.releaseNote(channel, note, endTime);
       });
-      this.mpeState.channelToNote.delete(channelNumber);
-      this.mpeState.noteToChannel.delete(noteIndex);
+      noteIndices.delete(targetNoteIndex);
+      if (noteIndices.size === 0) {
+        this.mpeState.channelToNotes.delete(channelNumber);
+      }
+      this.mpeState.noteToChannel.delete(targetNoteIndex);
       return promise;
     } else {
       return this.stopNote(
