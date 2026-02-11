@@ -423,8 +423,8 @@ export class MidyGMLite extends EventTarget {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].scheduledNotes = [];
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].scheduledNotes = [];
       this.resetChannelStates(i);
     }
   }
@@ -653,8 +653,8 @@ export class MidyGMLite extends EventTarget {
 
   stopNotes(velocity, force, scheduleTime) {
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      this.stopChannelNotes(i, velocity, force, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.stopChannelNotes(ch, velocity, force, scheduleTime);
     }
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
@@ -1612,9 +1612,9 @@ export class MidyGMLite extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
-    for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime);
-      const channel = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.allSoundOff(ch, 0, scheduleTime);
+      const channel = channels[ch];
       channel.isDrum = false;
     }
     channels[9].isDrum = true;

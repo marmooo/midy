@@ -553,9 +553,9 @@ export class Midy extends EventTarget {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].scheduledNotes = [];
-      this.resetChannelStates(i);
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].scheduledNotes = [];
+      this.resetChannelStates(ch);
     }
   }
 
@@ -2824,11 +2824,12 @@ export class Midy extends EventTarget {
     const lowerEnd = this.lowerMPEMembers;
     const upperStart = 16 - this.upperMPEMembers;
     const upperEnd = 14;
-    for (let i = 0; i < 16; i++) {
-      const isLower = this.lowerMPEMembers && lowerStart <= i && i <= lowerEnd;
-      const isUpper = this.upperMPEMembers && upperStart <= i && i <= upperEnd;
-      this.channels[i].isMPEMember = this.mpeEnabled && (isLower || isUpper);
-      this.channels[i].isMPEManager = this.mpeEnabled && (i === 0 || i === 15);
+    const { channels, lowerMPEMembers, upperMPEMembers } = this;
+    for (let ch = 0; ch < 16; ch++) {
+      const isLower = lowerMPEMembers && lowerStart <= ch && ch <= lowerEnd;
+      const isUpper = upperMPEMembers && upperStart <= ch && ch <= upperEnd;
+      channels[i].isMPEMember = this.mpeEnabled && (isLower || isUpper);
+      channels[i].isMPEManager = this.mpeEnabled && (ch === 0 || ch === 15);
     }
   }
 
@@ -2990,9 +2991,9 @@ export class Midy extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
-    for (let i = 0; i < channels.length; i++) {
-      this.applyAllSoundOff(i, 0, scheduleTime);
-      const channel = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.applyAllSoundOff(ch, 0, scheduleTime);
+      const channel = channels[ch];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
       channel.isDrum = false;
@@ -3005,9 +3006,9 @@ export class Midy extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM2";
-    for (let i = 0; i < channels.length; i++) {
-      this.applyAllSoundOff(i, 0, scheduleTime);
-      const channel = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.applyAllSoundOff(ch, 0, scheduleTime);
+      const channel = channels[ch];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
       channel.isDrum = false;
@@ -3110,8 +3111,9 @@ export class Midy extends EventTarget {
     const next = value;
     this.masterFineTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
@@ -3128,8 +3130,9 @@ export class Midy extends EventTarget {
     const next = value;
     this.masterCoarseTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);

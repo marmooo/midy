@@ -516,9 +516,9 @@ export class MidyGM2 extends EventTarget {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].scheduledNotes = [];
-      this.resetChannelStates(i);
+    for (let ch = 0; i < channels.length; ch++) {
+      channels[ch].scheduledNotes = [];
+      this.resetChannelStates(ch);
     }
   }
 
@@ -786,8 +786,8 @@ export class MidyGM2 extends EventTarget {
 
   stopNotes(velocity, force, scheduleTime) {
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      this.stopChannelNotes(i, velocity, force, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.stopChannelNotes(ch, velocity, force, scheduleTime);
     }
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
@@ -2547,9 +2547,9 @@ export class MidyGM2 extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM1";
-    for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime);
-      const channel = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.allSoundOff(ch, 0, scheduleTime);
+      const channel = channels[ch];
       channel.bankMSB = 0;
       channel.bankLSB = 0;
       channel.isDrum = false;
@@ -2562,9 +2562,9 @@ export class MidyGM2 extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.mode = "GM2";
-    for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime);
-      const channel = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.allSoundOff(ch, 0, scheduleTime);
+      const channel = channels[ch];
       channel.bankMSB = 121;
       channel.bankLSB = 0;
       channel.isDrum = false;
@@ -2642,8 +2642,9 @@ export class MidyGM2 extends EventTarget {
     const next = value;
     this.masterFineTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; i < channels.length; ch++) {
+      const channel = this.channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
@@ -2660,8 +2661,9 @@ export class MidyGM2 extends EventTarget {
     const next = value;
     this.masterCoarseTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = this.channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
