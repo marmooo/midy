@@ -34,7 +34,7 @@ var require_midi_parser = __commonJS({
         throw "Bad MIDI file.  Expected 'MHdr', got: '" + headerChunk.id + "'";
       var header = parseHeader(headerChunk.data);
       var tracks = [];
-      for (var i = 0; !p.eof() && i < header.numTracks; i++) {
+      for (var i2 = 0; !p.eof() && i2 < header.numTracks; i2++) {
         var trackChunk = p.readChunk();
         if (trackChunk.id != "MTrk")
           throw "Bad MIDI file.  Expected 'MTrk', got: '" + trackChunk.id + "'";
@@ -334,11 +334,11 @@ var require_midi_writer = __commonJS({
       opts = opts || {};
       var header = data.header || {};
       var tracks = data.tracks || [];
-      var i, len = tracks.length;
+      var i2, len = tracks.length;
       var w = new Writer();
       writeHeader(w, header, len);
-      for (i = 0; i < len; i++) {
-        writeTrack(w, tracks[i], opts);
+      for (i2 = 0; i2 < len; i2++) {
+        writeTrack(w, tracks[i2], opts);
       }
       return w.buffer;
     }
@@ -360,11 +360,11 @@ var require_midi_writer = __commonJS({
     }
     function writeTrack(w, track, opts) {
       var t = new Writer();
-      var i, len = track.length;
+      var i2, len = track.length;
       var eventTypeByte = null;
-      for (i = 0; i < len; i++) {
-        if (opts.running === false || !opts.running && !track[i].running) eventTypeByte = null;
-        eventTypeByte = writeEvent(t, track[i], eventTypeByte, opts.useByte9ForNoteOff);
+      for (i2 = 0; i2 < len; i2++) {
+        if (opts.running === false || !opts.running && !track[i2].running) eventTypeByte = null;
+        eventTypeByte = writeEvent(t, track[i2], eventTypeByte, opts.useByte9ForNoteOff);
       }
       w.writeChunk("MTrk", t.buffer);
     }
@@ -584,9 +584,9 @@ var require_midi_writer = __commonJS({
       this.buffer = this.buffer.concat(Array.prototype.slice.call(arr, 0));
     };
     Writer.prototype.writeString = function(str) {
-      var i, len = str.length, arr = [];
-      for (i = 0; i < len; i++) {
-        arr.push(str.codePointAt(i));
+      var i2, len = str.length, arr = [];
+      for (i2 = 0; i2 < len; i2++) {
+        arr.push(str.codePointAt(i2));
       }
       this.writeBytes(arr);
     };
@@ -595,14 +595,14 @@ var require_midi_writer = __commonJS({
       if (v <= 127) {
         this.writeUInt8(v);
       } else {
-        var i = v;
+        var i2 = v;
         var bytes = [];
-        bytes.push(i & 127);
-        i >>= 7;
-        while (i) {
-          var b = i & 127 | 128;
+        bytes.push(i2 & 127);
+        i2 >>= 7;
+        while (i2) {
+          var b = i2 & 127 | 128;
           bytes.push(b);
-          i >>= 7;
+          i2 >>= 7;
         }
         this.writeBytes(bytes.reverse());
       }
@@ -651,8 +651,8 @@ var Stream = class {
     if (nul < 0)
       nul = size;
     const arr = new Array(nul);
-    for (let i = 0; i < nul; i++) {
-      arr[i] = data[start + i];
+    for (let i2 = 0; i2 < nul; i2++) {
+      arr[i2] = data[start + i2];
     }
     this.offset = end;
     return String.fromCharCode(...arr);
@@ -971,9 +971,9 @@ var Info = class _Info {
   }
   static parse(data, chunks) {
     function getChunk(type) {
-      for (let i = 0; i < chunks.length; i++) {
-        if (chunks[i].type === type)
-          return chunks[i];
+      for (let i2 = 0; i2 < chunks.length; i2++) {
+        if (chunks[i2].type === type)
+          return chunks[i2];
       }
       return void 0;
     }
@@ -1384,20 +1384,20 @@ var AudioData = class {
       const frameCount = data.byteLength / bytesPerSample;
       const result = new Float32Array(frameCount);
       const src = new Int16Array(data.buffer, data.byteOffset, data.byteLength / bytesPerSample);
-      for (let i = 0; i < frameCount; i++) {
-        result[i] = src[i] / 32768;
+      for (let i2 = 0; i2 < frameCount; i2++) {
+        result[i2] = src[i2] / 32768;
       }
       return result;
     } else {
       const bytesPerSample = 3;
       const frameCount = data.byteLength / bytesPerSample;
       const result = new Float32Array(frameCount);
-      for (let i = 0; i < frameCount; i++) {
-        const idx = i * bytesPerSample;
+      for (let i2 = 0; i2 < frameCount; i2++) {
+        const idx = i2 * bytesPerSample;
         let val = data[idx] | data[idx + 1] << 8 | data[idx + 2] << 16;
         if (val & 8388608)
           val |= 4278190080;
-        result[i] = val / 8388608;
+        result[i2] = val / 8388608;
       }
       return result;
     }
@@ -1513,7 +1513,7 @@ function parseChunkObjects(chunk, data, type, clazz, terminate, isSF3) {
 }
 var parsePhdr = (chunk, data) => parseChunkObjects(chunk, data, "phdr", PresetHeader, (p) => p.isEnd);
 var parsePbag = (chunk, data) => parseChunkObjects(chunk, data, "pbag", Bag);
-var parseInst = (chunk, data) => parseChunkObjects(chunk, data, "inst", Instrument, (i) => i.isEnd);
+var parseInst = (chunk, data) => parseChunkObjects(chunk, data, "inst", Instrument, (i2) => i2.isEnd);
 var parseIbag = (chunk, data) => parseChunkObjects(chunk, data, "ibag", Bag);
 var parsePmod = (chunk, data) => parseChunkObjects(chunk, data, "pmod", ModulatorList);
 var parseImod = (chunk, data) => parseChunkObjects(chunk, data, "imod", ModulatorList);
@@ -1524,20 +1524,20 @@ function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB,
   const result = new Array(sampleHeader.length);
   const factor = isSF3 ? 1 : 2;
   const type = isSF3 ? "compressed" : samplingDataOffsetLSB ? "pcm24" : "pcm16";
-  for (let i = 0; i < sampleHeader.length; i++) {
-    const { start, end } = sampleHeader[i];
+  for (let i2 = 0; i2 < sampleHeader.length; i2++) {
+    const { start, end } = sampleHeader[i2];
     const startOffset = samplingDataOffsetMSB + start * factor;
     const endOffset = samplingDataOffsetMSB + end * factor;
     const sampleData = data.subarray(startOffset, endOffset);
-    result[i] = new AudioData(type, sampleHeader[i], sampleData);
+    result[i2] = new AudioData(type, sampleHeader[i2], sampleData);
   }
   return result;
 }
 
 // ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.7/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
-for (let i = 0; i < GeneratorKeys.length; i++) {
-  generatorKeyToIndex.set(GeneratorKeys[i], i);
+for (let i2 = 0; i2 < GeneratorKeys.length; i2++) {
+  generatorKeyToIndex.set(GeneratorKeys[i2], i2);
 }
 var IndexGeneratorKeys = [
   "instrument",
@@ -1569,8 +1569,8 @@ var presetExcludedKeys = [
   ...SubstitutionGeneratorKeys
 ];
 var presetExcludedIndices = /* @__PURE__ */ new Set();
-for (let i = 0; i < presetExcludedKeys.length; i++) {
-  const key = presetExcludedKeys[i];
+for (let i2 = 0; i2 < presetExcludedKeys.length; i2++) {
+  const key = presetExcludedKeys[i2];
   const index = generatorKeyToIndex.get(key);
   if (index !== void 0)
     presetExcludedIndices.add(index);
@@ -1606,8 +1606,8 @@ var nonValueGeneratorKeysSet = /* @__PURE__ */ new Set([
 function extractValueGeneratorKeys() {
   const result = [];
   const length = GeneratorKeys.length;
-  for (let i = 0; i < length; i++) {
-    const key = GeneratorKeys[i];
+  for (let i2 = 0; i2 < length; i2++) {
+    const key = GeneratorKeys[i2];
     if (key !== void 0 && !nonValueGeneratorKeysSet.has(key)) {
       result.push(key);
     }
@@ -1621,8 +1621,8 @@ function isValueGenerator(key) {
 }
 function createPresetGeneratorObject(generators) {
   const result = {};
-  for (let i = 0; i < generators.length; i++) {
-    const gen = generators[i];
+  for (let i2 = 0; i2 < generators.length; i2++) {
+    const gen = generators[i2];
     const type = gen.type;
     if (type === void 0)
       continue;
@@ -1639,8 +1639,8 @@ function createPresetGeneratorObject(generators) {
 }
 function createInstrumentGeneratorObject(generators) {
   const result = {};
-  for (let i = 0; i < generators.length; i++) {
-    const gen = generators[i];
+  for (let i2 = 0; i2 < generators.length; i2++) {
+    const gen = generators[i2];
     const type = gen.type;
     if (type === void 0)
       continue;
@@ -1651,8 +1651,8 @@ function createInstrumentGeneratorObject(generators) {
       result[key] = gen.value;
     }
   }
-  for (let i = 0; i < fixedGenerators.length; i++) {
-    const [src, dst] = fixedGenerators[i];
+  for (let i2 = 0; i2 < fixedGenerators.length; i2++) {
+    const [src, dst] = fixedGenerators[i2];
     const v = result[src];
     if (v === void 0)
       continue;
@@ -1914,8 +1914,8 @@ var Voice = class {
     this.setDestinationToModulators();
   }
   setControllerToDestinations() {
-    for (let i = 0; i < this.modulators.length; i++) {
-      const modulator = this.modulators[i];
+    for (let i2 = 0; i2 < this.modulators.length; i2++) {
+      const modulator = this.modulators[i2];
       const controllerType = modulator.sourceOper.controllerType;
       const destinationOper = modulator.destinationOper;
       const list = this.controllerToDestinations.get(controllerType);
@@ -1927,8 +1927,8 @@ var Voice = class {
     }
   }
   setDestinationToModulators() {
-    for (let i = 0; i < this.modulators.length; i++) {
-      const modulator = this.modulators[i];
+    for (let i2 = 0; i2 < this.modulators.length; i2++) {
+      const modulator = this.modulators[i2];
       const generatorKey = modulator.destinationOper;
       const list = this.destinationToModulators.get(generatorKey);
       if (list) {
@@ -2052,8 +2052,8 @@ var Voice = class {
       exclusiveClass: this.clamp("exclusiveClass", this.generators)
     };
     const generators = this.transformAllParams(controllerValues);
-    for (let i = 0; i < ValueGeneratorKeys.length; i++) {
-      const generatorKey = ValueGeneratorKeys[i];
+    for (let i2 = 0; i2 < ValueGeneratorKeys.length; i2++) {
+      const generatorKey = ValueGeneratorKeys[i2];
       this.voiceHandlers[generatorKey](params, generators);
     }
     return params;
@@ -2119,10 +2119,10 @@ var SoundFont = class {
   }
   getGeneratorParams(generators, zone, from, to) {
     const result = new Array(to - from);
-    for (let i = from; i < to; i++) {
-      const segmentFrom = zone[i].generatorIndex;
-      const segmentTo = zone[i + 1].generatorIndex;
-      result[i - from] = generators.slice(segmentFrom, segmentTo);
+    for (let i2 = from; i2 < to; i2++) {
+      const segmentFrom = zone[i2].generatorIndex;
+      const segmentTo = zone[i2 + 1].generatorIndex;
+      result[i2 - from] = generators.slice(segmentFrom, segmentTo);
     }
     return result;
   }
@@ -2140,10 +2140,10 @@ var SoundFont = class {
   }
   getModulators(modulators, zone, from, to) {
     const result = new Array(to - from);
-    for (let i = from; i < to; i++) {
-      const segmentFrom = zone[i].modulatorIndex;
-      const segmentTo = zone[i + 1].modulatorIndex;
-      result[i - from] = modulators.slice(segmentFrom, segmentTo);
+    for (let i2 = from; i2 < to; i2++) {
+      const segmentFrom = zone[i2].modulatorIndex;
+      const segmentTo = zone[i2 + 1].modulatorIndex;
+      result[i2 - from] = modulators.slice(segmentFrom, segmentTo);
     }
     return result;
   }
@@ -2164,11 +2164,11 @@ var SoundFont = class {
     const instrumentModulators = this.getInstrumentModulators(instrumentID);
     let globalGenerators;
     let globalModulators = [];
-    for (let i = 0; i < instrumentGenerators.length; i++) {
-      const generators = createInstrumentGeneratorObject(instrumentGenerators[i]);
+    for (let i2 = 0; i2 < instrumentGenerators.length; i2++) {
+      const generators = createInstrumentGeneratorObject(instrumentGenerators[i2]);
       if (generators.sampleID === void 0) {
         globalGenerators = generators;
-        globalModulators = instrumentModulators[i];
+        globalModulators = instrumentModulators[i2];
         continue;
       }
       if (generators.keyRange && !generators.keyRange.in(key))
@@ -2177,10 +2177,10 @@ var SoundFont = class {
         continue;
       if (globalGenerators) {
         const gen = { ...globalGenerators, ...generators };
-        const mod = [...globalModulators, ...instrumentModulators[i]];
+        const mod = [...globalModulators, ...instrumentModulators[i2]];
         return new InstrumentZone(gen, mod);
       } else {
-        return new InstrumentZone(generators, instrumentModulators[i]);
+        return new InstrumentZone(generators, instrumentModulators[i2]);
       }
     }
     return;
@@ -2190,11 +2190,11 @@ var SoundFont = class {
     const presetModulators = this.getPresetModulators(presetHeaderIndex);
     let globalGenerators;
     let globalModulators = [];
-    for (let i = 0; i < presetGenerators.length; i++) {
-      const generators = createPresetGeneratorObject(presetGenerators[i]);
+    for (let i2 = 0; i2 < presetGenerators.length; i2++) {
+      const generators = createPresetGeneratorObject(presetGenerators[i2]);
       if (generators.instrument === void 0) {
         globalGenerators = generators;
-        globalModulators = presetModulators[i];
+        globalModulators = presetModulators[i2];
         continue;
       }
       if (generators.keyRange && !generators.keyRange.in(key))
@@ -2205,11 +2205,11 @@ var SoundFont = class {
       if (instrumentZone) {
         if (globalGenerators) {
           const gen = { ...globalGenerators, ...generators };
-          const mod = [...globalModulators, ...presetModulators[i]];
+          const mod = [...globalModulators, ...presetModulators[i2]];
           const presetZone = new PresetZone(gen, mod);
           return this.createVoice(key, presetZone, instrumentZone);
         } else {
-          const presetZone = new PresetZone(generators, presetModulators[i]);
+          const presetZone = new PresetZone(generators, presetModulators[i2]);
           return this.createVoice(key, presetZone, instrumentZone);
         }
       }
@@ -2220,8 +2220,8 @@ var SoundFont = class {
     const instrumentGenerators = convertToInstrumentGeneratorParams(DefaultInstrumentZone);
     Object.assign(instrumentGenerators, instrumentZone.generators);
     const keys = Object.keys(presetZone.generators);
-    for (let i = 0; i < keys.length; i++) {
-      const key2 = keys[i];
+    for (let i2 = 0; i2 < keys.length; i2++) {
+      const key2 = keys[i2];
       if (isRangeGenerator(key2))
         continue;
       instrumentGenerators[key2] += presetZone.generators[key2];
@@ -2253,8 +2253,8 @@ var SoundFont = class {
   getPresetNames() {
     const bank = {};
     const presetHeaders = this.parsed.presetHeaders;
-    for (let i = 0; i < presetHeaders.length; i++) {
-      const preset = presetHeaders[i];
+    for (let i2 = 0; i2 < presetHeaders.length; i2++) {
+      const preset = presetHeaders[i2];
       if (!bank[preset.bank]) {
         bank[preset.bank] = {};
       }
@@ -2513,8 +2513,8 @@ var MidyGM2 = class extends EventTarget {
     this.soundFonts.push(soundFont);
     const presetHeaders = soundFont.parsed.presetHeaders;
     const soundFontTable = this.soundFontTable;
-    for (let i = 0; i < presetHeaders.length; i++) {
-      const { preset, bank } = presetHeaders[i];
+    for (let i2 = 0; i2 < presetHeaders.length; i2++) {
+      const { preset, bank } = presetHeaders[i2];
       soundFontTable[preset][bank] = index;
     }
   }
@@ -2535,12 +2535,12 @@ var MidyGM2 = class extends EventTarget {
     this.voiceCounter.clear();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        promises[i] = this.toUint8Array(input[i]);
+      for (let i2 = 0; i2 < input.length; i2++) {
+        promises[i2] = this.toUint8Array(input[i2]);
       }
       const uint8Arrays = await Promise.all(promises);
-      for (let i = 0; i < uint8Arrays.length; i++) {
-        const parsed = parse(uint8Arrays[i]);
+      for (let i2 = 0; i2 < uint8Arrays.length; i2++) {
+        const parsed = parse(uint8Arrays[i2]);
         const soundFont = new SoundFont(parsed);
         this.addSoundFont(soundFont);
       }
@@ -2563,8 +2563,8 @@ var MidyGM2 = class extends EventTarget {
   }
   cacheVoiceIds() {
     const { channels, timeline, voiceCounter } = this;
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
+    for (let i2 = 0; i2 < timeline.length; i2++) {
+      const event = timeline[i2];
       switch (event.type) {
         case "noteOn": {
           const audioBufferId = this.getVoiceId(
@@ -2744,9 +2744,9 @@ var MidyGM2 = class extends EventTarget {
   getQueueIndex(second) {
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    for (let i = 0; i < timeline.length; i++) {
-      if (second <= timeline[i].startTime * inverseTempo) {
-        return i;
+    for (let i2 = 0; i2 < timeline.length; i2++) {
+      if (second <= timeline[i2].startTime * inverseTempo) {
+        return i2;
       }
     }
     return 0;
@@ -2757,9 +2757,9 @@ var MidyGM2 = class extends EventTarget {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].scheduledNotes = [];
-      this.resetChannelStates(i);
+    for (let ch = 0; i < channels.length; ch++) {
+      channels[ch].scheduledNotes = [];
+      this.resetChannelStates(ch);
     }
   }
   updateStates(queueIndex, nextQueueIndex) {
@@ -2767,8 +2767,8 @@ var MidyGM2 = class extends EventTarget {
     const inverseTempo = 1 / this.tempo;
     const now = this.audioContext.currentTime;
     if (nextQueueIndex < queueIndex) queueIndex = 0;
-    for (let i = queueIndex; i < nextQueueIndex; i++) {
-      const event = timeline[i];
+    for (let i2 = queueIndex; i2 < nextQueueIndex; i2++) {
+      const event = timeline[i2];
       switch (event.type) {
         case "controller":
           this.setControlChange(
@@ -2897,8 +2897,8 @@ var MidyGM2 = class extends EventTarget {
     const instruments = /* @__PURE__ */ new Set();
     const timeline = [];
     const channels = this.channels;
-    for (let i = 0; i < midi.tracks.length; i++) {
-      const track = midi.tracks[i];
+    for (let i2 = 0; i2 < midi.tracks.length; i2++) {
+      const track = midi.tracks[i2];
       let currentTicks = 0;
       for (let j = 0; j < track.length; j++) {
         const event = track[j];
@@ -2962,8 +2962,8 @@ var MidyGM2 = class extends EventTarget {
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
     let secondsPerBeat = 0.5;
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
+    for (let i2 = 0; i2 < timeline.length; i2++) {
+      const event = timeline[i2];
       const timeFromPrevTempo = this.ticksToSecond(
         event.ticks - prevTempoTicks,
         secondsPerBeat
@@ -3014,8 +3014,8 @@ var MidyGM2 = class extends EventTarget {
   }
   stopNotes(velocity, force, scheduleTime2) {
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      this.stopChannelNotes(i, velocity, force, scheduleTime2);
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.stopChannelNotes(ch, velocity, force, scheduleTime2);
     }
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
@@ -3063,8 +3063,8 @@ var MidyGM2 = class extends EventTarget {
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     let totalTime = 0;
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
+    for (let i2 = 0; i2 < timeline.length; i2++) {
+      const event = timeline[i2];
       if (!totalTimeEventTypes.has(event.type)) continue;
       const t = event.startTime * inverseTempo;
       if (totalTime < t) totalTime = t;
@@ -3079,8 +3079,8 @@ var MidyGM2 = class extends EventTarget {
   async processScheduledNotes(channel2, callback) {
     const scheduledNotes = channel2.scheduledNotes;
     const tasks = [];
-    for (let i = channel2.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
+    for (let i2 = channel2.scheduleIndex; i2 < scheduledNotes.length; i2++) {
+      const note = scheduledNotes[i2];
       if (!note) continue;
       if (note.ending) continue;
       const task = note.ready.then(() => callback(note));
@@ -3091,8 +3091,8 @@ var MidyGM2 = class extends EventTarget {
   async processActiveNotes(channel2, scheduleTime2, callback) {
     const scheduledNotes = channel2.scheduledNotes;
     const tasks = [];
-    for (let i = channel2.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
+    for (let i2 = channel2.scheduleIndex; i2 < scheduledNotes.length; i2++) {
+      const note = scheduledNotes[i2];
       if (!note) continue;
       if (note.ending) continue;
       if (scheduleTime2 < note.startTime) break;
@@ -3112,15 +3112,15 @@ var MidyGM2 = class extends EventTarget {
     const preDecayLength = Math.min(sampleRate * preDecay, length);
     for (let channel2 = 0; channel2 < impulse.numberOfChannels; channel2++) {
       const channelData = impulse.getChannelData(channel2);
-      for (let i = 0; i < preDecayLength; i++) {
-        channelData[i] = Math.random() * 2 - 1;
+      for (let i2 = 0; i2 < preDecayLength; i2++) {
+        channelData[i2] = Math.random() * 2 - 1;
       }
       const attenuationFactor = 1 / (sampleRate * decay);
-      for (let i = preDecayLength; i < length; i++) {
+      for (let i2 = preDecayLength; i2 < length; i2++) {
         const attenuation = Math.exp(
-          -(i - preDecayLength) * attenuationFactor
+          -(i2 - preDecayLength) * attenuationFactor
         );
-        channelData[i] = (Math.random() * 2 - 1) * attenuation;
+        channelData[i2] = (Math.random() * 2 - 1) * attenuation;
       }
     }
     return impulse;
@@ -3162,10 +3162,10 @@ var MidyGM2 = class extends EventTarget {
   generateDistributedArray(center, count, varianceRatio = 0.1, randomness = 0.05) {
     const variance = center * varianceRatio;
     const array = new Array(count);
-    for (let i = 0; i < count; i++) {
-      const fraction = i / (count - 1 || 1);
+    for (let i2 = 0; i2 < count; i2++) {
+      const fraction = i2 / (count - 1 || 1);
       const value = center - variance + fraction * 2 * variance;
-      array[i] = value * (1 - (Math.random() * 2 - 1) * randomness);
+      array[i2] = value * (1 - (Math.random() * 2 - 1) * randomness);
     }
     return array;
   }
@@ -3174,22 +3174,22 @@ var MidyGM2 = class extends EventTarget {
   createSchroederReverb(audioContext, combFeedbacks, combDelays, allpassFeedbacks, allpassDelays) {
     const input = new GainNode(audioContext);
     const mergerGain = new GainNode(audioContext);
-    for (let i = 0; i < combDelays.length; i++) {
+    for (let i2 = 0; i2 < combDelays.length; i2++) {
       const comb = this.createCombFilter(
         audioContext,
         input,
-        combDelays[i],
-        combFeedbacks[i]
+        combDelays[i2],
+        combFeedbacks[i2]
       );
       comb.connect(mergerGain);
     }
     const allpasses = [];
-    for (let i = 0; i < allpassDelays.length; i++) {
+    for (let i2 = 0; i2 < allpassDelays.length; i2++) {
       const allpass = this.createAllpassFilter(
         audioContext,
-        i === 0 ? mergerGain : allpasses.at(-1),
-        allpassDelays[i],
-        allpassFeedbacks[i]
+        i2 === 0 ? mergerGain : allpasses.at(-1),
+        allpassDelays[i2],
+        allpassFeedbacks[i2]
       );
       allpasses.push(allpass);
     }
@@ -3239,8 +3239,8 @@ var MidyGM2 = class extends EventTarget {
     const delayTimes = this.chorus.delayTimes;
     const delayNodes = [];
     const feedbackGains = [];
-    for (let i = 0; i < delayTimes.length; i++) {
-      const delayTime = delayTimes[i];
+    for (let i2 = 0; i2 < delayTimes.length; i2++) {
+      const delayTime = delayTimes[i2];
       const delayNode = new DelayNode(audioContext, {
         maxDelayTime: 0.1,
         // generally, 5ms < delayTime < 50ms
@@ -3331,15 +3331,15 @@ var MidyGM2 = class extends EventTarget {
       [127, 0.01]
     ];
     const logPoints = new Array(points.length);
-    for (let i = 0; i < points.length; i++) {
-      const [x, y2] = points[i];
+    for (let i2 = 0; i2 < points.length; i2++) {
+      const [x, y2] = points[i2];
       if (value === x) return y2;
-      logPoints[i] = [x, Math.log(y2)];
+      logPoints[i2] = [x, Math.log(y2)];
     }
     let startIndex = 0;
-    for (let i = 1; i < logPoints.length; i++) {
-      if (value <= logPoints[i][0]) {
-        startIndex = i - 1;
+    for (let i2 = 1; i2 < logPoints.length; i2++) {
+      if (value <= logPoints[i2][0]) {
+        startIndex = i2 - 1;
         break;
       }
     }
@@ -3750,8 +3750,8 @@ var MidyGM2 = class extends EventTarget {
   }
   setNoteIndex(channel2, index) {
     let allEnds = true;
-    for (let i = channel2.scheduleIndex; i < index; i++) {
-      const note = channel2.scheduledNotes[i];
+    for (let i2 = channel2.scheduleIndex; i2 < index; i2++) {
+      const note = channel2.scheduledNotes[i2];
       if (note && !note.ending) {
         allEnds = false;
         break;
@@ -3761,12 +3761,12 @@ var MidyGM2 = class extends EventTarget {
   }
   findNoteOffIndex(channel2, noteNumber) {
     const scheduledNotes = channel2.scheduledNotes;
-    for (let i = channel2.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
+    for (let i2 = channel2.scheduleIndex; i2 < scheduledNotes.length; i2++) {
+      const note = scheduledNotes[i2];
       if (!note) continue;
       if (note.ending) continue;
       if (note.noteNumber !== noteNumber) continue;
-      return i;
+      return i2;
     }
     return -1;
   }
@@ -3774,10 +3774,10 @@ var MidyGM2 = class extends EventTarget {
     const velocity = halfVelocity * 2;
     const channel2 = this.channels[channelNumber];
     const promises = [];
-    for (let i = 0; i < channel2.sustainNotes.length; i++) {
+    for (let i2 = 0; i2 < channel2.sustainNotes.length; i2++) {
       const promise = this.noteOff(
         channelNumber,
-        channel2.sustainNotes[i].noteNumber,
+        channel2.sustainNotes[i2].noteNumber,
         velocity,
         scheduleTime2
       );
@@ -3792,8 +3792,8 @@ var MidyGM2 = class extends EventTarget {
     const promises = [];
     const sostenutoNotes = channel2.sostenutoNotes;
     channel2.state.sostenutoPedal = 0;
-    for (let i = 0; i < sostenutoNotes.length; i++) {
-      const note = sostenutoNotes[i];
+    for (let i2 = 0; i2 < sostenutoNotes.length; i2++) {
+      const note = sostenutoNotes[i2];
       const promise = this.noteOff(
         channelNumber,
         note.noteNumber,
@@ -4171,8 +4171,8 @@ var MidyGM2 = class extends EventTarget {
     const channel2 = this.channels[channelNumber];
     channel2.state.volumeMSB = value / 127;
     if (channel2.isDrum) {
-      for (let i = 0; i < 128; i++) {
-        this.updateKeyBasedVolume(channel2, i, scheduleTime2);
+      for (let i2 = 0; i2 < 128; i2++) {
+        this.updateKeyBasedVolume(channel2, i2, scheduleTime2);
       }
     } else {
       this.updateChannelVolume(channel2, scheduleTime2);
@@ -4190,8 +4190,8 @@ var MidyGM2 = class extends EventTarget {
     const channel2 = this.channels[channelNumber];
     channel2.state.panMSB = value / 127;
     if (channel2.isDrum) {
-      for (let i = 0; i < 128; i++) {
-        this.updateKeyBasedVolume(channel2, i, scheduleTime2);
+      for (let i2 = 0; i2 < 128; i2++) {
+        this.updateKeyBasedVolume(channel2, i2, scheduleTime2);
       }
     } else {
       this.updateChannelVolume(channel2, scheduleTime2);
@@ -4471,8 +4471,8 @@ var MidyGM2 = class extends EventTarget {
     ];
     const channel2 = this.channels[channelNumber];
     const state = channel2.state;
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
+    for (let i2 = 0; i2 < keys.length; i2++) {
+      const key = keys[i2];
       const { type, defaultValue } = defaultControllerState[key];
       if (128 <= type) {
         this.setControlChange(
@@ -4490,8 +4490,8 @@ var MidyGM2 = class extends EventTarget {
       "rpnMSB",
       "rpnLSB"
     ];
-    for (let i = 0; i < settingTypes.length; i++) {
-      const type = settingTypes[i];
+    for (let i2 = 0; i2 < settingTypes.length; i2++) {
+      const type = settingTypes[i2];
       channel2[type] = this.constructor.channelSettings[type];
     }
   }
@@ -4551,9 +4551,9 @@ var MidyGM2 = class extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime2)) scheduleTime2 = this.audioContext.currentTime;
     this.mode = "GM1";
-    for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime2);
-      const channel2 = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.allSoundOff(ch, 0, scheduleTime2);
+      const channel2 = channels[ch];
       channel2.bankMSB = 0;
       channel2.bankLSB = 0;
       channel2.isDrum = false;
@@ -4565,9 +4565,9 @@ var MidyGM2 = class extends EventTarget {
     const channels = this.channels;
     if (!(0 <= scheduleTime2)) scheduleTime2 = this.audioContext.currentTime;
     this.mode = "GM2";
-    for (let i = 0; i < channels.length; i++) {
-      this.allSoundOff(i, 0, scheduleTime2);
-      const channel2 = channels[i];
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.allSoundOff(ch, 0, scheduleTime2);
+      const channel2 = channels[ch];
       channel2.bankMSB = 121;
       channel2.bankLSB = 0;
       channel2.isDrum = false;
@@ -4638,8 +4638,9 @@ var MidyGM2 = class extends EventTarget {
     const next = value;
     this.masterFineTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel2 = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; i < channels.length; ch++) {
+      const channel2 = this.channels[ch];
       if (channel2.isDrum) continue;
       channel2.detune += detuneChange;
       this.updateChannelDetune(channel2, scheduleTime2);
@@ -4654,8 +4655,9 @@ var MidyGM2 = class extends EventTarget {
     const next = value;
     this.masterCoarseTuning = next;
     const detuneChange = next - prev;
-    for (let i = 0; i < this.channels.length; i++) {
-      const channel2 = this.channels[i];
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel2 = this.channels[ch];
       if (channel2.isDrum) continue;
       channel2.detune += detuneChange;
       this.updateChannelDetune(channel2, scheduleTime2);
@@ -4803,8 +4805,8 @@ var MidyGM2 = class extends EventTarget {
     const feedback = this.getChorusFeedback(value);
     this.chorus.feedback = feedback;
     const chorusEffect = this.chorusEffect;
-    for (let i = 0; i < chorusEffect.feedbackGains.length; i++) {
-      chorusEffect.feedbackGains[i].gain.cancelScheduledValues(scheduleTime2).setValueAtTime(feedback, scheduleTime2);
+    for (let i2 = 0; i2 < chorusEffect.feedbackGains.length; i2++) {
+      chorusEffect.feedbackGains[i2].gain.cancelScheduledValues(scheduleTime2).setValueAtTime(feedback, scheduleTime2);
     }
   }
   getChorusFeedback(value) {
@@ -4853,9 +4855,9 @@ var MidyGM2 = class extends EventTarget {
       return;
     }
     const channelBitmap = this.getChannelBitmap(data);
-    for (let i = 0; i < channelBitmap.length; i++) {
-      if (!channelBitmap[i]) continue;
-      const channel2 = this.channels[i];
+    for (let i2 = 0; i2 < channelBitmap.length; i2++) {
+      if (!channelBitmap[i2]) continue;
+      const channel2 = this.channels[i2];
       if (channel2.isDrum) continue;
       for (let j = 0; j < 12; j++) {
         const centValue = data[j + 7] - 64;
@@ -4917,9 +4919,9 @@ var MidyGM2 = class extends EventTarget {
     const channel2 = this.channels[channelNumber];
     if (channel2.isDrum) return;
     const table = channel2[tableName];
-    for (let i = 5; i < data.length - 1; i += 2) {
-      const pp = data[i];
-      const rr = data[i + 1];
+    for (let i2 = 5; i2 < data.length - 1; i2 += 2) {
+      const pp = data[i2];
+      const rr = data[i2 + 1];
       table[pp] = rr;
     }
     this.processActiveNotes(channel2, scheduleTime2, (note) => {
@@ -4947,9 +4949,9 @@ var MidyGM2 = class extends EventTarget {
     const controllerType = data[5];
     const offset = controllerType * slotSize;
     const table = channel2.controlTable;
-    for (let i = 6; i < data.length; i += 2) {
-      const pp = data[i];
-      const rr = data[i + 1];
+    for (let i2 = 6; i2 < data.length; i2 += 2) {
+      const pp = data[i2];
+      const rr = data[i2 + 1];
       table[offset + pp] = rr;
     }
     this.setControlChangeEffects(channel2, controllerType, scheduleTime2);
@@ -4981,9 +4983,9 @@ var MidyGM2 = class extends EventTarget {
     if (!channel2.isDrum) return;
     const keyNumber = data[5];
     const table = channel2.keyBasedTable;
-    for (let i = 6; i < data.length; i += 2) {
-      const controllerType = data[i];
-      const value = data[i + 1];
+    for (let i2 = 6; i2 < data.length; i2 += 2) {
+      const controllerType = data[i2];
+      const value = data[i2 + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
       const handler = this.keyBasedControllerHandlers[controllerType];
