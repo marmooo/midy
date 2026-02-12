@@ -24,9 +24,9 @@ This library provides several files depending on the implementation level.
 - [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
 - [Timidy](https://marmooo.github.io/timidy/) - Timidity++ style MIDI player
 - [4x4pad](https://marmooo.github.io/4x4pad/) - 4x4 grid MPE MIDI controller
-- [celltone](https://marmooo.github.io/celltone) - Grid MPE MIDI controller with
+- [Celltone](https://marmooo.github.io/celltone/) - Grid MPE MIDI controller with
   Janko-Piano layout
-- [isotone](https://marmooo.github.io/isotone) - Grid MPE MIDI controller
+- [Isotone](https://marmooo.github.io/isotone/) - Grid MPE MIDI controller
   optimized for chords
 
 ## Support Status
