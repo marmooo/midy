@@ -2824,12 +2824,12 @@ export class Midy extends EventTarget {
     const lowerEnd = this.lowerMPEMembers;
     const upperStart = 16 - this.upperMPEMembers;
     const upperEnd = 14;
-    const { channels, lowerMPEMembers, upperMPEMembers } = this;
+    const { channels, lowerMPEMembers, upperMPEMembers, mpeEnabled } = this;
     for (let ch = 0; ch < 16; ch++) {
       const isLower = lowerMPEMembers && lowerStart <= ch && ch <= lowerEnd;
       const isUpper = upperMPEMembers && upperStart <= ch && ch <= upperEnd;
-      channels[i].isMPEMember = this.mpeEnabled && (isLower || isUpper);
-      channels[i].isMPEManager = this.mpeEnabled && (ch === 0 || ch === 15);
+      channels[i].isMPEMember = mpeEnabled && (isLower || isUpper);
+      channels[i].isMPEManager = mpeEnabled && (ch === 0 || ch === 15);
     }
   }
 
