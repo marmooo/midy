@@ -2828,8 +2828,8 @@ export class Midy extends EventTarget {
     for (let ch = 0; ch < 16; ch++) {
       const isLower = lowerMPEMembers && lowerStart <= ch && ch <= lowerEnd;
       const isUpper = upperMPEMembers && upperStart <= ch && ch <= upperEnd;
-      channels[i].isMPEMember = mpeEnabled && (isLower || isUpper);
-      channels[i].isMPEManager = mpeEnabled && (ch === 0 || ch === 15);
+      channels[ch].isMPEMember = mpeEnabled && (isLower || isUpper);
+      channels[ch].isMPEManager = mpeEnabled && (ch === 0 || ch === 15);
     }
   }
 
