@@ -2266,6 +2266,7 @@ export class Midy extends EventTarget {
   }
 
   setControlChange(channelNumber, controllerType, value, scheduleTime) {
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.applyToMPEChannels(channelNumber, (ch) => {
       this.applyControlChange(ch, controllerType, value, scheduleTime);
     });

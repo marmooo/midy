@@ -1326,6 +1326,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   setControlChange(channelNumber, controllerType, value, scheduleTime) {
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const handler = this.controlChangeHandlers[controllerType];
     if (handler) {
       handler.call(this, channelNumber, value, scheduleTime);
