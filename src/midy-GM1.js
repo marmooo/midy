@@ -409,7 +409,7 @@ export class MidyGM1 extends EventTarget {
     const channels = this.channels;
     for (let ch = 0; ch < channels.length; ch++) {
       channels[ch].scheduledNotes = [];
-      this.resetChannelStates(i);
+      this.resetChannelStates(ch);
     }
   }
 
