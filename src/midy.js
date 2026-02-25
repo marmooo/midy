@@ -165,7 +165,20 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
+const effectParameters = [
+  2400 / 64, // cent
+  9600 / 64, // cent
+  1 / 64,
+  600 / 127, // cent
+  2400 / 127, // cent
+  1 / 127,
+];
+const pressureBaselines = new Int8Array([64, 64, 0, 0, 0, 0]);
 const defaultPressureValues = new Int8Array([64, 64, 64, 0, 0, 0]);
+const defaultControlValues = new Int8Array([
+  ...[-1, -1, -1, -1, -1, -1],
+  ...defaultPressureValues,
+]);
 
 function cbToRatio(cb) {
   return Math.pow(10, cb / 200);
@@ -409,7 +422,7 @@ export class Midy extends EventTarget {
   }
 
   resetChannelTable(channel) {
-    channel.controlTable.fill(-1);
+    channel.controlTable.set(defaultControlValues);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.set(defaultPressureValues);
     channel.polyphonicKeyPressureTable.set(defaultPressureValues);
@@ -427,7 +440,7 @@ export class Midy extends EventTarget {
         scheduledNotes: [],
         sustainNotes: [],
         sostenutoNotes: [],
-        controlTable: this.initControlTable(),
+        controlTable: new Int8Array(defaultControlValues),
         scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
         channelPressureTable: new Int8Array(defaultPressureValues),
         polyphonicKeyPressureTable: new Int8Array(defaultPressureValues),
@@ -829,8 +842,8 @@ export class Midy extends EventTarget {
 
   stopNotes(velocity, force, scheduleTime) {
     const channels = this.channels;
-    for (let i = 0; i < channels.length; i++) {
-      this.stopChannelNotes(i, velocity, force, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      this.stopChannelNotes(ch, velocity, force, scheduleTime);
     }
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
@@ -1150,15 +1163,8 @@ export class Midy extends EventTarget {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const channelPressureRaw = channel.channelPressureTable[0];
-    if (0 <= channelPressureRaw) {
-      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
-      const channelPressure = channelPressureDepth *
-        channel.state.channelPressure;
-      return tuning + pitch + channelPressure;
-    } else {
-      return tuning + pitch;
-    }
+    const effect = this.calcChannelEffectValue(channel, destination);
+    return tuning + pitch + effect;
   }
 
   updateChannelDetune(channel, scheduleTime) {
@@ -1178,7 +1184,7 @@ export class Midy extends EventTarget {
   calcNoteDetune(channel, note) {
     const noteDetune = note.voiceParams.detune +
       this.calcScaleOctaveTuning(channel, note);
-    const pitchControl = this.getPitchControl(channel, note);
+    const pitchControl = this.getNotePitchControl(channel, note);
     return channel.detune + noteDetune + pitchControl;
   }
 
@@ -1636,6 +1642,7 @@ export class Midy extends EventTarget {
     scheduledNotes.push(note);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return;
     let bank = channel.isDrum ? 128 : channel.bankLSB;
     if (bankTable[bank] === undefined) {
       if (channel.isDrum) return;
@@ -1897,11 +1904,10 @@ export class Midy extends EventTarget {
     const channel = this.channels[channelNumber];
     if (channel.isMPEMember) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const table = channel.polyphonicKeyPressureTable;
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setEffects(channel, note, table, scheduleTime);
+        this.setEffects(channel, note, scheduleTime);
       }
     });
     this.applyVoiceParams(channel, 10, scheduleTime);
@@ -1930,26 +1936,21 @@ export class Midy extends EventTarget {
   }
 
   setChannelPressure(channelNumber, value, scheduleTime) {
+    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     this.applyToMPEChannels(channelNumber, (ch) => {
       this.applyChannelPressure(ch, value, scheduleTime);
     });
   }
 
   applyChannelPressure(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
-    const prev = channel.state.channelPressure;
-    const next = value / 127;
-    channel.state.channelPressure = next;
-    const channelPressureRaw = channel.channelPressureTable[0];
-    if (0 <= channelPressureRaw) {
-      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
-      channel.detune += channelPressureDepth * (next - prev);
-    }
-    const table = channel.channelPressureTable;
+    const prev = this.calcChannelPressureEffectValue(channel, 0);
+    channel.state.channelPressure = value / 127;
+    const next = this.calcChannelPressureEffectValue(channel, 0);
+    channel.detune += next - prev;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, scheduleTime);
     });
     this.applyVoiceParams(channel, 13, scheduleTime);
   }
@@ -2278,7 +2279,9 @@ export class Midy extends EventTarget {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.setControlChangeEffects(channel, controllerType, scheduleTime);
+      this.processActiveNotes(channel, scheduleTime, (note) => {
+        this.setEffects(channel, note, scheduleTime);
+      });
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -2413,7 +2416,8 @@ export class Midy extends EventTarget {
     const volume = volumeMSB + volumeLSB / 128;
     const expression = expressionMSB + expressionLSB / 128;
     const pan = panMSB + panLSB / 128;
-    const gain = volume * expression;
+    const effect = this.getChannelAmplitudeControl(channel);
+    const gain = volume * expression * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(pan);
     channel.gainL.gain
       .cancelScheduledValues(scheduleTime)
@@ -3393,96 +3397,102 @@ export class Midy extends EventTarget {
     }
   }
 
+  calcEffectValue(channel, note, destination) {
+    return this.calcChannelEffectValue(channel, destination) +
+      this.calcNoteEffectValue(channel, note, destination);
+  }
+
+  calcChannelEffectValue(channel, destination) {
+    return this.calcControlChangeEffectValue(channel, destination) +
+      this.calcChannelPressureEffectValue(channel, destination);
+  }
+
+  calcControlChangeEffectValue(channel, destination) {
+    const controlType = channel.controlTable[destination];
+    if (controlType < 0) return 0;
+    const pressure = channel.state.array[controlType];
+    if (pressure <= 0) return 0;
+    const baseline = pressureBaselines[destination];
+    const tableValue = channel.controlTable[destination + 6];
+    const value = (tableValue - baseline) * pressure;
+    return value * effectParameters[destination];
+  }
+
+  calcChannelPressureEffectValue(channel, destination) {
+    const pressure = channel.state.channelPressure;
+    if (pressure <= 0) return 0;
+    const baseline = pressureBaselines[destination];
+    const tableValue = channel.channelPressureTable[destination];
+    const value = (tableValue - baseline) * pressure;
+    return value * effectParameters[destination];
+  }
+
+  calcNoteEffectValue(channel, note, destination) {
+    const pressure = note.pressure;
+    if (pressure <= 0) return 0;
+    const baseline = pressureBaselines[destination];
+    const tableValue = channel.polyphonicKeyPressureTable[destination];
+    const value = (tableValue - baseline) * pressure / 127;
+    return value * effectParameters[destination];
+  }
+
+  getChannelPitchControl(channel, note) {
+    return this.calcChannelEffectValue(channel, note, 0);
+  }
+
+  getNotePitchControl(channel, note) {
+    return this.calcNoteEffectValue(channel, note, 0);
+  }
+
   getPitchControl(channel, note) {
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[0];
-    if (polyphonicKeyPressureRaw <= 0) return 0;
-    const polyphonicKeyPressure = (polyphonicKeyPressureRaw - 64) *
-      note.pressure;
-    return polyphonicKeyPressure * note.pressure / 37.5; // 2400 / 64;
+    return this.calcChannelEffectValue(channel, note, 0);
   }
 
   getFilterCutoffControl(channel, note) {
-    const channelPressureRaw = channel.channelPressureTable[1];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? (channelPressureRaw - 64) * channel.state.channelPressure
-      : 0;
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[1];
-    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? (polyphonicKeyPressureRaw - 64) * note.pressure
-      : 0;
-    return (channelPressure + polyphonicKeyPressure) * 15;
+    return this.calcEffectValue(channel, note, 1);
+  }
+
+  getChannelAmplitudeControl(channel) {
+    return this.calcChannelEffectValue(channel, 2);
+  }
+
+  // TODO
+  getNoteAmplitudeControl(channel, note) {
+    return this.calcNoteEffectValue(channel, note, 2);
   }
 
   getAmplitudeControl(channel, note) {
-    const channelPressureRaw = channel.channelPressureTable[2];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channel.state.channelPressure * 127 / channelPressureRaw
-      : 0;
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[2];
-    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? note.pressure / polyphonicKeyPressureRaw
-      : 0;
-    return channelPressure + polyphonicKeyPressure;
+    return this.calcEffectValue(channel, note, 2);
   }
 
   getLFOPitchDepth(channel, note) {
-    const channelPressureRaw = channel.channelPressureTable[3];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[3];
-    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? polyphonicKeyPressureRaw * note.pressure
-      : 0;
-    return (channelPressure + polyphonicKeyPressure) / 254 * 600;
+    return this.calcEffectValue(channel, note, 3);
   }
 
   getLFOFilterDepth(channel, note) {
-    const channelPressureRaw = channel.channelPressureTable[4];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[4];
-    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? polyphonicKeyPressureRaw * note.pressure
-      : 0;
-    return (channelPressure + polyphonicKeyPressure) / 254 * 2400;
+    return this.calcEffectValue(channel, note, 4);
   }
 
   getLFOAmplitudeDepth(channel, note) {
-    const channelPressureRaw = channel.channelPressureTable[5];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    const polyphonicKeyPressureRaw = channel.polyphonicKeyPressureTable[5];
-    const polyphonicKeyPressure = (0 <= polyphonicKeyPressureRaw)
-      ? polyphonicKeyPressureRaw * note.pressure
-      : 0;
-    return (channelPressure + polyphonicKeyPressure) / 254;
+    return this.calcEffectValue(channel, note, 5);
   }
 
-  setEffects(channel, note, table, scheduleTime) {
-    if (0 < table[0]) {
-      if (this.isPortamento(channel, note)) {
-        this.setPortamentoDetune(channel, note, scheduleTime);
-      } else {
-        this.setDetune(channel, note, scheduleTime);
-      }
+  setEffects(channel, note, scheduleTime) {
+    if (this.isPortamento(channel, note)) {
+      this.setPortamentoDetune(channel, note, scheduleTime);
+    } else {
+      this.setDetune(channel, note, scheduleTime);
     }
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      if (0 < table[1]) {
-        this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-      }
-      if (0 < table[2]) {
-        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-      }
+      this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+      this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
     } else {
-      if (0 < table[1]) this.setFilterEnvelope(channel, note, scheduleTime);
-      if (0 < table[2]) this.setVolumeEnvelope(channel, note, scheduleTime);
+      this.setFilterEnvelope(channel, note, scheduleTime);
+      this.setVolumeEnvelope(channel, note, scheduleTime);
     }
-    if (0 < table[3]) this.setModLfoToPitch(channel, note, scheduleTime);
-    if (0 < table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
-    if (0 < table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
+    this.setModLfoToPitch(channel, note, scheduleTime);
+    this.setModLfoToFilterFc(channel, note, scheduleTime);
+    this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {
@@ -3496,22 +3506,7 @@ export class Midy extends EventTarget {
       table[pp] = rr;
     }
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
-    });
-  }
-
-  initControlTable() {
-    const ccCount = 128;
-    const slotSize = 6;
-    return new Int8Array(ccCount * slotSize).fill(-1);
-  }
-
-  setControlChangeEffects(channel, controllerType, scheduleTime) {
-    const slotSize = 6;
-    const offset = controllerType * slotSize;
-    const table = channel.controlTable.subarray(offset, offset + slotSize);
-    this.processScheduledNotes(channel, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, scheduleTime);
     });
   }
 
@@ -3519,16 +3514,18 @@ export class Midy extends EventTarget {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
-    const slotSize = 6;
+    table.set(defaultControlValues);
     const controllerType = data[5];
-    const offset = controllerType * slotSize;
     const table = channel.controlTable;
     for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
-      table[offset + pp] = rr;
+      table[pp] = controllerType;
+      table[pp + 6] = rr;
     }
-    this.setControlChangeEffects(channel, controllerType, scheduleTime);
+    this.processScheduledNotes(channel, (note) => {
+      this.setEffects(channel, note, scheduleTime);
+    });
   }
 
   getKeyBasedValue(channel, keyNumber, controllerType) {

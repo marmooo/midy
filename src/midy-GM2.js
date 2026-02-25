@@ -148,7 +148,20 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
+const effectParameters = [
+  2400 / 64, // cent
+  9600 / 64, // cent
+  1 / 64,
+  600 / 127, // cent
+  2400 / 127, // cent
+  1 / 127,
+];
+const pressureBaselines = new Int8Array([64, 64, 0, 0, 0, 0]);
 const defaultPressureValues = new Int8Array([64, 64, 64, 0, 0, 0]);
+const defaultControlValues = new Int8Array([
+  ...[-1, -1, -1, -1, -1, -1],
+  ...defaultPressureValues,
+]);
 
 function cbToRatio(cb) {
   return Math.pow(10, cb / 200);
@@ -381,7 +394,7 @@ export class MidyGM2 extends EventTarget {
   }
 
   resetChannelTable(channel) {
-    channel.controlTable.fill(-1);
+    channel.controlTable.set(defaultControlValues);
     channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
     channel.channelPressureTable.set(defaultPressureValues);
     channel.keyBasedTable.fill(-1);
@@ -398,7 +411,7 @@ export class MidyGM2 extends EventTarget {
         scheduledNotes: [],
         sustainNotes: [],
         sostenutoNotes: [],
-        controlTable: this.initControlTable(),
+        controlTable: new Int8Array(defaultControlValues),
         scaleOctaveTuningTable: new Int8Array(12), // [-64, 63] cent
         channelPressureTable: new Int8Array(defaultPressureValues),
 
@@ -516,7 +529,7 @@ export class MidyGM2 extends EventTarget {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     const channels = this.channels;
-    for (let ch = 0; i < channels.length; ch++) {
+    for (let ch = 0; ch < channels.length; ch++) {
       channels[ch].scheduledNotes = [];
       this.resetChannelStates(ch);
     }
@@ -1092,15 +1105,8 @@ export class MidyGM2 extends EventTarget {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const channelPressureRaw = channel.channelPressureTable[0];
-    if (0 <= channelPressureRaw) {
-      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
-      const channelPressure = channelPressureDepth *
-        channel.state.channelPressure;
-      return tuning + pitch + channelPressure;
-    } else {
-      return tuning + pitch;
-    }
+    const effect = this.calcChannelEffectValue(channel, destination);
+    return tuning + pitch + effect;
   }
 
   updateChannelDetune(channel, scheduleTime) {
@@ -1120,8 +1126,7 @@ export class MidyGM2 extends EventTarget {
   calcNoteDetune(channel, note) {
     const noteDetune = note.voiceParams.detune +
       this.calcScaleOctaveTuning(channel, note);
-    const pitchControl = this.getPitchControl(channel, note);
-    return channel.detune + noteDetune + pitchControl;
+    return channel.detune + noteDetune;
   }
 
   getPortamentoTime(channel, note) {
@@ -1544,7 +1549,6 @@ export class MidyGM2 extends EventTarget {
     scheduledNotes.push(note);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return;
     let bank = channel.isDrum ? 128 : channel.bankLSB;
     if (bankTable[bank] === undefined) {
       if (channel.isDrum) return;
@@ -1755,17 +1759,12 @@ export class MidyGM2 extends EventTarget {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
-    const prev = channel.state.channelPressure;
-    const next = value / 127;
-    channel.state.channelPressure = next;
-    const channelPressureRaw = channel.channelPressureTable[0];
-    if (0 <= channelPressureRaw) {
-      const channelPressureDepth = (channelPressureRaw - 64) / 37.5; // 2400 / 64;
-      channel.detune += channelPressureDepth * (next - prev);
-    }
-    const table = channel.channelPressureTable;
+    const prev = this.calcChannelPressureEffectValue(channel, 0);
+    channel.state.channelPressure = value / 127;
+    const next = this.calcChannelPressureEffectValue(channel, 0);
+    channel.detune += next - prev;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, scheduleTime);
     });
     this.applyVoiceParams(channel, 13, scheduleTime);
   }
@@ -2056,7 +2055,9 @@ export class MidyGM2 extends EventTarget {
       handler.call(this, channelNumber, value, scheduleTime);
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
-      this.setControlChangeEffects(channel, controllerType, scheduleTime);
+      this.processActiveNotes(channel, scheduleTime, (note) => {
+        this.setEffects(channel, note, scheduleTime);
+      });
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -2165,7 +2166,8 @@ export class MidyGM2 extends EventTarget {
 
   updateChannelVolume(channel, scheduleTime) {
     const state = channel.state;
-    const gain = state.volumeMSB * state.expressionMSB;
+    const effect = this.getChannelAmplitudeControl(channel);
+    const gain = state.volumeMSB * state.expressionMSB * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     channel.gainL.gain
       .cancelScheduledValues(scheduleTime)
@@ -2644,8 +2646,8 @@ export class MidyGM2 extends EventTarget {
     this.masterFineTuning = next;
     const detuneChange = next - prev;
     const channels = this.channels;
-    for (let ch = 0; i < channels.length; ch++) {
-      const channel = this.channels[ch];
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
@@ -2664,7 +2666,7 @@ export class MidyGM2 extends EventTarget {
     const detuneChange = next - prev;
     const channels = this.channels;
     for (let ch = 0; ch < channels.length; ch++) {
-      const channel = this.channels[ch];
+      const channel = channels[ch];
       if (channel.isDrum) continue;
       channel.detune += detuneChange;
       this.updateChannelDetune(channel, scheduleTime);
@@ -2902,68 +2904,79 @@ export class MidyGM2 extends EventTarget {
     }
   }
 
-  getFilterCutoffControl(channel) {
-    const channelPressureRaw = channel.channelPressureTable[1];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? (channelPressureRaw - 64) * channel.state.channelPressure
-      : 0;
-    return channelPressure * 15;
+  calcEffectValue(channel, destination) {
+    return this.calcChannelEffectValue(channel, destination);
   }
 
-  getAmplitudeControl(channel) {
-    const channelPressureRaw = channel.channelPressureTable[2];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channel.state.channelPressure * 127 / channelPressureRaw
-      : 0;
-    return channelPressure;
+  calcChannelEffectValue(channel, destination) {
+    return this.calcControlChangeEffectValue(channel, destination) +
+      this.calcChannelPressureEffectValue(channel, destination);
+  }
+
+  calcControlChangeEffectValue(channel, destination) {
+    const controlType = channel.controlTable[destination];
+    if (controlType < 0) return 0;
+    const pressure = channel.state.array[controlType];
+    if (pressure <= 0) return 0;
+    const baseline = pressureBaselines[destination];
+    const tableValue = channel.controlTable[destination + 6];
+    const value = (tableValue - baseline) * pressure;
+    return value * effectParameters[destination];
+  }
+
+  calcChannelPressureEffectValue(channel, destination) {
+    const pressure = channel.state.channelPressure;
+    if (pressure <= 0) return 0;
+    const baseline = pressureBaselines[destination];
+    const tableValue = channel.channelPressureTable[destination];
+    const value = (tableValue - baseline) * pressure;
+    return value * effectParameters[destination];
+  }
+
+  getChannelPitchControl(channel, note) {
+    return this.calcChannelEffectValue(channel, note, 0);
+  }
+
+  getPitchControl(channel, note) {
+    return this.calcChannelEffectValue(channel, note, 0);
+  }
+
+  getFilterCutoffControl(channel) {
+    return this.calcEffectValue(channel, 1);
+  }
+
+  getChannelAmplitudeControl(channel) {
+    return this.calcChannelEffectValue(channel, 2);
   }
 
   getLFOPitchDepth(channel) {
-    const channelPressureRaw = channel.channelPressureTable[3];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    return channelPressure / 127 * 600;
+    return this.calcEffectValue(channel, 3);
   }
 
   getLFOFilterDepth(channel) {
-    const channelPressureRaw = channel.channelPressureTable[4];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    return channelPressure / 127 * 2400;
+    return this.calcEffectValue(channel, 4);
   }
 
   getLFOAmplitudeDepth(channel) {
-    const channelPressureRaw = channel.channelPressureTable[5];
-    const channelPressure = (0 <= channelPressureRaw)
-      ? channelPressureRaw * channel.state.channelPressure
-      : 0;
-    return channelPressure / 127;
+    return this.calcEffectValue(channel, 5);
   }
 
-  setEffects(channel, note, table, scheduleTime) {
-    if (0 < table[0]) {
-      if (this.isPortamento(channel, note)) {
-        this.setPortamentoDetune(channel, note, scheduleTime);
-      } else {
-        this.setDetune(channel, note, scheduleTime);
-      }
+  setEffects(channel, note, scheduleTime) {
+    if (this.isPortamento(channel, note)) {
+      this.setPortamentoDetune(channel, note, scheduleTime);
+    } else {
+      this.setDetune(channel, note, scheduleTime);
     }
     if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      if (0 < table[1]) {
-        this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-      }
-      if (0 < table[2]) {
-        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-      }
+      this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+      this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
     } else {
-      if (0 < table[1]) this.setFilterEnvelope(channel, note, scheduleTime);
-      if (0 < table[2]) this.setVolumeEnvelope(channel, note, scheduleTime);
+      this.setFilterEnvelope(channel, note, scheduleTime);
+      this.setVolumeEnvelope(channel, note, scheduleTime);
     }
-    if (0 < table[3]) this.setModLfoToPitch(channel, note, scheduleTime);
-    if (0 < table[4]) this.setModLfoToFilterFc(channel, note, scheduleTime);
-    if (0 < table[5]) this.setModLfoToVolume(channel, note, scheduleTime);
+    this.setModLfoToPitch(channel, note, scheduleTime);
+    this.setModLfoToFilterFc(channel, note, scheduleTime);
+    this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {
@@ -2977,22 +2990,7 @@ export class MidyGM2 extends EventTarget {
       table[pp] = rr;
     }
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
-    });
-  }
-
-  initControlTable() {
-    const ccCount = 128;
-    const slotSize = 6;
-    return new Int8Array(ccCount * slotSize).fill(-1);
-  }
-
-  setControlChangeEffects(channel, controllerType, scheduleTime) {
-    const slotSize = 6;
-    const offset = controllerType * slotSize;
-    const table = channel.controlTable.subarray(offset, offset + slotSize);
-    this.processScheduledNotes(channel, (note) => {
-      this.setEffects(channel, note, table, scheduleTime);
+      this.setEffects(channel, note, scheduleTime);
     });
   }
 
@@ -3000,16 +2998,18 @@ export class MidyGM2 extends EventTarget {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
-    const slotSize = 6;
+    table.set(defaultControlValues);
     const controllerType = data[5];
-    const offset = controllerType * slotSize;
     const table = channel.controlTable;
     for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
-      table[offset + pp] = rr;
+      table[pp] = controllerType;
+      table[pp + 6] = rr;
     }
-    this.setControlChangeEffects(channel, controllerType, scheduleTime);
+    this.processScheduledNotes(channel, (note) => {
+      this.setEffects(channel, note, scheduleTime);
+    });
   }
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
