@@ -1,5 +1,9 @@
 import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
+import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
+
+const decoder = new OggVorbisDecoderWebWorker();
+await decoder.ready;
 
 class Note {
   voice;
@@ -223,6 +227,8 @@ export class Midy extends EventTarget {
   voiceCounter = new Map();
   voiceCache = new Map();
   realtimeVoiceCache = new Map();
+  decodeMethod = "wasm-audio-decoders";
+  decoderQueue = Promise.resolve();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -452,15 +458,66 @@ export class Midy extends EventTarget {
     return channels;
   }
 
+  decodeOggVorbis(sample) {
+    let resolveBuffer, rejectBuffer;
+    const bufferPromise = new Promise((resolve, reject) => {
+      resolveBuffer = resolve;
+      rejectBuffer = reject;
+    });
+    this.decoderQueue = this.decoderQueue.then(async () => {
+      try {
+        const slice = sample.data.slice();
+        const {
+          channelData,
+          sampleRate,
+          errors,
+        } = await decoder.decodeFile(slice);
+        if (errors.length > 0) throw new Error(errors);
+        const audioBuffer = new AudioBuffer({
+          numberOfChannels: channelData.length,
+          length: channelData[0].length,
+          sampleRate,
+        });
+        for (let ch = 0; ch < channelData.length; ch++) {
+          audioBuffer.getChannelData(ch).set(channelData[ch]);
+        }
+        resolveBuffer(audioBuffer);
+      } catch (err) {
+        rejectBuffer(err);
+      }
+    });
+    return bufferPromise;
+  }
+
   async createAudioBuffer(voiceParams) {
-    const { sample, start, end } = voiceParams;
-    const sampleEnd = sample.data.length + end;
-    const audioBuffer = await sample.toAudioBuffer(
-      this.audioContext,
-      start,
-      sampleEnd,
-    );
-    return audioBuffer;
+    const sample = voiceParams.sample;
+    if (sample.type === "compressed") {
+      switch (this.decodeMethod) {
+        case "decodeAudioData": {
+          // https://jakearchibald.com/2016/sounds-fun/
+          // https://github.com/WebAudio/web-audio-api/issues/1091
+          //   decodeAudioData() has priming issues on Safari
+          const arrayBuffer = sample.data.slice().buffer;
+          return await this.audioContext.decodeAudioData(arrayBuffer);
+        }
+        case "wasm-audio-decoders":
+          return await this.decodeOggVorbis(sample);
+        default:
+          throw new Error(`Unknown decodeMethod: ${this.decodeMethod}`);
+      }
+    } else {
+      const data = sample.data;
+      const end = data.length + voiceParams.end;
+      const subarray = data.subarray(voiceParams.start, end);
+      const pcm = sample.decodePCM(subarray);
+      const audioBuffer = new AudioBuffer({
+        numberOfChannels: 1,
+        length: pcm.length,
+        sampleRate: sample.sampleHeader.sampleRate,
+      });
+      audioBuffer.getChannelData(0).set(pcm);
+      return audioBuffer;
+    }
   }
 
   isLoopDrum(channel, noteNumber) {
