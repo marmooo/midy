@@ -288,6 +288,7 @@ export class Midy extends EventTarget {
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
+    this.effectHandlers = this.createEffectHandlers();
     this.channels = this.createChannels(audioContext);
     this.reverbEffect = this.createReverbEffect(audioContext);
     this.chorusEffect = this.createChorusEffect(audioContext);
@@ -1964,7 +1965,7 @@ export class Midy extends EventTarget {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setEffects(channel, note, scheduleTime);
+        this.setPressureEffects(channel, note, scheduleTime);
       }
     });
     this.applyVoiceParams(channel, 10, scheduleTime);
@@ -2007,7 +2008,7 @@ export class Midy extends EventTarget {
     const next = this.calcChannelPressureEffectValue(channel, 0);
     channel.detune += next - prev;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, scheduleTime);
+      this.setPressureEffects(channel, note, scheduleTime);
     });
     this.applyVoiceParams(channel, 13, scheduleTime);
   }
@@ -2337,7 +2338,7 @@ export class Midy extends EventTarget {
       const channel = this.channels[channelNumber];
       this.applyVoiceParams(channel, controllerType + 128, scheduleTime);
       this.processActiveNotes(channel, scheduleTime, (note) => {
-        this.setEffects(channel, note, scheduleTime);
+        this.setControlChangeEffects(channel, note, scheduleTime);
       });
     } else {
       console.warn(
@@ -3534,22 +3535,57 @@ export class Midy extends EventTarget {
     return this.calcEffectValue(channel, note, 5);
   }
 
-  setEffects(channel, note, scheduleTime) {
-    if (this.isPortamento(channel, note)) {
-      this.setPortamentoDetune(channel, note, scheduleTime);
-    } else {
-      this.setDetune(channel, note, scheduleTime);
+  createEffectHandlers() {
+    const handlers = new Array(6);
+    handlers[0] = (channel, note, scheduleTime) => {
+      if (this.isPortamento(channel, note)) {
+        this.setPortamentoDetune(channel, note, scheduleTime);
+      } else {
+        this.setDetune(channel, note, scheduleTime);
+      }
+    };
+    handlers[1] = (channel, note, scheduleTime) => {
+      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+        this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+      } else {
+        this.setFilterEnvelope(channel, note, scheduleTime);
+      }
+    };
+    handlers[2] = (channel, note, scheduleTime) => {
+      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
+      } else {
+        this.setVolumeEnvelope(channel, note, scheduleTime);
+      }
+    };
+    handlers[3] = (channel, note, scheduleTime) =>
+      this.setModLfoToPitch(channel, note, scheduleTime);
+    handlers[4] = (channel, note, scheduleTime) =>
+      this.setModLfoToFilterFc(channel, note, scheduleTime);
+    handlers[5] = (channel, note, scheduleTime) =>
+      this.setModLfoToVolume(channel, note, scheduleTime);
+    return handlers;
+  }
+
+  setControlChangeEffects(channel, note, scheduleTime) {
+    const handlers = this.effectHandlers;
+    for (let i = 0; i < handlers.length; i++) {
+      const baseline = pressureBaselines[i];
+      const tableValue = channel.controlTable[i + 6];
+      if (baseline === tableValue) continue;
+      handlers[i](channel, note, scheduleTime);
     }
-    if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-      this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-      this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-    } else {
-      this.setFilterEnvelope(channel, note, scheduleTime);
-      this.setVolumeEnvelope(channel, note, scheduleTime);
+  }
+
+  setPressureEffects(channel, note, tableName, scheduleTime) {
+    const handlers = this.effectHandlers;
+    const table = channel[tableName];
+    for (let i = 0; i < handlers.length; i++) {
+      const baseline = pressureBaselines[i];
+      const tableValue = table[i];
+      if (baseline === tableValue) continue;
+      handlers[i](channel, note, scheduleTime);
     }
-    this.setModLfoToPitch(channel, note, scheduleTime);
-    this.setModLfoToFilterFc(channel, note, scheduleTime);
-    this.setModLfoToVolume(channel, note, scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {
@@ -3561,10 +3597,11 @@ export class Midy extends EventTarget {
       const pp = data[i];
       const rr = data[i + 1];
       table[pp] = rr;
+      const handler = this.effectHandlers[pp];
+      this.processActiveNotes(channel, scheduleTime, (note) => {
+        if (handler) handler(channel, note, scheduleTime);
+      });
     }
-    this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setEffects(channel, note, scheduleTime);
-    });
   }
 
   handleControlChangeSysEx(data, scheduleTime) {
@@ -3579,10 +3616,11 @@ export class Midy extends EventTarget {
       const rr = data[i + 1];
       table[pp] = controllerType;
       table[pp + 6] = rr;
+      const handler = this.effectHandlers[pp];
+      this.processActiveNotes(channel, scheduleTime, (note) => {
+        if (handler) handler(channel, note, scheduleTime);
+      });
     }
-    this.processScheduledNotes(channel, (note) => {
-      this.setEffects(channel, note, scheduleTime);
-    });
   }
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
