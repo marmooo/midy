@@ -13,13 +13,13 @@ class Note {
   ending = false;
   bufferSource;
   filterNode;
-  filterDepth;
   volumeEnvelopeNode;
-  volumeDepth;
-  modulationLFO;
-  modulationDepth;
-  vibratoLFO;
-  vibratoDepth;
+  modLfo; // CC#1 modulation LFO
+  modLfoToPitch;
+  modLfoToFilterFc;
+  modLfoToVolume;
+  vibLfo; // vibrato LFO
+  vibLfoToPitch;
   reverbSend;
   chorusSend;
   portamentoNoteNumber = -1;
@@ -1390,24 +1390,24 @@ export class MidyGM2 extends EventTarget {
   startModulation(channel, note, scheduleTime) {
     const audioContext = this.audioContext;
     const { voiceParams } = note;
-    note.modulationLFO = new OscillatorNode(audioContext, {
+    note.modLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
-    note.filterDepth = new GainNode(audioContext, {
+    note.modLfoToFilterFc = new GainNode(audioContext, {
       gain: voiceParams.modLfoToFilterFc,
     });
-    note.modulationDepth = new GainNode(audioContext);
+    note.modLfoToPitch = new GainNode(audioContext);
     this.setModLfoToPitch(channel, note, scheduleTime);
-    note.volumeDepth = new GainNode(audioContext);
+    note.modLfoToVolume = new GainNode(audioContext);
     this.setModLfoToVolume(note, scheduleTime);
 
-    note.modulationLFO.start(note.startTime + voiceParams.delayModLFO);
-    note.modulationLFO.connect(note.filterDepth);
-    note.filterDepth.connect(note.filterNode.frequency);
-    note.modulationLFO.connect(note.modulationDepth);
-    note.modulationDepth.connect(note.bufferSource.detune);
-    note.modulationLFO.connect(note.volumeDepth);
-    note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
+    note.modLfo.start(note.startTime + voiceParams.delayModLFO);
+    note.modLfo.connect(note.modLfoToFilterFc);
+    note.modLfoToFilterFc.connect(note.filterNode.frequency);
+    note.modLfo.connect(note.modLfoToPitch);
+    note.modLfoToPitch.connect(note.bufferSource.detune);
+    note.modLfo.connect(note.modLfoToVolume);
+    note.modLfoToVolume.connect(note.volumeEnvelopeNode.gain);
   }
 
   startVibrato(channel, note, scheduleTime) {
@@ -1415,16 +1415,16 @@ export class MidyGM2 extends EventTarget {
     const state = channel.state;
     const vibratoRate = state.vibratoRate * 2;
     const vibratoDelay = state.vibratoDelay * 2;
-    note.vibratoLFO = new OscillatorNode(this.audioContext, {
+    note.vibLfo = new OscillatorNode(this.audioContext, {
       frequency: this.centToHz(voiceParams.freqVibLFO) * vibratoRate,
     });
-    note.vibratoLFO.start(
+    note.vibLfo.start(
       note.startTime + voiceParams.delayVibLFO * vibratoDelay,
     );
-    note.vibratoDepth = new GainNode(this.audioContext);
+    note.vibLfoToPitch = new GainNode(this.audioContext);
     this.setVibLfoToPitch(channel, note, scheduleTime);
-    note.vibratoLFO.connect(note.vibratoDepth);
-    note.vibratoDepth.connect(note.bufferSource.detune);
+    note.vibLfo.connect(note.vibLfoToPitch);
+    note.vibLfoToPitch.connect(note.bufferSource.detune);
   }
 
   async getAudioBuffer(
@@ -1626,14 +1626,14 @@ export class MidyGM2 extends EventTarget {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
-    if (note.modulationDepth) {
-      note.volumeDepth.disconnect();
-      note.modulationDepth.disconnect();
-      note.modulationLFO.stop();
+    if (note.modLfoToPitch) {
+      note.modLfoToVolume.disconnect();
+      note.modLfoToPitch.disconnect();
+      note.modLfo.stop();
     }
-    if (note.vibratoDepth) {
-      note.vibratoDepth.disconnect();
-      note.vibratoLFO.stop();
+    if (note.vibLfoToPitch) {
+      note.vibLfoToPitch.disconnect();
+      note.vibLfo.stop();
     }
     if (note.reverbSend) {
       note.reverbSend.disconnect();
@@ -1846,13 +1846,13 @@ export class MidyGM2 extends EventTarget {
   }
 
   setModLfoToPitch(channel, note, scheduleTime) {
-    if (note.modulationDepth) {
+    if (note.modLfoToPitch) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch +
         this.getLFOPitchDepth(channel, note);
       const baseDepth = Math.abs(modLfoToPitch) +
         channel.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
-      note.modulationDepth.gain
+      note.modLfoToPitch.gain
         .cancelScheduledValues(scheduleTime)
         .setValueAtTime(depth, scheduleTime);
     } else {
@@ -1861,12 +1861,12 @@ export class MidyGM2 extends EventTarget {
   }
 
   setVibLfoToPitch(channel, note, scheduleTime) {
-    if (note.vibratoDepth) {
+    if (note.vibLfoToPitch) {
       const vibratoDepth = channel.state.vibratoDepth * 2;
       const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
       const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
       const depth = baseDepth * Math.sign(vibLfoToPitch);
-      note.vibratoDepth.gain
+      note.vibLfoToPitch.gain
         .cancelScheduledValues(scheduleTime)
         .setValueAtTime(depth, scheduleTime);
     } else {
@@ -1877,7 +1877,7 @@ export class MidyGM2 extends EventTarget {
   setModLfoToFilterFc(channel, note, scheduleTime) {
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc +
       this.getLFOFilterDepth(channel);
-    note.filterDepth.gain
+    note.modLfoToFilterFc.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(modLfoToFilterFc, scheduleTime);
   }
@@ -1885,11 +1885,11 @@ export class MidyGM2 extends EventTarget {
   setModLfoToVolume(channel, note, scheduleTime) {
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepth = baseDepth * Math.sign(modLfoToVolume) *
+    const depth = baseDepth * Math.sign(modLfoToVolume) *
       (1 + this.getLFOAmplitudeDepth(channel));
-    note.volumeDepth.gain
+    note.modLfoToVolume.gain
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(volumeDepth, scheduleTime);
+      .setValueAtTime(depth, scheduleTime);
   }
 
   setReverbSend(channel, note, scheduleTime) {
@@ -1949,13 +1949,13 @@ export class MidyGM2 extends EventTarget {
   setDelayModLFO(note) {
     const startTime = note.startTime + note.voiceParams.delayModLFO;
     try {
-      note.modulationLFO.start(startTime);
+      note.modLfo.start(startTime);
     } catch { /* empty */ }
   }
 
   setFreqModLFO(note, scheduleTime) {
     const freqModLFO = note.voiceParams.freqModLFO;
-    note.modulationLFO.frequency
+    note.modLfo.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(freqModLFO, scheduleTime);
   }
@@ -1965,14 +1965,14 @@ export class MidyGM2 extends EventTarget {
     const value = note.voiceParams.delayVibLFO;
     const startTime = note.startTime + value * vibratoDelay;
     try {
-      note.vibratoLFO.start(startTime);
+      note.vibLfo.start(startTime);
     } catch { /* empty */ }
   }
 
   setFreqVibLFO(channel, note, scheduleTime) {
     const vibratoRate = channel.state.vibratoRate * 2;
     const freqVibLFO = note.voiceParams.freqVibLFO;
-    note.vibratoLFO.frequency
+    note.vibLfo.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
@@ -2131,8 +2131,8 @@ export class MidyGM2 extends EventTarget {
     const depth = channel.state.modulationDepthMSB *
       channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
-      if (note.modulationDepth) {
-        note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
+      if (note.modLfoToPitch) {
+        note.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
       } else {
         this.startModulation(channel, note, scheduleTime);
       }

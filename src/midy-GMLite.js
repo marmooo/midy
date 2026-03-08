@@ -13,11 +13,11 @@ class Note {
   ending = false;
   bufferSource;
   filterNode;
-  filterDepth;
   volumeEnvelopeNode;
-  volumeDepth;
-  modulationLFO;
-  modulationDepth;
+  modLfo; // CC#1 modulation LFO
+  modLfoToPitch;
+  modLfoToFilterFc;
+  modLfoToVolume;
 
   constructor(noteNumber, velocity, startTime) {
     this.noteNumber = noteNumber;
@@ -924,24 +924,24 @@ export class MidyGMLite extends EventTarget {
   startModulation(channel, note, scheduleTime) {
     const audioContext = this.audioContext;
     const { voiceParams } = note;
-    note.modulationLFO = new OscillatorNode(audioContext, {
+    note.modLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
-    note.filterDepth = new GainNode(audioContext, {
+    note.modLfoToFilterFc = new GainNode(audioContext, {
       gain: voiceParams.modLfoToFilterFc,
     });
-    note.modulationDepth = new GainNode(audioContext);
+    note.modLfoToPitch = new GainNode(audioContext);
     this.setModLfoToPitch(channel, note, scheduleTime);
-    note.volumeDepth = new GainNode(audioContext);
+    note.modLfoToVolume = new GainNode(audioContext);
     this.setModLfoToVolume(note, scheduleTime);
 
-    note.modulationLFO.start(note.startTime + voiceParams.delayModLFO);
-    note.modulationLFO.connect(note.filterDepth);
-    note.filterDepth.connect(note.filterNode.frequency);
-    note.modulationLFO.connect(note.modulationDepth);
-    note.modulationDepth.connect(note.bufferSource.detune);
-    note.modulationLFO.connect(note.volumeDepth);
-    note.volumeDepth.connect(note.volumeEnvelopeNode.gain);
+    note.modLfo.start(note.startTime + voiceParams.delayModLFO);
+    note.modLfo.connect(note.modLfoToFilterFc);
+    note.modLfoToFilterFc.connect(note.filterNode.frequency);
+    note.modLfo.connect(note.modLfoToPitch);
+    note.modLfoToPitch.connect(note.bufferSource.detune);
+    note.modLfo.connect(note.modLfoToVolume);
+    note.modLfoToVolume.connect(note.volumeEnvelopeNode.gain);
   }
 
   async getAudioBuffer(
@@ -1107,10 +1107,10 @@ export class MidyGMLite extends EventTarget {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
-    if (note.modulationDepth) {
-      note.volumeDepth.disconnect();
-      note.modulationDepth.disconnect();
-      note.modulationLFO.stop();
+    if (note.modLfoToPitch) {
+      note.modLfoToVolume.disconnect();
+      note.modLfoToPitch.disconnect();
+      note.modLfo.stop();
     }
   }
 
@@ -1287,12 +1287,12 @@ export class MidyGMLite extends EventTarget {
   }
 
   setModLfoToPitch(channel, note, scheduleTime) {
-    if (note.modulationDepth) {
+    if (note.modLfoToPitch) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch;
       const baseDepth = Math.abs(modLfoToPitch) +
         channel.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
-      note.modulationDepth.gain
+      note.modLfoToPitch.gain
         .cancelScheduledValues(scheduleTime)
         .setValueAtTime(depth, scheduleTime);
     } else {
@@ -1302,7 +1302,7 @@ export class MidyGMLite extends EventTarget {
 
   setModLfoToFilterFc(note, scheduleTime) {
     const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
-    note.filterDepth.gain
+    note.modLfoToFilterFc.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(modLfoToFilterFc, scheduleTime);
   }
@@ -1310,23 +1310,23 @@ export class MidyGMLite extends EventTarget {
   setModLfoToVolume(note, scheduleTime) {
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const volumeDepth = baseDepth * Math.sign(modLfoToVolume);
-    note.volumeDepth.gain
+    const depth = baseDepth * Math.sign(modLfoToVolume);
+    note.modLfoToVolume.gain
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(volumeDepth, scheduleTime);
+      .setValueAtTime(depth, scheduleTime);
   }
 
   setDelayModLFO(note, scheduleTime) {
     const startTime = note.startTime;
     if (startTime < scheduleTime) return;
-    note.modulationLFO.stop(scheduleTime);
-    note.modulationLFO.start(startTime + note.voiceParams.delayModLFO);
-    note.modulationLFO.connect(note.filterDepth);
+    note.modLfo.stop(scheduleTime);
+    note.modLfo.start(startTime + note.voiceParams.delayModLFO);
+    note.modLfo.connect(note.modLfoToFilterFc);
   }
 
   setFreqModLFO(note, scheduleTime) {
     const freqModLFO = note.voiceParams.freqModLFO;
-    note.modulationLFO.frequency
+    note.modLfo.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(freqModLFO, scheduleTime);
   }
@@ -1441,8 +1441,8 @@ export class MidyGMLite extends EventTarget {
     const depth = channel.state.modulationDepthMSB *
       channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
-      if (note.modulationDepth) {
-        note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
+      if (note.modLfoToPitch) {
+        note.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
       } else {
         this.startModulation(channel, note, scheduleTime);
       }
