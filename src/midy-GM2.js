@@ -12,7 +12,7 @@ class Note {
   index = -1;
   ending = false;
   bufferSource;
-  filterNode;
+  filterEnvelopeNode;
   volumeEnvelopeNode;
   modLfo; // CC#1 modulation LFO
   modLfoToPitch;
@@ -1347,7 +1347,7 @@ export class MidyGM2 extends EventTarget {
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     const modDelay = startTime + voiceParams.modDelay;
     note.adjustedBaseFreq = adjustedSustainFreq;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
@@ -1374,7 +1374,7 @@ export class MidyGM2 extends EventTarget {
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = voiceParams.modDecay;
     note.adjustedBaseFreq = adjustedBaseFreq;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
@@ -1403,7 +1403,7 @@ export class MidyGM2 extends EventTarget {
 
     note.modLfo.start(note.startTime + voiceParams.delayModLFO);
     note.modLfo.connect(note.modLfoToFilterFc);
-    note.modLfoToFilterFc.connect(note.filterNode.frequency);
+    note.modLfoToFilterFc.connect(note.filterEnvelopeNode.frequency);
     note.modLfo.connect(note.modLfoToPitch);
     note.modLfoToPitch.connect(note.bufferSource.detune);
     note.modLfo.connect(note.modLfoToVolume);
@@ -1489,7 +1489,7 @@ export class MidyGM2 extends EventTarget {
       audioBuffer,
     );
     note.volumeEnvelopeNode = new GainNode(audioContext);
-    note.filterNode = new BiquadFilterNode(audioContext, {
+    note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 10, // dB
     });
@@ -1518,8 +1518,8 @@ export class MidyGM2 extends EventTarget {
       channel.currentBufferSource.stop(startTime);
       channel.currentBufferSource = note.bufferSource;
     }
-    note.bufferSource.connect(note.filterNode);
-    note.filterNode.connect(note.volumeEnvelopeNode);
+    note.bufferSource.connect(note.filterEnvelopeNode);
+    note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
     this.setChorusSend(channel, note, now);
     this.setReverbSend(channel, note, now);
     if (voiceParams.sample.type === "compressed") {
@@ -1624,7 +1624,7 @@ export class MidyGM2 extends EventTarget {
 
   disconnectNote(note) {
     note.bufferSource.disconnect();
-    note.filterNode.disconnect();
+    note.filterEnvelopeNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
     if (note.modLfoToPitch) {
       note.modLfoToVolume.disconnect();
@@ -1647,7 +1647,7 @@ export class MidyGM2 extends EventTarget {
     endTime ??= this.audioContext.currentTime;
     const volDuration = note.voiceParams.volRelease;
     const volRelease = endTime + volDuration;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(endTime)
       .setTargetAtTime(
         note.adjustedBaseFreq,

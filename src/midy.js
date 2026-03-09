@@ -12,7 +12,7 @@ class Note {
   index = -1;
   ending = false;
   bufferSource;
-  filterNode;
+  filterEnvelopeNode;
   volumeEnvelopeNode;
   volumeNode; // polyphonic key pressure
   modLfo; // CC#1 modulation LFO
@@ -1427,7 +1427,7 @@ export class Midy extends EventTarget {
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     const modDelay = startTime + voiceParams.modDelay;
     note.adjustedBaseFreq = adjustedSustainFreq;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
@@ -1456,7 +1456,7 @@ export class Midy extends EventTarget {
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = modHold + voiceParams.modDecay;
     note.adjustedBaseFreq = adjustedBaseFreq;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
       .setValueAtTime(adjustedBaseFreq, modDelay)
@@ -1485,7 +1485,7 @@ export class Midy extends EventTarget {
 
     note.modLfo.start(note.startTime + voiceParams.delayModLFO);
     note.modLfo.connect(note.modLfoToFilterFc);
-    note.modLfoToFilterFc.connect(note.filterNode.frequency);
+    note.modLfoToFilterFc.connect(note.filterEnvelopeNode.frequency);
     note.modLfo.connect(note.modLfoToPitch);
     note.modLfoToPitch.connect(note.bufferSource.detune);
     note.modLfo.connect(note.modLfoToVolume);
@@ -1573,7 +1573,7 @@ export class Midy extends EventTarget {
     note.volumeEnvelopeNode = new GainNode(audioContext);
     note.volumeNode = new GainNode(audioContext);
     const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
-    note.filterNode = new BiquadFilterNode(audioContext, {
+    note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
       type: "lowpass",
       Q: voiceParams.initialFilterQ / 5 * filterResonance, // dB
     });
@@ -1603,8 +1603,8 @@ export class Midy extends EventTarget {
       channel.currentBufferSource.stop(startTime);
       channel.currentBufferSource = note.bufferSource;
     }
-    note.bufferSource.connect(note.filterNode);
-    note.filterNode.connect(note.volumeEnvelopeNode);
+    note.bufferSource.connect(note.filterEnvelopeNode);
+    note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
     note.volumeEnvelopeNode.connect(note.volumeNode);
     this.setChorusSend(channel, note, now);
     this.setReverbSend(channel, note, now);
@@ -1730,7 +1730,7 @@ export class Midy extends EventTarget {
 
   disconnectNote(note) {
     note.bufferSource.disconnect();
-    note.filterNode.disconnect();
+    note.filterEnvelopeNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
     note.volumeNode.disconnect();
     if (note.modLfoToPitch) {
@@ -1755,7 +1755,7 @@ export class Midy extends EventTarget {
     const releaseTime = this.getRelativeKeyBasedValue(channel, note, 72) * 2;
     const volDuration = note.voiceParams.volRelease * releaseTime;
     const volRelease = endTime + volDuration;
-    note.filterNode.frequency
+    note.filterEnvelopeNode.frequency
       .cancelScheduledValues(endTime)
       .setTargetAtTime(
         note.adjustedBaseFreq,
@@ -2600,7 +2600,7 @@ export class Midy extends EventTarget {
     this.processScheduledNotes(channel, (note) => {
       const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
       const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
-      note.filterNode.Q.setValueAtTime(Q, scheduleTime);
+      note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
     });
   }
 
@@ -3650,7 +3650,7 @@ export class Midy extends EventTarget {
             71,
           );
           const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
-          note.filterNode.Q.setValueAtTime(Q, scheduleTime);
+          note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
         }
       });
     handlers[73] = (channel, keyNumber, scheduleTime) =>
