@@ -14,6 +14,7 @@ class Note {
   bufferSource;
   filterNode;
   volumeEnvelopeNode;
+  volumeNode; // polyphonic key pressure
   modLfo; // CC#1 modulation LFO
   modLfoToPitch;
   modLfoToFilterFc;
@@ -1563,6 +1564,7 @@ export class Midy extends EventTarget {
       audioBuffer,
     );
     note.volumeEnvelopeNode = new GainNode(audioContext);
+    note.volumeNode = new GainNode(audioContext);
     const filterResonance = this.getRelativeKeyBasedValue(channel, note, 71);
     note.filterNode = new BiquadFilterNode(audioContext, {
       type: "lowpass",
@@ -1595,6 +1597,7 @@ export class Midy extends EventTarget {
     }
     note.bufferSource.connect(note.filterNode);
     note.filterNode.connect(note.volumeEnvelopeNode);
+    note.volumeEnvelopeNode.connect(note.volumeNode);
     this.setChorusSend(channel, note, now);
     this.setReverbSend(channel, note, now);
     if (voiceParams.sample.type === "compressed") {
@@ -1649,7 +1652,7 @@ export class Midy extends EventTarget {
 
   setNoteRouting(channelNumber, note, startTime) {
     const channel = this.channels[channelNumber];
-    const { noteNumber, volumeEnvelopeNode } = note;
+    const { noteNumber, volumeNode } = note;
     if (channel.isDrum) {
       const { keyBasedGainLs, keyBasedGainRs } = channel;
       let gainL = keyBasedGainLs[noteNumber];
@@ -1659,11 +1662,11 @@ export class Midy extends EventTarget {
         gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
         gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
       }
-      volumeEnvelopeNode.connect(gainL);
-      volumeEnvelopeNode.connect(gainR);
+      volumeNode.connect(gainL);
+      volumeNode.connect(gainR);
     } else {
-      volumeEnvelopeNode.connect(channel.gainL);
-      volumeEnvelopeNode.connect(channel.gainR);
+      volumeNode.connect(channel.gainL);
+      volumeNode.connect(channel.gainR);
     }
     if (0.5 <= channel.state.sustainPedal) {
       channel.sustainNotes.push(note);
@@ -1721,6 +1724,7 @@ export class Midy extends EventTarget {
     note.bufferSource.disconnect();
     note.filterNode.disconnect();
     note.volumeEnvelopeNode.disconnect();
+    note.volumeNode.disconnect();
     if (note.modLfoToPitch) {
       note.modLfoToVolume.disconnect();
       note.modLfoToPitch.disconnect();
@@ -2096,7 +2100,7 @@ export class Midy extends EventTarget {
     if (!note.reverbSend) {
       if (0 < value) {
         note.reverbSend = new GainNode(this.audioContext, { gain: value });
-        note.volumeEnvelopeNode.connect(note.reverbSend);
+        note.volumeNode.connect(note.reverbSend);
         note.reverbSend.connect(this.reverbEffect.input);
       }
     } else {
@@ -2104,10 +2108,10 @@ export class Midy extends EventTarget {
         .cancelScheduledValues(scheduleTime)
         .setValueAtTime(value, scheduleTime);
       if (0 < value) {
-        note.volumeEnvelopeNode.connect(note.reverbSend);
+        note.volumeNode.connect(note.reverbSend);
       } else {
         try {
-          note.volumeEnvelopeNode.disconnect(note.reverbSend);
+          note.volumeNode.disconnect(note.reverbSend);
         } catch { /* empty */ }
       }
     }
@@ -2123,7 +2127,7 @@ export class Midy extends EventTarget {
     if (!note.chorusSend) {
       if (0 < value) {
         note.chorusSend = new GainNode(this.audioContext, { gain: value });
-        note.volumeEnvelopeNode.connect(note.chorusSend);
+        note.volumeNode.connect(note.chorusSend);
         note.chorusSend.connect(this.chorusEffect.input);
       }
     } else {
@@ -2131,10 +2135,10 @@ export class Midy extends EventTarget {
         .cancelScheduledValues(scheduleTime)
         .setValueAtTime(value, scheduleTime);
       if (0 < value) {
-        note.volumeEnvelopeNode.connect(note.chorusSend);
+        note.volumeNode.connect(note.chorusSend);
       } else {
         try {
-          note.volumeEnvelopeNode.disconnect(note.chorusSend);
+          note.volumeNode.disconnect(note.chorusSend);
         } catch { /* empty */ }
       }
     }
