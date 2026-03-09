@@ -1312,7 +1312,7 @@ export class Midy extends EventTarget {
   setPortamentoVolumeEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
-      (1 + this.getAmplitudeControl(channel, note));
+      (1 + this.getChannelAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     note.volumeEnvelopeNode.gain
@@ -1323,7 +1323,7 @@ export class Midy extends EventTarget {
   setVolumeEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
-      (1 + this.getAmplitudeControl(channel, note));
+      (1 + this.getChannelAmplitudeControl(channel, note));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const attackTime = this.getRelativeKeyBasedValue(channel, note, 73) * 2;
@@ -1338,6 +1338,13 @@ export class Midy extends EventTarget {
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
       .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
+  }
+
+  setVolumeNode(channel, note, scheduleTime) {
+    const depth = 1 + this.getNoteAmplitudeControl(channel, note);
+    note.volumeNode.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(depth, scheduleTime);
   }
 
   setPortamentoDetune(channel, note, scheduleTime) {
@@ -1574,6 +1581,7 @@ export class Midy extends EventTarget {
     if (prevNote && prevNote.noteNumber !== noteNumber) {
       note.portamentoNoteNumber = prevNote.noteNumber;
     }
+    this.setVolumeNode(channel, note, now);
     if (!channel.isDrum && this.isPortamento(channel, note)) {
       this.setPortamentoVolumeEnvelope(channel, note, now);
       this.setPortamentoFilterEnvelope(channel, note, now);
@@ -3518,7 +3526,6 @@ export class Midy extends EventTarget {
     return this.calcChannelEffectValue(channel, 2);
   }
 
-  // TODO
   getNoteAmplitudeControl(channel, note) {
     return this.calcNoteEffectValue(channel, note, 2);
   }
@@ -3555,13 +3562,8 @@ export class Midy extends EventTarget {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (channel, note, scheduleTime) => {
-      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-      } else {
-        this.setVolumeEnvelope(channel, note, scheduleTime);
-      }
-    };
+    handlers[2] = (channel, note, scheduleTime) =>
+      this.setVolumeNode(channel, note, scheduleTime);
     handlers[3] = (channel, note, scheduleTime) =>
       this.setModLfoToPitch(channel, note, scheduleTime);
     handlers[4] = (channel, note, scheduleTime) =>
