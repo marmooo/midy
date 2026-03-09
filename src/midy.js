@@ -2067,8 +2067,8 @@ export class Midy extends EventTarget {
 
   setVibLfoToPitch(channel, note, scheduleTime) {
     if (note.vibLfoToPitch) {
-      const vibratoDepth = this.getKeyBasedValue(channel, note.noteNumber, 77) *
-        2;
+      const vibratoDepth =
+        this.getRelativeKeyBasedValue(channel, note.noteNumber, 77) * 2;
       const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
       const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
       const depth = baseDepth * Math.sign(vibLfoToPitch);
@@ -2602,18 +2602,6 @@ export class Midy extends EventTarget {
       const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
       note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
     });
-  }
-
-  getRelativeKeyBasedValue(channel, note, controllerType) {
-    const ccState = channel.state.array[128 + controllerType];
-    const keyBasedValue = this.getKeyBasedValue(
-      channel,
-      note.noteNumber,
-      controllerType,
-    );
-    if (keyBasedValue < 0) return ccState;
-    const keyValue = ccState + keyBasedValue / 127 - 0.5;
-    return keyValue < 0 ? keyValue : 0;
   }
 
   setReleaseTime(channelNumber, releaseTime, scheduleTime) {
@@ -3627,6 +3615,18 @@ export class Midy extends EventTarget {
         if (handler) handler(channel, note, scheduleTime);
       });
     }
+  }
+
+  getRelativeKeyBasedValue(channel, note, controllerType) {
+    const ccState = channel.state.array[128 + controllerType];
+    if (!channel.isDrum) return ccState;
+    const keyBasedValue = this.getKeyBasedValue(
+      channel,
+      note.noteNumber,
+      controllerType,
+    );
+    if (keyBasedValue < 0) return ccState;
+    return ccState * keyBasedValue / 64;
   }
 
   getKeyBasedValue(channel, keyNumber, controllerType) {
