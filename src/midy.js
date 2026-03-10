@@ -2067,8 +2067,7 @@ export class Midy extends EventTarget {
 
   setVibLfoToPitch(channel, note, scheduleTime) {
     if (note.vibLfoToPitch) {
-      const vibratoDepth =
-        this.getRelativeKeyBasedValue(channel, note.noteNumber, 77) * 2;
+      const vibratoDepth = this.getRelativeKeyBasedValue(channel, note, 77) * 2;
       const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
       const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
       const depth = baseDepth * Math.sign(vibLfoToPitch);
