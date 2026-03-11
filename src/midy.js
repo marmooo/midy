@@ -1222,7 +1222,7 @@ export class Midy extends EventTarget {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const effect = this.calcChannelEffectValue(channel, destination);
+    const effect = this.getChannelPitchControl(channel);
     return tuning + pitch + effect;
   }
 
@@ -1312,7 +1312,7 @@ export class Midy extends EventTarget {
   setPortamentoVolumeEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime } = note;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
-      (1 + this.getChannelAmplitudeControl(channel, note));
+      (1 + this.getChannelAmplitudeControl(channel));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     note.volumeEnvelopeNode.gain
@@ -1323,7 +1323,7 @@ export class Midy extends EventTarget {
   setVolumeEnvelope(channel, note, scheduleTime) {
     const { voiceParams, startTime, noteNumber } = note;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
-      (1 + this.getChannelAmplitudeControl(channel, note));
+      (1 + this.getChannelAmplitudeControl(channel));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const attackTime = this.getRelativeKeyBasedValue(channel, noteNumber, 73) *
@@ -2241,7 +2241,7 @@ export class Midy extends EventTarget {
       },
       delayVibLFO: (channel, note, _scheduleTime) => {
         if (0 < channel.state.vibratoDepth) {
-          setDelayVibLFO(channel, note);
+          this.setDelayVibLFO(channel, note);
         }
       },
       freqVibLFO: (channel, note, scheduleTime) => {
@@ -2445,7 +2445,7 @@ export class Midy extends EventTarget {
   }
 
   panToGain(pan) {
-    const theta = Math.PI / 2 * Math.max(pan * 127 - 1) / 126;
+    const theta = Math.PI / 2 * Math.max(0, pan * 127 - 1) / 126;
     return {
       gainLeft: Math.cos(theta),
       gainRight: Math.sin(theta),
@@ -2888,6 +2888,7 @@ export class Midy extends EventTarget {
   }
 
   handleMIDIPolyphonicExpressionRPN(channelNumber, _scheduleTime) {
+    const channel = this.channels[channelNumber];
     this.setMIDIPolyphonicExpression(channelNumber, channel.dataMSB);
   }
 
@@ -3511,8 +3512,8 @@ export class Midy extends EventTarget {
     return value * effectParameters[destination];
   }
 
-  getChannelPitchControl(channel, note) {
-    return this.calcChannelEffectValue(channel, note, 0);
+  getChannelPitchControl(channel) {
+    return this.calcChannelEffectValue(channel, 0);
   }
 
   getNotePitchControl(channel, note) {
@@ -3520,7 +3521,7 @@ export class Midy extends EventTarget {
   }
 
   getPitchControl(channel, note) {
-    return this.calcChannelEffectValue(channel, note, 0);
+    return this.calcEffectValue(channel, note, 0);
   }
 
   getFilterCutoffControl(channel, note) {
@@ -3561,7 +3562,7 @@ export class Midy extends EventTarget {
       }
     };
     handlers[1] = (channel, note, scheduleTime) => {
-      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+      if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
@@ -3619,9 +3620,9 @@ export class Midy extends EventTarget {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    const table = channel.controlTable;
     table.set(defaultControlValues);
     const controllerType = data[5];
-    const table = channel.controlTable;
     for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];

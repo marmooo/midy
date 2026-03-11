@@ -1163,7 +1163,7 @@ export class MidyGM2 extends EventTarget {
     const pitchWheel = channel.state.pitchWheel * 2 - 1;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const effect = this.calcChannelEffectValue(channel, destination);
+    const effect = this.getChannelPitchControl(channel);
     return tuning + pitch + effect;
   }
 
@@ -2017,7 +2017,7 @@ export class MidyGM2 extends EventTarget {
       },
       delayVibLFO: (channel, note, _scheduleTime) => {
         if (0 < channel.state.vibratoDepth) {
-          setDelayVibLFO(channel, note);
+          this.setDelayVibLFO(channel, note);
         }
       },
       freqVibLFO: (channel, note, scheduleTime) => {
@@ -2991,12 +2991,12 @@ export class MidyGM2 extends EventTarget {
     return value * effectParameters[destination];
   }
 
-  getChannelPitchControl(channel, note) {
-    return this.calcChannelEffectValue(channel, note, 0);
+  getChannelPitchControl(channel) {
+    return this.calcChannelEffectValue(channel, 0);
   }
 
   getPitchControl(channel, note) {
-    return this.calcChannelEffectValue(channel, note, 0);
+    return this.calcEffectValue(channel, note, 0);
   }
 
   getFilterCutoffControl(channel) {
@@ -3029,7 +3029,7 @@ export class MidyGM2 extends EventTarget {
       }
     };
     handlers[1] = (channel, note, scheduleTime) => {
-      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
+      if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
@@ -3092,9 +3092,9 @@ export class MidyGM2 extends EventTarget {
     const channelNumber = data[4];
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
+    const table = channel.controlTable;
     table.set(defaultControlValues);
     const controllerType = data[5];
-    const table = channel.controlTable;
     for (let i = 6; i < data.length; i += 2) {
       const pp = data[i];
       const rr = data[i + 1];
