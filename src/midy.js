@@ -1458,7 +1458,7 @@ export class Midy extends EventTarget {
     const modDelay = startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
-    const decayDuration = modHold + voiceParams.modDecay;
+    const decayDuration = voiceParams.modDecay;
     note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
