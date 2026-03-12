@@ -263,13 +263,6 @@ export class MidyGMLite extends EventTarget {
           );
           break;
         }
-        case "controller":
-          if (event.controllerType === 0) {
-            this.setBankMSB(event.channel, event.value);
-          } else if (event.controllerType === 32) {
-            this.setBankLSB(event.channel, event.value);
-          }
-          break;
         case "programChange":
           this.setProgramChange(
             event.channel,
