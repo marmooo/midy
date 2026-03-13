@@ -2,8 +2,16 @@ import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
 import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 
-const decoder = new OggVorbisDecoderWebWorker();
-await decoder.ready;
+let decoderPromise = null;
+let decoderQueue = Promise.resolve();
+
+function initDecoder() {
+  if (!decoderPromise) {
+    const instance = new OggVorbisDecoderWebWorker();
+    decoderPromise = instance.ready.then(() => instance);
+  }
+  return decoderPromise;
+}
 
 class Note {
   voice;
@@ -229,7 +237,6 @@ export class Midy extends EventTarget {
   voiceCache = new Map();
   realtimeVoiceCache = new Map();
   decodeMethod = "wasm-audio-decoders";
-  decoderQueue = Promise.resolve();
   isPlaying = false;
   isPausing = false;
   isPaused = false;
@@ -278,6 +285,9 @@ export class Midy extends EventTarget {
 
   constructor(audioContext) {
     super();
+    this.decoder = new OggVorbisDecoderWebWorker();
+    this.decoderReady = this.decoder.ready;
+    this.decoderQueue = Promise.resolve();
     this.audioContext = audioContext;
     this.masterVolume = new GainNode(audioContext);
     this.scheduler = new GainNode(audioContext, { gain: 0 });
@@ -461,34 +471,27 @@ export class Midy extends EventTarget {
   }
 
   decodeOggVorbis(sample) {
-    let resolveBuffer, rejectBuffer;
-    const bufferPromise = new Promise((resolve, reject) => {
-      resolveBuffer = resolve;
-      rejectBuffer = reject;
-    });
-    this.decoderQueue = this.decoderQueue.then(async () => {
-      try {
-        const slice = sample.data.slice();
-        const {
-          channelData,
-          sampleRate,
-          errors,
-        } = await decoder.decodeFile(slice);
-        if (errors.length > 0) throw new Error(errors);
-        const audioBuffer = new AudioBuffer({
-          numberOfChannels: channelData.length,
-          length: channelData[0].length,
-          sampleRate,
-        });
-        for (let ch = 0; ch < channelData.length; ch++) {
-          audioBuffer.getChannelData(ch).set(channelData[ch]);
-        }
-        resolveBuffer(audioBuffer);
-      } catch (err) {
-        rejectBuffer(err);
+    const task = decoderQueue.then(async () => {
+      const decoder = await initDecoder();
+      const slice = sample.data.slice();
+      const { channelData, sampleRate, errors } = await decoder.decodeFile(
+        slice,
+      );
+      if (0 < errors.length) {
+        throw new Error(errors.join(", "));
       }
+      const audioBuffer = new AudioBuffer({
+        numberOfChannels: channelData.length,
+        length: channelData[0].length,
+        sampleRate,
+      });
+      for (let ch = 0; ch < channelData.length; ch++) {
+        audioBuffer.getChannelData(ch).set(channelData[ch]);
+      }
+      return audioBuffer;
     });
-    return bufferPromise;
+    decoderQueue = task.catch(() => {});
+    return task;
   }
 
   async createAudioBuffer(voiceParams) {
