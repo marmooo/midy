@@ -1991,7 +1991,7 @@ export class Midy extends EventTarget {
     this.processActiveNotes(channel, scheduleTime, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setPressureEffects(channel, note, scheduleTime);
+        this.setPolyphonicKeyPressureEffects(channel, note, scheduleTime);
       }
     });
     this.applyVoiceParams(channel, 10, scheduleTime);
@@ -2034,7 +2034,7 @@ export class Midy extends EventTarget {
     const next = this.calcChannelPressureEffectValue(channel, 0);
     channel.detune += next - prev;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setPressureEffects(channel, note, scheduleTime);
+      this.setChannelPressureEffects(channel, note, scheduleTime);
     });
     this.applyVoiceParams(channel, 13, scheduleTime);
   }
@@ -3139,17 +3139,9 @@ export class Midy extends EventTarget {
       case 9:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handlePressureSysEx(
-              data,
-              "channelPressureTable",
-              scheduleTime,
-            );
+            return this.handleChannelPressureSysEx(data, scheduelTime);
           case 2: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handlePressureSysEx(
-              data,
-              "polyphonicKeyPressureTable",
-              scheduleTime,
-            );
+            return this.handlePolyphonicKeyPressureSysEx(data, scheduleTime);
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
             return this.handleControlChangeSysEx(data, scheduleTime);
           default:
@@ -3592,6 +3584,24 @@ export class Midy extends EventTarget {
     }
   }
 
+  setChannelPressureEffects(channel, note, scheduleTime) {
+    this.setPressureEffects(
+      channel,
+      note,
+      "channelPressureTable",
+      scheduleTime,
+    );
+  }
+
+  setPolyphonicKeyPressureEffects(channel, note, scheduleTime) {
+    this.setPressureEffects(
+      channel,
+      note,
+      "polyphonicKeyPressureTable",
+      scheduleTime,
+    );
+  }
+
   setPressureEffects(channel, note, tableName, scheduleTime) {
     const handlers = this.effectHandlers;
     const table = channel[tableName];
@@ -3601,6 +3611,14 @@ export class Midy extends EventTarget {
       if (baseline === tableValue) continue;
       handlers[i](channel, note, scheduleTime);
     }
+  }
+
+  handleChannelPressureSysEx(data, scheduleTime) {
+    this.handlePressureSysEx(data, "channelPressureTable", scheduleTime);
+  }
+
+  handlePolyphonicKeyPressureSysEx(data, scheduleTime) {
+    this.handlePressureSysEx(data, "polyphonicKeyPressureTable", scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {

@@ -1822,7 +1822,7 @@ export class MidyGM2 extends EventTarget {
     const next = this.calcChannelPressureEffectValue(channel, 0);
     channel.detune += next - prev;
     this.processActiveNotes(channel, scheduleTime, (note) => {
-      this.setPressureEffects(channel, note, scheduleTime);
+      this.setChannelPressureEffects(channel, note, scheduleTime);
     });
     this.applyVoiceParams(channel, 13, scheduleTime);
   }
@@ -2653,11 +2653,7 @@ export class MidyGM2 extends EventTarget {
       case 9:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handlePressureSysEx(
-              data,
-              "channelPressureTable",
-              scheduleTime,
-            );
+            return this.handleChannelPressureSysEx(data, scheduelTime);
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
             return this.handleControlChangeSysEx(data, scheduleTime);
           default:
@@ -3061,6 +3057,15 @@ export class MidyGM2 extends EventTarget {
     }
   }
 
+  setChannelPressureEffects(channel, note, scheduleTime) {
+    this.setPressureEffects(
+      channel,
+      note,
+      "channelPressureTable",
+      scheduleTime,
+    );
+  }
+
   setPressureEffects(channel, note, tableName, scheduleTime) {
     const handlers = this.effectHandlers;
     const table = channel[tableName];
@@ -3070,6 +3075,10 @@ export class MidyGM2 extends EventTarget {
       if (baseline === tableValue) continue;
       handlers[i](channel, note, scheduleTime);
     }
+  }
+
+  handleChannelPressureSysEx(data, scheduleTime) {
+    this.handlePressureSysEx(data, "channelPressureTable", scheduleTime);
   }
 
   handlePressureSysEx(data, tableName, scheduleTime) {
