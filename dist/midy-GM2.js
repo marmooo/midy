@@ -6856,7 +6856,7 @@ var MidyGM2 = class extends EventTarget {
     const next = this.calcChannelPressureEffectValue(channel3, 0);
     channel3.detune += next - prev;
     this.processActiveNotes(channel3, scheduleTime2, (note) => {
-      this.setPressureEffects(channel3, note, scheduleTime2);
+      this.setChannelPressureEffects(channel3, note, scheduleTime2);
     });
     this.applyVoiceParams(channel3, 13, scheduleTime2);
   }
@@ -7168,6 +7168,9 @@ var MidyGM2 = class extends EventTarget {
     if (!(0 <= scheduleTime2)) scheduleTime2 = this.audioContext.currentTime;
     const channel3 = this.channels[channelNumber];
     channel3.state.volumeMSB = value / 127;
+    this.applyVolume(channel3, scheduleTime2);
+  }
+  applyVolume(channel3, scheduleTime2) {
     if (channel3.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel3, i, scheduleTime2);
@@ -7593,11 +7596,7 @@ var MidyGM2 = class extends EventTarget {
       case 9:
         switch (data3[3]) {
           case 1:
-            return this.handlePressureSysEx(
-              data3,
-              "channelPressureTable",
-              scheduleTime2
-            );
+            return this.handleChannelPressureSysEx(data3, scheduelTime);
           case 3:
             return this.handleControlChangeSysEx(data3, scheduleTime2);
           default:
@@ -7926,13 +7925,7 @@ var MidyGM2 = class extends EventTarget {
         this.setFilterEnvelope(channel3, note, scheduleTime2);
       }
     };
-    handlers[2] = (channel3, note, scheduleTime2) => {
-      if (0.5 <= channel3.state.portamemento && 0 <= note.portamentoNoteNumber) {
-        this.setPortamentoVolumeEnvelope(channel3, note, scheduleTime2);
-      } else {
-        this.setVolumeEnvelope(channel3, note, scheduleTime2);
-      }
-    };
+    handlers[2] = (channel3, note, scheduleTime2) => this.applyVolume(channel3, note, scheduleTime2);
     handlers[3] = (channel3, note, scheduleTime2) => this.setModLfoToPitch(channel3, note, scheduleTime2);
     handlers[4] = (channel3, note, scheduleTime2) => this.setModLfoToFilterFc(channel3, note, scheduleTime2);
     handlers[5] = (channel3, note, scheduleTime2) => this.setModLfoToVolume(channel3, note, scheduleTime2);
@@ -7947,6 +7940,14 @@ var MidyGM2 = class extends EventTarget {
       handlers[i](channel3, note, scheduleTime2);
     }
   }
+  setChannelPressureEffects(channel3, note, scheduleTime2) {
+    this.setPressureEffects(
+      channel3,
+      note,
+      "channelPressureTable",
+      scheduleTime2
+    );
+  }
   setPressureEffects(channel3, note, tableName, scheduleTime2) {
     const handlers = this.effectHandlers;
     const table = channel3[tableName];
@@ -7956,6 +7957,9 @@ var MidyGM2 = class extends EventTarget {
       if (baseline === tableValue) continue;
       handlers[i](channel3, note, scheduleTime2);
     }
+  }
+  handleChannelPressureSysEx(data3, scheduleTime2) {
+    this.handlePressureSysEx(data3, "channelPressureTable", scheduleTime2);
   }
   handlePressureSysEx(data3, tableName, scheduleTime2) {
     const channelNumber = data3[4];

@@ -6993,7 +6993,7 @@ var Midy = class extends EventTarget {
     this.processActiveNotes(channel3, scheduleTime2, (note) => {
       if (note.noteNumber === noteNumber) {
         note.pressure = pressure;
-        this.setPressureEffects(channel3, note, scheduleTime2);
+        this.setPolyphonicKeyPressureEffects(channel3, note, scheduleTime2);
       }
     });
     this.applyVoiceParams(channel3, 10, scheduleTime2);
@@ -7032,7 +7032,7 @@ var Midy = class extends EventTarget {
     const next = this.calcChannelPressureEffectValue(channel3, 0);
     channel3.detune += next - prev;
     this.processActiveNotes(channel3, scheduleTime2, (note) => {
-      this.setPressureEffects(channel3, note, scheduleTime2);
+      this.setChannelPressureEffects(channel3, note, scheduleTime2);
     });
     this.applyVoiceParams(channel3, 13, scheduleTime2);
   }
@@ -7391,6 +7391,9 @@ var Midy = class extends EventTarget {
     const intPart = Math.trunc(value);
     state.volumeMSB = intPart / 127;
     state.volumeLSB = value - intPart;
+    this.applyVolume(channel3, scheduleTime2);
+  }
+  applyVolume(channel3, scheduleTime2) {
     if (channel3.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel3, i, scheduleTime2);
@@ -8023,17 +8026,9 @@ var Midy = class extends EventTarget {
       case 9:
         switch (data3[3]) {
           case 1:
-            return this.handlePressureSysEx(
-              data3,
-              "channelPressureTable",
-              scheduleTime2
-            );
+            return this.handleChannelPressureSysEx(data3, scheduelTime);
           case 2:
-            return this.handlePressureSysEx(
-              data3,
-              "polyphonicKeyPressureTable",
-              scheduleTime2
-            );
+            return this.handlePolyphonicKeyPressureSysEx(data3, scheduleTime2);
           case 3:
             return this.handleControlChangeSysEx(data3, scheduleTime2);
           default:
@@ -8386,24 +8381,30 @@ var Midy = class extends EventTarget {
   }
   createEffectHandlers() {
     const handlers = new Array(6);
-    handlers[0] = (channel3, note, scheduleTime2) => {
+    handlers[0] = (channel3, note, _tableName, scheduleTime2) => {
       if (this.isPortamento(channel3, note)) {
         this.setPortamentoDetune(channel3, note, scheduleTime2);
       } else {
         this.setDetune(channel3, note, scheduleTime2);
       }
     };
-    handlers[1] = (channel3, note, scheduleTime2) => {
+    handlers[1] = (channel3, note, _tableName, scheduleTime2) => {
       if (0.5 <= channel3.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel3, note, scheduleTime2);
       } else {
         this.setFilterEnvelope(channel3, note, scheduleTime2);
       }
     };
-    handlers[2] = (channel3, note, scheduleTime2) => this.setVolumeNode(channel3, note, scheduleTime2);
-    handlers[3] = (channel3, note, scheduleTime2) => this.setModLfoToPitch(channel3, note, scheduleTime2);
-    handlers[4] = (channel3, note, scheduleTime2) => this.setModLfoToFilterFc(channel3, note, scheduleTime2);
-    handlers[5] = (channel3, note, scheduleTime2) => this.setModLfoToVolume(channel3, note, scheduleTime2);
+    handlers[2] = (channel3, note, tableName, scheduleTime2) => {
+      if (tableName === "polyphonicKeyPressureTable") {
+        this.setVolumeNode(channel3, note, scheduleTime2);
+      } else {
+        this.applyVolume(channel3, scheduleTime2);
+      }
+    };
+    handlers[3] = (channel3, note, _tableName, scheduleTime2) => this.setModLfoToPitch(channel3, note, scheduleTime2);
+    handlers[4] = (channel3, note, _tableName, scheduleTime2) => this.setModLfoToFilterFc(channel3, note, scheduleTime2);
+    handlers[5] = (channel3, note, _tableName, scheduleTime2) => this.setModLfoToVolume(channel3, note, scheduleTime2);
     return handlers;
   }
   setControlChangeEffects(channel3, note, scheduleTime2) {
@@ -8412,8 +8413,24 @@ var Midy = class extends EventTarget {
       const baseline = pressureBaselines[i];
       const tableValue = channel3.controlTable[i + 6];
       if (baseline === tableValue) continue;
-      handlers[i](channel3, note, scheduleTime2);
+      handlers[i](channel3, note, "controlTable", scheduleTime2);
     }
+  }
+  setChannelPressureEffects(channel3, note, scheduleTime2) {
+    this.setPressureEffects(
+      channel3,
+      note,
+      "channelPressureTable",
+      scheduleTime2
+    );
+  }
+  setPolyphonicKeyPressureEffects(channel3, note, scheduleTime2) {
+    this.setPressureEffects(
+      channel3,
+      note,
+      "polyphonicKeyPressureTable",
+      scheduleTime2
+    );
   }
   setPressureEffects(channel3, note, tableName, scheduleTime2) {
     const handlers = this.effectHandlers;
@@ -8422,8 +8439,14 @@ var Midy = class extends EventTarget {
       const baseline = pressureBaselines[i];
       const tableValue = table[i];
       if (baseline === tableValue) continue;
-      handlers[i](channel3, note, scheduleTime2);
+      handlers[i](channel3, note, tableName, scheduleTime2);
     }
+  }
+  handleChannelPressureSysEx(data3, scheduleTime2) {
+    this.handlePressureSysEx(data3, "channelPressureTable", scheduleTime2);
+  }
+  handlePolyphonicKeyPressureSysEx(data3, scheduleTime2) {
+    this.handlePressureSysEx(data3, "polyphonicKeyPressureTable", scheduleTime2);
   }
   handlePressureSysEx(data3, tableName, scheduleTime2) {
     const channelNumber = data3[4];
@@ -8436,7 +8459,7 @@ var Midy = class extends EventTarget {
       table[pp] = rr;
       const handler = this.effectHandlers[pp];
       this.processActiveNotes(channel3, scheduleTime2, (note) => {
-        if (handler) handler(channel3, note, scheduleTime2);
+        if (handler) handler(channel3, note, tableName, scheduleTime2);
       });
     }
   }
@@ -8454,7 +8477,7 @@ var Midy = class extends EventTarget {
       table[pp + 6] = rr;
       const handler = this.effectHandlers[pp];
       this.processActiveNotes(channel3, scheduleTime2, (note) => {
-        if (handler) handler(channel3, note, scheduleTime2);
+        if (handler) handler(channel3, note, "controlTable", scheduleTime2);
       });
     }
   }
