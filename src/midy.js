@@ -2438,6 +2438,10 @@ export class Midy extends EventTarget {
     const intPart = Math.trunc(value);
     state.volumeMSB = intPart / 127;
     state.volumeLSB = value - intPart;
+    this.applyVolume(channel, scheduleTime);
+  }
+
+  applyVolume(channel, scheduleTime) {
     if (channel.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel, i, scheduleTime);
@@ -3549,27 +3553,32 @@ export class Midy extends EventTarget {
 
   createEffectHandlers() {
     const handlers = new Array(6);
-    handlers[0] = (channel, note, scheduleTime) => {
+    handlers[0] = (channel, note, _tableName, scheduleTime) => {
       if (this.isPortamento(channel, note)) {
         this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
         this.setDetune(channel, note, scheduleTime);
       }
     };
-    handlers[1] = (channel, note, scheduleTime) => {
+    handlers[1] = (channel, note, _tableName, scheduleTime) => {
       if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (channel, note, scheduleTime) =>
-      this.setVolumeNode(channel, note, scheduleTime);
-    handlers[3] = (channel, note, scheduleTime) =>
+    handlers[2] = (channel, note, tableName, scheduleTime) => {
+      if (tableName === "polyphonicKeyPressureTable") {
+        this.setVolumeNode(channel, note, scheduleTime);
+      } else {
+        this.applyVolume(channel, scheduleTime);
+      }
+    };
+    handlers[3] = (channel, note, _tableName, scheduleTime) =>
       this.setModLfoToPitch(channel, note, scheduleTime);
-    handlers[4] = (channel, note, scheduleTime) =>
+    handlers[4] = (channel, note, _tableName, scheduleTime) =>
       this.setModLfoToFilterFc(channel, note, scheduleTime);
-    handlers[5] = (channel, note, scheduleTime) =>
+    handlers[5] = (channel, note, _tableName, scheduleTime) =>
       this.setModLfoToVolume(channel, note, scheduleTime);
     return handlers;
   }
@@ -3580,7 +3589,7 @@ export class Midy extends EventTarget {
       const baseline = pressureBaselines[i];
       const tableValue = channel.controlTable[i + 6];
       if (baseline === tableValue) continue;
-      handlers[i](channel, note, scheduleTime);
+      handlers[i](channel, note, "controlTable", scheduleTime);
     }
   }
 
@@ -3609,7 +3618,7 @@ export class Midy extends EventTarget {
       const baseline = pressureBaselines[i];
       const tableValue = table[i];
       if (baseline === tableValue) continue;
-      handlers[i](channel, note, scheduleTime);
+      handlers[i](channel, note, tableName, scheduleTime);
     }
   }
 
@@ -3632,7 +3641,7 @@ export class Midy extends EventTarget {
       table[pp] = rr;
       const handler = this.effectHandlers[pp];
       this.processActiveNotes(channel, scheduleTime, (note) => {
-        if (handler) handler(channel, note, scheduleTime);
+        if (handler) handler(channel, note, tableName, scheduleTime);
       });
     }
   }
@@ -3651,7 +3660,7 @@ export class Midy extends EventTarget {
       table[pp + 6] = rr;
       const handler = this.effectHandlers[pp];
       this.processActiveNotes(channel, scheduleTime, (note) => {
-        if (handler) handler(channel, note, scheduleTime);
+        if (handler) handler(channel, note, "controlTable", scheduleTime);
       });
     }
   }

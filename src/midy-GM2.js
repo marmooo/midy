@@ -2176,6 +2176,10 @@ export class MidyGM2 extends EventTarget {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     channel.state.volumeMSB = value / 127;
+    this.applyVolume(channel, scheduleTime);
+  }
+
+  applyVolume(channel, scheduleTime) {
     if (channel.isDrum) {
       for (let i = 0; i < 128; i++) {
         this.updateKeyBasedVolume(channel, i, scheduleTime);
@@ -3031,13 +3035,8 @@ export class MidyGM2 extends EventTarget {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (channel, note, scheduleTime) => {
-      if (0.5 <= channel.state.portamemento && 0 <= note.portamentoNoteNumber) {
-        this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
-      } else {
-        this.setVolumeEnvelope(channel, note, scheduleTime);
-      }
-    };
+    handlers[2] = (channel, note, scheduleTime) =>
+      this.applyVolume(channel, note, scheduleTime);
     handlers[3] = (channel, note, scheduleTime) =>
       this.setModLfoToPitch(channel, note, scheduleTime);
     handlers[4] = (channel, note, scheduleTime) =>
