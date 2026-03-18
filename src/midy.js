@@ -44,6 +44,52 @@ class Note {
   }
 }
 
+class Channel {
+  isDrum = false;
+  programNumber = 0;
+  scheduleIndex = 0;
+  detune = 0;
+  bankMSB = 121;
+  bankLSB = 0;
+  dataMSB = 0;
+  dataLSB = 0;
+  rpnMSB = 127;
+  rpnLSB = 127;
+  mono = false; // CC#124, CC#125
+  modulationDepthRange = 50; // cent
+  fineTuning = 0; // cent
+  coarseTuning = 0; // cent
+  scheduledNotes = [];
+  sustainNotes = [];
+  sostenutoNotes = [];
+  controlTable = new Int8Array(defaultControlValues);
+  scaleOctaveTuningTable = new Float32Array(12); // [-100, 100] cent
+  channelPressureTable = new Int8Array(defaultPressureValues);
+  polyphonicKeyPressureTable = new Int8Array(defaultPressureValues);
+  keyBasedTable = new Int8Array(128 * 128).fill(-1);
+  keyBasedGainLs = new Array(128);
+  keyBasedGainRs = new Array(128);
+  currentBufferSource = null;
+
+  constructor(audioNodes, settings) {
+    Object.assign(this, audioNodes);
+    Object.assign(this, settings);
+    this.state = new ControllerState();
+  }
+
+  resetSettings(settings) {
+    Object.assign(this, settings);
+  }
+
+  resetTable(channel) {
+    channel.controlTable.set(defaultControlValues);
+    channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
+    channel.channelPressureTable.set(defaultPressureValues);
+    channel.polyphonicKeyPressureTable.set(defaultPressureValues);
+    channel.keyBasedTable.fill(-1);
+  }
+}
+
 const drumExclusiveClassesByKit = new Array(57);
 const drumExclusiveClassCount = 10;
 const standardSet = new Uint8Array(128);
@@ -439,35 +485,12 @@ export class Midy extends EventTarget {
     };
   }
 
-  resetChannelTable(channel) {
-    channel.controlTable.set(defaultControlValues);
-    channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
-    channel.channelPressureTable.set(defaultPressureValues);
-    channel.polyphonicKeyPressureTable.set(defaultPressureValues);
-    channel.keyBasedTable.fill(-1);
-  }
-
   createChannels(audioContext) {
-    const channels = Array.from({ length: this.numChannels }, () => {
-      return {
-        currentBufferSource: null,
-        isDrum: false,
-        state: new ControllerState(),
-        ...this.constructor.channelSettings,
-        ...this.createChannelAudioNodes(audioContext),
-        scheduledNotes: [],
-        sustainNotes: [],
-        sostenutoNotes: [],
-        controlTable: new Int8Array(defaultControlValues),
-        scaleOctaveTuningTable: new Float32Array(12), // [-100, 100] cent
-        channelPressureTable: new Int8Array(defaultPressureValues),
-        polyphonicKeyPressureTable: new Int8Array(defaultPressureValues),
-        keyBasedTable: new Int8Array(128 * 128).fill(-1),
-        keyBasedGainLs: new Array(128),
-        keyBasedGainRs: new Array(128),
-      };
-    });
-    return channels;
+    const settings = this.constructor.channelSettings;
+    return Array.from(
+      { length: this.numChannels },
+      () => new Channel(this.createChannelAudioNodes(audioContext), settings),
+    );
   }
 
   decodeOggVorbis(sample) {
@@ -2949,10 +2972,8 @@ export class Midy extends EventTarget {
         state[key] = defaultValue;
       }
     }
-    for (const key of Object.keys(this.constructor.channelSettings)) {
-      channel[key] = this.constructor.channelSettings[key];
-    }
-    this.resetChannelTable(channel);
+    channel.resetSettings(this.constructor.channelSettings);
+    this.resetTable(channel);
     this.mode = "GM2";
     this.masterFineTuning = 0; // cent
     this.masterCoarseTuning = 0; // cent
