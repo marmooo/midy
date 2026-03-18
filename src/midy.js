@@ -1698,20 +1698,15 @@ export class Midy extends EventTarget {
 
   async noteOn(channelNumber, noteNumber, velocity, startTime) {
     if (this.mpeEnabled) {
-      const note = await this.startNote(
-        channelNumber,
-        noteNumber,
-        velocity,
-        startTime,
-      );
+      const channel = this.channels[channelNumber];
+      const noteIndex = channel.scheduledNotes.length;
       if (!this.mpeState.channelToNotes.has(channelNumber)) {
         this.mpeState.channelToNotes.set(channelNumber, new Set());
       }
-      this.mpeState.channelToNotes.get(channelNumber).add(note.index);
-      this.mpeState.noteToChannel.set(note.index, channelNumber);
-    } else {
-      await this.startNote(channelNumber, noteNumber, velocity, startTime);
+      this.mpeState.channelToNotes.get(channelNumber).add(noteIndex);
+      this.mpeState.noteToChannel.set(noteIndex, channelNumber);
     }
+    await this.startNote(channelNumber, noteNumber, velocity, startTime);
   }
 
   async startNote(channelNumber, noteNumber, velocity, startTime) {
