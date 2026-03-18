@@ -5243,6 +5243,53 @@ var Note = class {
     });
   }
 };
+var Channel = class {
+  isDrum = false;
+  programNumber = 0;
+  scheduleIndex = 0;
+  detune = 0;
+  bankMSB = 121;
+  bankLSB = 0;
+  dataMSB = 0;
+  dataLSB = 0;
+  rpnMSB = 127;
+  rpnLSB = 127;
+  mono = false;
+  // CC#124, CC#125
+  modulationDepthRange = 50;
+  // cent
+  fineTuning = 0;
+  // cent
+  coarseTuning = 0;
+  // cent
+  scheduledNotes = [];
+  sustainNotes = [];
+  sostenutoNotes = [];
+  controlTable = new Int8Array(defaultControlValues);
+  scaleOctaveTuningTable = new Float32Array(12);
+  // [-100, 100] cent
+  channelPressureTable = new Int8Array(defaultPressureValues);
+  polyphonicKeyPressureTable = new Int8Array(defaultPressureValues);
+  keyBasedTable = new Int8Array(128 * 128).fill(-1);
+  keyBasedGainLs = new Array(128);
+  keyBasedGainRs = new Array(128);
+  currentBufferSource = null;
+  constructor(audioNodes, settings) {
+    Object.assign(this, audioNodes);
+    Object.assign(this, settings);
+    this.state = new ControllerState();
+  }
+  resetSettings(settings) {
+    Object.assign(this, settings);
+  }
+  resetTable(channel3) {
+    channel3.controlTable.set(defaultControlValues);
+    channel3.scaleOctaveTuningTable.fill(0);
+    channel3.channelPressureTable.set(defaultPressureValues);
+    channel3.polyphonicKeyPressureTable.set(defaultPressureValues);
+    channel3.keyBasedTable.fill(-1);
+  }
+};
 var drumExclusiveClassesByKit = new Array(57);
 var drumExclusiveClassCount = 10;
 var standardSet = new Uint8Array(128);
@@ -5630,35 +5677,12 @@ var Midy = class extends EventTarget {
       merger
     };
   }
-  resetChannelTable(channel3) {
-    channel3.controlTable.set(defaultControlValues);
-    channel3.scaleOctaveTuningTable.fill(0);
-    channel3.channelPressureTable.set(defaultPressureValues);
-    channel3.polyphonicKeyPressureTable.set(defaultPressureValues);
-    channel3.keyBasedTable.fill(-1);
-  }
   createChannels(audioContext) {
-    const channels2 = Array.from({ length: this.numChannels }, () => {
-      return {
-        currentBufferSource: null,
-        isDrum: false,
-        state: new ControllerState(),
-        ...this.constructor.channelSettings,
-        ...this.createChannelAudioNodes(audioContext),
-        scheduledNotes: [],
-        sustainNotes: [],
-        sostenutoNotes: [],
-        controlTable: new Int8Array(defaultControlValues),
-        scaleOctaveTuningTable: new Float32Array(12),
-        // [-100, 100] cent
-        channelPressureTable: new Int8Array(defaultPressureValues),
-        polyphonicKeyPressureTable: new Int8Array(defaultPressureValues),
-        keyBasedTable: new Int8Array(128 * 128).fill(-1),
-        keyBasedGainLs: new Array(128),
-        keyBasedGainRs: new Array(128)
-      };
-    });
-    return channels2;
+    const settings = this.constructor.channelSettings;
+    return Array.from(
+      { length: this.numChannels },
+      () => new Channel(this.createChannelAudioNodes(audioContext), settings)
+    );
   }
   decodeOggVorbis(sample2) {
     const task = decoderQueue.then(async () => {
@@ -6755,20 +6779,15 @@ var Midy = class extends EventTarget {
   }
   async noteOn(channelNumber, noteNumber, velocity, startTime) {
     if (this.mpeEnabled) {
-      const note = await this.startNote(
-        channelNumber,
-        noteNumber,
-        velocity,
-        startTime
-      );
+      const channel3 = this.channels[channelNumber];
+      const noteIndex = channel3.scheduledNotes.length;
       if (!this.mpeState.channelToNotes.has(channelNumber)) {
         this.mpeState.channelToNotes.set(channelNumber, /* @__PURE__ */ new Set());
       }
-      this.mpeState.channelToNotes.get(channelNumber).add(note.index);
-      this.mpeState.noteToChannel.set(note.index, channelNumber);
-    } else {
-      await this.startNote(channelNumber, noteNumber, velocity, startTime);
+      this.mpeState.channelToNotes.get(channelNumber).add(noteIndex);
+      this.mpeState.noteToChannel.set(noteIndex, channelNumber);
     }
+    await this.startNote(channelNumber, noteNumber, velocity, startTime);
   }
   async startNote(channelNumber, noteNumber, velocity, startTime) {
     const channel3 = this.channels[channelNumber];
@@ -7850,10 +7869,8 @@ var Midy = class extends EventTarget {
         state[key] = defaultValue;
       }
     }
-    for (const key of Object.keys(this.constructor.channelSettings)) {
-      channel3[key] = this.constructor.channelSettings[key];
-    }
-    this.resetChannelTable(channel3);
+    channel3.resetSettings(this.constructor.channelSettings);
+    this.resetTable(channel3);
     this.mode = "GM2";
     this.masterFineTuning = 0;
     this.masterCoarseTuning = 0;

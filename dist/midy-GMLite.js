@@ -5234,6 +5234,29 @@ var Note = class {
     });
   }
 };
+var Channel = class {
+  isDrum = false;
+  programNumber = 0;
+  scheduleIndex = 0;
+  detune = 0;
+  dataMSB = 0;
+  dataLSB = 0;
+  rpnMSB = 127;
+  rpnLSB = 127;
+  modulationDepthRange = 50;
+  // cent
+  scheduledNotes = [];
+  sustainNotes = [];
+  currentBufferSource = null;
+  constructor(audioNodes, settings) {
+    Object.assign(this, audioNodes);
+    Object.assign(this, settings);
+    this.state = new ControllerState();
+  }
+  resetSettings(settings) {
+    Object.assign(this, settings);
+  }
+};
 var drumExclusiveClasses = new Uint8Array(128);
 drumExclusiveClasses[42] = 1;
 drumExclusiveClasses[44] = 1;
@@ -5500,18 +5523,11 @@ var MidyGMLite = class extends EventTarget {
     };
   }
   createChannels(audioContext) {
-    const channels2 = Array.from({ length: this.numChannels }, () => {
-      return {
-        currentBufferSource: null,
-        isDrum: false,
-        state: new ControllerState(),
-        ...this.constructor.channelSettings,
-        ...this.createChannelAudioNodes(audioContext),
-        scheduledNotes: [],
-        sustainNotes: []
-      };
-    });
-    return channels2;
+    const settings = this.constructor.channelSettings;
+    return Array.from(
+      { length: this.numChannels },
+      () => new Channel(this.createChannelAudioNodes(audioContext), settings)
+    );
   }
   decodeOggVorbis(sample2) {
     const task = decoderQueue.then(async () => {
@@ -6640,9 +6656,7 @@ var MidyGMLite = class extends EventTarget {
         state[key] = defaultValue;
       }
     }
-    for (const key of Object.keys(this.constructor.channelSettings)) {
-      channel3[key] = this.constructor.channelSettings[key];
-    }
+    channel3.resetSettings(this.constructor.channelSettings);
     this.mode = "GM1";
   }
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
