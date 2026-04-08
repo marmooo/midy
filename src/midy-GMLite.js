@@ -65,8 +65,8 @@ class Channel {
 const drumExclusiveClasses = new Uint8Array(128);
 drumExclusiveClasses[42] = 1;
 drumExclusiveClasses[44] = 1;
-drumExclusiveClasses[46] = 1, // HH
-  drumExclusiveClasses[71] = 2;
+drumExclusiveClasses[46] = 1; // HH
+drumExclusiveClasses[71] = 2;
 drumExclusiveClasses[72] = 2; // Whistle
 drumExclusiveClasses[73] = 3;
 drumExclusiveClasses[74] = 3; // Guiro
