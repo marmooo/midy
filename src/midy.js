@@ -1395,9 +1395,6 @@ export class Midy extends EventTarget {
 
   setDetune(channel, note, scheduleTime) {
     const detune = this.calcNoteDetune(channel, note);
-    note.bufferSource.detune
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(detune, scheduleTime);
     const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     note.bufferSource.detune
       .cancelAndHoldAtTime(scheduleTime)
