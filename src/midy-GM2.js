@@ -3056,8 +3056,8 @@ export class MidyGM2 extends EventTarget {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (channel, note, scheduleTime) =>
-      this.applyVolume(channel, note, scheduleTime);
+    handlers[2] = (channel, _note, scheduleTime) =>
+      this.applyVolume(channel, scheduleTime);
     handlers[3] = (channel, note, scheduleTime) =>
       this.setModLfoToPitch(channel, note, scheduleTime);
     handlers[4] = (channel, note, scheduleTime) =>
