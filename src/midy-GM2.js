@@ -3024,6 +3024,10 @@ export class MidyGM2 extends EventTarget {
     return this.calcChannelEffectValue(channel, 2);
   }
 
+  getAmplitudeControl(channel) {
+    return this.calcEffectValue(channel, 2);
+  }
+
   getLFOPitchDepth(channel) {
     return this.calcEffectValue(channel, 3);
   }
