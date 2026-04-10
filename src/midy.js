@@ -842,12 +842,12 @@ export class Midy extends EventTarget {
             if (data[0] === 126 && data[1] === 9 && data[2] === 3) {
               switch (data[3]) {
                 case 1:
-                  this.GM1SystemOn(scheduleTime);
+                  this.GM1SystemOn();
                   break;
                 case 2: // GM System Off
                   break;
                 case 3:
-                  this.GM2SystemOn(scheduleTime);
+                  this.GM2SystemOn();
                   break;
                 default:
                   console.warn(`Unsupported Exclusive Message: ${data}`);
