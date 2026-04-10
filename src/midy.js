@@ -3156,7 +3156,7 @@ export class Midy extends EventTarget {
       case 9:
         switch (data[3]) {
           case 1: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
-            return this.handleChannelPressureSysEx(data, scheduelTime);
+            return this.handleChannelPressureSysEx(data, scheduleTime);
           case 2: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
             return this.handlePolyphonicKeyPressureSysEx(data, scheduleTime);
           case 3: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/ca22.pdf
