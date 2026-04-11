@@ -2283,7 +2283,6 @@ export class Midy extends EventTarget {
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
     state[10] = polyphonicKeyPressure / 127;
-    state[13] = state.channelPressure / 127;
     return state;
   }
 

@@ -2059,7 +2059,6 @@ export class MidyGM2 extends EventTarget {
     state.set(channel.state.array);
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
-    state[13] = state.channelPressure / 127;
     return state;
   }
 
