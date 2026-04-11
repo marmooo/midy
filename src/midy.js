@@ -2245,7 +2245,7 @@ export class Midy extends EventTarget {
       reverbEffectsSend: (channel, note, scheduleTime) => {
         this.setReverbSend(channel, note, scheduleTime);
       },
-      delayModLFO: (_channel, note, _scheduleTime) => {
+      delayModLFO: (channel, note, _scheduleTime) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setDelayModLFO(note);

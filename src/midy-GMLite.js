@@ -1359,7 +1359,7 @@ export class MidyGMLite extends EventTarget {
       },
       chorusEffectsSend: (_channel, _note, _scheduleTime) => {},
       reverbEffectsSend: (_channel, _note, _scheduleTime) => {},
-      delayModLFO: (_channel, note, scheduleTime) => {
+      delayModLFO: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepth) {
           this.setDelayModLFO(note, scheduleTime);
         }

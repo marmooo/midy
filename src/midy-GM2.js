@@ -2024,7 +2024,7 @@ export class MidyGM2 extends EventTarget {
       reverbEffectsSend: (channel, note, scheduleTime) => {
         this.setReverbSend(channel, note, scheduleTime);
       },
-      delayModLFO: (_channel, note, _scheduleTime) => {
+      delayModLFO: (channel, note, _scheduleTime) => {
         if (0 < channel.state.modulationDepthMSB) {
           this.setDelayModLFO(note);
         }
