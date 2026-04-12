@@ -1474,11 +1474,15 @@ export class MidyGM1 extends EventTarget {
   setSustainPedal(channelNumber, value, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    channel.state.sustainPedal = value / 127;
+    const state = channel.state;
+    const prevValue = state.sustainPedal;
+    state.sustainPedal = value / 127;
     if (64 <= value) {
-      this.processScheduledNotes(channel, (note) => {
-        channel.sustainNotes.push(note);
-      });
+      if (prevValue < 0.5) {
+        this.processScheduledNotes(channel, (note) => {
+          channel.sustainNotes.push(note);
+        });
+      }
     } else {
       this.releaseSustainPedal(channelNumber, value, scheduleTime);
     }
