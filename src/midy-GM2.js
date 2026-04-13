@@ -1609,9 +1609,6 @@ export class MidyGM2 extends EventTarget {
       volumeEnvelopeNode.connect(channel.gainL);
       volumeEnvelopeNode.connect(channel.gainR);
     }
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
   }
@@ -1639,6 +1636,12 @@ export class MidyGM2 extends EventTarget {
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
+    if (0.5 <= channel.state.sostenutoPedal) {
+      channel.sostenutoNotes.push(note);
+    }
   }
 
   disconnectNote(note) {

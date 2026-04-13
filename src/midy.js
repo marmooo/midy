@@ -1709,9 +1709,6 @@ export class Midy extends EventTarget {
       volumeNode.connect(channel.gainL);
       volumeNode.connect(channel.gainR);
     }
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
   }
@@ -1753,6 +1750,12 @@ export class Midy extends EventTarget {
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
+    if (0.5 <= channel.state.sostenutoPedal) {
+      channel.sostenutoNotes.push(note);
+    }
     return note;
   }
 
@@ -2596,17 +2599,13 @@ export class Midy extends EventTarget {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const state = channel.state;
-    const prevValue = state.sustainPedal;
-    state.sostenutoPedal = value / 127;
+    channel.state.sostenutoPedal = value / 127;
     if (64 <= value) {
-      if (prevValue < 0.5) {
-        const sostenutoNotes = [];
-        this.processActiveNotes(channel, scheduleTime, (note) => {
-          sostenutoNotes.push(note);
-        });
-        channel.sostenutoNotes = sostenutoNotes;
-      }
+      const sostenutoNotes = [];
+      this.processActiveNotes(channel, scheduleTime, (note) => {
+        sostenutoNotes.push(note);
+      });
+      channel.sostenutoNotes = sostenutoNotes;
     } else {
       this.releaseSostenutoPedal(channelNumber, value, scheduleTime);
     }

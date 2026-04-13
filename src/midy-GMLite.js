@@ -1078,9 +1078,6 @@ export class MidyGMLite extends EventTarget {
     const volumeEnvelopeNode = note.volumeEnvelopeNode;
     volumeEnvelopeNode.connect(channel.gainL);
     volumeEnvelopeNode.connect(channel.gainR);
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
     this.handleExclusiveClass(note, channelNumber, startTime);
     this.handleDrumExclusiveClass(note, channelNumber, startTime);
   }
@@ -1109,6 +1106,9 @@ export class MidyGMLite extends EventTarget {
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
+    if (0.5 <= channel.state.sustainPedal) {
+      channel.sustainNotes.push(note);
+    }
   }
 
   disconnectNote(note) {
