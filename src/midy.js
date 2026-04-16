@@ -81,12 +81,12 @@ class Channel {
     Object.assign(this, settings);
   }
 
-  resetTable(channel) {
-    channel.controlTable.set(defaultControlValues);
-    channel.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
-    channel.channelPressureTable.set(defaultPressureValues);
-    channel.polyphonicKeyPressureTable.set(defaultPressureValues);
-    channel.keyBasedTable.fill(-1);
+  resetTable() {
+    this.controlTable.set(defaultControlValues);
+    this.scaleOctaveTuningTable.fill(0); // [-100, 100] cent
+    this.channelPressureTable.set(defaultPressureValues);
+    this.polyphonicKeyPressureTable.set(defaultPressureValues);
+    this.keyBasedTable.fill(-1);
   }
 }
 
@@ -331,9 +331,6 @@ export class Midy extends EventTarget {
 
   constructor(audioContext) {
     super();
-    this.decoder = new OggVorbisDecoderWebWorker();
-    this.decoderReady = this.decoder.ready;
-    this.decoderQueue = Promise.resolve();
     this.audioContext = audioContext;
     this.masterVolume = new GainNode(audioContext);
     this.scheduler = new GainNode(audioContext, { gain: 0 });
@@ -2082,7 +2079,7 @@ export class Midy extends EventTarget {
   }
 
   setModLfoToPitch(channel, note, scheduleTime) {
-    if (note.modulationDepth) {
+    if (note.modLfoToPitch) {
       const { modulationDepthMSB, modulationDepthLSB } = channel.state;
       const modulationDepth = modulationDepthMSB + modulationDepthLSB / 128;
       const modLfoToPitch = note.voiceParams.modLfoToPitch +
@@ -2401,8 +2398,8 @@ export class Midy extends EventTarget {
     const modulationDepth = modulationDepthMSB + modulationDepthLSB / 128;
     const depth = modulationDepth * channel.modulationDepthRange;
     this.processScheduledNotes(channel, (note) => {
-      if (note.modulationDepth) {
-        note.modulationDepth.gain.setValueAtTime(depth, scheduleTime);
+      if (note.modLfoToPitch) {
+        note.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
       } else {
         this.startModulation(channel, note, scheduleTime);
       }
@@ -2976,7 +2973,7 @@ export class Midy extends EventTarget {
       }
     }
     channel.resetSettings(this.constructor.channelSettings);
-    this.resetTable(channel);
+    channel.resetTable();
     this.mode = "GM2";
     this.masterFineTuning = 0; // cent
     this.masterCoarseTuning = 0; // cent
