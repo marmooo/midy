@@ -578,14 +578,15 @@ export class MidyGM2 extends EventTarget {
             startTime,
           );
           break;
-        case "channelAftertouch":
-          this.setChannelPressure(event.channel, event.amount, startTime);
-          break;
         case "pitchBend":
           this.setPitchBend(event.channel, event.value + 8192, startTime);
           break;
         case "sysEx":
           this.handleSysEx(event.data, startTime);
+          break;
+        case "channelAftertouch":
+          this.setChannelPressure(event.channel, event.amount, startTime);
+          break;
       }
       queueIndex++;
     }
@@ -648,6 +649,13 @@ export class MidyGM2 extends EventTarget {
         case "sysEx":
           this.handleSysEx(
             event.data,
+            now - resumeTime + event.startTime * inverseTempo,
+          );
+          break;
+        case "channelAftertouch":
+          this.setChannelPressure(
+            event.channel,
+            event.amount,
             now - resumeTime + event.startTime * inverseTempo,
           );
       }

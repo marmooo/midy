@@ -594,14 +594,6 @@ export class Midy extends EventTarget {
           );
           break;
         }
-        case "noteAftertouch":
-          this.setPolyphonicKeyPressure(
-            event.channel,
-            event.noteNumber,
-            event.amount,
-            startTime,
-          );
-          break;
         case "controller":
           this.setControlChange(
             event.channel,
@@ -617,14 +609,22 @@ export class Midy extends EventTarget {
             startTime,
           );
           break;
-        case "channelAftertouch":
-          this.setChannelPressure(event.channel, event.amount, startTime);
-          break;
         case "pitchBend":
           this.setPitchBend(event.channel, event.value + 8192, startTime);
           break;
         case "sysEx":
           this.handleSysEx(event.data, startTime);
+          break;
+        case "channelAftertouch":
+          this.setChannelPressure(event.channel, event.amount, startTime);
+          break;
+        case "noteAftertouch":
+          this.setPolyphonicKeyPressure(
+            event.channel,
+            event.noteNumber,
+            event.amount,
+            startTime,
+          );
       }
       queueIndex++;
     }
@@ -689,6 +689,22 @@ export class Midy extends EventTarget {
             event.data,
             now - resumeTime + event.startTime * inverseTempo,
           );
+          break;
+        case "channelAftertouch":
+          this.setChannelPressure(
+            event.channel,
+            event.amount,
+            now - resumeTime + event.startTime * inverseTempo,
+          );
+          break;
+        case "noteAftertouch":
+          this.setPolyphonicKeyPressure(
+            event.channel,
+            event.noteNumber,
+            event.amount,
+            now - resumeTime + event.startTime * inverseTempo,
+          );
+          break;
       }
     }
   }
