@@ -94,6 +94,18 @@ midy.addEventListener("resumed", func);
 midy.addEventListener("seeked", func);
 ```
 
+## Cache Mode
+
+- "none" -for full real-time control (dynamic CC, LFO, pitch)
+- "ads" - for real-time playback with higher cache hit rate
+- "adsr" - for real-time playback with accurate release envelope
+- "note" - for efficient playback when note behavior is fixed
+- "audio" - for fully pre-rendered playback (lowest CPU)
+
+```
+const midy = new Midy(audioContext, { cacheMode: "note" });
+```
+
 ### MIDI Message
 
 There are functions that handle MIDI messages as they are, as well as simplified
