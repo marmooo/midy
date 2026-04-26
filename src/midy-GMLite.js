@@ -43,7 +43,7 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 //   A "rendering" event is dispatched when rendering starts, and a
 //   "rendered" event is dispatched when rendering completes.
 /** @type {"none"|"ads"|"adsr"|"note"|"audio"} */
-const DEFAULT_CACHE_MODE = "audio";
+const DEFAULT_CACHE_MODE = "ads";
 
 const _f64Buf = new ArrayBuffer(8);
 const _f64Array = new Float64Array(_f64Buf);
