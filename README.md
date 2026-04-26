@@ -96,7 +96,7 @@ midy.addEventListener("seeked", func);
 
 ## Cache Mode
 
-- "none" -for full real-time control (dynamic CC, LFO, pitch)
+- "none" - for full real-time control (dynamic CC, LFO, pitch)
 - "ads" - for real-time playback with higher cache hit rate
 - "adsr" - for real-time playback with accurate release envelope
 - "note" - for efficient playback when note behavior is fixed
