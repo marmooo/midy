@@ -1,6 +1,11 @@
 import { parseMidi } from "midi-file";
 import { parse, SoundFont } from "@marmooo/soundfont-parser";
 import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
+import {
+  createConvolutionReverb,
+  createConvolutionReverbImpulse,
+  createSchroederReverb,
+} from "./reverb.js";
 
 // Cache mode
 // - "none"  for full real-time control (dynamic CC, LFO, pitch)
@@ -312,7 +317,7 @@ export class MidyGM2 extends EventTarget {
   masterFineTuning = 0; // cent
   masterCoarseTuning = 0; // cent
   reverb = {
-    algorithm: "SchroederReverb",
+    algorithm: "Schroeder",
     time: this.getReverbTime(64),
     feedback: 0.8,
   };
@@ -1532,68 +1537,6 @@ export class MidyGM2 extends EventTarget {
     await Promise.all(tasks);
   }
 
-  createConvolutionReverbImpulse(audioContext, decay, preDecay) {
-    const sampleRate = audioContext.sampleRate;
-    const length = sampleRate * decay;
-    const impulse = new AudioBuffer({
-      numberOfChannels: 2,
-      length,
-      sampleRate,
-    });
-    const preDecayLength = Math.min(sampleRate * preDecay, length);
-    for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
-      const channelData = impulse.getChannelData(channel);
-      for (let i = 0; i < preDecayLength; i++) {
-        channelData[i] = Math.random() * 2 - 1;
-      }
-      const attenuationFactor = 1 / (sampleRate * decay);
-      for (let i = preDecayLength; i < length; i++) {
-        const attenuation = Math.exp(
-          -(i - preDecayLength) * attenuationFactor,
-        );
-        channelData[i] = (Math.random() * 2 - 1) * attenuation;
-      }
-    }
-    return impulse;
-  }
-
-  createConvolutionReverb(audioContext, impulse) {
-    const convolverNode = new ConvolverNode(audioContext, {
-      buffer: impulse,
-    });
-    return {
-      input: convolverNode,
-      output: convolverNode,
-      convolverNode,
-    };
-  }
-
-  createCombFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay,
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    return delayNode;
-  }
-
-  createAllpassFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay,
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    const passGain = new GainNode(audioContext, { gain: 1 - feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    delayNode.connect(passGain);
-    return passGain;
-  }
-
   generateDistributedArray(
     center,
     count,
@@ -1610,61 +1553,25 @@ export class MidyGM2 extends EventTarget {
     return array;
   }
 
-  // https://hajim.rochester.edu/ece/sites/zduan/teaching/ece472/reading/Schroeder_1962.pdf
-  //   M.R.Schroeder, "Natural Sounding Artificial Reverberation", J.Audio Eng. Soc., vol.10, p.219, 1962
-  createSchroederReverb(
-    audioContext,
-    combFeedbacks,
-    combDelays,
-    allpassFeedbacks,
-    allpassDelays,
-  ) {
-    const input = new GainNode(audioContext);
-    const mergerGain = new GainNode(audioContext);
-    for (let i = 0; i < combDelays.length; i++) {
-      const comb = this.createCombFilter(
-        audioContext,
-        input,
-        combDelays[i],
-        combFeedbacks[i],
-      );
-      comb.connect(mergerGain);
-    }
-    const allpasses = [];
-    for (let i = 0; i < allpassDelays.length; i++) {
-      const allpass = this.createAllpassFilter(
-        audioContext,
-        (i === 0) ? mergerGain : allpasses.at(-1),
-        allpassDelays[i],
-        allpassFeedbacks[i],
-      );
-      allpasses.push(allpass);
-    }
-    const output = allpasses.at(-1);
-    return { input, output };
-  }
-
   createReverbEffect(audioContext) {
     const { algorithm, time: rt60, feedback } = this.reverb;
     switch (algorithm) {
       case "ConvolutionReverb": {
-        const impulse = this.createConvolutionReverbImpulse(
+        const impulse = createConvolutionReverbImpulse(
           audioContext,
           rt60,
           this.calcDelay(rt60, feedback),
         );
-        return this.createConvolutionReverb(audioContext, impulse);
+        return createConvolutionReverb(audioContext, impulse);
       }
-      case "SchroederReverb": {
+      case "Schroeder": {
         const combFeedbacks = this.generateDistributedArray(feedback, 4);
-        const combDelays = combFeedbacks.map((feedback) =>
-          this.calcDelay(rt60, feedback)
-        );
+        const combDelays = combFeedbacks.map((fb) => this.calcDelay(rt60, fb));
         const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
-        const allpassDelays = allpassFeedbacks.map((feedback) =>
-          this.calcDelay(rt60, feedback)
+        const allpassDelays = allpassFeedbacks.map((fb) =>
+          this.calcDelay(rt60, fb)
         );
-        return this.createSchroederReverb(
+        return createSchroederReverb(
           audioContext,
           combFeedbacks,
           combDelays,
