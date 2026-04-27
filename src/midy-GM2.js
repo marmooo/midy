@@ -4,7 +4,12 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 import {
   createConvolutionReverb,
   createConvolutionReverbImpulse,
+  createDattorroReverb,
+  createFDNDefault,
+  createFreeverb,
+  createMoorerReverbDefault,
   createSchroederReverb,
+  createVelvetNoiseReverb,
 } from "./reverb.js";
 
 // Cache mode
@@ -1556,7 +1561,7 @@ export class MidyGM2 extends EventTarget {
   createReverbEffect(audioContext) {
     const { algorithm, time: rt60, feedback } = this.reverb;
     switch (algorithm) {
-      case "ConvolutionReverb": {
+      case "Convolution": {
         const impulse = createConvolutionReverbImpulse(
           audioContext,
           rt60,
@@ -1579,6 +1584,36 @@ export class MidyGM2 extends EventTarget {
           allpassDelays,
         );
       }
+      case "Moorer":
+        return createMoorerReverbDefault(audioContext, {
+          rt60,
+          damping: 1 - feedback,
+        });
+      case "FDN":
+        return createFDNDefault(audioContext, { rt60, damping: 1 - feedback });
+      case "Dattorro": {
+        const decay = feedback * 0.28 + 0.7;
+        return createDattorroReverb(audioContext, {
+          decay,
+          damping: 1 - feedback,
+        });
+      }
+      case "Freeverb": {
+        const damping = 1 - feedback;
+        const { inputL, inputR, outputL, outputR } = createFreeverb(
+          audioContext,
+          { roomSize: feedback, damping },
+        );
+        const inputMerger = new GainNode(audioContext);
+        const outputMerger = new GainNode(audioContext, { gain: 0.5 });
+        inputMerger.connect(inputL);
+        inputMerger.connect(inputR);
+        outputL.connect(outputMerger);
+        outputR.connect(outputMerger);
+        return { input: inputMerger, output: outputMerger };
+      }
+      case "VelvetNoise":
+        return createVelvetNoiseReverb(audioContext, rt60);
     }
   }
 
