@@ -8,6 +8,7 @@
 // - Velvet Noise Reverb (2012)
 
 // Convolution Reverb
+
 export function createConvolutionReverbImpulse(audioContext, decay, preDecay) {
   const sampleRate = audioContext.sampleRate;
   const length = sampleRate * decay;
@@ -116,13 +117,13 @@ export function createSchroederReverb(
   const allpasses = [];
   for (let i = 0; i < allpassDelays.length; i++) {
     const src = i === 0 ? mergerGain : allpasses.at(-1);
-    const ap = createAllpassFilter(
+    const allpass = createAllpassFilter(
       audioContext,
       src,
       allpassDelays[i],
       allpassFeedbacks[i],
     );
-    allpasses.push(ap);
+    allpasses.push(allpass);
   }
   return { input, output: allpasses.at(-1) };
 }
@@ -174,13 +175,13 @@ export function createMoorerReverb(
   const allpasses = [];
   for (let i = 0; i < allpassDelays.length; i++) {
     const src = i === 0 ? lateSum : allpasses.at(-1);
-    const ap = createAllpassFilter(
+    const allpass = createAllpassFilter(
       audioContext,
       src,
       allpassDelays[i],
       allpassFeedbacks[i],
     );
-    allpasses.push(ap);
+    allpasses.push(allpass);
   }
   // Mix early + late to output
   const output = new GainNode(audioContext);
@@ -334,7 +335,7 @@ export function createFDNDefault(
 // Topology:
 //   input -> pre-LPF -> 4×allpass (pre-diffusion)
 //         -> split into two "tank" loops (left / right)
-//   each loop: AP -> delay1 -> LPF -> delay2 -> decayGain -> cross-feed
+//   each loop: allpass -> delay1 -> LPF -> delay2 -> decayGain -> cross-feed
 //   output tapped at multiple points from both loops
 
 export function createDattorroReverb(audioContext, {
@@ -362,21 +363,21 @@ export function createDattorroReverb(audioContext, {
   const preDiffs = [];
   for (let i = 0; i < preDiffSamples.length; i++) {
     const src = i === 0 ? preLPF : preDiffs.at(-1);
-    const ap = createAllpassFilter(
+    const allpass = createAllpassFilter(
       audioContext,
       src,
       (preDiffSamples[i] * scale) / sr,
       preDiffFeedbacks[i],
     );
-    preDiffs.push(ap);
+    preDiffs.push(allpass);
   }
   const preDiffOut = preDiffs.at(-1);
 
   // Tank: two cross-coupled loops
-  // Each tank: AP(modulated) -> delay1 -> LPF -> AP -> delay2 -> decayGain -> cross-feed
+  // Each tank: allpass(modulated) -> delay1 -> LPF -> allpass -> delay2 -> decayGain -> cross-feed
   // Sample counts from Dattorro Table 1
-  const tankAPSamples = [672, 908];
-  const tankAPFeedbacks = [0.5, 0.5];
+  const tankAllpassSamples = [672, 908];
+  const tankAllpassFeedbacks = [0.5, 0.5];
   const tankDelay1Samples = [4453, 4217];
   const tankDelay2Samples = [3720, 3163];
   const damp = Math.max(0, Math.min(1, damping));
@@ -387,14 +388,14 @@ export function createDattorroReverb(audioContext, {
 
   const loopOutput = [];
   for (let t = 0; t < 2; t++) {
-    // AP -> delay1 -> LPF -> AP -> delay2 -> decayGain
-    const ap1 = createAllpassFilter(
+    // allpass -> delay1 -> LPF -> allpass -> delay2 -> decayGain
+    const allpass1 = createAllpassFilter(
       audioContext,
       loopInput[t],
-      (tankAPSamples[t] * scale) / sr,
-      tankAPFeedbacks[t],
+      (tankAllpassSamples[t] * scale) / sr,
+      tankAllpassFeedbacks[t],
     );
-    const d1 = new DelayNode(audioContext, {
+    const delay1 = new DelayNode(audioContext, {
       maxDelayTime: (tankDelay1Samples[t] * scale) / sr,
       delayTime: (tankDelay1Samples[t] * scale) / sr,
     });
@@ -402,15 +403,15 @@ export function createDattorroReverb(audioContext, {
       feedforward: [1 - damp],
       feedback: [1, -damp],
     });
-    const d2 = new DelayNode(audioContext, {
+    const delay2 = new DelayNode(audioContext, {
       maxDelayTime: (tankDelay2Samples[t] * scale) / sr,
       delayTime: (tankDelay2Samples[t] * scale) / sr,
     });
     const decayGain = new GainNode(audioContext, { gain: decay });
-    ap1.connect(d1);
-    d1.connect(tankLPF);
-    tankLPF.connect(d2);
-    d2.connect(decayGain);
+    allpass1.connect(delay1);
+    delay1.connect(tankLPF);
+    tankLPF.connect(delay2);
+    delay2.connect(decayGain);
     loopOutput.push(decayGain);
   }
   // Cross-feed: decayGain of each tank feeds the other tank's loopInput
@@ -465,13 +466,13 @@ export function createFreeverb(
     const allpasses = [];
     for (let i = 0; i < FREEVERB_ALLPASS_SAMPLES.length; i++) {
       const src = i === 0 ? sumGain : allpasses.at(-1);
-      const ap = createAllpassFilter(
+      const allpass = createAllpassFilter(
         audioContext,
         src,
         FREEVERB_ALLPASS_SAMPLES[i] / sr,
         FREEVERB_ALLPASS_FEEDBACK,
       );
-      allpasses.push(ap);
+      allpasses.push(allpass);
     }
     return { input: inputGain, output: allpasses.at(-1) };
   };
