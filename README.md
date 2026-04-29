@@ -94,7 +94,7 @@ midy.addEventListener("resumed", func);
 midy.addEventListener("seeked", func);
 ```
 
-## Cache Mode
+### Cache Mode
 
 - "none" - for full real-time control (dynamic CC, LFO, pitch)
 - "ads" - for real-time playback with higher cache hit rate
@@ -104,6 +104,7 @@ midy.addEventListener("seeked", func);
 
 ```
 const midy = new Midy(audioContext, { cacheMode: "note" });
+midy.cacheMode = "audio";
 ```
 
 ### MIDI Message
