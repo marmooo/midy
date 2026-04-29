@@ -107,6 +107,20 @@ const midy = new Midy(audioContext, { cacheMode: "note" });
 midy.cacheMode = "audio";
 ```
 
+### Reverb Mode
+
+- "Convolution" - Convolution Reverb
+- "Schroeder" - Schroeder (1962)
+- "Moorer" - Moorer (1979)
+- "FDN" - FDN (1992)
+- "Dattorro" - Dattorro (1997)
+- "Freeverb" - Freeverb (1999)
+- "VelvetNoise" - Velvet Noise Reverb (2012)
+
+```
+midy.setReverbEffect("CDN");
+```
+
 ### MIDI Message
 
 There are functions that handle MIDI messages as they are, as well as simplified

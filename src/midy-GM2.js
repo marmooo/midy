@@ -407,9 +407,9 @@ export class MidyGM2 extends EventTarget {
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.effectHandlers = this.createEffectHandlers();
-    this.channels = this.createChannels(audioContext);
-    this.reverbEffect = this.createReverbEffect(audioContext);
-    this.chorusEffect = this.createChorusEffect(audioContext);
+    this.channels = this.createChannels();
+    this.reverbEffect = this.createReverbEffect(this.reverb.algorithm);
+    this.chorusEffect = this.createChorusEffect();
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
     this.masterVolume.connect(audioContext.destination);
@@ -700,8 +700,9 @@ export class MidyGM2 extends EventTarget {
     return { gainL, gainR, merger };
   }
 
-  createChannels(audioContext) {
+  createChannels() {
     const settings = this.constructor.channelSettings;
+    const audioContext = this.audioContext;
     return Array.from(
       { length: this.numChannels },
       () => new Channel(this.createChannelAudioNodes(audioContext), settings),
@@ -1558,8 +1559,15 @@ export class MidyGM2 extends EventTarget {
     return array;
   }
 
-  createReverbEffect(audioContext) {
-    const { algorithm, time: rt60, feedback } = this.reverb;
+  setReverbEffect(algorithm) {
+    if (this.reverbEffect) this.reverbEffect.output.disconnect();
+    this.reverbEffect = this.createReverbEffect(algorithm);
+    this.reverb.algorithm = algorithm;
+  }
+
+  createReverbEffect(algorithm) {
+    const { audioContext, reverb } = this;
+    const { time: rt60, feedback } = reverb;
     switch (algorithm) {
       case "Convolution": {
         const impulse = createConvolutionReverbImpulse(
@@ -1614,10 +1622,13 @@ export class MidyGM2 extends EventTarget {
       }
       case "VelvetNoise":
         return createVelvetNoiseReverb(audioContext, rt60);
+      default:
+        throw new Error(`Unknown reverb algorithm: ${algorithm}`);
     }
   }
 
-  createChorusEffect(audioContext) {
+  createChorusEffect() {
+    const audioContext = this.audioContext;
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
     const sendGain = new GainNode(audioContext);
@@ -3793,7 +3804,7 @@ export class MidyGM2 extends EventTarget {
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = (type === 8) ? 0.9 : 0.8;
-    this.reverbEffect = this.createReverbEffect(this.audioContext);
+    this.reverbEffect = this.setReverbEffect(this.reverb.algorithm);
   }
 
   getReverbTimeFromType(type) {
@@ -3817,7 +3828,7 @@ export class MidyGM2 extends EventTarget {
 
   setReverbTime(value) {
     this.reverb.time = this.getReverbTime(value);
-    this.reverbEffect = this.createReverbEffect(this.audioContext);
+    this.reverbEffect = this.setReverbEffect(this.reverb.algorithm);
   }
 
   getReverbTime(value) {
