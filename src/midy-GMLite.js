@@ -1458,10 +1458,11 @@ export class MidyGMLite extends EventTarget {
     const renderDuration = isLoop
       ? alignedLoopStart + loopDuration
       : audioBuffer.duration;
+    const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
-      Math.ceil(renderDuration * this.audioContext.sampleRate),
-      this.audioContext.sampleRate,
+      Math.ceil(renderDuration * sampleRate),
+      sampleRate,
     );
     const bufferSource = new AudioBufferSourceNode(offlineContext);
     bufferSource.buffer = audioBuffer;

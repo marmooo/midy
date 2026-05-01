@@ -2048,18 +2048,19 @@ export class Midy extends EventTarget {
   }
 
   startVibrato(channel, note, scheduleTime) {
+    const audioContext = this.audioContext;
     const { voiceParams, noteNumber } = note;
     const vibratoRate = this.getRelativeKeyBasedValue(channel, noteNumber, 76) *
       2;
     const vibratoDelay =
       this.getRelativeKeyBasedValue(channel, noteNumber, 78) * 2;
-    note.vibLfo = new OscillatorNode(this.audioContext, {
+    note.vibLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqVibLFO) * vibratoRate,
     });
     note.vibLfo.start(
       note.startTime + voiceParams.delayVibLFO * vibratoDelay,
     );
-    note.vibLfoToPitch = new GainNode(this.audioContext);
+    note.vibLfoToPitch = new GainNode(audioContext);
     this.setVibLfoToPitch(channel, note, scheduleTime);
     note.vibLfo.connect(note.vibLfoToPitch);
     note.vibLfoToPitch.connect(note.bufferSource.detune);
@@ -2088,10 +2089,11 @@ export class Midy extends EventTarget {
     const renderDuration = isLoop
       ? alignedLoopStart + loopDuration
       : audioBuffer.duration;
+    const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
-      Math.ceil(renderDuration * this.audioContext.sampleRate),
-      this.audioContext.sampleRate,
+      Math.ceil(renderDuration * sampleRate),
+      sampleRate,
     );
     const bufferSource = new AudioBufferSourceNode(offlineContext);
     bufferSource.buffer = audioBuffer;
