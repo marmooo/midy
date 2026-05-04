@@ -4223,7 +4223,7 @@ export class Midy extends EventTarget {
   setMasterVolume(value, scheduleTime) { // [0-1]
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
-    note.masterVolume.gain
+    this.masterVolume.gain
       .cancelAndHoldAtTime(scheduleTime)
       .setTargetAtTime(value * value, scheduleTime, timeConstant);
   }
