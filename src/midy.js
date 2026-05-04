@@ -2503,7 +2503,6 @@ export class Midy extends EventTarget {
       audioBuffer,
     );
     note.volumeNode = new GainNode(audioContext);
-    note.volumeNode.gain.setValueAtTime(1, now);
 
     const cacheMode = this.cacheMode;
     const isFullCached = isRendered && audioBuffer.isFull === true;
@@ -2747,7 +2746,6 @@ export class Midy extends EventTarget {
         const volRelease = endTime + volDuration;
         note.volumeNode.gain
           .cancelScheduledValues(endTime)
-          .setValueAtTime(1, endTime)
           .setTargetAtTime(0, endTime, volDuration * releaseCurve);
         return new Promise((resolve) => {
           this.scheduleTask(() => {
@@ -2804,7 +2802,6 @@ export class Midy extends EventTarget {
           const volRelease = endTime + volDuration;
           note.volumeNode.gain
             .cancelScheduledValues(endTime)
-            .setValueAtTime(1, endTime)
             .setTargetAtTime(0, endTime, volDuration * releaseCurve);
           return new Promise((resolve) => {
             this.scheduleTask(() => {
@@ -2827,7 +2824,6 @@ export class Midy extends EventTarget {
       }
       note.volumeNode.gain
         .cancelScheduledValues(endTime)
-        .setValueAtTime(1, endTime)
         .setTargetAtTime(0, endTime, volDuration * releaseCurve);
     }
     return new Promise((resolve) => {
