@@ -1447,17 +1447,20 @@ export class MidyGMLite extends EventTarget {
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
     const adsDuration = volHold + decayDuration * decayCurve * 5;
-    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
-    const loopDuration = isLoop
+    const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
+    const sampleLoopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
       : 0;
-    const loopCount = isLoop && adsDuration > loopStartTime
-      ? Math.ceil((adsDuration - loopStartTime) / loopDuration)
+    const playbackRate = voiceParams.playbackRate;
+    const outputLoopStart = sampleLoopStart / playbackRate;
+    const outputLoopDuration = sampleLoopDuration / playbackRate;
+    const loopCount = isLoop && adsDuration > outputLoopStart
+      ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration)
       : 0;
-    const alignedLoopStart = loopStartTime + loopCount * loopDuration;
+    const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
     const renderDuration = isLoop
-      ? alignedLoopStart + loopDuration
-      : audioBuffer.duration;
+      ? alignedLoopStart + outputLoopDuration
+      : audioBuffer.duration / playbackRate;
     const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
@@ -1466,11 +1469,11 @@ export class MidyGMLite extends EventTarget {
     );
     const bufferSource = new AudioBufferSourceNode(offlineContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.playbackRate.value = voiceParams.playbackRate;
+    bufferSource.playbackRate.value = playbackRate;
     bufferSource.loop = isLoop;
     if (isLoop) {
-      bufferSource.loopStart = loopStartTime;
-      bufferSource.loopEnd = loopStartTime + loopDuration;
+      bufferSource.loopStart = sampleLoopStart;
+      bufferSource.loopEnd = sampleLoopStart + sampleLoopDuration;
     }
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
@@ -1503,7 +1506,7 @@ export class MidyGMLite extends EventTarget {
       isLoop,
       adsDuration,
       loopStart: alignedLoopStart,
-      loopDuration,
+      loopDuration: outputLoopDuration,
     });
   }
 
