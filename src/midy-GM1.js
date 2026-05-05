@@ -531,6 +531,7 @@ export class MidyGM1 extends EventTarget {
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
+    if (!voice) return;
     const { instrument, sampleID } = voice.generators;
     return soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
       (sampleID << 8);
