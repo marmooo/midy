@@ -1895,9 +1895,10 @@ export class Midy extends EventTarget {
 
   setVolumeNode(channel, note, scheduleTime) {
     const depth = 1 + this.getNoteAmplitudeControl(channel, note);
+    const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     note.volumeNode.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(depth, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(depth, scheduleTime, timeConstant);
   }
 
   setPortamentoDetune(channel, note, scheduleTime) {
