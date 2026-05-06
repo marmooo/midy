@@ -398,6 +398,7 @@ export class Midy extends EventTarget {
   renderedAudioBuffer = null;
   isRendering = false;
   audioModeBufferSource = null;
+  // MPE
   mpeEnabled = false;
   lowerMPEMembers = 0;
   upperMPEMembers = 0;
