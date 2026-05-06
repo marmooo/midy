@@ -109,6 +109,7 @@ class Note {
 }
 
 class Channel {
+  channelNumber = 0;
   isDrum = false;
   programNumber = 0;
   scheduleIndex = 0;
@@ -135,7 +136,8 @@ class Channel {
   keyBasedGainRs = new Array(128);
   currentBufferSource = null;
 
-  constructor(audioNodes, settings) {
+  constructor(channelNumber, audioNodes, settings) {
+    this.channelNumber = channelNumber;
     Object.assign(this, audioNodes);
     Object.assign(this, settings);
     this.state = new ControllerState();
@@ -738,7 +740,8 @@ export class Midy extends EventTarget {
     const audioContext = this.audioContext;
     return Array.from(
       { length: this.numChannels },
-      () => new Channel(this.createChannelAudioNodes(audioContext), settings),
+      (_, ch) =>
+        new Channel(ch, this.createChannelAudioNodes(audioContext), settings),
     );
   }
 
@@ -1352,6 +1355,7 @@ export class Midy extends EventTarget {
           const soundFont = this.soundFonts[soundFontIndex];
           const pressure = renderNoteAftertouch[ch * 128 + noteNumber];
           const fakeChannel = {
+            channelNumber: ch,
             state: { array: renderControllerStates[ch].slice() },
             programNumber,
             isDrum,
@@ -2259,7 +2263,7 @@ export class Midy extends EventTarget {
     noteEvent = {},
   ) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent;
-    const ch = note.channel ?? 0;
+    const ch = channel.channelNumber;
     const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
     const totalDuration = noteDuration + releaseEndDuration;
     const sampleRate = this.audioContext.sampleRate;
@@ -2328,7 +2332,7 @@ export class Midy extends EventTarget {
     const audioBufferId = this.getVoiceId(channel, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getFullCachedBuffer(note, audioBufferId);
+        return await this.getFullCachedBuffer(channel, note, audioBufferId);
       } else if (cacheMode === "adsr") {
         return await this.getAdsrCachedBuffer(channel, note, audioBufferId);
       }
@@ -2439,7 +2443,7 @@ export class Midy extends EventTarget {
     return await renderPromise;
   }
 
-  async getFullCachedBuffer(note, audioBufferId) {
+  async getFullCachedBuffer(channel, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     const timelineIndex = note.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
@@ -2463,11 +2467,10 @@ export class Midy extends EventTarget {
     }
     const renderPromise = (async () => {
       try {
-        const rawBuffer = await this.createAudioBuffer(voiceParams);
         const rendered = await this.createFullRenderedBuffer(
+          channel,
           note,
           voiceParams,
-          rawBuffer,
           noteDuration,
           noteEvent,
         );
