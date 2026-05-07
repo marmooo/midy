@@ -2036,16 +2036,7 @@ export class MidyGMLite extends EventTarget {
         note.volumeNode.gain
           .cancelScheduledValues(endTime)
           .setTargetAtTime(0, endTime, volDuration * releaseCurve);
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            note.bufferSource.loop = false;
-            note.bufferSource.stop(volRelease);
-            this.disconnectNote(note);
-            channel.scheduledNotes[note.index] = undefined;
-            this.releaseFullCache(note);
-            resolve();
-          }, volRelease);
-        });
+        note.bufferSource.stop(volRelease);
       } else {
         const now = this.audioContext.currentTime;
         if (naturalEndTime <= now) {
@@ -2054,15 +2045,16 @@ export class MidyGMLite extends EventTarget {
           this.releaseFullCache(note);
           return Promise.resolve();
         }
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            this.disconnectNote(note);
-            channel.scheduledNotes[note.index] = undefined;
-            this.releaseFullCache(note);
-            resolve();
-          }, naturalEndTime);
-        });
+        note.bufferSource.stop(naturalEndTime);
       }
+      return new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note);
+          channel.scheduledNotes[note.index] = undefined;
+          this.releaseFullCache(note);
+          resolve();
+        };
+      });
     }
     const volDuration = note.voiceParams.volRelease;
     const volRelease = endTime + volDuration;
@@ -2086,42 +2078,32 @@ export class MidyGMLite extends EventTarget {
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          const volRelease = endTime + volDuration;
           note.volumeNode.gain
             .cancelScheduledValues(endTime)
             .setTargetAtTime(0, endTime, volDuration * releaseCurve);
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop(volRelease);
-              this.disconnectNote(note);
-              channel.scheduledNotes[note.index] = undefined;
-              resolve();
-            }, volRelease);
-          });
+          note.bufferSource.stop(volRelease);
         } else {
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop();
-              this.disconnectNote(note);
-              channel.scheduledNotes[note.index] = undefined;
-              resolve();
-            }, naturalEndTime);
-          });
+          note.bufferSource.stop(naturalEndTime);
         }
+        return new Promise((resolve) => {
+          note.bufferSource.onended = () => {
+            this.disconnectNote(note);
+            channel.scheduledNotes[note.index] = undefined;
+            resolve();
+          };
+        });
       }
       note.volumeNode.gain
         .cancelScheduledValues(endTime)
         .setTargetAtTime(0, endTime, volDuration * releaseCurve);
     }
+    note.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
-      this.scheduleTask(() => {
-        const bufferSource = note.bufferSource;
-        bufferSource.loop = false;
-        bufferSource.stop(volRelease);
+      note.bufferSource.onended = () => {
         this.disconnectNote(note);
         channel.scheduledNotes[note.index] = undefined;
         resolve();
-      }, volRelease);
+      };
     });
   }
 
