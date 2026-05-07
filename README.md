@@ -118,7 +118,7 @@ midy.cacheMode = "audio";
 - "VelvetNoise" - Velvet Noise Reverb (2012)
 
 ```
-midy.setReverbEffect("CDN");
+midy.setReverbEffect("FDN");
 ```
 
 ### MIDI Message
