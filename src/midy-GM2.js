@@ -2542,9 +2542,6 @@ export class MidyGM2 extends EventTarget {
     if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
     const note = new Note(noteNumber, velocity, startTime);
     note.channel = channelNumber;
-    const channel = this.channels[channelNumber];
-    note.index = channel.scheduledNotes.length;
-    channel.scheduledNotes.push(note);
     return note;
   }
 
@@ -2569,6 +2566,8 @@ export class MidyGM2 extends EventTarget {
       note.velocity,
     );
     if (!note.voice) return;
+    note.index = channel.scheduledNotes.length;
+    channel.scheduledNotes.push(note);
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
