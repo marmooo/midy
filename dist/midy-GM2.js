@@ -5201,6 +5201,368 @@ var OggVorbisDecoderWebWorker = class extends OggVorbisDecoder {
 assignNames(OggVorbisDecoder, "OggVorbisDecoder");
 assignNames(OggVorbisDecoderWebWorker, "OggVorbisDecoderWebWorker");
 
+// src/reverb.js
+function createConvolutionReverbImpulse(audioContext, decay, preDecay) {
+  const sampleRate2 = audioContext.sampleRate;
+  const length2 = sampleRate2 * decay;
+  const impulse = new AudioBuffer({ numberOfChannels: 2, length: length2, sampleRate: sampleRate2 });
+  const preDecayLength = Math.min(sampleRate2 * preDecay, length2);
+  for (let channel3 = 0; channel3 < impulse.numberOfChannels; channel3++) {
+    const channelData = impulse.getChannelData(channel3);
+    for (let i = 0; i < preDecayLength; i++) {
+      channelData[i] = Math.random() * 2 - 1;
+    }
+    const attenuationFactor = 1 / (sampleRate2 * decay);
+    for (let i = preDecayLength; i < length2; i++) {
+      const attenuation = Math.exp(-(i - preDecayLength) * attenuationFactor);
+      channelData[i] = (Math.random() * 2 - 1) * attenuation;
+    }
+  }
+  return impulse;
+}
+function createConvolutionReverb(audioContext, impulse) {
+  const convolverNode = new ConvolverNode(audioContext, { buffer: impulse });
+  return { input: convolverNode, output: convolverNode };
+}
+function createCombFilter(audioContext, input, delay, feedback) {
+  const delayNode = new DelayNode(audioContext, {
+    maxDelayTime: delay,
+    delayTime: delay
+  });
+  const feedbackGain = new GainNode(audioContext, { gain: feedback });
+  input.connect(delayNode);
+  delayNode.connect(feedbackGain);
+  feedbackGain.connect(delayNode);
+  return delayNode;
+}
+function createAllpassFilter(audioContext, input, delay, feedback) {
+  const delayNode = new DelayNode(audioContext, {
+    maxDelayTime: delay,
+    delayTime: delay
+  });
+  const feedbackGain = new GainNode(audioContext, { gain: feedback });
+  const passGain = new GainNode(audioContext, { gain: 1 - feedback });
+  input.connect(delayNode);
+  delayNode.connect(feedbackGain);
+  feedbackGain.connect(delayNode);
+  delayNode.connect(passGain);
+  return passGain;
+}
+function createLPFCombFilter(audioContext, input, delayTime, feedback, damping) {
+  const delayNode = new DelayNode(audioContext, {
+    maxDelayTime: delayTime,
+    delayTime
+  });
+  const feedbackGain = new GainNode(audioContext, { gain: feedback });
+  const damp = Math.max(0, Math.min(1, damping));
+  const lpf = new IIRFilterNode(audioContext, {
+    feedforward: [1 - damp],
+    feedback: [1, -damp]
+  });
+  input.connect(delayNode);
+  delayNode.connect(lpf);
+  lpf.connect(feedbackGain);
+  feedbackGain.connect(delayNode);
+  return delayNode;
+}
+function createSchroederReverb(audioContext, combFeedbacks, combDelays, allpassFeedbacks, allpassDelays) {
+  const input = new GainNode(audioContext);
+  const mergerGain = new GainNode(audioContext);
+  for (let i = 0; i < combDelays.length; i++) {
+    const comb = createCombFilter(
+      audioContext,
+      input,
+      combDelays[i],
+      combFeedbacks[i]
+    );
+    comb.connect(mergerGain);
+  }
+  const allpasses = [];
+  for (let i = 0; i < allpassDelays.length; i++) {
+    const src = i === 0 ? mergerGain : allpasses.at(-1);
+    const allpass = createAllpassFilter(
+      audioContext,
+      src,
+      allpassDelays[i],
+      allpassFeedbacks[i]
+    );
+    allpasses.push(allpass);
+  }
+  return { input, output: allpasses.at(-1) };
+}
+function createMoorerReverb(audioContext, earlyTaps, earlyGains, combDelays, combFeedbacks, damping, allpassDelays, allpassFeedbacks) {
+  const input = new GainNode(audioContext);
+  const earlySum = new GainNode(audioContext);
+  for (let i = 0; i < earlyTaps.length; i++) {
+    const tapDelay = new DelayNode(audioContext, {
+      maxDelayTime: earlyTaps[i],
+      delayTime: earlyTaps[i]
+    });
+    const tapGain = new GainNode(audioContext, { gain: earlyGains[i] });
+    input.connect(tapDelay);
+    tapDelay.connect(tapGain);
+    tapGain.connect(earlySum);
+  }
+  const lateSum = new GainNode(audioContext);
+  for (let i = 0; i < combDelays.length; i++) {
+    const comb = createLPFCombFilter(
+      audioContext,
+      earlySum,
+      combDelays[i],
+      combFeedbacks[i],
+      damping
+    );
+    comb.connect(lateSum);
+  }
+  const allpasses = [];
+  for (let i = 0; i < allpassDelays.length; i++) {
+    const src = i === 0 ? lateSum : allpasses.at(-1);
+    const allpass = createAllpassFilter(
+      audioContext,
+      src,
+      allpassDelays[i],
+      allpassFeedbacks[i]
+    );
+    allpasses.push(allpass);
+  }
+  const output = new GainNode(audioContext);
+  earlySum.connect(output);
+  allpasses.at(-1).connect(output);
+  return { input, output };
+}
+function createMoorerReverbDefault(audioContext, {
+  rt60 = 2,
+  damping = 0.3
+} = {}) {
+  const sr = audioContext.sampleRate;
+  const earlyTaps = [43e-4, 0.0215, 0.0225, 0.0268, 0.027, 0.0298, 0.0458];
+  const earlyGains = [0.841, 0.504, 0.491, 0.379, 0.38, 0.346, 0.289];
+  const combSamples = [1309, 1635, 1811, 1926, 2053, 2667];
+  const combDelays = combSamples.map((s) => s / sr);
+  const combFeedbacks = combDelays.map((d) => Math.pow(10, -3 * d / rt60));
+  const allpassDelays = [5e-3, 17e-4];
+  const allpassFeedbacks = [0.7, 0.7];
+  return createMoorerReverb(
+    audioContext,
+    earlyTaps,
+    earlyGains,
+    combDelays,
+    combFeedbacks,
+    damping,
+    allpassDelays,
+    allpassFeedbacks
+  );
+}
+function createFDN(audioContext, delayTimes, gains, damping = 0.2, modulation = 5e-4) {
+  const N = delayTimes.length;
+  if (N !== 4) {
+    throw new Error("createFDN: only N=4 is supported (4x4 Hadamard)");
+  }
+  const H = [
+    [0.5, 0.5, 0.5, 0.5],
+    [0.5, -0.5, 0.5, -0.5],
+    [0.5, 0.5, -0.5, -0.5],
+    [0.5, -0.5, -0.5, 0.5]
+  ];
+  const input = new GainNode(audioContext);
+  const output = new GainNode(audioContext);
+  const delays = delayTimes.map(
+    (t2) => new DelayNode(audioContext, {
+      maxDelayTime: t2 + modulation,
+      delayTime: t2
+    })
+  );
+  const lpfs = delays.map(() => {
+    const damp = Math.max(0, Math.min(1, damping));
+    return new IIRFilterNode(audioContext, {
+      feedforward: [1 - damp],
+      feedback: [1, -damp]
+    });
+  });
+  const attenuations = gains.map(
+    (g) => new GainNode(audioContext, { gain: g })
+  );
+  if (modulation > 0) {
+    delays.forEach((delayNode, i) => {
+      const osc = new OscillatorNode(audioContext, {
+        frequency: 0.3 + i * 0.07
+        // 0.30, 0.37, 0.44, 0.51 Hz
+      });
+      const oscGain = new GainNode(audioContext, { gain: modulation });
+      osc.connect(oscGain);
+      oscGain.connect(delayNode.delayTime);
+      osc.start();
+    });
+  }
+  const inputScale = new GainNode(audioContext, { gain: 1 / N });
+  input.connect(inputScale);
+  delays.forEach((d) => inputScale.connect(d));
+  for (let i = 0; i < N; i++) {
+    delays[i].connect(lpfs[i]);
+    lpfs[i].connect(attenuations[i]);
+  }
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      if (H[j][i] === 0) continue;
+      const matrixGain = new GainNode(audioContext, { gain: H[j][i] });
+      attenuations[i].connect(matrixGain);
+      matrixGain.connect(delays[j]);
+    }
+    delays[j].connect(output);
+  }
+  return { input, output };
+}
+function createFDNDefault(audioContext, { rt60 = 2, damping = 0.2, modulation = 5e-4 } = {}) {
+  const sr = audioContext.sampleRate;
+  const delaySamples = [1049, 1327, 1601, 1873];
+  const delayTimes = delaySamples.map((s) => s / sr);
+  const gains = delayTimes.map((d) => Math.pow(10, -3 * d / rt60));
+  return createFDN(audioContext, delayTimes, gains, damping, modulation);
+}
+function createDattorroReverb(audioContext, {
+  decay = 0.7,
+  damping = 5e-4,
+  bandwidth: bandwidth2 = 0.9995
+} = {}) {
+  const sr = audioContext.sampleRate;
+  const bw = Math.max(0, Math.min(1, bandwidth2));
+  const preLPF = new IIRFilterNode(audioContext, {
+    feedforward: [1 - bw],
+    feedback: [1, -bw]
+  });
+  const scale = sr / 29761;
+  const preDiffSamples = [142, 107, 379, 277];
+  const preDiffFeedbacks = [0.75, 0.75, 0.625, 0.625];
+  const input = new GainNode(audioContext);
+  input.connect(preLPF);
+  const preDiffs = [];
+  for (let i = 0; i < preDiffSamples.length; i++) {
+    const src = i === 0 ? preLPF : preDiffs.at(-1);
+    const allpass = createAllpassFilter(
+      audioContext,
+      src,
+      preDiffSamples[i] * scale / sr,
+      preDiffFeedbacks[i]
+    );
+    preDiffs.push(allpass);
+  }
+  const preDiffOut = preDiffs.at(-1);
+  const tankAllpassSamples = [672, 908];
+  const tankAllpassFeedbacks = [0.5, 0.5];
+  const tankDelay1Samples = [4453, 4217];
+  const tankDelay2Samples = [3720, 3163];
+  const damp = Math.max(0, Math.min(1, damping));
+  const loopInput = [new GainNode(audioContext), new GainNode(audioContext)];
+  preDiffOut.connect(loopInput[0]);
+  preDiffOut.connect(loopInput[1]);
+  const loopOutput = [];
+  for (let t2 = 0; t2 < 2; t2++) {
+    const allpass1 = createAllpassFilter(
+      audioContext,
+      loopInput[t2],
+      tankAllpassSamples[t2] * scale / sr,
+      tankAllpassFeedbacks[t2]
+    );
+    const delay1 = new DelayNode(audioContext, {
+      maxDelayTime: tankDelay1Samples[t2] * scale / sr,
+      delayTime: tankDelay1Samples[t2] * scale / sr
+    });
+    const tankLPF = new IIRFilterNode(audioContext, {
+      feedforward: [1 - damp],
+      feedback: [1, -damp]
+    });
+    const delay2 = new DelayNode(audioContext, {
+      maxDelayTime: tankDelay2Samples[t2] * scale / sr,
+      delayTime: tankDelay2Samples[t2] * scale / sr
+    });
+    const decayGain = new GainNode(audioContext, { gain: decay });
+    allpass1.connect(delay1);
+    delay1.connect(tankLPF);
+    tankLPF.connect(delay2);
+    delay2.connect(decayGain);
+    loopOutput.push(decayGain);
+  }
+  loopOutput[0].connect(loopInput[1]);
+  loopOutput[1].connect(loopInput[0]);
+  const output = new GainNode(audioContext, { gain: 0.5 });
+  loopOutput[0].connect(output);
+  loopOutput[1].connect(output);
+  return { input, output };
+}
+var FREEVERB_COMB_SAMPLES_L = [
+  1116,
+  1188,
+  1277,
+  1356,
+  1422,
+  1491,
+  1557,
+  1617
+];
+var FREEVERB_STEREO_SPREAD = 23;
+var FREEVERB_ALLPASS_SAMPLES = [225, 341, 441, 556];
+var FREEVERB_ALLPASS_FEEDBACK = 0.5;
+function createFreeverb(audioContext, { roomSize = 0.84, damping = 0.2 } = {}) {
+  const sr = audioContext.sampleRate;
+  const feedback = roomSize * 0.28 + 0.7;
+  const buildChannel = (sampleOffsetPerComb) => {
+    const inputGain = new GainNode(audioContext);
+    const sumGain = new GainNode(audioContext);
+    for (const samples2 of FREEVERB_COMB_SAMPLES_L) {
+      const delayTime = (samples2 + sampleOffsetPerComb) / sr;
+      const comb = createLPFCombFilter(
+        audioContext,
+        inputGain,
+        delayTime,
+        feedback,
+        damping
+      );
+      comb.connect(sumGain);
+    }
+    const allpasses = [];
+    for (let i = 0; i < FREEVERB_ALLPASS_SAMPLES.length; i++) {
+      const src = i === 0 ? sumGain : allpasses.at(-1);
+      const allpass = createAllpassFilter(
+        audioContext,
+        src,
+        FREEVERB_ALLPASS_SAMPLES[i] / sr,
+        FREEVERB_ALLPASS_FEEDBACK
+      );
+      allpasses.push(allpass);
+    }
+    return { input: inputGain, output: allpasses.at(-1) };
+  };
+  const L = buildChannel(0);
+  const R = buildChannel(FREEVERB_STEREO_SPREAD);
+  return {
+    inputL: L.input,
+    inputR: R.input,
+    outputL: L.output,
+    outputR: R.output
+  };
+}
+function createVelvetNoiseImpulse(audioContext, decay, density = 2e3) {
+  const sampleRate2 = audioContext.sampleRate;
+  const length2 = Math.ceil(sampleRate2 * decay);
+  const impulse = new AudioBuffer({ numberOfChannels: 2, length: length2, sampleRate: sampleRate2 });
+  const interval = Math.max(1, Math.round(sampleRate2 / density));
+  for (let ch = 0; ch < 2; ch++) {
+    const data3 = impulse.getChannelData(ch);
+    for (let i = 0; i < length2; i += interval) {
+      const idx = i + Math.floor(Math.random() * interval);
+      if (idx < length2) {
+        const env = Math.exp(-idx / (sampleRate2 * decay * 0.3));
+        data3[idx] = (Math.random() > 0.5 ? 1 : -1) * env;
+      }
+    }
+  }
+  return impulse;
+}
+function createVelvetNoiseReverb(audioContext, decay, density) {
+  const impulse = createVelvetNoiseImpulse(audioContext, decay, density);
+  return createConvolutionReverb(audioContext, impulse);
+}
+
 // src/midy-GM2.js
 var DEFAULT_CACHE_MODE = "ads";
 var _f64Buf = new ArrayBuffer(8);
@@ -5252,6 +5614,7 @@ var Note = class {
   }
 };
 var Channel = class {
+  channelNumber = 0;
   isDrum = false;
   programNumber = 0;
   scheduleIndex = 0;
@@ -5281,7 +5644,8 @@ var Channel = class {
   keyBasedGainLs = new Array(128);
   keyBasedGainRs = new Array(128);
   currentBufferSource = null;
-  constructor(audioNodes, settings) {
+  constructor(channelNumber, audioNodes, settings) {
+    this.channelNumber = channelNumber;
     Object.assign(this, audioNodes);
     Object.assign(this, settings);
     this.state = new ControllerState();
@@ -5464,7 +5828,7 @@ var MidyGM2 = class extends EventTarget {
   masterCoarseTuning = 0;
   // cent
   reverb = {
-    algorithm: "SchroederReverb",
+    algorithm: "Schroeder",
     time: this.getReverbTime(64),
     feedback: 0.8
   };
@@ -5551,9 +5915,9 @@ var MidyGM2 = class extends EventTarget {
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.effectHandlers = this.createEffectHandlers();
-    this.channels = this.createChannels(audioContext);
-    this.reverbEffect = this.createReverbEffect(audioContext);
-    this.chorusEffect = this.createChorusEffect(audioContext);
+    this.channels = this.createChannels();
+    this.reverbEffect = this.createReverbEffect(this.reverb.algorithm);
+    this.chorusEffect = this.createChorusEffect();
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
     this.masterVolume.connect(audioContext.destination);
@@ -5814,6 +6178,7 @@ var MidyGM2 = class extends EventTarget {
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
+    if (!voice) return;
     const { instrument, sampleID } = voice.generators;
     return soundFontIndex * 2 ** 31 + instrument * 2 ** 24 + (sampleID << 8);
   }
@@ -5829,11 +6194,12 @@ var MidyGM2 = class extends EventTarget {
     merger.connect(this.masterVolume);
     return { gainL, gainR, merger };
   }
-  createChannels(audioContext) {
+  createChannels() {
     const settings = this.constructor.channelSettings;
+    const audioContext = this.audioContext;
     return Array.from(
       { length: this.numChannels },
-      () => new Channel(this.createChannelAudioNodes(audioContext), settings)
+      (_, ch) => new Channel(ch, this.createChannelAudioNodes(audioContext), settings)
     );
   }
   decodeOggVorbis(sample2) {
@@ -6392,6 +6758,7 @@ var MidyGM2 = class extends EventTarget {
           if (soundFontIndex === void 0) continue;
           const soundFont = this.soundFonts[soundFontIndex];
           const fakeChannel = {
+            channelNumber: ch,
             state: { array: renderControllerStates[ch].slice() },
             programNumber,
             isDrum,
@@ -6624,64 +6991,6 @@ var MidyGM2 = class extends EventTarget {
     }
     await Promise.all(tasks);
   }
-  createConvolutionReverbImpulse(audioContext, decay, preDecay) {
-    const sampleRate2 = audioContext.sampleRate;
-    const length2 = sampleRate2 * decay;
-    const impulse = new AudioBuffer({
-      numberOfChannels: 2,
-      length: length2,
-      sampleRate: sampleRate2
-    });
-    const preDecayLength = Math.min(sampleRate2 * preDecay, length2);
-    for (let channel3 = 0; channel3 < impulse.numberOfChannels; channel3++) {
-      const channelData = impulse.getChannelData(channel3);
-      for (let i = 0; i < preDecayLength; i++) {
-        channelData[i] = Math.random() * 2 - 1;
-      }
-      const attenuationFactor = 1 / (sampleRate2 * decay);
-      for (let i = preDecayLength; i < length2; i++) {
-        const attenuation = Math.exp(
-          -(i - preDecayLength) * attenuationFactor
-        );
-        channelData[i] = (Math.random() * 2 - 1) * attenuation;
-      }
-    }
-    return impulse;
-  }
-  createConvolutionReverb(audioContext, impulse) {
-    const convolverNode = new ConvolverNode(audioContext, {
-      buffer: impulse
-    });
-    return {
-      input: convolverNode,
-      output: convolverNode,
-      convolverNode
-    };
-  }
-  createCombFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    return delayNode;
-  }
-  createAllpassFilter(audioContext, input, delay, feedback) {
-    const delayNode = new DelayNode(audioContext, {
-      maxDelayTime: delay,
-      delayTime: delay
-    });
-    const feedbackGain = new GainNode(audioContext, { gain: feedback });
-    const passGain = new GainNode(audioContext, { gain: 1 - feedback });
-    input.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    delayNode.connect(passGain);
-    return passGain;
-  }
   generateDistributedArray(center, count, varianceRatio = 0.1, randomness = 0.05) {
     const variance = center * varianceRatio;
     const array = new Array(count);
@@ -6692,54 +7001,31 @@ var MidyGM2 = class extends EventTarget {
     }
     return array;
   }
-  // https://hajim.rochester.edu/ece/sites/zduan/teaching/ece472/reading/Schroeder_1962.pdf
-  //   M.R.Schroeder, "Natural Sounding Artificial Reverberation", J.Audio Eng. Soc., vol.10, p.219, 1962
-  createSchroederReverb(audioContext, combFeedbacks, combDelays, allpassFeedbacks, allpassDelays) {
-    const input = new GainNode(audioContext);
-    const mergerGain = new GainNode(audioContext);
-    for (let i = 0; i < combDelays.length; i++) {
-      const comb = this.createCombFilter(
-        audioContext,
-        input,
-        combDelays[i],
-        combFeedbacks[i]
-      );
-      comb.connect(mergerGain);
-    }
-    const allpasses = [];
-    for (let i = 0; i < allpassDelays.length; i++) {
-      const allpass = this.createAllpassFilter(
-        audioContext,
-        i === 0 ? mergerGain : allpasses.at(-1),
-        allpassDelays[i],
-        allpassFeedbacks[i]
-      );
-      allpasses.push(allpass);
-    }
-    const output = allpasses.at(-1);
-    return { input, output };
+  setReverbEffect(algorithm) {
+    if (this.reverbEffect) this.reverbEffect.output.disconnect();
+    this.reverbEffect = this.createReverbEffect(algorithm);
+    this.reverb.algorithm = algorithm;
   }
-  createReverbEffect(audioContext) {
-    const { algorithm, time: rt60, feedback } = this.reverb;
+  createReverbEffect(algorithm) {
+    const { audioContext, reverb } = this;
+    const { time: rt60, feedback } = reverb;
     switch (algorithm) {
-      case "ConvolutionReverb": {
-        const impulse = this.createConvolutionReverbImpulse(
+      case "Convolution": {
+        const impulse = createConvolutionReverbImpulse(
           audioContext,
           rt60,
           this.calcDelay(rt60, feedback)
         );
-        return this.createConvolutionReverb(audioContext, impulse);
+        return createConvolutionReverb(audioContext, impulse);
       }
-      case "SchroederReverb": {
+      case "Schroeder": {
         const combFeedbacks = this.generateDistributedArray(feedback, 4);
-        const combDelays = combFeedbacks.map(
-          (feedback2) => this.calcDelay(rt60, feedback2)
-        );
+        const combDelays = combFeedbacks.map((fb) => this.calcDelay(rt60, fb));
         const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
         const allpassDelays = allpassFeedbacks.map(
-          (feedback2) => this.calcDelay(rt60, feedback2)
+          (fb) => this.calcDelay(rt60, fb)
         );
-        return this.createSchroederReverb(
+        return createSchroederReverb(
           audioContext,
           combFeedbacks,
           combDelays,
@@ -6747,9 +7033,42 @@ var MidyGM2 = class extends EventTarget {
           allpassDelays
         );
       }
+      case "Moorer":
+        return createMoorerReverbDefault(audioContext, {
+          rt60,
+          damping: 1 - feedback
+        });
+      case "FDN":
+        return createFDNDefault(audioContext, { rt60, damping: 1 - feedback });
+      case "Dattorro": {
+        const decay = feedback * 0.28 + 0.7;
+        return createDattorroReverb(audioContext, {
+          decay,
+          damping: 1 - feedback
+        });
+      }
+      case "Freeverb": {
+        const damping = 1 - feedback;
+        const { inputL, inputR, outputL, outputR } = createFreeverb(
+          audioContext,
+          { roomSize: feedback, damping }
+        );
+        const inputMerger = new GainNode(audioContext);
+        const outputMerger = new GainNode(audioContext, { gain: 0.5 });
+        inputMerger.connect(inputL);
+        inputMerger.connect(inputR);
+        outputL.connect(outputMerger);
+        outputR.connect(outputMerger);
+        return { input: inputMerger, output: outputMerger };
+      }
+      case "VelvetNoise":
+        return createVelvetNoiseReverb(audioContext, rt60);
+      default:
+        throw new Error(`Unknown reverb algorithm: ${algorithm}`);
     }
   }
-  createChorusEffect(audioContext) {
+  createChorusEffect() {
+    const audioContext = this.audioContext;
     const input = new GainNode(audioContext);
     const output = new GainNode(audioContext);
     const sendGain = new GainNode(audioContext);
@@ -7003,17 +7322,18 @@ var MidyGM2 = class extends EventTarget {
     note.modLfoToVolume.connect(volumeTarget.gain);
   }
   startVibrato(channel3, note, scheduleTime) {
+    const audioContext = this.audioContext;
     const { voiceParams } = note;
     const state = channel3.state;
     const vibratoRate = state.vibratoRate * 2;
     const vibratoDelay = state.vibratoDelay * 2;
-    note.vibLfo = new OscillatorNode(this.audioContext, {
+    note.vibLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqVibLFO) * vibratoRate
     });
     note.vibLfo.start(
       note.startTime + voiceParams.delayVibLFO * vibratoDelay
     );
-    note.vibLfoToPitch = new GainNode(this.audioContext);
+    note.vibLfoToPitch = new GainNode(audioContext);
     this.setVibLfoToPitch(channel3, note, scheduleTime);
     note.vibLfo.connect(note.vibLfoToPitch);
     note.vibLfoToPitch.connect(note.bufferSource.detune);
@@ -7024,23 +7344,27 @@ var MidyGM2 = class extends EventTarget {
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
     const adsDuration = volHold + decayDuration * decayCurve * 5;
-    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
-    const loopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
-    const loopCount = isLoop && adsDuration > loopStartTime ? Math.ceil((adsDuration - loopStartTime) / loopDuration) : 0;
-    const alignedLoopStart = loopStartTime + loopCount * loopDuration;
-    const renderDuration = isLoop ? alignedLoopStart + loopDuration : audioBuffer.duration;
+    const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
+    const sampleLoopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
+    const playbackRate = voiceParams.playbackRate;
+    const outputLoopStart = sampleLoopStart / playbackRate;
+    const outputLoopDuration = sampleLoopDuration / playbackRate;
+    const loopCount = isLoop && adsDuration > outputLoopStart ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration) : 0;
+    const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
+    const renderDuration = isLoop ? alignedLoopStart + outputLoopDuration : audioBuffer.duration / playbackRate;
+    const sampleRate2 = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
-      Math.ceil(renderDuration * this.audioContext.sampleRate),
-      this.audioContext.sampleRate
+      Math.ceil(renderDuration * sampleRate2),
+      sampleRate2
     );
     const bufferSource = new AudioBufferSourceNode(offlineContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.playbackRate.value = voiceParams.playbackRate;
+    bufferSource.playbackRate.value = playbackRate;
     bufferSource.loop = isLoop;
     if (isLoop) {
-      bufferSource.loopStart = loopStartTime;
-      bufferSource.loopEnd = loopStartTime + loopDuration;
+      bufferSource.loopStart = sampleLoopStart;
+      bufferSource.loopEnd = sampleLoopStart + sampleLoopDuration;
     }
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc)
@@ -7074,7 +7398,7 @@ var MidyGM2 = class extends EventTarget {
       isLoop,
       adsDuration,
       loopStart: alignedLoopStart,
-      loopDuration
+      loopDuration: outputLoopDuration
     });
   }
   async createAdsrRenderedBuffer(channel3, note, voiceParams, audioBuffer, noteDuration) {
@@ -7164,7 +7488,7 @@ var MidyGM2 = class extends EventTarget {
   }
   async createFullRenderedBuffer(channel3, note, voiceParams, noteDuration, noteEvent = {}) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent;
-    const ch = note.channel ?? 0;
+    const ch = channel3.channelNumber;
     const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
     const totalDuration2 = noteDuration + releaseEndDuration;
     const sampleRate2 = this.audioContext.sampleRate;
@@ -7224,7 +7548,7 @@ var MidyGM2 = class extends EventTarget {
     const audioBufferId = this.getVoiceId(channel3, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getFullCachedBuffer(note, audioBufferId);
+        return await this.getFullCachedBuffer(channel3, note, audioBufferId);
       } else if (cacheMode === "adsr") {
         return await this.getAdsrCachedBuffer(channel3, note, audioBufferId);
       }
@@ -7323,7 +7647,7 @@ var MidyGM2 = class extends EventTarget {
     durationMap.set(cacheKey, renderPromise);
     return await renderPromise;
   }
-  async getFullCachedBuffer(note, audioBufferId) {
+  async getFullCachedBuffer(channel3, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     const timelineIndex = note.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
@@ -7348,7 +7672,7 @@ var MidyGM2 = class extends EventTarget {
     const renderPromise = (async () => {
       try {
         const rendered2 = await this.createFullRenderedBuffer(
-          this.channels[note.channel],
+          channel3,
           note,
           voiceParams,
           noteDuration,
@@ -7388,7 +7712,6 @@ var MidyGM2 = class extends EventTarget {
       audioBuffer
     );
     note.volumeNode = new GainNode(audioContext);
-    note.volumeNode.gain.setValueAtTime(1, now);
     const cacheMode = this.cacheMode;
     const isFullCached = isRendered && audioBuffer.isFull === true;
     if (cacheMode === "none") {
@@ -7533,9 +7856,6 @@ var MidyGM2 = class extends EventTarget {
     if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
     const note = new Note(noteNumber, velocity, startTime);
     note.channel = channelNumber;
-    const channel3 = this.channels[channelNumber];
-    note.index = channel3.scheduledNotes.length;
-    channel3.scheduledNotes.push(note);
     return note;
   }
   async setupNote(channelNumber, note, startTime) {
@@ -7559,6 +7879,8 @@ var MidyGM2 = class extends EventTarget {
       note.velocity
     );
     if (!note.voice) return;
+    note.index = channel3.scheduledNotes.length;
+    channel3.scheduledNotes.push(note);
     await this.setNoteAudioNode(channel3, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
@@ -7613,17 +7935,8 @@ var MidyGM2 = class extends EventTarget {
       if (isEarlyCut) {
         const volDuration2 = note.voiceParams.volRelease;
         const volRelease2 = endTime + volDuration2;
-        note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            note.bufferSource.loop = false;
-            note.bufferSource.stop(volRelease2);
-            this.disconnectNote(note);
-            channel3.scheduledNotes[note.index] = void 0;
-            this.releaseFullCache(note);
-            resolve();
-          }, volRelease2);
-        });
+        note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
+        note.bufferSource.stop(volRelease2);
       } else {
         const now = this.audioContext.currentTime;
         if (naturalEndTime <= now) {
@@ -7632,15 +7945,16 @@ var MidyGM2 = class extends EventTarget {
           this.releaseFullCache(note);
           return Promise.resolve();
         }
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            this.disconnectNote(note);
-            channel3.scheduledNotes[note.index] = void 0;
-            this.releaseFullCache(note);
-            resolve();
-          }, naturalEndTime);
-        });
+        note.bufferSource.stop(naturalEndTime);
       }
+      return new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note);
+          channel3.scheduledNotes[note.index] = void 0;
+          this.releaseFullCache(note);
+          resolve();
+        };
+      });
     }
     const volDuration = note.voiceParams.volRelease;
     const volRelease = endTime + volDuration;
@@ -7659,38 +7973,28 @@ var MidyGM2 = class extends EventTarget {
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          const volRelease2 = endTime + volDuration;
-          note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop(volRelease2);
-              this.disconnectNote(note);
-              channel3.scheduledNotes[note.index] = void 0;
-              resolve();
-            }, volRelease2);
-          });
+          note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+          note.bufferSource.stop(volRelease);
         } else {
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop();
-              this.disconnectNote(note);
-              channel3.scheduledNotes[note.index] = void 0;
-              resolve();
-            }, naturalEndTime);
-          });
+          note.bufferSource.stop(naturalEndTime);
         }
+        return new Promise((resolve) => {
+          note.bufferSource.onended = () => {
+            this.disconnectNote(note);
+            channel3.scheduledNotes[note.index] = void 0;
+            resolve();
+          };
+        });
       }
-      note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+      note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
     }
+    note.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
-      this.scheduleTask(() => {
-        const bufferSource = note.bufferSource;
-        bufferSource.loop = false;
-        bufferSource.stop(volRelease);
+      note.bufferSource.onended = () => {
         this.disconnectNote(note);
         channel3.scheduledNotes[note.index] = void 0;
         resolve();
-      }, volRelease);
+      };
     });
   }
   noteOff(channelNumber, noteNumber, _velocity, endTime, force) {
@@ -8598,7 +8902,8 @@ var MidyGM2 = class extends EventTarget {
   }
   setMasterVolume(value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    this.masterVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value * value, scheduleTime);
+    const timeConstant = this.perceptualSmoothingTime / 5;
+    this.masterVolume.gain.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(value * value, scheduleTime, timeConstant);
   }
   handleMasterFineTuningSysEx(data3, scheduleTime) {
     const value = (data3[5] * 128 + data3[4]) / 16383;
@@ -8662,7 +8967,7 @@ var MidyGM2 = class extends EventTarget {
   setReverbType(type) {
     this.reverb.time = this.getReverbTimeFromType(type);
     this.reverb.feedback = type === 8 ? 0.9 : 0.8;
-    this.reverbEffect = this.createReverbEffect(this.audioContext);
+    this.reverbEffect = this.setReverbEffect(this.reverb.algorithm);
   }
   getReverbTimeFromType(type) {
     switch (type) {
@@ -8684,7 +8989,7 @@ var MidyGM2 = class extends EventTarget {
   }
   setReverbTime(value) {
     this.reverb.time = this.getReverbTime(value);
-    this.reverbEffect = this.createReverbEffect(this.audioContext);
+    this.reverbEffect = this.setReverbEffect(this.reverb.algorithm);
   }
   getReverbTime(value) {
     return Math.exp((value - 40) * 0.025);

@@ -5246,6 +5246,7 @@ var Note = class {
   }
 };
 var Channel = class {
+  channelNumber = 0;
   isDrum = false;
   programNumber = 0;
   scheduleIndex = 0;
@@ -5263,7 +5264,8 @@ var Channel = class {
   scheduledNotes = [];
   sustainNotes = [];
   currentBufferSource = null;
-  constructor(audioNodes, settings) {
+  constructor(channelNumber, audioNodes, settings) {
+    this.channelNumber = channelNumber;
     Object.assign(this, audioNodes);
     Object.assign(this, settings);
     this.state = new ControllerState();
@@ -5666,6 +5668,7 @@ var MidyGM1 = class extends EventTarget {
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
     const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
+    if (!voice) return;
     const { instrument, sampleID } = voice.generators;
     return soundFontIndex * 2 ** 31 + instrument * 2 ** 24 + (sampleID << 8);
   }
@@ -5685,7 +5688,7 @@ var MidyGM1 = class extends EventTarget {
     const settings = this.constructor.channelSettings;
     return Array.from(
       { length: this.numChannels },
-      () => new Channel(this.createChannelAudioNodes(audioContext), settings)
+      (_, ch) => new Channel(ch, this.createChannelAudioNodes(audioContext), settings)
     );
   }
   decodeOggVorbis(sample2) {
@@ -6187,6 +6190,7 @@ var MidyGM1 = class extends EventTarget {
           if (soundFontIndex === void 0) continue;
           const soundFont = this.soundFonts[soundFontIndex];
           const fakeChannel = {
+            channelNumber: ch,
             state: { array: renderControllerStates[ch].slice() },
             programNumber,
             isDrum,
@@ -6486,23 +6490,27 @@ var MidyGM1 = class extends EventTarget {
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
     const adsDuration = volHold + decayDuration * decayCurve * 5;
-    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
-    const loopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
-    const loopCount = isLoop && adsDuration > loopStartTime ? Math.ceil((adsDuration - loopStartTime) / loopDuration) : 0;
-    const alignedLoopStart = loopStartTime + loopCount * loopDuration;
-    const renderDuration = isLoop ? alignedLoopStart + loopDuration : audioBuffer.duration;
+    const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
+    const sampleLoopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
+    const playbackRate = voiceParams.playbackRate;
+    const outputLoopStart = sampleLoopStart / playbackRate;
+    const outputLoopDuration = sampleLoopDuration / playbackRate;
+    const loopCount = isLoop && adsDuration > outputLoopStart ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration) : 0;
+    const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
+    const renderDuration = isLoop ? alignedLoopStart + outputLoopDuration : audioBuffer.duration / playbackRate;
+    const sampleRate2 = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
-      Math.ceil(renderDuration * this.audioContext.sampleRate),
-      this.audioContext.sampleRate
+      Math.ceil(renderDuration * sampleRate2),
+      sampleRate2
     );
     const bufferSource = new AudioBufferSourceNode(offlineContext);
     bufferSource.buffer = audioBuffer;
-    bufferSource.playbackRate.value = voiceParams.playbackRate;
+    bufferSource.playbackRate.value = playbackRate;
     bufferSource.loop = isLoop;
     if (isLoop) {
-      bufferSource.loopStart = loopStartTime;
-      bufferSource.loopEnd = loopStartTime + loopDuration;
+      bufferSource.loopStart = sampleLoopStart;
+      bufferSource.loopEnd = sampleLoopStart + sampleLoopDuration;
     }
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc)
@@ -6536,7 +6544,7 @@ var MidyGM1 = class extends EventTarget {
       isLoop,
       adsDuration,
       loopStart: alignedLoopStart,
-      loopDuration
+      loopDuration: outputLoopDuration
     });
   }
   async createAdsrRenderedBuffer(note, voiceParams, audioBuffer, noteDuration) {
@@ -6626,7 +6634,7 @@ var MidyGM1 = class extends EventTarget {
   }
   async createFullRenderedBuffer(channel3, note, voiceParams, noteDuration, noteEvent = {}) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent;
-    const ch = note.channel ?? 0;
+    const ch = channel3.channelNumber;
     const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
     const totalDuration2 = noteDuration + releaseEndDuration;
     const sampleRate2 = this.audioContext.sampleRate;
@@ -6683,7 +6691,7 @@ var MidyGM1 = class extends EventTarget {
     const audioBufferId = this.getVoiceId(channel3, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getFullCachedBuffer(note, audioBufferId);
+        return await this.getFullCachedBuffer(channel3, note, audioBufferId);
       } else if (cacheMode === "adsr") {
         return await this.getAdsrCachedBuffer(note, audioBufferId);
       }
@@ -6779,7 +6787,7 @@ var MidyGM1 = class extends EventTarget {
     durationMap.set(cacheKey, renderPromise);
     return await renderPromise;
   }
-  async getFullCachedBuffer(note, audioBufferId) {
+  async getFullCachedBuffer(channel3, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     const timelineIndex = note.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
@@ -6804,7 +6812,7 @@ var MidyGM1 = class extends EventTarget {
     const renderPromise = (async () => {
       try {
         const rendered2 = await this.createFullRenderedBuffer(
-          this.channels[note.channel],
+          channel3,
           note,
           voiceParams,
           noteDuration,
@@ -6839,7 +6847,6 @@ var MidyGM1 = class extends EventTarget {
     note.renderedBuffer = isRendered ? audioBuffer : null;
     note.bufferSource = this.createBufferSource(voiceParams, audioBuffer);
     note.volumeNode = new GainNode(audioContext);
-    note.volumeNode.gain.setValueAtTime(1, now);
     const cacheMode = this.cacheMode;
     const isFullCached = isRendered && audioBuffer.isFull === true;
     if (cacheMode === "none") {
@@ -6923,9 +6930,6 @@ var MidyGM1 = class extends EventTarget {
     if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
     const note = new Note(noteNumber, velocity, startTime);
     note.channel = channelNumber;
-    const channel3 = this.channels[channelNumber];
-    note.index = channel3.scheduledNotes.length;
-    channel3.scheduledNotes.push(note);
     return note;
   }
   async setupNote(channelNumber, note, startTime) {
@@ -6949,6 +6953,8 @@ var MidyGM1 = class extends EventTarget {
       note.velocity
     );
     if (!note.voice) return;
+    note.index = channel3.scheduledNotes.length;
+    channel3.scheduledNotes.push(note);
     await this.setNoteAudioNode(channel3, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
@@ -6990,17 +6996,8 @@ var MidyGM1 = class extends EventTarget {
       if (isEarlyCut) {
         const volDuration2 = note.voiceParams.volRelease;
         const volRelease2 = endTime + volDuration2;
-        note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            note.bufferSource.loop = false;
-            note.bufferSource.stop(volRelease2);
-            this.disconnectNote(note);
-            channel3.scheduledNotes[note.index] = void 0;
-            this.releaseFullCache(note);
-            resolve();
-          }, volRelease2);
-        });
+        note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
+        note.bufferSource.stop(volRelease2);
       } else {
         const now = this.audioContext.currentTime;
         if (naturalEndTime <= now) {
@@ -7009,15 +7006,16 @@ var MidyGM1 = class extends EventTarget {
           this.releaseFullCache(note);
           return Promise.resolve();
         }
-        return new Promise((resolve) => {
-          this.scheduleTask(() => {
-            this.disconnectNote(note);
-            channel3.scheduledNotes[note.index] = void 0;
-            this.releaseFullCache(note);
-            resolve();
-          }, naturalEndTime);
-        });
+        note.bufferSource.stop(naturalEndTime);
       }
+      return new Promise((resolve) => {
+        note.bufferSource.onended = () => {
+          this.disconnectNote(note);
+          channel3.scheduledNotes[note.index] = void 0;
+          this.releaseFullCache(note);
+          resolve();
+        };
+      });
     }
     const volDuration = note.voiceParams.volRelease;
     const volRelease = endTime + volDuration;
@@ -7036,38 +7034,28 @@ var MidyGM1 = class extends EventTarget {
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          const volRelease2 = endTime + volDuration;
-          note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop(volRelease2);
-              this.disconnectNote(note);
-              channel3.scheduledNotes[note.index] = void 0;
-              resolve();
-            }, volRelease2);
-          });
+          note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+          note.bufferSource.stop(volRelease);
         } else {
-          return new Promise((resolve) => {
-            this.scheduleTask(() => {
-              note.bufferSource.stop();
-              this.disconnectNote(note);
-              channel3.scheduledNotes[note.index] = void 0;
-              resolve();
-            }, naturalEndTime);
-          });
+          note.bufferSource.stop(naturalEndTime);
         }
+        return new Promise((resolve) => {
+          note.bufferSource.onended = () => {
+            this.disconnectNote(note);
+            channel3.scheduledNotes[note.index] = void 0;
+            resolve();
+          };
+        });
       }
-      note.volumeNode.gain.cancelScheduledValues(endTime).setValueAtTime(1, endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+      note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
     }
+    note.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
-      this.scheduleTask(() => {
-        const bufferSource = note.bufferSource;
-        bufferSource.loop = false;
-        bufferSource.stop(volRelease);
+      note.bufferSource.onended = () => {
         this.disconnectNote(note);
         channel3.scheduledNotes[note.index] = void 0;
         resolve();
-      }, volRelease);
+      };
     });
   }
   noteOff(channelNumber, noteNumber, _velocity, endTime, force) {
@@ -7605,7 +7593,8 @@ var MidyGM1 = class extends EventTarget {
   }
   setMasterVolume(value, scheduleTime) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    this.masterVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(value * value, scheduleTime);
+    const timeConstant = this.perceptualSmoothingTime / 5;
+    this.masterVolume.gain.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(value * value, scheduleTime, timeConstant);
   }
   handleSysEx(data3, scheduleTime) {
     switch (data3[0]) {
