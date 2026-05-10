@@ -302,7 +302,7 @@ export class MidyGMLite extends EventTarget {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
-    this.channels = this.createChannels(audioContext);
+    this.channels = this.createChannels();
     this.masterVolume.connect(audioContext.destination);
     this.scheduler.connect(audioContext.destination);
     this.GM1SystemOn();
@@ -565,8 +565,9 @@ export class MidyGMLite extends EventTarget {
     return { gainL, gainR, merger };
   }
 
-  createChannels(audioContext) {
+  createChannels() {
     const settings = this.constructor.channelSettings;
+    const audioContext = this.audioContext;
     return Array.from(
       { length: this.numChannels },
       (_, ch) =>
