@@ -1218,6 +1218,8 @@ export class MidyGM2 extends EventTarget {
       promises.push(promise);
     }
     await Promise.all(promises);
+    channel.scheduledNotes = [];
+    channel.scheduleIndex = 0;
     this.notePromises = [];
   }
 

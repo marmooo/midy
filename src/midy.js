@@ -1273,6 +1273,8 @@ export class Midy extends EventTarget {
       promises.push(promise);
     }
     await Promise.all(promises);
+    channel.scheduledNotes = [];
+    channel.scheduleIndex = 0;
     this.notePromises = [];
   }
 
