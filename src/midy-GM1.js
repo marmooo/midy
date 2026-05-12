@@ -861,7 +861,9 @@ export class MidyGM1 extends EventTarget {
         this.totalTime < this.currentTime() ||
         this.timeline.length <= queueIndex
       ) {
-        await this.stopNotes(now);
+        const pendingPromises = this.notePromises.slice();
+        this.notePromises = [];
+        await Promise.allSettled(pendingPromises);
         if (this.loop) {
           this.resetAllStates();
           this.startTime = audioContext.currentTime;
