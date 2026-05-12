@@ -95,7 +95,6 @@ class Channel {
   channelNumber = 0;
   isDrum = false;
   programNumber = 0;
-  scheduleIndex = 0;
   detune = 0;
   dataMSB = 0;
   dataLSB = 0;
@@ -103,9 +102,7 @@ class Channel {
   rpnLSB = 127;
   modulationDepthRange = 50; // cent
   activeNotes = new Array(128);
-  scheduledNotes = [];
   sustainNotes = [];
-  currentBufferSource = null;
 
   constructor(channelNumber, audioNodes, settings) {
     this.channelNumber = channelNumber;
@@ -280,7 +277,6 @@ export class MidyGMLite extends EventTarget {
   audioModeBufferSource = null;
 
   static channelSettings = {
-    scheduleIndex: 0,
     detune: 0,
     programNumber: 0,
     dataMSB: 0,
@@ -731,9 +727,8 @@ export class MidyGMLite extends EventTarget {
     this.adsrVoiceCache.clear();
     const channels = this.channels;
     for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.scheduledNotes = [];
-      channel.activeNotes = new Array(128);
+      channels[ch].activeNotes = new Array(128);
+      channels[ch].sustainNotes = [];
       this.resetChannelStates(ch);
     }
   }
@@ -1009,27 +1004,28 @@ export class MidyGMLite extends EventTarget {
 
   async stopChannelNotes(channelNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
-    const scheduledNotes = channel.scheduledNotes;
     const promises = [];
-    const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
-    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
-      if (!note) continue;
-      const promise = note.ready.then(() => {
-        if (!note.voice) return;
-        const now = this.audioContext.currentTime;
-        const startTime = Math.max(scheduleTime, now);
-        note.volumeNode.gain
-          .cancelScheduledValues(startTime)
-          .setTargetAtTime(0, startTime, timeConstant);
-        note.bufferSource.stop(startTime + this.perceptualSmoothingTime);
-      });
-      promises.push(promise);
+    const timeConstant = this.perceptualSmoothingTime / 5;
+    for (let i = 0; i < 128; i++) {
+      const stack = channel.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        const promise = note.ready.then(() => {
+          if (!note.voice) return;
+          const now = this.audioContext.currentTime;
+          const startTime = Math.max(scheduleTime, now);
+          note.volumeNode.gain
+            .cancelScheduledValues(startTime)
+            .setTargetAtTime(0, startTime, timeConstant);
+          note.bufferSource.stop(startTime + this.perceptualSmoothingTime);
+        });
+        promises.push(promise);
+      }
     }
     await Promise.all(promises);
-    channel.scheduledNotes = [];
-    channel.scheduleIndex = 0;
     channel.activeNotes = new Array(128);
+    channel.sustainNotes = [];
     this.notePromises = [];
   }
 
@@ -1271,28 +1267,32 @@ export class MidyGMLite extends EventTarget {
   }
 
   async processScheduledNotes(channel, callback) {
-    const scheduledNotes = channel.scheduledNotes;
     const tasks = [];
-    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      const task = note.ready.then(() => callback(note));
-      tasks.push(task);
+    for (let i = 0; i < 128; i++) {
+      const stack = channel.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        const task = note.ready.then(() => callback(note));
+        tasks.push(task);
+      }
     }
     return await Promise.all(tasks);
   }
 
   async processActiveNotes(channel, scheduleTime, callback) {
-    const scheduledNotes = channel.scheduledNotes;
     const tasks = [];
-    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      if (scheduleTime < note.startTime) break;
-      const task = note.ready.then(() => callback(note));
-      tasks.push(task);
+    for (let i = 0; i < 128; i++) {
+      const stack = channel.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        if (scheduleTime < note.startTime) continue;
+        const task = note.ready.then(() => callback(note));
+        tasks.push(task);
+      }
     }
     return await Promise.all(tasks);
   }
@@ -1981,8 +1981,6 @@ export class MidyGMLite extends EventTarget {
       note.velocity,
     );
     if (!note.voice) return;
-    note.index = channel.scheduledNotes.length;
-    channel.scheduledNotes.push(note);
     if (!channel.activeNotes[note.noteNumber]) {
       channel.activeNotes[note.noteNumber] = [];
     }
@@ -2021,19 +2019,12 @@ export class MidyGMLite extends EventTarget {
     }
   }
 
-  releaseNote(channel, note, endTime) {
+  releaseNote(note, endTime) {
     const now = this.audioContext.currentTime;
     endTime ??= now;
 
     const onEnded = () => {
       this.disconnectNote(note);
-      channel.scheduledNotes[note.index] = undefined;
-      while (
-        channel.scheduleIndex < channel.scheduledNotes.length &&
-        channel.scheduledNotes[channel.scheduleIndex] === undefined
-      ) {
-        channel.scheduleIndex++;
-      }
     };
 
     if (note.renderedBuffer?.isFull) {
@@ -2127,11 +2118,8 @@ export class MidyGMLite extends EventTarget {
     note.ending = true;
     this.removeFromActiveNotes(channel, noteNumber);
     const promise = note.ready.then(() => {
-      if (!note.voice) {
-        channel.scheduledNotes[note.index] = undefined;
-        return;
-      }
-      return this.releaseNote(channel, note, endTime);
+      if (!note.voice) return;
+      return this.releaseNote(note, endTime);
     });
     this.notePromises.push(promise);
     return promise;
@@ -2169,12 +2157,9 @@ export class MidyGMLite extends EventTarget {
     return promises;
   }
 
-  soundOffNote(channel, note, scheduleTime) {
+  soundOffNote(note, scheduleTime) {
     note.ending = true;
-    if (!note.voice) {
-      channel.scheduledNotes[note.index] = undefined;
-      return Promise.resolve();
-    }
+    if (!note.voice) return Promise.resolve();
     const now = this.audioContext.currentTime;
     const startTime = Math.max(scheduleTime, now);
     const perceptualSmoothingTime = this.perceptualSmoothingTime;
@@ -2186,12 +2171,6 @@ export class MidyGMLite extends EventTarget {
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
         this.disconnectNote(note);
-        while (
-          channel.scheduleIndex < channel.scheduledNotes.length &&
-          channel.scheduledNotes[channel.scheduleIndex] === undefined
-        ) {
-          channel.scheduleIndex++;
-        }
         resolve();
       };
     });
@@ -2202,7 +2181,7 @@ export class MidyGMLite extends EventTarget {
     const note = this.findNoteForOff(channel, noteNumber);
     if (!note) return Promise.resolve();
     this.removeFromActiveNotes(channel, note.noteNumber);
-    return this.soundOffNote(channel, note, scheduleTime);
+    return this.soundOffNote(note, scheduleTime);
   }
 
   createMessageHandlers() {
