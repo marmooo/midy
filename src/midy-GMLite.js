@@ -102,6 +102,7 @@ class Channel {
   rpnMSB = 127;
   rpnLSB = 127;
   modulationDepthRange = 50; // cent
+  activeNotes = new Array(128);
   scheduledNotes = [];
   sustainNotes = [];
   currentBufferSource = null;
@@ -730,7 +731,9 @@ export class MidyGMLite extends EventTarget {
     this.adsrVoiceCache.clear();
     const channels = this.channels;
     for (let ch = 0; ch < channels.length; ch++) {
-      channels[ch].scheduledNotes = [];
+      const channel = channels[ch];
+      channel.scheduledNotes = [];
+      channel.activeNotes = new Array(128);
       this.resetChannelStates(ch);
     }
   }
@@ -1026,6 +1029,7 @@ export class MidyGMLite extends EventTarget {
     await Promise.all(promises);
     channel.scheduledNotes = [];
     channel.scheduleIndex = 0;
+    channel.activeNotes = new Array(128);
     this.notePromises = [];
   }
 
@@ -1979,6 +1983,10 @@ export class MidyGMLite extends EventTarget {
     if (!note.voice) return;
     note.index = channel.scheduledNotes.length;
     channel.scheduledNotes.push(note);
+    if (!channel.activeNotes[note.noteNumber]) {
+      channel.activeNotes[note.noteNumber] = [];
+    }
+    channel.activeNotes[note.noteNumber].push(note);
     await this.setNoteAudioNode(channel, note, realtime);
     this.setNoteRouting(channelNumber, note, startTime);
     note.resolveReady();
@@ -2108,13 +2116,16 @@ export class MidyGMLite extends EventTarget {
   noteOff(channelNumber, noteNumber, _velocity, endTime, force) {
     const channel = this.channels[channelNumber];
     if (!force) {
-      if (channel.isDrum) return;
+      if (channel.isDrum) {
+        this.removeFromActiveNotes(channel, noteNumber);
+        return;
+      }
       if (0.5 <= channel.state.sustainPedal) return;
     }
-    const index = this.findNoteOffIndex(channel, noteNumber);
-    if (index < 0) return;
-    const note = channel.scheduledNotes[index];
+    const note = this.findNoteForOff(channel, noteNumber);
+    if (!note) return;
     note.ending = true;
+    this.removeFromActiveNotes(channel, noteNumber);
     const promise = note.ready.then(() => {
       if (!note.voice) {
         channel.scheduledNotes[note.index] = undefined;
@@ -2126,16 +2137,18 @@ export class MidyGMLite extends EventTarget {
     return promise;
   }
 
-  findNoteOffIndex(channel, noteNumber) {
-    const scheduledNotes = channel.scheduledNotes;
-    for (let i = channel.scheduleIndex; i < scheduledNotes.length; i++) {
-      const note = scheduledNotes[i];
-      if (!note) continue;
-      if (note.ending) continue;
-      if (note.noteNumber !== noteNumber) continue;
-      return i;
+  findNoteForOff(channel, noteNumber) {
+    const stack = channel.activeNotes[noteNumber];
+    if (!stack) return;
+    for (let i = 0; i < stack.length; i++) {
+      if (!stack[i].ending) return stack[i];
     }
-    return -1;
+  }
+
+  removeFromActiveNotes(channel, noteNumber) {
+    const stack = channel.activeNotes[noteNumber];
+    if (!stack || stack.length === 0) return;
+    stack.shift();
   }
 
   releaseSustainPedal(channelNumber, halfVelocity, scheduleTime) {
@@ -2148,6 +2161,7 @@ export class MidyGMLite extends EventTarget {
         channel.sustainNotes[i].noteNumber,
         velocity,
         scheduleTime,
+        true,
       );
       promises.push(promise);
     }
@@ -2172,7 +2186,6 @@ export class MidyGMLite extends EventTarget {
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
         this.disconnectNote(note);
-        channel.scheduledNotes[note.index] = undefined;
         while (
           channel.scheduleIndex < channel.scheduledNotes.length &&
           channel.scheduledNotes[channel.scheduleIndex] === undefined
@@ -2186,13 +2199,10 @@ export class MidyGMLite extends EventTarget {
 
   soundOff(channelNumber, noteNumber, scheduleTime) {
     const channel = this.channels[channelNumber];
-    const index = this.findNoteOffIndex(channel, noteNumber);
-    if (index < 0) return Promise.resolve();
-    return this.soundOffNote(
-      channel,
-      channel.scheduledNotes[index],
-      scheduleTime,
-    );
+    const note = this.findNoteForOff(channel, noteNumber);
+    if (!note) return Promise.resolve();
+    this.removeFromActiveNotes(channel, note.noteNumber);
+    return this.soundOffNote(channel, note, scheduleTime);
   }
 
   createMessageHandlers() {
