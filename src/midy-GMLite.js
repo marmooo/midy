@@ -286,10 +286,10 @@ export class MidyGMLite extends EventTarget {
     modulationDepthRange: 50, // cent
   };
 
-  constructor(audioContext, options = {}) {
+  constructor(audioContext) {
     super();
     this.audioContext = audioContext;
-    this.cacheMode = options.cacheMode ?? DEFAULT_CACHE_MODE;
+    this.cacheMode = DEFAULT_CACHE_MODE;
     this.masterVolume = new GainNode(audioContext);
     this.scheduler = new GainNode(audioContext, { gain: 0 });
     this.schedulerBuffer = new AudioBuffer({
