@@ -1971,6 +1971,7 @@ export class Midy extends EventTarget {
   }
 
   setPortamentoFilterEnvelope(channel, note, scheduleTime) {
+    if (!note.filterEnvelopeNode) return;
     const { voiceParams, startTime, noteNumber } = note;
     const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const brightness = this.getRelativeKeyBasedValue(channel, noteNumber, 74) *
@@ -3673,6 +3674,17 @@ export class Midy extends EventTarget {
     });
   }
 
+  setFilterQ(channel, note, scheduleTime) {
+    if (!note.filterEnvelopeNode) return;
+    const filterResonance = this.getRelativeKeyBasedValue(
+      channel,
+      note.noteNumber,
+      71,
+    );
+    const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
+    note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
+  }
+
   setFilterResonance(channelNumber, ccValue, scheduleTime) {
     const channel = this.channels[channelNumber];
     if (channel.isDrum) return;
@@ -3680,13 +3692,7 @@ export class Midy extends EventTarget {
     const state = channel.state;
     state.filterResonance = ccValue / 127;
     this.processScheduledNotes(channel, (note) => {
-      const filterResonance = this.getRelativeKeyBasedValue(
-        channel,
-        note.noteNumber,
-        71,
-      );
-      const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
-      note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
+      this.setFilterQ(channel, note, scheduleTime);
     });
   }
 
@@ -4769,13 +4775,7 @@ export class Midy extends EventTarget {
     handlers[71] = (channel, keyNumber, scheduleTime) =>
       this.processScheduledNotes(channel, (note) => {
         if (note.noteNumber === keyNumber) {
-          const filterResonance = this.getRelativeKeyBasedValue(
-            channel,
-            keyNumber,
-            71,
-          );
-          const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
-          note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
+          this.setFilterQ(channel, note, scheduleTime);
         }
       });
     handlers[73] = (channel, keyNumber, scheduleTime) =>

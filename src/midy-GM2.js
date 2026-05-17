@@ -1870,6 +1870,7 @@ export class MidyGM2 extends EventTarget {
   }
 
   setPortamentoFilterEnvelope(channel, note, scheduleTime) {
+    if (!note.filterEnvelopeNode) return;
     const { voiceParams, startTime } = note;
     const scale = this.getSoftPedalFactor(channel, note);
     const baseCent = voiceParams.initialFilterFc +
