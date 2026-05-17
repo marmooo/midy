@@ -103,7 +103,6 @@ midy.addEventListener("seeked", func);
 - "audio" - for fully pre-rendered playback (lowest CPU)
 
 ```
-const midy = new Midy(audioContext, { cacheMode: "note" });
 midy.cacheMode = "audio";
 ```
 
