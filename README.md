@@ -21,6 +21,8 @@ This library provides several files depending on the implementation level.
 ## Demo
 
 - [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
+- [midi2audio](https://marmooo.github.io/midi2audio/) - Convert MIDI to audio
+  (WAV, MP3, AAC, FLAC, Opus)
 - [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
 - [Timidy](https://marmooo.github.io/timidy/) - Timidity++ style MIDI player
 - [4x4pad](https://marmooo.github.io/4x4pad/) - 4x4 grid MPE MIDI controller
