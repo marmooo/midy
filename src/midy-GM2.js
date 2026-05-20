@@ -2182,6 +2182,7 @@ export class MidyGM2 extends EventTarget {
     dstChannel.programNumber = channel.programNumber;
     dstChannel.modulationDepthRange = channel.modulationDepthRange;
     dstChannel.detune = this.calcChannelDetune(dstChannel);
+    offlinePlayer.updateChannelVolume(dstChannel, 0);
     await offlinePlayer.noteOn(ch, note.noteNumber, note.velocity, 0);
     for (const event of noteEvents) {
       const t = event.startTime / this.tempo - noteStartTime;
