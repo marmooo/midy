@@ -650,7 +650,6 @@ export class MidyGM1 extends EventTarget {
       switch (event.type) {
         case "noteOn": {
           const note = this.createNote(
-            event.channel,
             event.noteNumber,
             event.velocity,
             startTime,
@@ -1910,20 +1909,13 @@ export class MidyGM1 extends EventTarget {
   }
 
   async noteOn(channelNumber, noteNumber, velocity, startTime) {
-    const note = this.createNote(
-      channelNumber,
-      noteNumber,
-      velocity,
-      startTime,
-    );
+    const note = this.createNote(noteNumber, velocity, startTime);
     return await this.setupNote(channelNumber, note, startTime);
   }
 
-  createNote(channelNumber, noteNumber, velocity, startTime) {
+  createNote(noteNumber, velocity, startTime) {
     if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
-    const note = new Note(noteNumber, velocity, startTime);
-    note.channel = channelNumber;
-    return note;
+    return new Note(noteNumber, velocity, startTime);
   }
 
   async setupNote(channelNumber, note, startTime) {
