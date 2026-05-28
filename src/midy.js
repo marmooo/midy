@@ -3283,7 +3283,7 @@ export class Midy extends EventTarget {
           this.setDelayModLFO(note);
         }
       },
-      freqModLFO: (_channel, note, scheduleTime) => {
+      freqModLFO: (channel, note, scheduleTime) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setFreqModLFO(note, scheduleTime);

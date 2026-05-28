@@ -2325,7 +2325,7 @@ export class MidyGMLite extends EventTarget {
           this.setDelayModLFO(note, scheduleTime);
         }
       },
-      freqModLFO: (_channel, note, scheduleTime) => {
+      freqModLFO: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepthMSB) {
           this.setFreqModLFO(note, scheduleTime);
         }
