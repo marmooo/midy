@@ -3738,7 +3738,7 @@ export class Midy extends EventTarget {
     if (channel.isDrum) return;
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
     channel.state.vibratoRate = vibratoRate / 127;
-    if (channel.vibratoDepth <= 0) return;
+    if (channel.state.vibratoDepth <= 0) return;
     this.processScheduledNotes(channel, (note) => {
       this.setVibLfoToPitch(channel, note, scheduleTime);
     });
