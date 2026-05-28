@@ -908,6 +908,9 @@ export class Midy extends EventTarget {
   }
 
   resetAllStates() {
+    this.mode = "GM2";
+    this.masterFineTuning = 0;
+    this.masterCoarseTuning = 0;
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
@@ -4021,9 +4024,6 @@ export class Midy extends EventTarget {
     }
     channel.resetSettings(this.constructor.channelSettings);
     channel.resetTable();
-    this.mode = "GM2";
-    this.masterFineTuning = 0; // cent
-    this.masterCoarseTuning = 0; // cent
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf

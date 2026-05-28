@@ -719,6 +719,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   resetAllStates() {
+    this.mode = "GM1";
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
@@ -2584,7 +2585,6 @@ export class MidyGMLite extends EventTarget {
       }
     }
     channel.resetSettings(this.constructor.channelSettings);
-    this.mode = "GM1";
   }
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
