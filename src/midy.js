@@ -3474,7 +3474,7 @@ export class Midy extends EventTarget {
     const state = channel.state;
     const intPart = Math.trunc(value);
     state.portamentoTimeMSB = intPart / 127;
-    state.portamentoTimeLSB = value - 127;
+    state.portamentoTimeLSB = value - intPart;
     if (channel.isDrum) return;
     this.updatePortamento(channel, scheduleTime);
   }
