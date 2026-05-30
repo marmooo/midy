@@ -128,9 +128,11 @@ There are functions that handle MIDI messages as they are, as well as simplified
 functions.
 
 ```js
+const channel = midy.channels[0];
 midy.handleMessage(data, scheduleTime);
-midy.noteOn(channelNumber, noteNumber, velocity);
-midy.setProgramChange(channelNumber, programNumber);
+channel.noteOn(noteNumber, velocity, startTime);
+channel.noteOff(noteNumber, velocity, endTime, force);
+channel.setProgramChange(programNumber);
 ```
 
 ### Control Change
@@ -139,14 +141,10 @@ There are functions that handle control changes as they are, as well as
 simplified functions.
 
 ```js
-midy.setControlChange(
-  channelNumber,
-  controller,
-  value,
-  scheduleTime,
-); // [0-127] value
-midy.setModulation(channelNumber, modulation); // [0-127] modulation
-midy.setVolume(channelNumber, volume); // [0-127] volume
+const channel = midy.channels[0];
+channel.setControlChange(controller, value, scheduleTime); // [0-127] value
+channel.setModulationDepth(value, scheduleTime); // [0-127] value
+channel.setVolume(volume, scheduleTime); // [0-127] value
 ```
 
 ### System Exclusive Message
@@ -155,8 +153,8 @@ There are functions that handle SysEx data as is, as well as simplified
 functions.
 
 ```js
-midy.handleSysEx(data, scheduleTime); // [F0 F6 04 01 xx xx F7] data
-midy.handleMasterVolumeSysEx(data, scheduleTime); // [F0 F6 04 01 xx xx F7] data
+midy.handleSysEx(data, scheduleTime); // SysEx data without F0/F7
+midy.handleMasterVolumeSysEx(data, scheduleTime); // [7F 7F 04 01 vv vv] data
 midy.setMasterVolume(volume); // [0-1] volume
 ```
 
