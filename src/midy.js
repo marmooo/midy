@@ -560,29 +560,16 @@ class Channel {
     const rpn = this.rpnMSB * 128 + this.rpnLSB;
     switch (rpn) {
       case 0:
-        this.limitData(0, 127, 0, 127);
-        this.setPitchBendRange(
-          (this.dataMSB + this.dataLSB / 128) * 100,
-          scheduleTime,
-        );
+        this.handlePitchBendRangeRPN(scheduleTime);
         break;
       case 1:
-        this.limitData(0, 127, 0, 127);
-        this.setFineTuning(
-          (this.dataMSB * 128 + this.dataLSB - 8192) / 8192 * 100,
-          scheduleTime,
-        );
+        this.handleFineTuningRPN(scheduleTime);
         break;
       case 2:
-        this.limitDataMSB(0, 127);
-        this.setCoarseTuning((this.dataMSB - 64) * 100, scheduleTime);
+        this.handleCoarseTuningRPN(scheduleTime);
         break;
       case 5:
-        this.limitData(0, 127, 0, 127);
-        this.setModulationDepthRange(
-          (this.dataMSB + this.dataLSB / 128) * 100,
-          scheduleTime,
-        );
+        this.handleModulationDepthRangeRPN(scheduleTime);
         break;
       case 6: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp053.pdf
         this.player.setMIDIPolyphonicExpression(
@@ -617,6 +604,12 @@ class Channel {
     this.handleRPN(scheduleTime);
   }
 
+  handlePitchBendRangeRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const pitchBendRange = (this.dataMSB + this.dataLSB / 128) * 100;
+    this.setPitchBendRange(pitchBendRange, scheduleTime);
+  }
+
   setPitchBendRange(value, scheduleTime) { // [0, 12800] cent
     const player = this.player;
     if (this.isDrum) return;
@@ -630,6 +623,13 @@ class Channel {
     player.applyVoiceParams(this, 16, scheduleTime);
   }
 
+  handleFineTuningRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const value = this.dataMSB * 128 + this.dataLSB;
+    const fineTuning = (value - 8192) / 8192 * 100;
+    this.setFineTuning(fineTuning, scheduleTime);
+  }
+
   setFineTuning(value, scheduleTime) { // [-100, 100] cent
     const player = this.player;
     if (this.isDrum) return;
@@ -640,6 +640,12 @@ class Channel {
     player.updateChannelDetune(this, scheduleTime);
   }
 
+  handleCoarseTuningRPN(scheduleTime) {
+    this.limitDataMSB(0, 127);
+    const coarseTuning = (this.dataMSB - 64) * 100;
+    this.setCoarseTuning(coarseTuning, scheduleTime);
+  }
+
   setCoarseTuning(value, scheduleTime) { // [-6400, 6300] cent
     const player = this.player;
     if (this.isDrum) return;
@@ -648,6 +654,12 @@ class Channel {
     this.coarseTuning = value;
     this.detune += value - prev;
     player.updateChannelDetune(this, scheduleTime);
+  }
+
+  handleModulationDepthRangeRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const value = (this.dataMSB + this.dataLSB / 128) * 100;
+    this.setModulationDepthRange(value, scheduleTime);
   }
 
   setModulationDepthRange(value, scheduleTime) { // [0, 12800] cent
