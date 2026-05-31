@@ -3112,6 +3112,10 @@ export class Midy extends EventTarget {
       channel.activeNotes[noteNumber] = [];
     }
     channel.activeNotes[noteNumber].push(note);
+    if (this.mpeEnabled) {
+      const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
+      if (notes) notes.add(note);
+    }
     await this.setNoteAudioNode(channel, note, realtime);
     channel.lastNote = note;
     this.setNoteRouting(channel, note, startTime);
@@ -3121,10 +3125,6 @@ export class Midy extends EventTarget {
     }
     if (0.5 <= channel.state.sostenutoPedal) {
       channel.sostenutoNotes.push(note);
-    }
-    if (this.mpeEnabled) {
-      const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
-      if (notes) notes.add(note);
     }
     return note;
   }
@@ -3254,9 +3254,14 @@ export class Midy extends EventTarget {
   }
 
   noteOff(channel, noteNumber, _velocity, endTime, force) {
+    const state = channel.state;
     if (this.mpeEnabled && channel.isMPEMember) {
       const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
       if (!notes || notes.size === 0) return;
+      if (!force) {
+        if (0.5 <= state.sustainPedal) return;
+        if (0.5 <= state.sostenutoPedal) return;
+      }
       let targetNote = undefined;
       for (const note of notes) {
         if (note.noteNumber === noteNumber && !note.ending) {
@@ -3270,11 +3275,14 @@ export class Midy extends EventTarget {
       if (notes.size === 0) {
         this.mpeState.channelToNotes.delete(channel.channelNumber);
       }
-      return targetNote.ready.then(() => {
+      this.removeFromActiveNotes(channel, noteNumber);
+      const promise = targetNote.ready.then(() => {
+        if (!targetNote.voice) return;
         return this.releaseNote(channel, targetNote, endTime);
       });
+      this.notePromises.push(promise);
+      return promise;
     }
-    const state = channel.state;
     if (!force) {
       if (channel.isDrum && !this.isLoopDrum(channel, noteNumber)) {
         this.removeFromActiveNotes(channel, noteNumber);
