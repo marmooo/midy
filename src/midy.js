@@ -572,9 +572,9 @@ class Channel {
         this.handleModulationDepthRangeRPN(scheduleTime);
         break;
       case 6: // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp053.pdf
-        this.player.setMIDIPolyphonicExpression(
+        this.player.handleMIDIPolyphonicExpressionRPN(
           this.channelNumber,
-          this.dataMSB,
+          scheduleTime,
         );
         break;
       case 16383: // NULL
@@ -3821,6 +3821,33 @@ export class Midy extends EventTarget {
     gainR.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(gain * gainRight, scheduleTime);
+  }
+
+  handleMIDIPolyphonicExpressionRPN(channelNumber, _scheduleTime) {
+    const channel = this.channels[channelNumber];
+    this.setMIDIPolyphonicExpression(channelNumber, channel.dataMSB);
+  }
+
+  setMIDIPolyphonicExpression(channelNumber, value) {
+    if (channelNumber !== 0 && channelNumber !== 15) return;
+    const members = value & 15;
+    if (channelNumber === 0) {
+      this.lowerMPEMembers = members;
+    } else {
+      this.upperMPEMembers = members;
+    }
+    this.mpeEnabled = this.lowerMPEMembers > 0 || this.upperMPEMembers > 0;
+    const lowerStart = 1;
+    const lowerEnd = this.lowerMPEMembers;
+    const upperStart = 16 - this.upperMPEMembers;
+    const upperEnd = 14;
+    const { channels, lowerMPEMembers, upperMPEMembers, mpeEnabled } = this;
+    for (let ch = 0; ch < 16; ch++) {
+      const isLower = lowerMPEMembers && lowerStart <= ch && ch <= lowerEnd;
+      const isUpper = upperMPEMembers && upperStart <= ch && ch <= upperEnd;
+      channels[ch].isMPEMember = mpeEnabled && (isLower || isUpper);
+      channels[ch].isMPEManager = mpeEnabled && (ch === 0 || ch === 15);
+    }
   }
 
   isPortamento(channel, note) {
