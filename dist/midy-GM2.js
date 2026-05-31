@@ -2349,10 +2349,10 @@ function WASMAudioDecoderCommon() {
         value(errors, input, channelsDecoded, samplesDecoded, sampleRate2, bitDepth2) {
           let channelData = [], i, j;
           for (i = 0; i < channelsDecoded; i++) {
-            const channel3 = [];
-            for (j = 0; j < input.length; ) channel3.push(input[j++][i] || []);
+            const channel2 = [];
+            for (j = 0; j < input.length; ) channel2.push(input[j++][i] || []);
             channelData.push(
-              WASMAudioDecoderCommon.concatFloat32(channel3, samplesDecoded)
+              WASMAudioDecoderCommon.concatFloat32(channel2, samplesDecoded)
             );
           }
           return WASMAudioDecoderCommon.getDecodedAudio(
@@ -2498,7 +2498,7 @@ var WASMAudioDecoderWorker = class extends getWorker() {
                 Array.isArray(data3) ? data3.map((data4) => new Uint8Array(data4)) : new Uint8Array(data3)
               )
             );
-            transferList = messagePayload.channelData ? messagePayload.channelData.map((channel3) => channel3.buffer) : [];
+            transferList = messagePayload.channelData ? messagePayload.channelData.map((channel2) => channel2.buffer) : [];
           }
           messagePromise.then(
             () => self.postMessage(messagePayload, transferList)
@@ -2668,12 +2668,12 @@ var blockSize = block + "Size";
 var blocksize0 = block + "size0";
 var blocksize1 = block + "size1";
 var blockSizeBits = symbol();
-var channel2 = "channel";
-var channelMappingFamily = channel2 + "MappingFamily";
-var channelMappingTable = channel2 + "MappingTable";
-var channelMode = channel2 + "Mode";
+var channel = "channel";
+var channelMappingFamily = channel + "MappingFamily";
+var channelMappingTable = channel + "MappingTable";
+var channelMode = channel + "Mode";
 var channelModeBits = symbol();
-var channels = channel2 + "s";
+var channels = channel + "s";
 var copyright = "copyright";
 var copyrightId = copyright + "Id";
 var copyrightIdStart = copyright + "IdStart";
@@ -5031,13 +5031,13 @@ function Decoder() {
         this._outputBufferPtr.buf[0],
         this._channels.buf[0]
       );
-      for (let channel3 = 0; channel3 < this._channels.buf[0]; channel3++) {
+      for (let channel2 = 0; channel2 < this._channels.buf[0]; channel2++) {
         const output = new Float32Array(samplesDecoded);
         if (samplesDecoded) {
           output.set(
             new Float32Array(
               this._common.wasm.HEAP,
-              outputBufferChannels[channel3],
+              outputBufferChannels[channel2],
               samplesDecoded
             )
           );
@@ -5207,8 +5207,8 @@ function createConvolutionReverbImpulse(audioContext, decay, preDecay) {
   const length2 = sampleRate2 * decay;
   const impulse = new AudioBuffer({ numberOfChannels: 2, length: length2, sampleRate: sampleRate2 });
   const preDecayLength = Math.min(sampleRate2 * preDecay, length2);
-  for (let channel3 = 0; channel3 < impulse.numberOfChannels; channel3++) {
-    const channelData = impulse.getChannelData(channel3);
+  for (let channel2 = 0; channel2 < impulse.numberOfChannels; channel2++) {
+    const channelData = impulse.getChannelData(channel2);
     for (let i = 0; i < preDecayLength; i++) {
       channelData[i] = Math.random() * 2 - 1;
     }
@@ -5614,8 +5614,12 @@ var Note = class {
   }
 };
 var Channel = class {
-  channelNumber = 0;
+  player;
+  gainL;
+  gainR;
+  merger;
   isDrum = false;
+  channelNumber = 0;
   programNumber = 0;
   detune = 0;
   bankMSB = 121;
@@ -5644,11 +5648,11 @@ var Channel = class {
   keyBasedGainRs = new Array(128);
   lastNote = null;
   currentBufferSource = null;
-  constructor(channelNumber, audioNodes, settings) {
+  constructor(channelNumber, settings, audioNodes) {
     this.channelNumber = channelNumber;
-    Object.assign(this, audioNodes);
     Object.assign(this, settings);
     this.state = new ControllerState();
+    if (audioNodes) Object.assign(this, audioNodes);
   }
   resetSettings(settings) {
     Object.assign(this, settings);
@@ -5658,6 +5662,415 @@ var Channel = class {
     this.scaleOctaveTuningTable.fill(0);
     this.channelPressureTable.set(defaultPressureValues);
     this.keyBasedTable.fill(-1);
+  }
+  processScheduledNotes(callback) {
+    const tasks = [];
+    for (let i = 0; i < 128; i++) {
+      const stack = this.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        tasks.push(note.ready.then(() => callback(note)));
+      }
+    }
+    return Promise.all(tasks);
+  }
+  processActiveNotes(scheduleTime, callback) {
+    const tasks = [];
+    for (let i = 0; i < 128; i++) {
+      const stack = this.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        if (scheduleTime < note.startTime) continue;
+        tasks.push(note.ready.then(() => callback(note)));
+      }
+    }
+    return Promise.all(tasks);
+  }
+  async noteOn(noteNumber, velocity, startTime) {
+    return await this.player.noteOn(this, noteNumber, velocity, startTime);
+  }
+  noteOff(noteNumber, velocity, endTime, force) {
+    return this.player.noteOff(this, noteNumber, velocity, endTime, force);
+  }
+  setProgramChange(programNumber) {
+    this.programNumber = programNumber;
+    if (this.player.mode === "GM2") {
+      switch (this.bankMSB) {
+        case 120:
+          this.isDrum = true;
+          this.keyBasedTable.fill(-1);
+          break;
+        case 121:
+          this.isDrum = false;
+          break;
+      }
+    }
+  }
+  setChannelPressure(value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    if (this.isDrum) return;
+    const prev = player2.calcChannelPressureEffectValue(this, 0);
+    this.state.channelPressure = value / 127;
+    const next = player2.calcChannelPressureEffectValue(this, 0);
+    this.detune += next - prev;
+    this.processActiveNotes(scheduleTime, (note) => {
+      player2.setChannelPressureEffects(this, note, scheduleTime);
+    });
+    player2.applyVoiceParams(this, 13, scheduleTime);
+  }
+  setPitchBend(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const state = this.state;
+    const prev = state.pitchWheel * 2 - 1;
+    const next = (value - 8192) / 8192;
+    state.pitchWheel = value / 16383;
+    this.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
+    player2.updateChannelDetune(this, scheduleTime);
+    player2.applyVoiceParams(this, 14, scheduleTime);
+  }
+  setControlChange(controllerType, value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const handler = player2.controlChangeHandlers[controllerType];
+    if (handler) {
+      handler.call(player2, this, value, scheduleTime);
+      player2.applyVoiceParams(this, controllerType + 128, scheduleTime);
+      this.processActiveNotes(scheduleTime, (note) => {
+        player2.setControlChangeEffects(this, note, scheduleTime);
+      });
+    } else {
+      console.warn(
+        `Unsupported Control change: controllerType=${controllerType} value=${value}`
+      );
+    }
+  }
+  setBankMSB(msb) {
+    this.bankMSB = msb;
+  }
+  setModulationDepth(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.modulationDepthMSB = value / 127;
+    player2.updateModulation(this, scheduleTime);
+  }
+  setPortamentoTime(value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.portamentoTimeMSB = value / 127;
+    if (this.isDrum) return;
+    player2.updatePortamento(this, scheduleTime);
+  }
+  setVolume(value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.volumeMSB = value / 127;
+    player2.applyVolume(this, scheduleTime);
+  }
+  setPan(value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.panMSB = value / 127;
+    if (this.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        player2.updateKeyBasedVolume(this, i, scheduleTime);
+      }
+    } else {
+      player2.updateChannelVolume(this, scheduleTime);
+    }
+  }
+  setExpression(value, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.expressionMSB = value / 127;
+    player2.updateChannelVolume(this, scheduleTime);
+  }
+  setBankLSB(lsb) {
+    this.bankLSB = lsb;
+  }
+  dataEntryLSB(value, scheduleTime) {
+    this.dataLSB = value;
+    this.handleRPN(scheduleTime);
+  }
+  setSustainPedal(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const state = this.state;
+    const prevValue = state.sustainPedal;
+    state.sustainPedal = value / 127;
+    if (64 <= value) {
+      if (prevValue < 0.5) {
+        this.processScheduledNotes((note) => {
+          this.sustainNotes.push(note);
+        });
+      }
+    } else {
+      player2.releaseSustainPedal(this, value, scheduleTime);
+    }
+  }
+  setPortamento(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.portamento = value / 127;
+    player2.updatePortamento(this, scheduleTime);
+  }
+  setSostenutoPedal(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const state = this.state;
+    const prevValue = state.sostenutoPedal;
+    state.sostenutoPedal = value / 127;
+    if (64 <= value) {
+      if (prevValue < 0.5) {
+        const sostenutoNotes = [];
+        this.processActiveNotes(scheduleTime, (note) => {
+          sostenutoNotes.push(note);
+        });
+        this.sostenutoNotes = sostenutoNotes;
+      }
+    } else {
+      player2.releaseSostenutoPedal(this, value, scheduleTime);
+    }
+  }
+  setSoftPedal(softPedal, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.softPedal = softPedal / 127;
+    this.processScheduledNotes((note) => {
+      if (player2.isPortamento(this, note)) {
+        player2.setPortamentoVolumeEnvelope(this, note, scheduleTime);
+        player2.setPortamentoFilterEnvelope(this, note, scheduleTime);
+      } else {
+        player2.setVolumeEnvelope(this, note, scheduleTime);
+        player2.setFilterEnvelope(this, note, scheduleTime);
+      }
+    });
+  }
+  setReverbSendLevel(reverbSendLevel, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.reverbSendLevel = reverbSendLevel / 127;
+    this.processScheduledNotes((note) => {
+      player2.setReverbSend(this, note, scheduleTime);
+    });
+  }
+  setChorusSendLevel(chorusSendLevel, scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.state.chorusSendLevel = chorusSendLevel / 127;
+    this.processScheduledNotes((note) => {
+      player2.setChorusSend(this, note, scheduleTime);
+    });
+  }
+  setRPNMSB(value) {
+    this.rpnMSB = value;
+  }
+  setRPNLSB(value) {
+    this.rpnLSB = value;
+  }
+  dataEntryMSB(value, scheduleTime) {
+    this.dataMSB = value;
+    this.handleRPN(scheduleTime);
+  }
+  limitData(minMSB, maxMSB, minLSB, maxLSB) {
+    if (maxLSB < this.dataLSB) {
+      this.dataMSB++;
+      this.dataLSB = minLSB;
+    } else if (this.dataLSB < 0) {
+      this.dataMSB--;
+      this.dataLSB = maxLSB;
+    }
+    if (maxMSB < this.dataMSB) {
+      this.dataMSB = maxMSB;
+      this.dataLSB = maxLSB;
+    } else if (this.dataMSB < 0) {
+      this.dataMSB = minMSB;
+      this.dataLSB = minLSB;
+    }
+  }
+  limitDataMSB(minMSB, maxMSB) {
+    if (maxMSB < this.dataMSB) {
+      this.dataMSB = maxMSB;
+    } else if (this.dataMSB < 0) {
+      this.dataMSB = minMSB;
+    }
+  }
+  handleRPN(scheduleTime) {
+    const rpn = this.rpnMSB * 128 + this.rpnLSB;
+    switch (rpn) {
+      case 0:
+        this.handlePitchBendRangeRPN(scheduleTime);
+        break;
+      case 1:
+        this.handleFineTuningRPN(scheduleTime);
+        break;
+      case 2:
+        this.handleCoarseTuningRPN(scheduleTime);
+        break;
+      case 5:
+        this.handleModulationDepthRangeRPN(scheduleTime);
+        break;
+      case 16383:
+        break;
+      default:
+        console.warn(
+          `Channel ${this.channelNumber}: Unsupported RPN MSB=${this.rpnMSB} LSB=${this.rpnLSB}`
+        );
+    }
+  }
+  handlePitchBendRangeRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const pitchBendRange = (this.dataMSB + this.dataLSB / 128) * 100;
+    this.setPitchBendRange(pitchBendRange, scheduleTime);
+  }
+  setPitchBendRange(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const state = this.state;
+    const prev = state.pitchWheelSensitivity;
+    const next = value / 12800;
+    state.pitchWheelSensitivity = next;
+    this.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
+    player2.updateChannelDetune(this, scheduleTime);
+    player2.applyVoiceParams(this, 16, scheduleTime);
+  }
+  handleFineTuningRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const value = this.dataMSB * 128 + this.dataLSB;
+    const fineTuning = (value - 8192) / 8192 * 100;
+    this.setFineTuning(fineTuning, scheduleTime);
+  }
+  setFineTuning(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const prev = this.fineTuning;
+    this.fineTuning = value;
+    this.detune += value - prev;
+    player2.updateChannelDetune(this, scheduleTime);
+  }
+  handleCoarseTuningRPN(scheduleTime) {
+    this.limitDataMSB(0, 127);
+    const coarseTuning = (this.dataMSB - 64) * 100;
+    this.setCoarseTuning(coarseTuning, scheduleTime);
+  }
+  setCoarseTuning(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const prev = this.coarseTuning;
+    this.coarseTuning = value;
+    this.detune += value - prev;
+    player2.updateChannelDetune(this, scheduleTime);
+  }
+  handleModulationDepthRangeRPN(scheduleTime) {
+    this.limitData(0, 127, 0, 127);
+    const value = (this.dataMSB + this.dataLSB / 128) * 100;
+    this.setModulationDepthRange(value, scheduleTime);
+  }
+  setModulationDepthRange(value, scheduleTime) {
+    const player2 = this.player;
+    if (this.isDrum) return;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    this.modulationDepthRange = value;
+    player2.updateModulation(this, scheduleTime);
+  }
+  allSoundOff(scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const promises = [];
+    this.processActiveNotes(scheduleTime, (note) => {
+      promises.push(player2.soundOffNote(note, scheduleTime));
+    });
+    return Promise.all(promises);
+  }
+  resetChannelStates() {
+    const player2 = this.player;
+    const scheduleTime = player2.audioContext.currentTime;
+    const state = this.state;
+    const entries = Object.entries(defaultControllerState);
+    for (const [key, { type, defaultValue }] of entries) {
+      if (128 <= type) {
+        this.setControlChange(
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime
+        );
+      } else {
+        state[key] = defaultValue;
+      }
+    }
+    this.resetSettings(player2.constructor.channelSettings);
+    this.resetTable();
+  }
+  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
+  resetAllControllers(scheduleTime) {
+    const player2 = this.player;
+    const keys = [
+      "channelPressure",
+      "pitchWheel",
+      "expressionMSB",
+      "modulationDepthMSB",
+      "sustainPedal",
+      "portamento",
+      "sostenutoPedal",
+      "softPedal"
+    ];
+    const state = this.state;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
+      if (128 <= type) {
+        this.setControlChange(
+          type - 128,
+          Math.ceil(defaultValue * 127),
+          scheduleTime
+        );
+      } else {
+        state[key] = defaultValue;
+      }
+    }
+    this.setPitchBend(8192, scheduleTime);
+    const settingTypes = ["rpnMSB", "rpnLSB"];
+    for (let i = 0; i < settingTypes.length; i++) {
+      this[settingTypes[i]] = player2.constructor.channelSettings[settingTypes[i]];
+    }
+  }
+  allNotesOff(scheduleTime) {
+    const player2 = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const promises = [];
+    this.processActiveNotes(scheduleTime, (note) => {
+      const promise = this.noteOff(note.noteNumber, 0, scheduleTime, false);
+      promises.push(promise);
+    });
+    return Promise.all(promises);
+  }
+  omniOff(scheduleTime) {
+    this.allNotesOff(scheduleTime);
+  }
+  omniOn(scheduleTime) {
+    this.allNotesOff(scheduleTime);
+  }
+  monoOn(scheduleTime) {
+    this.allNotesOff(scheduleTime);
+    this.mono = true;
+  }
+  polyOn(scheduleTime) {
+    this.allNotesOff(scheduleTime);
+    this.mono = false;
   }
 };
 var drumExclusiveClassesByKit = new Array(57);
@@ -6143,17 +6556,13 @@ var MidyGM2 = class extends EventTarget {
         }
         case "controller":
           if (event.controllerType === 0) {
-            this.setBankMSB(event.channel, event.value);
+            channels2[event.channel].setBankMSB(event.value);
           } else if (event.controllerType === 32) {
-            this.setBankLSB(event.channel, event.value);
+            channels2[event.channel].setBankLSB(event.value);
           }
           break;
         case "programChange":
-          this.setProgramChange(
-            event.channel,
-            event.programNumber,
-            event.startTime
-          );
+          channels2[event.channel].setProgramChange(event.programNumber);
       }
     }
     for (const [audioBufferId, count] of voiceCounter) {
@@ -6164,13 +6573,13 @@ var MidyGM2 = class extends EventTarget {
       this.buildNoteOnDurations();
     }
   }
-  getVoiceId(channel3, noteNumber, velocity) {
-    const programNumber = channel3.programNumber;
+  getVoiceId(channel2, noteNumber, velocity) {
+    const programNumber = channel2.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
-    let bank = channel3.isDrum ? 128 : channel3.bankLSB;
+    let bank = channel2.isDrum ? 128 : channel2.bankLSB;
     if (bankTable[bank] === void 0) {
-      if (channel3.isDrum) return;
+      if (channel2.isDrum) return;
       bank = 0;
     }
     const soundFontIndex = bankTable[bank];
@@ -6198,7 +6607,15 @@ var MidyGM2 = class extends EventTarget {
     const audioContext = this.audioContext;
     return Array.from(
       { length: this.numChannels },
-      (_, ch) => new Channel(ch, this.createChannelAudioNodes(audioContext), settings)
+      (_, ch) => {
+        const channel2 = new Channel(
+          ch,
+          settings,
+          this.createChannelAudioNodes(audioContext)
+        );
+        channel2.player = this;
+        return channel2;
+      }
     );
   }
   decodeOggVorbis(sample2) {
@@ -6252,16 +6669,16 @@ var MidyGM2 = class extends EventTarget {
       return audioBuffer;
     }
   }
-  isLoopDrum(channel3, noteNumber) {
-    const programNumber = channel3.programNumber;
+  isLoopDrum(channel2, noteNumber) {
+    const programNumber = channel2.programNumber;
     return programNumber === 48 && noteNumber === 88 || programNumber === 56 && 47 <= noteNumber && noteNumber <= 84;
   }
-  createBufferSource(channel3, noteNumber, voiceParams, renderedOrRaw) {
+  createBufferSource(channel2, noteNumber, voiceParams, renderedOrRaw) {
     const isRendered = renderedOrRaw instanceof RenderedBuffer;
     const audioBuffer = isRendered ? renderedOrRaw.buffer : renderedOrRaw;
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
-    const isDrumLoop = channel3.isDrum ? this.isLoopDrum(channel3, noteNumber) : voiceParams.sampleModes % 2 !== 0;
+    const isDrumLoop = channel2.isDrum ? this.isLoopDrum(channel2, noteNumber) : voiceParams.sampleModes % 2 !== 0;
     const isLoop = isRendered ? renderedOrRaw.isLoop : isDrumLoop;
     bufferSource.loop = isLoop;
     if (bufferSource.loop) {
@@ -6275,6 +6692,39 @@ var MidyGM2 = class extends EventTarget {
     }
     return bufferSource;
   }
+  processTimelineEvent(event, scheduleTime, {
+    channels: channels2 = this.channels,
+    onNoteOn = null,
+    onNoteOff = null
+  } = {}) {
+    const channel2 = channels2[event.channel];
+    switch (event.type) {
+      case "noteOn":
+        onNoteOn?.(channel2, event, scheduleTime);
+        break;
+      case "noteOff":
+        onNoteOff?.(channel2, event, scheduleTime);
+        break;
+      case "controller":
+        channel2.setControlChange(
+          event.controllerType,
+          event.value,
+          scheduleTime
+        );
+        break;
+      case "programChange":
+        channel2.setProgramChange(event.programNumber);
+        break;
+      case "pitchBend":
+        channel2.setPitchBend(event.value + 8192, scheduleTime);
+        break;
+      case "sysEx":
+        this.handleSysEx(event.data, scheduleTime, channels2);
+        break;
+      case "channelAftertouch":
+        channel2.setChannelPressure(event.amount, scheduleTime);
+    }
+  }
   scheduleTimelineEvents(scheduleTime, queueIndex) {
     const timeOffset = this.resumeTime - this.startTime;
     const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
@@ -6286,52 +6736,26 @@ var MidyGM2 = class extends EventTarget {
       const t2 = event.startTime * inverseTempo;
       if (lookAheadCheckTime < t2) break;
       const startTime = t2 + schedulingOffset;
-      switch (event.type) {
-        case "noteOn": {
+      this.processTimelineEvent(event, startTime, {
+        onNoteOn: (channel2, event2, startTime2) => {
           const note = this.createNote(
-            event.channel,
-            event.noteNumber,
-            event.velocity,
-            startTime
+            event2.noteNumber,
+            event2.velocity,
+            startTime2
           );
           note.timelineIndex = queueIndex;
-          this.setupNote(event.channel, note, startTime);
-          break;
+          this.noteOn(
+            channel2,
+            event2.noteNumber,
+            event2.velocity,
+            startTime2,
+            note
+          );
+        },
+        onNoteOff: (channel2, event2, startTime2) => {
+          channel2.noteOff(event2.noteNumber, event2.velocity, startTime2, false);
         }
-        case "noteOff":
-          this.noteOff(
-            event.channel,
-            event.noteNumber,
-            event.velocity,
-            startTime,
-            false
-            // force
-          );
-          break;
-        case "controller":
-          this.setControlChange(
-            event.channel,
-            event.controllerType,
-            event.value,
-            startTime
-          );
-          break;
-        case "programChange":
-          this.setProgramChange(
-            event.channel,
-            event.programNumber,
-            startTime
-          );
-          break;
-        case "pitchBend":
-          this.setPitchBend(event.channel, event.value + 8192, startTime);
-          break;
-        case "sysEx":
-          this.handleSysEx(event.data, startTime);
-          break;
-        case "channelAftertouch":
-          this.setChannelPressure(event.channel, event.amount, startTime);
-      }
+      });
       queueIndex++;
     }
     return queueIndex;
@@ -6347,6 +6771,9 @@ var MidyGM2 = class extends EventTarget {
     return 0;
   }
   resetAllStates() {
+    player.mode = "GM2";
+    player.masterFineTuning = 0;
+    player.masterCoarseTuning = 0;
     this.exclusiveClassNotes.fill(void 0);
     this.drumExclusiveClassNotes.fill(void 0);
     this.voiceCache.clear();
@@ -6354,12 +6781,12 @@ var MidyGM2 = class extends EventTarget {
     this.adsrVoiceCache.clear();
     const channels2 = this.channels;
     for (let ch = 0; ch < channels2.length; ch++) {
-      const channel3 = channels2[ch];
-      channel3.lastNote = null;
-      channel3.activeNotes = new Array(128);
-      channel3.sustainNotes = [];
-      channel3.sostenutoNotes = [];
-      this.resetChannelStates(ch);
+      const channel2 = channels2[ch];
+      channel2.lastNote = null;
+      channel2.activeNotes = new Array(128);
+      channel2.sustainNotes = [];
+      channel2.sostenutoNotes = [];
+      channel2.resetChannelStates();
     }
   }
   updateStates(queueIndex, nextQueueIndex) {
@@ -6369,42 +6796,8 @@ var MidyGM2 = class extends EventTarget {
     if (nextQueueIndex < queueIndex) queueIndex = 0;
     for (let i = queueIndex; i < nextQueueIndex; i++) {
       const event = timeline[i];
-      switch (event.type) {
-        case "controller":
-          this.setControlChange(
-            event.channel,
-            event.controllerType,
-            event.value,
-            now - resumeTime + event.startTime * inverseTempo
-          );
-          break;
-        case "programChange":
-          this.setProgramChange(
-            event.channel,
-            event.programNumber,
-            now - resumeTime + event.startTime * inverseTempo
-          );
-          break;
-        case "pitchBend":
-          this.setPitchBend(
-            event.channel,
-            event.value + 8192,
-            now - resumeTime + event.startTime * inverseTempo
-          );
-          break;
-        case "sysEx":
-          this.handleSysEx(
-            event.data,
-            now - resumeTime + event.startTime * inverseTempo
-          );
-          break;
-        case "channelAftertouch":
-          this.setChannelPressure(
-            event.channel,
-            event.amount,
-            now - resumeTime + event.startTime * inverseTempo
-          );
-      }
+      const t2 = now - resumeTime + event.startTime * inverseTempo;
+      this.processTimelineEvent(event, t2);
     }
   }
   async playAudioBuffer() {
@@ -6576,9 +6969,9 @@ var MidyGM2 = class extends EventTarget {
   secondToTicks(second, secondsPerBeat) {
     return second * this.ticksPerBeat / secondsPerBeat;
   }
-  getSoundFontId(channel3) {
-    const programNumber = channel3.programNumber;
-    const bankNumber = channel3.isDrum ? 128 : channel3.bankLSB;
+  getSoundFontId(channel2) {
+    const programNumber = channel2.programNumber;
+    const bankNumber = channel2.isDrum ? 128 : channel2.bankLSB;
     const bank = bankNumber.toString().padStart(3, "0");
     const program = programNumber.toString().padStart(3, "0");
     return `${bank}:${program}`;
@@ -6596,24 +6989,24 @@ var MidyGM2 = class extends EventTarget {
         event.ticks = currentTicks;
         switch (event.type) {
           case "noteOn": {
-            const channel3 = channels2[event.channel];
-            instruments.add(this.getSoundFontId(channel3));
+            const channel2 = channels2[event.channel];
+            instruments.add(this.getSoundFontId(channel2));
             break;
           }
           case "controller":
             switch (event.controllerType) {
               case 0:
-                this.setBankMSB(event.channel, event.value);
+                channels2[event.channel].setBankMSB(event.value);
                 break;
               case 32:
-                this.setBankLSB(event.channel, event.value);
+                channels2[event.channel].setBankLSB(event.value);
                 break;
             }
             break;
           case "programChange": {
-            const channel3 = channels2[event.channel];
-            this.setProgramChange(event.channel, event.programNumber);
-            instruments.add(this.getSoundFontId(channel3));
+            const channel2 = channels2[event.channel];
+            channel2.setProgramChange(event.programNumber);
+            instruments.add(this.getSoundFontId(channel2));
             break;
           }
           case "sysEx": {
@@ -6670,12 +7063,11 @@ var MidyGM2 = class extends EventTarget {
     }
     return { instruments, timeline };
   }
-  async stopChannelNotes(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
+  async stopChannelNotes(channel2, scheduleTime) {
     const promises = [];
     const timeConstant = this.perceptualSmoothingTime / 5;
     for (let i = 0; i < 128; i++) {
-      const stack = channel3.activeNotes[i];
+      const stack = channel2.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
@@ -6690,22 +7082,48 @@ var MidyGM2 = class extends EventTarget {
       }
     }
     await Promise.all(promises);
-    channel3.lastNote = null;
-    channel3.activeNotes = new Array(128);
-    channel3.sustainNotes = [];
+    channel2.lastNote = null;
+    channel2.activeNotes = new Array(128);
+    channel2.sustainNotes = [];
     this.notePromises = [];
   }
   async stopNotes(scheduleTime) {
-    for (let ch = 0; ch < this.channels.length; ch++) {
-      await this.stopChannelNotes(ch, scheduleTime);
+    const channels2 = this.channels;
+    for (let ch = 0; ch < channels2.length; ch++) {
+      await this.stopChannelNotes(channels2[ch], scheduleTime);
     }
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
     return stopPromise;
   }
+  resolveVoice(channel2, noteNumber, velocity) {
+    const programNumber = channel2.programNumber;
+    const bankTable = this.soundFontTable[programNumber];
+    if (!bankTable) return null;
+    let bank = channel2.isDrum ? 128 : 0;
+    if (bankTable[bank] === void 0) {
+      if (channel2.isDrum) return null;
+      bank = 0;
+    }
+    const soundFontIndex = bankTable[bank];
+    if (soundFontIndex === void 0) return null;
+    return this.soundFonts[soundFontIndex].getVoice(
+      bank,
+      programNumber,
+      noteNumber,
+      velocity
+    );
+  }
   async render() {
     if (this.isRendering) return;
     if (this.timeline.length === 0) return;
+    const settings = this.constructor.channelSettings;
+    const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
+      const channel2 = new Channel(ch, settings);
+      channel2.player = this;
+      return channel2;
+    });
+    renderChannels[9].isDrum = true;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     this.isRendering = true;
     this.renderedAudioBuffer = null;
@@ -6714,75 +7132,29 @@ var MidyGM2 = class extends EventTarget {
     const totalSamples3 = Math.ceil(
       (this.totalTime + this.startDelay) * sampleRate2
     );
-    const renderBankMSB = new Uint8Array(this.numChannels);
-    const renderBankLSB = new Uint8Array(this.numChannels);
-    const renderProgramNumber = new Uint8Array(this.numChannels);
-    const renderIsDrum = new Uint8Array(this.numChannels);
-    renderBankMSB.fill(121);
-    renderIsDrum[9] = 1;
-    const renderControllerStates = Array.from(
-      { length: this.numChannels },
-      () => {
-        const state = new Float32Array(256);
-        for (const { type, defaultValue } of Object.values(defaultControllerState)) {
-          state[type] = defaultValue;
-        }
-        return state;
-      }
-    );
     const tasks = [];
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
-      const ch = event.channel;
-      switch (event.type) {
-        case "noteOn": {
+      const t2 = event.startTime * inverseTempo + this.startDelay;
+      this.processTimelineEvent(event, -1, {
+        channels: renderChannels,
+        onNoteOn: (renderChannel, event2) => {
           const noteEvent = this.noteOnEvents.get(i);
           const noteDuration = noteEvent?.duration ?? this.noteOnDurations.get(i) ?? 0;
-          if (noteDuration <= 0) continue;
-          const { noteNumber, velocity } = event;
-          const isDrum = renderIsDrum[ch] === 1;
-          const programNumber = renderProgramNumber[ch];
-          const bankTable = this.soundFontTable[programNumber];
-          if (!bankTable) continue;
-          let bank = isDrum ? 128 : renderBankLSB[ch];
-          if (bankTable[bank] === void 0) {
-            if (isDrum) continue;
-            bank = 0;
-          }
-          const soundFontIndex = bankTable[bank];
-          if (soundFontIndex === void 0) continue;
-          const soundFont = this.soundFonts[soundFontIndex];
-          const fakeChannel = {
-            channelNumber: ch,
-            state: { array: renderControllerStates[ch].slice() },
-            programNumber,
-            isDrum,
-            modulationDepthRange: 50,
-            detune: 0
-          };
-          const controllerState = this.getControllerState(
-            fakeChannel,
-            noteNumber,
-            velocity
-          );
-          const voice = soundFont.getVoice(
-            bank,
-            programNumber,
-            noteNumber,
-            velocity
-          );
-          if (!voice) continue;
-          const voiceParams = voice.getAllParams(controllerState);
-          const t2 = event.startTime * inverseTempo + this.startDelay;
-          const fakeNote = { voiceParams, channel: ch, noteNumber, velocity };
+          if (noteDuration <= 0) return;
+          const { noteNumber, velocity } = event2;
+          const voice = this.resolveVoice(renderChannel, noteNumber, velocity);
+          if (!voice) return;
           const promise = (async () => {
             try {
               return await this.createFullRenderedBuffer(
-                fakeChannel,
-                fakeNote,
-                voiceParams,
+                renderChannel,
+                { noteNumber, velocity },
+                voice.getAllParams(
+                  this.getControllerState(renderChannel, noteNumber, velocity)
+                ),
                 noteDuration,
                 noteEvent
               );
@@ -6791,88 +7163,9 @@ var MidyGM2 = class extends EventTarget {
               return null;
             }
           })();
-          tasks.push({ t: t2, promise, fakeChannel });
-          break;
+          tasks.push({ t: t2, promise });
         }
-        case "controller": {
-          const { controllerType, value } = event;
-          switch (controllerType) {
-            case 0:
-              renderBankMSB[ch] = value;
-              if (this.mode === "GM2") {
-                if (value === 120) {
-                  renderIsDrum[ch] = 1;
-                } else if (value === 121) {
-                  renderIsDrum[ch] = 0;
-                }
-              }
-              break;
-            case 32:
-              renderBankLSB[ch] = value;
-              break;
-            default: {
-              const stateIndex = 128 + controllerType;
-              if (stateIndex < 256) {
-                renderControllerStates[ch][stateIndex] = value / 127;
-              }
-              break;
-            }
-          }
-          break;
-        }
-        case "pitchBend":
-          renderControllerStates[ch][14] = (event.value + 8192) / 16383;
-          break;
-        case "programChange":
-          renderProgramNumber[ch] = event.programNumber;
-          if (this.mode === "GM2") {
-            if (renderBankMSB[ch] === 120) {
-              renderIsDrum[ch] = 1;
-            } else if (renderBankMSB[ch] === 121) {
-              renderIsDrum[ch] = 0;
-            }
-          }
-          break;
-        case "sysEx": {
-          const data3 = event.data;
-          if (data3[0] === 126 && data3[1] === 9 && data3[2] === 3) {
-            if (data3[3] === 1) {
-              renderBankMSB.fill(0);
-              renderBankLSB.fill(0);
-              renderProgramNumber.fill(0);
-              renderIsDrum.fill(0);
-              renderIsDrum[9] = 1;
-              renderBankMSB[9] = 1;
-              for (let c = 0; c < this.numChannels; c++) {
-                for (const { type, defaultValue } of Object.values(
-                  defaultControllerState
-                )) {
-                  renderControllerStates[c][type] = defaultValue;
-                }
-              }
-              renderNoteAftertouch.fill(0);
-            } else if (data3[3] === 3) {
-              renderBankMSB.fill(121);
-              renderBankLSB.fill(0);
-              renderProgramNumber.fill(0);
-              renderIsDrum.fill(0);
-              renderIsDrum[9] = 1;
-              renderBankMSB[9] = 120;
-              for (let c = 0; c < this.numChannels; c++) {
-                for (const { type, defaultValue } of Object.values(
-                  defaultControllerState
-                )) {
-                  renderControllerStates[c][type] = defaultValue;
-                }
-              }
-              renderNoteAftertouch.fill(0);
-            }
-          }
-          break;
-        }
-        case "channelAftertouch":
-          renderControllerStates[ch][13] = event.amount / 127;
-      }
+      });
     }
     const offlineContext = new OfflineAudioContext(2, totalSamples3, sampleRate2);
     for (let i = 0; i < tasks.length; i++) {
@@ -6962,35 +7255,6 @@ var MidyGM2 = class extends EventTarget {
       return this.resumeTime + (now - this.startTime) * this.tempo;
     }
     return now + this.resumeTime - this.startTime;
-  }
-  async processScheduledNotes(channel3, callback) {
-    const tasks = [];
-    for (let i = 0; i < 128; i++) {
-      const stack = channel3.activeNotes[i];
-      if (!stack) continue;
-      for (let j = 0; j < stack.length; j++) {
-        const note = stack[j];
-        if (note.ending) continue;
-        const task = note.ready.then(() => callback(note));
-        tasks.push(task);
-      }
-    }
-    return await Promise.all(tasks);
-  }
-  async processActiveNotes(channel3, scheduleTime, callback) {
-    const tasks = [];
-    for (let i = 0; i < 128; i++) {
-      const stack = channel3.activeNotes[i];
-      if (!stack) continue;
-      for (let j = 0; j < stack.length; j++) {
-        const note = stack[j];
-        if (note.ending) continue;
-        if (scheduleTime < note.startTime) continue;
-        const task = note.ready.then(() => callback(note));
-        tasks.push(task);
-      }
-    }
-    return await Promise.all(tasks);
   }
   generateDistributedArray(center, count, varianceRatio = 0.1, randomness = 0.05) {
     const variance = center * varianceRatio;
@@ -7122,36 +7386,36 @@ var MidyGM2 = class extends EventTarget {
   centToHz(cent) {
     return 8.176 * this.centToRate(cent);
   }
-  calcChannelDetune(channel3) {
-    const masterTuning = channel3.isDrum ? 0 : this.masterCoarseTuning + this.masterFineTuning;
-    const channelTuning = channel3.coarseTuning + channel3.fineTuning;
+  calcChannelDetune(channel2) {
+    const masterTuning = channel2.isDrum ? 0 : this.masterCoarseTuning + this.masterFineTuning;
+    const channelTuning = channel2.coarseTuning + channel2.fineTuning;
     const tuning = masterTuning + channelTuning;
-    const pitchWheel = channel3.state.pitchWheel * 2 - 1;
-    const pitchWheelSensitivity = channel3.state.pitchWheelSensitivity * 12800;
+    const pitchWheel = channel2.state.pitchWheel * 2 - 1;
+    const pitchWheelSensitivity = channel2.state.pitchWheelSensitivity * 12800;
     const pitch = pitchWheel * pitchWheelSensitivity;
-    const effect = this.getChannelPitchControl(channel3);
+    const effect = this.getChannelPitchControl(channel2);
     return tuning + pitch + effect;
   }
-  updateChannelDetune(channel3, scheduleTime) {
-    this.processScheduledNotes(channel3, (note) => {
+  updateChannelDetune(channel2, scheduleTime) {
+    channel2.processScheduledNotes((note) => {
       if (note.renderedBuffer?.isFull) return;
-      if (this.isPortamento(channel3, note)) {
-        this.setPortamentoDetune(channel3, note, scheduleTime);
+      if (this.isPortamento(channel2, note)) {
+        this.setPortamentoDetune(channel2, note, scheduleTime);
       } else {
-        this.setDetune(channel3, note, scheduleTime);
+        this.setDetune(channel2, note, scheduleTime);
       }
     });
   }
-  calcScaleOctaveTuning(channel3, note) {
-    return channel3.scaleOctaveTuningTable[note.noteNumber % 12];
+  calcScaleOctaveTuning(channel2, note) {
+    return channel2.scaleOctaveTuningTable[note.noteNumber % 12];
   }
-  calcNoteDetune(channel3, note) {
-    const noteDetune = note.voiceParams.detune + this.calcScaleOctaveTuning(channel3, note);
-    return channel3.detune + noteDetune;
+  calcNoteDetune(channel2, note) {
+    const noteDetune = note.voiceParams.detune + this.calcScaleOctaveTuning(channel2, note);
+    return channel2.detune + noteDetune;
   }
-  getPortamentoTime(channel3, note) {
+  getPortamentoTime(channel2, note) {
     const deltaSemitone = Math.abs(note.noteNumber - note.portamentoNoteNumber);
-    const value = Math.ceil(channel3.state.portamentoTimeMSB * 127);
+    const value = Math.ceil(channel2.state.portamentoTimeMSB * 127);
     return deltaSemitone / this.getPitchIncrementSpeed(value) / 10;
   }
   getPitchIncrementSpeed(value) {
@@ -7206,17 +7470,17 @@ var MidyGM2 = class extends EventTarget {
     const y = h00 * y0 + h01 * y1 + h * (h10 * m0 + h11 * m1);
     return Math.exp(y);
   }
-  setPortamentoVolumeEnvelope(channel3, note, scheduleTime) {
+  setPortamentoVolumeEnvelope(channel2, note, scheduleTime) {
     const { voiceParams, startTime } = note;
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * (1 + this.getAmplitudeControl(channel3));
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * (1 + this.getAmplitudeControl(channel2));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
-    const portamentoTime = startTime + this.getPortamentoTime(channel3, note);
+    const portamentoTime = startTime + this.getPortamentoTime(channel2, note);
     note.volumeEnvelopeNode.gain.cancelScheduledValues(scheduleTime).exponentialRampToValueAtTime(sustainVolume, portamentoTime);
   }
-  setVolumeEnvelope(channel3, note, scheduleTime) {
+  setVolumeEnvelope(channel2, note, scheduleTime) {
     if (!note.volumeEnvelopeNode) return;
     const { voiceParams, startTime } = note;
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * (1 + this.getAmplitudeControl(channel3));
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * (1 + this.getAmplitudeControl(channel2));
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack;
@@ -7224,21 +7488,21 @@ var MidyGM2 = class extends EventTarget {
     const decayDuration = voiceParams.volDecay;
     note.volumeEnvelopeNode.gain.cancelScheduledValues(scheduleTime).setValueAtTime(0, startTime).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
-  setPortamentoDetune(channel3, note, scheduleTime) {
-    const detune = this.calcNoteDetune(channel3, note);
+  setPortamentoDetune(channel2, note, scheduleTime) {
+    const detune = this.calcNoteDetune(channel2, note);
     const startTime = note.startTime;
     const deltaCent = (note.noteNumber - note.portamentoNoteNumber) * 100;
-    const portamentoTime = startTime + this.getPortamentoTime(channel3, note);
+    const portamentoTime = startTime + this.getPortamentoTime(channel2, note);
     note.bufferSource.detune.cancelScheduledValues(scheduleTime).setValueAtTime(detune - deltaCent, scheduleTime).linearRampToValueAtTime(detune, portamentoTime);
   }
-  setDetune(channel3, note, scheduleTime) {
-    const detune = this.calcNoteDetune(channel3, note);
+  setDetune(channel2, note, scheduleTime) {
+    const detune = this.calcNoteDetune(channel2, note);
     const timeConstant = this.perceptualSmoothingTime / 5;
     note.bufferSource.detune.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(detune, scheduleTime, timeConstant);
   }
-  setPortamentoPitchEnvelope(channel3, note, scheduleTime) {
+  setPortamentoPitchEnvelope(channel2, note, scheduleTime) {
     const baseRate = note.voiceParams.playbackRate;
-    const portamentoTime = note.startTime + this.getPortamentoTime(channel3, note);
+    const portamentoTime = note.startTime + this.getPortamentoTime(channel2, note);
     note.bufferSource.playbackRate.cancelScheduledValues(scheduleTime).exponentialRampToValueAtTime(baseRate, portamentoTime);
   }
   setPitchEnvelope(note, scheduleTime) {
@@ -7259,29 +7523,29 @@ var MidyGM2 = class extends EventTarget {
     const maxFrequency = 2e4;
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
-  setPortamentoFilterEnvelope(channel3, note, scheduleTime) {
+  setPortamentoFilterEnvelope(channel2, note, scheduleTime) {
     if (!note.filterEnvelopeNode) return;
     const { voiceParams, startTime } = note;
-    const scale = this.getSoftPedalFactor(channel3, note);
-    const baseCent = voiceParams.initialFilterFc + this.getFilterCutoffControl(channel3);
+    const scale = this.getSoftPedalFactor(channel2, note);
+    const baseCent = voiceParams.initialFilterFc + this.getFilterCutoffControl(channel2);
     const sustainCent = baseCent + voiceParams.modEnvToFilterFc * (1 - voiceParams.modSustain);
     const baseFreq = this.centToHz(baseCent) * scale;
     const sustainFreq = this.centToHz(sustainCent) * scale;
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const portamentoTime = startTime + this.getPortamentoTime(channel3, note);
+    const portamentoTime = startTime + this.getPortamentoTime(channel2, note);
     const modDelay = startTime + voiceParams.modDelay;
     note.adjustedBaseFreq = adjustedSustainFreq;
     note.filterEnvelopeNode.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(adjustedBaseFreq, startTime).setValueAtTime(adjustedBaseFreq, modDelay).exponentialRampToValueAtTime(adjustedSustainFreq, portamentoTime);
   }
-  setFilterEnvelope(channel3, note, scheduleTime) {
+  setFilterEnvelope(channel2, note, scheduleTime) {
     if (!note.filterEnvelopeNode) return;
     const { voiceParams, startTime } = note;
     const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
-    const baseCent = voiceParams.initialFilterFc + this.getFilterCutoffControl(channel3);
+    const baseCent = voiceParams.initialFilterFc + this.getFilterCutoffControl(channel2);
     const peekCent = baseCent + modEnvToFilterFc;
     const sustainCent = baseCent + modEnvToFilterFc * (1 - voiceParams.modSustain);
-    const softPedalFactor = this.getSoftPedalFactor(channel3, note);
+    const softPedalFactor = this.getSoftPedalFactor(channel2, note);
     const baseFreq = this.centToHz(baseCent) * softPedalFactor;
     const peekFreq = this.centToHz(peekCent) * softPedalFactor;
     const sustainFreq = this.centToHz(sustainCent) * softPedalFactor;
@@ -7299,7 +7563,7 @@ var MidyGM2 = class extends EventTarget {
       decayDuration * decayCurve
     );
   }
-  startModulation(channel3, note, scheduleTime) {
+  startModulation(channel2, note, scheduleTime) {
     const audioContext = this.audioContext;
     const { voiceParams } = note;
     note.modLfo = new OscillatorNode(audioContext, {
@@ -7309,9 +7573,9 @@ var MidyGM2 = class extends EventTarget {
       gain: voiceParams.modLfoToFilterFc
     });
     note.modLfoToPitch = new GainNode(audioContext);
-    this.setModLfoToPitch(channel3, note, scheduleTime);
+    this.setModLfoToPitch(channel2, note, scheduleTime);
     note.modLfoToVolume = new GainNode(audioContext);
-    this.setModLfoToVolume(channel3, note, scheduleTime);
+    this.setModLfoToVolume(channel2, note, scheduleTime);
     note.modLfo.start(note.startTime + voiceParams.delayModLFO);
     note.modLfo.connect(note.modLfoToFilterFc);
     if (note.filterEnvelopeNode) {
@@ -7323,10 +7587,10 @@ var MidyGM2 = class extends EventTarget {
     const volumeTarget = note.volumeEnvelopeNode ?? note.volumeNode;
     note.modLfoToVolume.connect(volumeTarget.gain);
   }
-  startVibrato(channel3, note, scheduleTime) {
+  startVibrato(channel2, note, scheduleTime) {
     const audioContext = this.audioContext;
     const { voiceParams } = note;
-    const state = channel3.state;
+    const state = channel2.state;
     const vibratoRate = state.vibratoRate * 2;
     const vibratoDelay = state.vibratoDelay * 2;
     note.vibLfo = new OscillatorNode(audioContext, {
@@ -7336,11 +7600,11 @@ var MidyGM2 = class extends EventTarget {
       note.startTime + voiceParams.delayVibLFO * vibratoDelay
     );
     note.vibLfoToPitch = new GainNode(audioContext);
-    this.setVibLfoToPitch(channel3, note, scheduleTime);
+    this.setVibLfoToPitch(channel2, note, scheduleTime);
     note.vibLfo.connect(note.vibLfoToPitch);
     note.vibLfoToPitch.connect(note.bufferSource.detune);
   }
-  async createAdsRenderedBuffer(channel3, note, voiceParams, audioBuffer, isDrum = false) {
+  async createAdsRenderedBuffer(channel2, note, voiceParams, audioBuffer, isDrum = false) {
     const isLoop = isDrum ? false : voiceParams.sampleModes % 2 !== 0;
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
@@ -7385,8 +7649,8 @@ var MidyGM2 = class extends EventTarget {
       filterEnvelopeNode,
       volumeEnvelopeNode
     };
-    this.setVolumeEnvelope(channel3, offlineNote, 0);
-    this.setFilterEnvelope(channel3, offlineNote, 0);
+    this.setVolumeEnvelope(channel2, offlineNote, 0);
+    this.setFilterEnvelope(channel2, offlineNote, 0);
     bufferSource.connect(filterEnvelopeNode);
     filterEnvelopeNode.connect(volumeEnvelopeNode);
     volumeEnvelopeNode.connect(offlineContext.destination);
@@ -7403,7 +7667,7 @@ var MidyGM2 = class extends EventTarget {
       loopDuration: outputLoopDuration
     });
   }
-  async createAdsrRenderedBuffer(channel3, note, voiceParams, audioBuffer, noteDuration) {
+  async createAdsrRenderedBuffer(channel2, note, voiceParams, audioBuffer, noteDuration) {
     const isLoop = voiceParams.sampleModes % 2 !== 0;
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
@@ -7447,8 +7711,8 @@ var MidyGM2 = class extends EventTarget {
       filterEnvelopeNode,
       volumeEnvelopeNode
     };
-    this.setVolumeEnvelope(channel3, offlineNote, 0);
-    this.setFilterEnvelope(channel3, offlineNote, 0);
+    this.setVolumeEnvelope(channel2, offlineNote, 0);
+    this.setFilterEnvelope(channel2, offlineNote, 0);
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelayTime = voiceParams.volDelay;
@@ -7488,9 +7752,9 @@ var MidyGM2 = class extends EventTarget {
       releaseDuration
     });
   }
-  async createFullRenderedBuffer(channel3, note, voiceParams, noteDuration, noteEvent = {}) {
+  async createFullRenderedBuffer(channel2, note, voiceParams, noteDuration, noteEvent = {}) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent;
-    const ch = channel3.channelNumber;
+    const ch = channel2.channelNumber;
     const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
     const totalDuration2 = noteDuration + releaseEndDuration;
     const sampleRate2 = this.audioContext.sampleRate;
@@ -7507,35 +7771,21 @@ var MidyGM2 = class extends EventTarget {
     offlinePlayer.soundFonts = this.soundFonts;
     offlinePlayer.soundFontTable = this.soundFontTable;
     const dstChannel = offlinePlayer.channels[ch];
-    dstChannel.state.array.set(channel3.state.array);
-    dstChannel.isDrum = channel3.isDrum;
-    dstChannel.programNumber = channel3.programNumber;
-    dstChannel.modulationDepthRange = channel3.modulationDepthRange;
-    dstChannel.detune = this.calcChannelDetune(dstChannel);
-    await offlinePlayer.noteOn(ch, note.noteNumber, note.velocity, 0);
+    dstChannel.state.array.set(channel2.state.array);
+    dstChannel.isDrum = channel2.isDrum;
+    dstChannel.programNumber = channel2.programNumber;
+    dstChannel.modulationDepthRange = channel2.modulationDepthRange;
+    dstChannel.detune = channel2.detune;
+    offlinePlayer.updateChannelVolume(dstChannel, 0);
+    await dstChannel.noteOn(note.noteNumber, note.velocity, 0);
     for (const event of noteEvents) {
       const t2 = event.startTime / this.tempo - noteStartTime;
       if (t2 < 0 || t2 > noteDuration) continue;
-      switch (event.type) {
-        case "controller":
-          offlinePlayer.setControlChange(
-            ch,
-            event.controllerType,
-            event.value,
-            t2
-          );
-          break;
-        case "pitchBend":
-          offlinePlayer.setPitchBend(ch, event.value + 8192, t2);
-          break;
-        case "sysEx":
-          offlinePlayer.handleSysEx(event.data, t2);
-          break;
-        case "channelAftertouch":
-          offlinePlayer.setChannelPressure(ch, event.amount, t2);
-      }
+      offlinePlayer.processTimelineEvent(event, t2, {
+        channels: offlinePlayer.channels
+      });
     }
-    offlinePlayer.noteOff(ch, note.noteNumber, 0, noteDuration, true);
+    dstChannel.noteOff(note.noteNumber, 0, noteDuration, true);
     const buffer2 = await offlineContext.startRendering();
     return new RenderedBuffer(buffer2, {
       isLoop: false,
@@ -7544,28 +7794,28 @@ var MidyGM2 = class extends EventTarget {
       releaseDuration: releaseEndDuration
     });
   }
-  async getAudioBuffer(channel3, note, realtime) {
+  async getAudioBuffer(channel2, note, realtime) {
     const cacheMode = this.cacheMode;
     const { noteNumber, velocity } = note;
-    const audioBufferId = this.getVoiceId(channel3, noteNumber, velocity);
+    const audioBufferId = this.getVoiceId(channel2, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getFullCachedBuffer(channel3, note, audioBufferId);
+        return await this.getFullCachedBuffer(channel2, note, audioBufferId);
       } else if (cacheMode === "adsr") {
-        return await this.getAdsrCachedBuffer(channel3, note, audioBufferId);
+        return await this.getAdsrCachedBuffer(channel2, note, audioBufferId);
       }
     }
     if (cacheMode === "none") {
       return await this.createAudioBuffer(note.voiceParams);
     }
     return await this.getAdsCachedBuffer(
-      channel3,
+      channel2,
       note,
       audioBufferId,
       realtime
     );
   }
-  async getAdsCachedBuffer(channel3, note, audioBufferId, realtime) {
+  async getAdsCachedBuffer(channel2, note, audioBufferId, realtime) {
     const cacheKey = audioBufferId + (note.noteNumber << 1) + 1;
     const voiceParams = note.voiceParams;
     if (realtime) {
@@ -7573,11 +7823,11 @@ var MidyGM2 = class extends EventTarget {
       if (cached) return cached;
       const rawBuffer = await this.createAudioBuffer(voiceParams);
       const rendered = await this.createAdsRenderedBuffer(
-        channel3,
+        channel2,
         note,
         voiceParams,
         rawBuffer,
-        channel3.isDrum
+        channel2.isDrum
       );
       this.realtimeVoiceCache.set(cacheKey, rendered);
       return rendered;
@@ -7593,11 +7843,11 @@ var MidyGM2 = class extends EventTarget {
         const maxCount = this.voiceCounter.get(cacheKey) ?? 0;
         const rawBuffer = await this.createAudioBuffer(voiceParams);
         const rendered = await this.createAdsRenderedBuffer(
-          channel3,
+          channel2,
           note,
           voiceParams,
           rawBuffer,
-          channel3.isDrum
+          channel2.isDrum
         );
         const cache2 = { audioBuffer: rendered, maxCount, counter: 1 };
         this.voiceCache.set(cacheKey, cache2);
@@ -7605,7 +7855,7 @@ var MidyGM2 = class extends EventTarget {
       }
     }
   }
-  async getAdsrCachedBuffer(channel3, note, audioBufferId) {
+  async getAdsrCachedBuffer(channel2, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     const timelineIndex = note.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
@@ -7633,7 +7883,7 @@ var MidyGM2 = class extends EventTarget {
       try {
         const rawBuffer = await this.createAudioBuffer(voiceParams);
         const rendered = await this.createAdsrRenderedBuffer(
-          channel3,
+          channel2,
           note,
           voiceParams,
           rawBuffer,
@@ -7649,7 +7899,7 @@ var MidyGM2 = class extends EventTarget {
     durationMap.set(cacheKey, renderPromise);
     return await renderPromise;
   }
-  async getFullCachedBuffer(channel3, note, audioBufferId) {
+  async getFullCachedBuffer(channel2, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     const timelineIndex = note.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
@@ -7674,7 +7924,7 @@ var MidyGM2 = class extends EventTarget {
     const renderPromise = (async () => {
       try {
         const rendered2 = await this.createFullRenderedBuffer(
-          channel3,
+          channel2,
           note,
           voiceParams,
           noteDuration,
@@ -7692,23 +7942,23 @@ var MidyGM2 = class extends EventTarget {
     note.fullCacheVoiceId = audioBufferId;
     return rendered;
   }
-  async setNoteAudioNode(channel3, note, realtime) {
+  async setNoteAudioNode(channel2, note, realtime) {
     const audioContext = this.audioContext;
     const now = audioContext.currentTime;
     const { noteNumber, velocity, startTime } = note;
-    const state = channel3.state;
+    const state = channel2.state;
     const controllerState = this.getControllerState(
-      channel3,
+      channel2,
       noteNumber,
       velocity
     );
     const voiceParams = note.voice.getAllParams(controllerState);
     note.voiceParams = voiceParams;
-    const audioBuffer = await this.getAudioBuffer(channel3, note, realtime);
+    const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
     const isRendered = audioBuffer instanceof RenderedBuffer;
     note.renderedBuffer = isRendered ? audioBuffer : null;
     note.bufferSource = this.createBufferSource(
-      channel3,
+      channel2,
       noteNumber,
       voiceParams,
       audioBuffer
@@ -7723,52 +7973,52 @@ var MidyGM2 = class extends EventTarget {
         Q: voiceParams.initialFilterQ / 10
         // dB
       });
-      const prevNote = channel3.lastNote;
+      const prevNote = channel2.lastNote;
       if (prevNote && prevNote.noteNumber !== noteNumber) {
         note.portamentoNoteNumber = prevNote.noteNumber;
       }
-      if (!channel3.isDrum && this.isPortamento(channel3, note)) {
-        this.setPortamentoVolumeEnvelope(channel3, note, now);
-        this.setPortamentoFilterEnvelope(channel3, note, now);
-        this.setPortamentoPitchEnvelope(channel3, note, now);
-        this.setPortamentoDetune(channel3, note, now);
+      if (!channel2.isDrum && this.isPortamento(channel2, note)) {
+        this.setPortamentoVolumeEnvelope(channel2, note, now);
+        this.setPortamentoFilterEnvelope(channel2, note, now);
+        this.setPortamentoPitchEnvelope(channel2, note, now);
+        this.setPortamentoDetune(channel2, note, now);
       } else {
-        this.setVolumeEnvelope(channel3, note, now);
-        this.setFilterEnvelope(channel3, note, now);
+        this.setVolumeEnvelope(channel2, note, now);
+        this.setFilterEnvelope(channel2, note, now);
         this.setPitchEnvelope(note, now);
-        this.setDetune(channel3, note, now);
+        this.setDetune(channel2, note, now);
       }
       if (0 < state.vibratoDepth) {
-        this.startVibrato(channel3, note, now);
+        this.startVibrato(channel2, note, now);
       }
       if (0 < state.modulationDepthMSB) {
-        this.startModulation(channel3, note, now);
+        this.startModulation(channel2, note, now);
       }
-      if (channel3.mono && channel3.currentBufferSource) {
-        channel3.currentBufferSource.stop(startTime);
-        channel3.currentBufferSource = note.bufferSource;
+      if (channel2.mono && channel2.currentBufferSource) {
+        channel2.currentBufferSource.stop(startTime);
+        channel2.currentBufferSource = note.bufferSource;
       }
       note.bufferSource.connect(note.filterEnvelopeNode);
       note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
       note.volumeEnvelopeNode.connect(note.volumeNode);
-      this.setChorusSend(channel3, note, now);
-      this.setReverbSend(channel3, note, now);
+      this.setChorusSend(channel2, note, now);
+      this.setReverbSend(channel2, note, now);
     } else if (isFullCached) {
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-      this.setChorusSend(channel3, note, now);
-      this.setReverbSend(channel3, note, now);
+      this.setChorusSend(channel2, note, now);
+      this.setReverbSend(channel2, note, now);
     } else {
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
-      this.setDetune(channel3, note, now);
+      this.setDetune(channel2, note, now);
       if (0 < state.modulationDepthMSB) {
-        this.startModulation(channel3, note, now);
+        this.startModulation(channel2, note, now);
       }
       note.bufferSource.connect(note.volumeNode);
-      this.setChorusSend(channel3, note, now);
-      this.setReverbSend(channel3, note, now);
+      this.setChorusSend(channel2, note, now);
+      this.setReverbSend(channel2, note, now);
     }
     if (voiceParams.sample.type === "compressed") {
       note.bufferSource.start(startTime);
@@ -7777,57 +8027,39 @@ var MidyGM2 = class extends EventTarget {
     }
     return note;
   }
-  handleExclusiveClass(note, channelNumber, startTime) {
+  handleExclusiveClass(note, channel2, startTime) {
     const exclusiveClass = note.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
     const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
-      const [prevNote, prevChannelNumber] = prev;
+      const [prevNote, prevChannel] = prev;
       if (prevNote && !prevNote.ending) {
-        this.noteOff(
-          prevChannelNumber,
-          prevNote.noteNumber,
-          0,
-          // velocity,
-          startTime,
-          true
-          // force
-        );
+        prevChannel.noteOff(prevNote.noteNumber, 0, startTime, true);
       }
     }
-    this.exclusiveClassNotes[exclusiveClass] = [note, channelNumber];
+    this.exclusiveClassNotes[exclusiveClass] = [note, channel2];
   }
-  handleDrumExclusiveClass(note, channelNumber, startTime) {
-    const channel3 = this.channels[channelNumber];
-    if (!channel3.isDrum) return;
-    const kitTable = drumExclusiveClassesByKit[channel3.programNumber];
+  handleDrumExclusiveClass(note, channel2, startTime) {
+    if (!channel2.isDrum) return;
+    const kitTable = drumExclusiveClassesByKit[channel2.programNumber];
     if (!kitTable) return;
     const drumExclusiveClass = kitTable[note.noteNumber];
     if (drumExclusiveClass === 0) return;
-    const index = (drumExclusiveClass - 1) * this.channels.length + channelNumber;
+    const index = (drumExclusiveClass - 1) * this.channels.length + channel2.channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
     if (prevNote && !prevNote.ending) {
-      this.noteOff(
-        channelNumber,
-        prevNote.noteNumber,
-        0,
-        // velocity,
-        startTime,
-        true
-        // force
-      );
+      channel2.noteOff(prevNote.noteNumber, 0, startTime, true);
     }
     this.drumExclusiveClassNotes[index] = note;
   }
-  setNoteRouting(channelNumber, note, startTime) {
-    const channel3 = this.channels[channelNumber];
+  setNoteRouting(channel2, note, startTime) {
     const { volumeNode } = note;
     if (note.renderedBuffer?.isFull) {
       volumeNode.connect(this.masterVolume);
     } else {
-      if (channel3.isDrum) {
+      if (channel2.isDrum) {
         const noteNumber = note.noteNumber;
-        const { keyBasedGainLs, keyBasedGainRs } = channel3;
+        const { keyBasedGainLs, keyBasedGainRs } = channel2;
         let gainL = keyBasedGainLs[noteNumber];
         let gainR = keyBasedGainRs[noteNumber];
         if (!gainL) {
@@ -7838,37 +8070,28 @@ var MidyGM2 = class extends EventTarget {
         volumeNode.connect(gainL);
         volumeNode.connect(gainR);
       } else {
-        volumeNode.connect(channel3.gainL);
-        volumeNode.connect(channel3.gainR);
+        volumeNode.connect(channel2.gainL);
+        volumeNode.connect(channel2.gainR);
       }
     }
-    this.handleExclusiveClass(note, channelNumber, startTime);
-    this.handleDrumExclusiveClass(note, channelNumber, startTime);
+    this.handleExclusiveClass(note, channel2, startTime);
+    this.handleDrumExclusiveClass(note, channel2, startTime);
   }
-  async noteOn(channelNumber, noteNumber, velocity, startTime) {
-    const note = this.createNote(
-      channelNumber,
-      noteNumber,
-      velocity,
-      startTime
-    );
-    return await this.setupNote(channelNumber, note, startTime);
-  }
-  createNote(channelNumber, noteNumber, velocity, startTime) {
+  createNote(noteNumber, velocity, startTime) {
     if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
-    const note = new Note(noteNumber, velocity, startTime);
-    note.channel = channelNumber;
-    return note;
+    return new Note(noteNumber, velocity, startTime);
   }
-  async setupNote(channelNumber, note, startTime) {
+  async noteOn(channel2, noteNumber, velocity, startTime, note) {
     const realtime = startTime === void 0;
-    const channel3 = this.channels[channelNumber];
-    const programNumber = channel3.programNumber;
+    if (!note) {
+      note = this.createNote(noteNumber, velocity, startTime);
+    }
+    const programNumber = channel2.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
-    let bank = channel3.isDrum ? 128 : channel3.bankLSB;
+    let bank = channel2.isDrum ? 128 : channel2.bankLSB;
     if (bankTable[bank] === void 0) {
-      if (channel3.isDrum) return;
+      if (channel2.isDrum) return;
       bank = 0;
     }
     const soundFontIndex = bankTable[bank];
@@ -7877,23 +8100,23 @@ var MidyGM2 = class extends EventTarget {
     note.voice = soundFont.getVoice(
       bank,
       programNumber,
-      note.noteNumber,
-      note.velocity
+      noteNumber,
+      velocity
     );
     if (!note.voice) return;
-    if (!channel3.activeNotes[note.noteNumber]) {
-      channel3.activeNotes[note.noteNumber] = [];
+    if (!channel2.activeNotes[noteNumber]) {
+      channel2.activeNotes[noteNumber] = [];
     }
-    channel3.activeNotes[note.noteNumber].push(note);
-    await this.setNoteAudioNode(channel3, note, realtime);
-    channel3.lastNote = note;
-    this.setNoteRouting(channelNumber, note, startTime);
+    channel2.activeNotes[noteNumber].push(note);
+    await this.setNoteAudioNode(channel2, note, realtime);
+    channel2.lastNote = note;
+    this.setNoteRouting(channel2, note, startTime);
     note.resolveReady();
-    if (0.5 <= channel3.state.sustainPedal) {
-      channel3.sustainNotes.push(note);
+    if (0.5 <= channel2.state.sustainPedal) {
+      channel2.sustainNotes.push(note);
     }
-    if (0.5 <= channel3.state.sostenutoPedal) {
-      channel3.sostenutoNotes.push(note);
+    if (0.5 <= channel2.state.sostenutoPedal) {
+      channel2.sostenutoNotes.push(note);
     }
     return note;
   }
@@ -8001,21 +8224,20 @@ var MidyGM2 = class extends EventTarget {
       };
     });
   }
-  noteOff(channelNumber, noteNumber, _velocity, endTime, force) {
-    const channel3 = this.channels[channelNumber];
-    const state = channel3.state;
+  noteOff(channel2, noteNumber, _velocity, endTime, force) {
+    const state = channel2.state;
     if (!force) {
-      if (channel3.isDrum && !this.isLoopDrum(channel3, noteNumber)) {
-        this.removeFromActiveNotes(channel3, noteNumber);
+      if (channel2.isDrum && !this.isLoopDrum(channel2, noteNumber)) {
+        this.removeFromActiveNotes(channel2, noteNumber);
         return;
       }
       if (0.5 <= state.sustainPedal) return;
       if (0.5 <= state.sostenutoPedal) return;
     }
-    const note = this.findNoteForOff(channel3, noteNumber);
+    const note = this.findNoteForOff(channel2, noteNumber);
     if (!note) return;
     note.ending = true;
-    this.removeFromActiveNotes(channel3, noteNumber);
+    this.removeFromActiveNotes(channel2, noteNumber);
     const promise = note.ready.then(() => {
       if (!note.voice) return;
       return this.releaseNote(note, endTime);
@@ -8023,52 +8245,31 @@ var MidyGM2 = class extends EventTarget {
     this.notePromises.push(promise);
     return promise;
   }
-  findNoteForOff(channel3, noteNumber) {
-    const stack = channel3.activeNotes[noteNumber];
+  findNoteForOff(channel2, noteNumber) {
+    const stack = channel2.activeNotes[noteNumber];
     if (!stack) return;
     for (let i = 0; i < stack.length; i++) {
       if (!stack[i].ending) return stack[i];
     }
   }
-  removeFromActiveNotes(channel3, noteNumber) {
-    const stack = channel3.activeNotes[noteNumber];
+  removeFromActiveNotes(channel2, noteNumber) {
+    const stack = channel2.activeNotes[noteNumber];
     if (!stack || stack.length === 0) return;
     stack.shift();
   }
-  releaseSustainPedal(channelNumber, halfVelocity, scheduleTime) {
+  releaseSustainPedal(channel2, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
-    const channel3 = this.channels[channelNumber];
     const promises = [];
-    for (let i = 0; i < channel3.sustainNotes.length; i++) {
-      const promise = this.noteOff(
-        channelNumber,
-        channel3.sustainNotes[i].noteNumber,
+    for (let i = 0; i < channel2.sustainNotes.length; i++) {
+      const promise = channel2.noteOff(
+        channel2.sustainNotes[i].noteNumber,
         velocity,
         scheduleTime,
         true
       );
       promises.push(promise);
     }
-    channel3.sustainNotes = [];
-    return promises;
-  }
-  releaseSostenutoPedal(channelNumber, halfVelocity, scheduleTime) {
-    const velocity = halfVelocity * 2;
-    const channel3 = this.channels[channelNumber];
-    const promises = [];
-    const sostenutoNotes = channel3.sostenutoNotes;
-    channel3.state.sostenutoPedal = 0;
-    for (let i = 0; i < sostenutoNotes.length; i++) {
-      const note = sostenutoNotes[i];
-      const promise = this.noteOff(
-        channelNumber,
-        note.noteNumber,
-        velocity,
-        scheduleTime
-      );
-      promises.push(promise);
-    }
-    channel3.sostenutoNotes = [];
+    channel2.sustainNotes = [];
     return promises;
   }
   soundOffNote(note, scheduleTime) {
@@ -8088,25 +8289,39 @@ var MidyGM2 = class extends EventTarget {
     });
   }
   soundOff(channelNumber, noteNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    const note = this.findNoteForOff(channel3, noteNumber);
+    const channel2 = this.channels[channelNumber];
+    const note = this.findNoteForOff(channel2, noteNumber);
     if (!note) return Promise.resolve();
-    this.removeFromActiveNotes(channel3, note.noteNumber);
+    this.removeFromActiveNotes(channel2, note.noteNumber);
     return this.soundOffNote(note, scheduleTime);
   }
   createMessageHandlers() {
     const handlers = new Array(256);
-    handlers[128] = (data3, scheduleTime) => this.noteOff(data3[0] & 15, data3[1], data3[2], scheduleTime);
-    handlers[144] = (data3, scheduleTime) => this.noteOn(data3[0] & 15, data3[1], data3[2], scheduleTime);
-    handlers[176] = (data3, scheduleTime) => this.setControlChange(data3[0] & 15, data3[1], data3[2], scheduleTime);
-    handlers[192] = (data3, scheduleTime) => this.setProgramChange(data3[0] & 15, data3[1], scheduleTime);
-    handlers[208] = (data3, scheduleTime) => this.setChannelPressure(data3[0] & 15, data3[1], scheduleTime);
-    handlers[224] = (data3, scheduleTime) => this.handlePitchBendMessage(
-      data3[0] & 15,
-      data3[1],
-      data3[2],
-      scheduleTime
-    );
+    handlers[128] = (data3, scheduleTime) => {
+      this.channels[data3[0] & 15].noteOff(data3[1], data3[2], scheduleTime);
+    };
+    handlers[144] = (data3, scheduleTime) => {
+      this.channels[data3[0] & 15].noteOn(data3[1], data3[2], scheduleTime);
+    };
+    handlers[176] = (data3, scheduleTime) => {
+      this.channels[data3[0] & 15].setControlChange(
+        data3[1],
+        data3[2],
+        scheduleTime
+      );
+    };
+    handlers[192] = (data3, _scheduleTime) => {
+      this.channels[data3[0] & 15].setProgramChange(data3[1]);
+    };
+    handlers[208] = (data3, scheduleTime) => {
+      this.channels[data3[0] & 15].setChannelPressure(data3[1], scheduleTime);
+    };
+    handlers[224] = (data3, scheduleTime) => {
+      this.channels[data3[0] & 15].setPitchBend(
+        data3[2] * 128 + data3[1],
+        scheduleTime
+      );
+    };
     handlers[254] = (_data, _scheduleTime) => this.activeSensing();
     return handlers;
   }
@@ -8121,85 +8336,58 @@ var MidyGM2 = class extends EventTarget {
   activeSensing() {
     this.lastActiveSensing = performance.now();
   }
-  setProgramChange(channelNumber, programNumber, _scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    channel3.programNumber = programNumber;
-    if (this.mode === "GM2") {
-      switch (channel3.bankMSB) {
-        case 120:
-          channel3.isDrum = true;
-          channel3.keyBasedTable.fill(-1);
-          break;
-        case 121:
-          channel3.isDrum = false;
-          break;
-      }
+  releaseSostenutoPedal(channel2, halfVelocity, scheduleTime) {
+    const velocity = halfVelocity * 2;
+    const sostenutoNotes = channel2.sostenutoNotes;
+    channel2.state.sostenutoPedal = 0;
+    const promises = [];
+    for (let i = 0; i < sostenutoNotes.length; i++) {
+      const note = sostenutoNotes[i];
+      const promise = channel2.noteOff(
+        note.noteNumber,
+        velocity,
+        scheduleTime
+      );
+      promises.push(promise);
     }
+    channel2.sostenutoNotes = [];
+    return promises;
   }
-  setChannelPressure(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    const prev = this.calcChannelPressureEffectValue(channel3, 0);
-    channel3.state.channelPressure = value / 127;
-    const next = this.calcChannelPressureEffectValue(channel3, 0);
-    channel3.detune += next - prev;
-    this.processActiveNotes(channel3, scheduleTime, (note) => {
-      this.setChannelPressureEffects(channel3, note, scheduleTime);
-    });
-    this.applyVoiceParams(channel3, 13, scheduleTime);
-  }
-  handlePitchBendMessage(channelNumber, lsb, msb, scheduleTime) {
-    const pitchBend = msb * 128 + lsb;
-    this.setPitchBend(channelNumber, pitchBend, scheduleTime);
-  }
-  setPitchBend(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const state = channel3.state;
-    const prev = state.pitchWheel * 2 - 1;
-    const next = (value - 8192) / 8192;
-    state.pitchWheel = value / 16383;
-    channel3.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
-    this.updateChannelDetune(channel3, scheduleTime);
-    this.applyVoiceParams(channel3, 14, scheduleTime);
-  }
-  setModLfoToPitch(channel3, note, scheduleTime) {
+  setModLfoToPitch(channel2, note, scheduleTime) {
     if (note.modLfoToPitch) {
-      const modLfoToPitch = note.voiceParams.modLfoToPitch + this.getLFOPitchDepth(channel3, note);
-      const baseDepth = Math.abs(modLfoToPitch) + channel3.state.modulationDepthMSB;
+      const modLfoToPitch = note.voiceParams.modLfoToPitch + this.getLFOPitchDepth(channel2, note);
+      const baseDepth = Math.abs(modLfoToPitch) + channel2.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
       note.modLfoToPitch.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
     } else {
-      this.startModulation(channel3, note, scheduleTime);
+      this.startModulation(channel2, note, scheduleTime);
     }
   }
-  setVibLfoToPitch(channel3, note, scheduleTime) {
+  setVibLfoToPitch(channel2, note, scheduleTime) {
     if (note.vibLfoToPitch) {
-      const vibratoDepth = channel3.state.vibratoDepth * 2;
+      const vibratoDepth = channel2.state.vibratoDepth * 2;
       const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
       const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
       const depth = baseDepth * Math.sign(vibLfoToPitch);
       note.vibLfoToPitch.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
     } else {
-      this.startVibrato(channel3, note, scheduleTime);
+      this.startVibrato(channel2, note, scheduleTime);
     }
   }
-  setModLfoToFilterFc(channel3, note, scheduleTime) {
-    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc + this.getLFOFilterDepth(channel3);
+  setModLfoToFilterFc(channel2, note, scheduleTime) {
+    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc + this.getLFOFilterDepth(channel2);
     note.modLfoToFilterFc.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modLfoToFilterFc, scheduleTime);
   }
-  setModLfoToVolume(channel3, note, scheduleTime) {
+  setModLfoToVolume(channel2, note, scheduleTime) {
     const modLfoToVolume = note.voiceParams.modLfoToVolume;
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
-    const depth = baseDepth * Math.sign(modLfoToVolume) * (1 + this.getLFOAmplitudeDepth(channel3));
+    const depth = baseDepth * Math.sign(modLfoToVolume) * (1 + this.getLFOAmplitudeDepth(channel2));
     note.modLfoToVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
   }
-  setReverbSend(channel3, note, scheduleTime) {
-    let value = note.voiceParams.reverbEffectsSend * channel3.state.reverbSendLevel;
-    if (channel3.isDrum) {
-      const keyBasedValue = this.getKeyBasedValue(channel3, note.noteNumber, 91);
+  setReverbSend(channel2, note, scheduleTime) {
+    let value = note.voiceParams.reverbEffectsSend * channel2.state.reverbSendLevel;
+    if (channel2.isDrum) {
+      const keyBasedValue = this.getKeyBasedValue(channel2, note.noteNumber, 91);
       if (0 <= keyBasedValue) value = keyBasedValue / 127;
     }
     if (!note.reverbSend) {
@@ -8220,10 +8408,10 @@ var MidyGM2 = class extends EventTarget {
       }
     }
   }
-  setChorusSend(channel3, note, scheduleTime) {
-    let value = note.voiceParams.chorusEffectsSend * channel3.state.chorusSendLevel;
-    if (channel3.isDrum) {
-      const keyBasedValue = this.getKeyBasedValue(channel3, note.noteNumber, 93);
+  setChorusSend(channel2, note, scheduleTime) {
+    let value = note.voiceParams.chorusEffectsSend * channel2.state.chorusSendLevel;
+    if (channel2.isDrum) {
+      const keyBasedValue = this.getKeyBasedValue(channel2, note.noteNumber, 93);
       if (0 <= keyBasedValue) value = keyBasedValue / 127;
     }
     if (!note.chorusSend) {
@@ -8255,8 +8443,8 @@ var MidyGM2 = class extends EventTarget {
     const freqModLFO = note.voiceParams.freqModLFO;
     note.modLfo.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(freqModLFO, scheduleTime);
   }
-  setDelayVibLFO(channel3, note) {
-    const vibratoDelay = channel3.state.vibratoDelay * 2;
+  setDelayVibLFO(channel2, note) {
+    const vibratoDelay = channel2.state.vibratoDelay * 2;
     const value = note.voiceParams.delayVibLFO;
     const startTime = note.startTime + value * vibratoDelay;
     try {
@@ -8264,80 +8452,80 @@ var MidyGM2 = class extends EventTarget {
     } catch {
     }
   }
-  setFreqVibLFO(channel3, note, scheduleTime) {
-    const vibratoRate = channel3.state.vibratoRate * 2;
+  setFreqVibLFO(channel2, note, scheduleTime) {
+    const vibratoRate = channel2.state.vibratoRate * 2;
     const freqVibLFO = note.voiceParams.freqVibLFO;
     note.vibLfo.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
   createVoiceParamsHandlers() {
     return {
-      modLfoToPitch: (channel3, note, scheduleTime) => {
-        if (0 < channel3.state.modulationDepthMSB) {
-          this.setModLfoToPitch(channel3, note, scheduleTime);
+      modLfoToPitch: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.modulationDepthMSB) {
+          this.setModLfoToPitch(channel2, note, scheduleTime);
         }
       },
-      vibLfoToPitch: (channel3, note, scheduleTime) => {
-        if (0 < channel3.state.vibratoDepth) {
-          this.setVibLfoToPitch(channel3, note, scheduleTime);
+      vibLfoToPitch: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.vibratoDepth) {
+          this.setVibLfoToPitch(channel2, note, scheduleTime);
         }
       },
-      modLfoToFilterFc: (channel3, note, scheduleTime) => {
-        if (0 < channel3.state.modulationDepthMSB) {
-          this.setModLfoToFilterFc(channel3, note, scheduleTime);
+      modLfoToFilterFc: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.modulationDepthMSB) {
+          this.setModLfoToFilterFc(channel2, note, scheduleTime);
         }
       },
-      modLfoToVolume: (channel3, note, scheduleTime) => {
-        if (0 < channel3.state.modulationDepthMSB) {
-          this.setModLfoToVolume(channel3, note, scheduleTime);
+      modLfoToVolume: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.modulationDepthMSB) {
+          this.setModLfoToVolume(channel2, note, scheduleTime);
         }
       },
-      chorusEffectsSend: (channel3, note, scheduleTime) => {
-        this.setChorusSend(channel3, note, scheduleTime);
+      chorusEffectsSend: (channel2, note, scheduleTime) => {
+        this.setChorusSend(channel2, note, scheduleTime);
       },
-      reverbEffectsSend: (channel3, note, scheduleTime) => {
-        this.setReverbSend(channel3, note, scheduleTime);
+      reverbEffectsSend: (channel2, note, scheduleTime) => {
+        this.setReverbSend(channel2, note, scheduleTime);
       },
-      delayModLFO: (channel3, note, _scheduleTime) => {
-        if (0 < channel3.state.modulationDepthMSB) {
+      delayModLFO: (channel2, note, _scheduleTime) => {
+        if (0 < channel2.state.modulationDepthMSB) {
           this.setDelayModLFO(note);
         }
       },
-      freqModLFO: (_channel, note, scheduleTime) => {
-        if (0 < channel.state.modulationDepthMSB) {
+      freqModLFO: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.modulationDepthMSB) {
           this.setFreqModLFO(note, scheduleTime);
         }
       },
-      delayVibLFO: (channel3, note, _scheduleTime) => {
-        if (0 < channel3.state.vibratoDepth) {
-          this.setDelayVibLFO(channel3, note);
+      delayVibLFO: (channel2, note, _scheduleTime) => {
+        if (0 < channel2.state.vibratoDepth) {
+          this.setDelayVibLFO(channel2, note);
         }
       },
-      freqVibLFO: (channel3, note, scheduleTime) => {
-        if (0 < channel3.state.vibratoDepth) {
-          this.setFreqVibLFO(channel3, note, scheduleTime);
+      freqVibLFO: (channel2, note, scheduleTime) => {
+        if (0 < channel2.state.vibratoDepth) {
+          this.setFreqVibLFO(channel2, note, scheduleTime);
         }
       },
-      detune: (channel3, note, scheduleTime) => {
-        if (this.isPortamento(channel3, note)) {
-          this.setPortamentoDetune(channel3, note, scheduleTime);
+      detune: (channel2, note, scheduleTime) => {
+        if (this.isPortamento(channel2, note)) {
+          this.setPortamentoDetune(channel2, note, scheduleTime);
         } else {
-          this.setDetune(channel3, note, scheduleTime);
+          this.setDetune(channel2, note, scheduleTime);
         }
       }
     };
   }
-  getControllerState(channel3, noteNumber, velocity) {
-    const state = new Float32Array(channel3.state.array.length);
-    state.set(channel3.state.array);
+  getControllerState(channel2, noteNumber, velocity) {
+    const state = new Float32Array(channel2.state.array.length);
+    state.set(channel2.state.array);
     state[2] = velocity / 127;
     state[3] = noteNumber / 127;
     return state;
   }
-  applyVoiceParams(channel3, controllerType, scheduleTime) {
-    this.processScheduledNotes(channel3, (note) => {
+  applyVoiceParams(channel2, controllerType, scheduleTime) {
+    channel2.processScheduledNotes((note) => {
       if (note.renderedBuffer?.isFull) return;
       const controllerState = this.getControllerState(
-        channel3,
+        channel2,
         note.noteNumber,
         note.velocity
       );
@@ -8350,7 +8538,7 @@ var MidyGM2 = class extends EventTarget {
         if (value === prevValue) continue;
         note.voiceParams[key] = value;
         if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](channel3, note, scheduleTime);
+          this.voiceParamsHandlers[key](channel2, note, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
@@ -8358,115 +8546,76 @@ var MidyGM2 = class extends EventTarget {
         }
       }
       if (applyVolumeEnvelope) {
-        this.setVolumeEnvelope(channel3, note, scheduleTime);
+        this.setVolumeEnvelope(channel2, note, scheduleTime);
       }
       if (applyFilterEnvelope) {
-        this.setFilterEnvelope(channel3, note, scheduleTime);
+        this.setFilterEnvelope(channel2, note, scheduleTime);
       }
       if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
     });
   }
   createControlChangeHandlers() {
     const handlers = new Array(128);
-    handlers[0] = this.setBankMSB;
-    handlers[1] = this.setModulationDepth;
-    handlers[5] = this.setPortamentoTime;
-    handlers[6] = this.dataEntryMSB;
-    handlers[7] = this.setVolume;
-    handlers[10] = this.setPan;
-    handlers[11] = this.setExpression;
-    handlers[32] = this.setBankLSB;
-    handlers[38] = this.dataEntryLSB;
-    handlers[64] = this.setSustainPedal;
-    handlers[65] = this.setPortamento;
-    handlers[66] = this.setSostenutoPedal;
-    handlers[67] = this.setSoftPedal;
-    handlers[91] = this.setReverbSendLevel;
-    handlers[93] = this.setChorusSendLevel;
-    handlers[100] = this.setRPNLSB;
-    handlers[101] = this.setRPNMSB;
-    handlers[120] = this.allSoundOff;
-    handlers[121] = this.resetAllControllers;
-    handlers[123] = this.allNotesOff;
-    handlers[124] = this.omniOff;
-    handlers[125] = this.omniOn;
-    handlers[126] = this.monoOn;
-    handlers[127] = this.polyOn;
+    handlers[0] = (ch, v, _t) => ch.setBankMSB(v);
+    handlers[1] = (ch, v, t2) => ch.setModulationDepth(v, t2);
+    handlers[5] = (ch, v, t2) => ch.setPortamentoTime(v, t2);
+    handlers[6] = (ch, v, t2) => ch.dataEntryMSB(v, t2);
+    handlers[7] = (ch, v, t2) => ch.setVolume(v, t2);
+    handlers[10] = (ch, v, t2) => ch.setPan(v, t2);
+    handlers[11] = (ch, v, t2) => ch.setExpression(v, t2);
+    handlers[32] = (ch, v, _t) => ch.setBankLSB(v);
+    handlers[38] = (ch, v, t2) => ch.dataEntryLSB(v, t2);
+    handlers[64] = (ch, v, t2) => ch.setSustainPedal(v, t2);
+    handlers[65] = (ch, v, t2) => ch.setPortamento(v, t2);
+    handlers[66] = (ch, v, t2) => ch.setSostenutoPedal(v, t2);
+    handlers[67] = (ch, v, t2) => ch.setSoftPedal(v, t2);
+    handlers[91] = (ch, v, t2) => ch.setReverbSendLevel(v, t2);
+    handlers[93] = (ch, v, t2) => ch.setChorusSendLevel(v, t2);
+    handlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
+    handlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
+    handlers[120] = (ch, _v, t2) => ch.allSoundOff(t2);
+    handlers[121] = (ch, _v, t2) => ch.resetAllControllers(t2);
+    handlers[123] = (ch, _v, t2) => ch.allNotesOff(t2);
+    handlers[124] = (ch, _v, t2) => ch.omniOff(t2);
+    handlers[125] = (ch, _v, t2) => ch.omniOn(t2);
+    handlers[126] = (ch, _v, t2) => ch.monoOn(t2);
+    handlers[127] = (ch, _v, t2) => ch.polyOn(t2);
     return handlers;
   }
-  setControlChange(channelNumber, controllerType, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const handler = this.controlChangeHandlers[controllerType];
-    if (handler) {
-      handler.call(this, channelNumber, value, scheduleTime);
-      const channel3 = this.channels[channelNumber];
-      this.applyVoiceParams(channel3, controllerType + 128, scheduleTime);
-      this.processActiveNotes(channel3, scheduleTime, (note) => {
-        this.setControlChangeEffects(channel3, note, scheduleTime);
-      });
-    } else {
-      console.warn(
-        `Unsupported Control change: controllerType=${controllerType} value=${value}`
-      );
-    }
-  }
-  setBankMSB(channelNumber, msb) {
-    this.channels[channelNumber].bankMSB = msb;
-  }
-  updateModulation(channel3, scheduleTime) {
-    const depth = channel3.state.modulationDepthMSB * channel3.modulationDepthRange;
-    this.processScheduledNotes(channel3, (note) => {
+  updateModulation(channel2, scheduleTime) {
+    const depth = channel2.state.modulationDepthMSB * channel2.modulationDepthRange;
+    channel2.processScheduledNotes((note) => {
       if (note.renderedBuffer?.isFull) return;
       if (note.modLfoToPitch) {
         note.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
       } else {
-        this.startModulation(channel3, note, scheduleTime);
+        this.startModulation(channel2, note, scheduleTime);
       }
     });
   }
-  setModulationDepth(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    channel3.state.modulationDepthMSB = value / 127;
-    this.updateModulation(channel3, scheduleTime);
-  }
-  updatePortamento(channel3, scheduleTime) {
-    if (channel3.isDrum) return;
-    this.processScheduledNotes(channel3, (note) => {
-      if (this.isPortamento(channel3, note)) {
-        this.setPortamentoVolumeEnvelope(channel3, note, scheduleTime);
-        this.setPortamentoFilterEnvelope(channel3, note, scheduleTime);
-        this.setPortamentoPitchEnvelope(channel3, note, scheduleTime);
-        this.setPortamentoDetune(channel3, note, scheduleTime);
+  updatePortamento(channel2, scheduleTime) {
+    if (channel2.isDrum) return;
+    channel2.processScheduledNotes((note) => {
+      if (this.isPortamento(channel2, note)) {
+        this.setPortamentoVolumeEnvelope(channel2, note, scheduleTime);
+        this.setPortamentoFilterEnvelope(channel2, note, scheduleTime);
+        this.setPortamentoPitchEnvelope(channel2, note, scheduleTime);
+        this.setPortamentoDetune(channel2, note, scheduleTime);
       } else {
-        this.setVolumeEnvelope(channel3, note, scheduleTime);
-        this.setFilterEnvelope(channel3, note, scheduleTime);
+        this.setVolumeEnvelope(channel2, note, scheduleTime);
+        this.setFilterEnvelope(channel2, note, scheduleTime);
         this.setPitchEnvelope(note, scheduleTime);
-        this.setDetune(channel3, note, scheduleTime);
+        this.setDetune(channel2, note, scheduleTime);
       }
     });
   }
-  setPortamentoTime(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    channel3.state.portamentoTimeMSB = value / 127;
-    if (channel3.isDrum) return;
-    this.updatePortamento(channel3, scheduleTime);
-  }
-  setVolume(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    channel3.state.volumeMSB = value / 127;
-    this.applyVolume(channel3, scheduleTime);
-  }
-  applyVolume(channel3, scheduleTime) {
-    if (channel3.isDrum) {
+  applyVolume(channel2, scheduleTime) {
+    if (channel2.isDrum) {
       for (let i = 0; i < 128; i++) {
-        this.updateKeyBasedVolume(channel3, i, scheduleTime);
+        this.updateKeyBasedVolume(channel2, i, scheduleTime);
       }
     } else {
-      this.updateChannelVolume(channel3, scheduleTime);
+      this.updateChannelVolume(channel2, scheduleTime);
     }
   }
   panToGain(pan) {
@@ -8476,363 +8625,37 @@ var MidyGM2 = class extends EventTarget {
       gainRight: Math.sin(theta)
     };
   }
-  setPan(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    channel3.state.panMSB = value / 127;
-    if (channel3.isDrum) {
-      for (let i = 0; i < 128; i++) {
-        this.updateKeyBasedVolume(channel3, i, scheduleTime);
-      }
-    } else {
-      this.updateChannelVolume(channel3, scheduleTime);
-    }
-  }
-  setExpression(channelNumber, value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    channel3.state.expressionMSB = value / 127;
-    this.updateChannelVolume(channel3, scheduleTime);
-  }
-  setBankLSB(channelNumber, lsb) {
-    this.channels[channelNumber].bankLSB = lsb;
-  }
-  dataEntryLSB(channelNumber, value, scheduleTime) {
-    this.channels[channelNumber].dataLSB = value;
-    this.handleRPN(channelNumber, scheduleTime);
-  }
-  updateChannelVolume(channel3, scheduleTime) {
-    const state = channel3.state;
-    const effect = this.getChannelAmplitudeControl(channel3);
+  updateChannelVolume(channel2, scheduleTime) {
+    if (!channel2.gainL) return;
+    const state = channel2.state;
+    const effect = this.getChannelAmplitudeControl(channel2);
     const gain = state.volumeMSB * state.expressionMSB * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
-    channel3.gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainLeft, scheduleTime);
-    channel3.gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainRight, scheduleTime);
+    channel2.gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainLeft, scheduleTime);
+    channel2.gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainRight, scheduleTime);
   }
-  updateKeyBasedVolume(channel3, keyNumber, scheduleTime) {
-    const gainL = channel3.keyBasedGainLs[keyNumber];
+  updateKeyBasedVolume(channel2, keyNumber, scheduleTime) {
+    const gainL = channel2.keyBasedGainLs[keyNumber];
     if (!gainL) return;
-    const gainR = channel3.keyBasedGainRs[keyNumber];
-    const state = channel3.state;
+    const gainR = channel2.keyBasedGainRs[keyNumber];
+    const state = channel2.state;
     const defaultGain = state.volumeMSB * state.expressionMSB;
     const defaultPan = state.panMSB;
-    const keyBasedVolume = this.getKeyBasedValue(channel3, keyNumber, 7);
+    const keyBasedVolume = this.getKeyBasedValue(channel2, keyNumber, 7);
     const gain = 0 <= keyBasedVolume ? defaultGain * keyBasedVolume / 64 : defaultGain;
-    const keyBasedPan = this.getKeyBasedValue(channel3, keyNumber, 10);
+    const keyBasedPan = this.getKeyBasedValue(channel2, keyNumber, 10);
     const pan = 0 <= keyBasedPan ? keyBasedPan / 127 : defaultPan;
     const { gainLeft, gainRight } = this.panToGain(pan);
     gainL.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainLeft, scheduleTime);
     gainR.gain.cancelScheduledValues(scheduleTime).setValueAtTime(gain * gainRight, scheduleTime);
   }
-  setSustainPedal(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const state = channel3.state;
-    const prevValue = state.sustainPedal;
-    state.sustainPedal = value / 127;
-    if (64 <= value) {
-      if (prevValue < 0.5) {
-        this.processScheduledNotes(channel3, (note) => {
-          channel3.sustainNotes.push(note);
-        });
-      }
-    } else {
-      this.releaseSustainPedal(channelNumber, value, scheduleTime);
-    }
+  isPortamento(channel2, note) {
+    return 0.5 <= channel2.state.portamento && 0 <= note.portamentoNoteNumber;
   }
-  isPortamento(channel3, note) {
-    return 0.5 <= channel3.state.portamento && 0 <= note.portamentoNoteNumber;
+  getSoftPedalFactor(channel2, note) {
+    return 1 - (0.1 + note.noteNumber / 127 * 0.2) * channel2.state.softPedal;
   }
-  setPortamento(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    channel3.state.portamento = value / 127;
-    this.updatePortamento(channel3, scheduleTime);
-  }
-  setSostenutoPedal(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const state = channel3.state;
-    const prevValue = state.sostenutoPedal;
-    state.sostenutoPedal = value / 127;
-    if (64 <= value) {
-      if (prevValue < 0.5) {
-        const sostenutoNotes = [];
-        this.processActiveNotes(channel3, scheduleTime, (note) => {
-          sostenutoNotes.push(note);
-        });
-        channel3.sostenutoNotes = sostenutoNotes;
-      }
-    } else {
-      this.releaseSostenutoPedal(channelNumber, value, scheduleTime);
-    }
-  }
-  getSoftPedalFactor(channel3, note) {
-    return 1 - (0.1 + note.noteNumber / 127 * 0.2) * channel3.state.softPedal;
-  }
-  setSoftPedal(channelNumber, softPedal, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    const state = channel3.state;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    state.softPedal = softPedal / 127;
-    this.processScheduledNotes(channel3, (note) => {
-      if (this.isPortamento(channel3, note)) {
-        this.setPortamentoVolumeEnvelope(channel3, note, scheduleTime);
-        this.setPortamentoFilterEnvelope(channel3, note, scheduleTime);
-      } else {
-        this.setVolumeEnvelope(channel3, note, scheduleTime);
-        this.setFilterEnvelope(channel3, note, scheduleTime);
-      }
-    });
-  }
-  setReverbSendLevel(channelNumber, reverbSendLevel, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    const state = channel3.state;
-    state.reverbSendLevel = reverbSendLevel / 127;
-    this.processScheduledNotes(channel3, (note) => {
-      this.setReverbSend(channel3, note, scheduleTime);
-    });
-  }
-  setChorusSendLevel(channelNumber, chorusSendLevel, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    const state = channel3.state;
-    state.chorusSendLevel = chorusSendLevel / 127;
-    this.processScheduledNotes(channel3, (note) => {
-      this.setChorusSend(channel3, note, scheduleTime);
-    });
-  }
-  limitData(channel3, minMSB, maxMSB, minLSB, maxLSB) {
-    if (maxLSB < channel3.dataLSB) {
-      channel3.dataMSB++;
-      channel3.dataLSB = minLSB;
-    } else if (channel3.dataLSB < 0) {
-      channel3.dataMSB--;
-      channel3.dataLSB = maxLSB;
-    }
-    if (maxMSB < channel3.dataMSB) {
-      channel3.dataMSB = maxMSB;
-      channel3.dataLSB = maxLSB;
-    } else if (channel3.dataMSB < 0) {
-      channel3.dataMSB = minMSB;
-      channel3.dataLSB = minLSB;
-    }
-  }
-  limitDataMSB(channel3, minMSB, maxMSB) {
-    if (maxMSB < channel3.dataMSB) {
-      channel3.dataMSB = maxMSB;
-    } else if (channel3.dataMSB < 0) {
-      channel3.dataMSB = minMSB;
-    }
-  }
-  handleRPN(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    const rpn = channel3.rpnMSB * 128 + channel3.rpnLSB;
-    switch (rpn) {
-      case 0:
-        this.handlePitchBendRangeRPN(channelNumber, scheduleTime);
-        break;
-      case 1:
-        this.handleFineTuningRPN(channelNumber, scheduleTime);
-        break;
-      case 2:
-        this.handleCoarseTuningRPN(channelNumber, scheduleTime);
-        break;
-      case 5:
-        this.handleModulationDepthRangeRPN(channelNumber, scheduleTime);
-        break;
-      case 16383:
-        break;
-      default:
-        console.warn(
-          `Channel ${channelNumber}: Unsupported RPN MSB=${channel3.rpnMSB} LSB=${channel3.rpnLSB}`
-        );
-    }
-  }
-  setRPNMSB(channelNumber, value) {
-    this.channels[channelNumber].rpnMSB = value;
-  }
-  setRPNLSB(channelNumber, value) {
-    this.channels[channelNumber].rpnLSB = value;
-  }
-  dataEntryMSB(channelNumber, value, scheduleTime) {
-    this.channels[channelNumber].dataMSB = value;
-    this.handleRPN(channelNumber, scheduleTime);
-  }
-  handlePitchBendRangeRPN(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.limitData(channel3, 0, 127, 0, 127);
-    const pitchBendRange = (channel3.dataMSB + channel3.dataLSB / 128) * 100;
-    this.setPitchBendRange(channelNumber, pitchBendRange, scheduleTime);
-  }
-  setPitchBendRange(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const state = channel3.state;
-    const prev = state.pitchWheelSensitivity;
-    const next = value / 12800;
-    state.pitchWheelSensitivity = next;
-    channel3.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
-    this.updateChannelDetune(channel3, scheduleTime);
-    this.applyVoiceParams(channel3, 16, scheduleTime);
-  }
-  handleFineTuningRPN(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.limitData(channel3, 0, 127, 0, 127);
-    const value = channel3.dataMSB * 128 + channel3.dataLSB;
-    const fineTuning = (value - 8192) / 8192 * 100;
-    this.setFineTuning(channelNumber, fineTuning, scheduleTime);
-  }
-  setFineTuning(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const prev = channel3.fineTuning;
-    const next = value;
-    channel3.fineTuning = next;
-    channel3.detune += next - prev;
-    this.updateChannelDetune(channel3, scheduleTime);
-  }
-  handleCoarseTuningRPN(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.limitDataMSB(channel3, 0, 127);
-    const coarseTuning = (channel3.dataMSB - 64) * 100;
-    this.setCoarseTuning(channelNumber, coarseTuning, scheduleTime);
-  }
-  setCoarseTuning(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const prev = channel3.coarseTuning;
-    const next = value;
-    channel3.coarseTuning = next;
-    channel3.detune += next - prev;
-    this.updateChannelDetune(channel3, scheduleTime);
-  }
-  handleModulationDepthRangeRPN(channelNumber, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.limitData(channel3, 0, 127, 0, 127);
-    const value = (channel3.dataMSB + channel3.dataLSB / 128) * 100;
-    this.setModulationDepthRange(channelNumber, value, scheduleTime);
-  }
-  setModulationDepthRange(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    channel3.modulationDepthRange = value;
-    this.updateModulation(channel3, scheduleTime);
-  }
-  allSoundOff(channelNumber, _value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    const promises = [];
-    this.processActiveNotes(channel3, scheduleTime, (note) => {
-      promises.push(this.soundOffNote(channel3, note, scheduleTime));
-    });
-    return Promise.all(promises);
-  }
-  resetChannelStates(channelNumber) {
-    const scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    const state = channel3.state;
-    const entries = Object.entries(defaultControllerState);
-    for (const [key, { type, defaultValue }] of entries) {
-      if (128 <= type) {
-        this.setControlChange(
-          channelNumber,
-          type - 128,
-          Math.ceil(defaultValue * 127),
-          scheduleTime
-        );
-      } else {
-        state[key] = defaultValue;
-      }
-    }
-    channel3.resetSettings(this.constructor.channelSettings);
-    channel3.resetTable();
-    this.mode = "GM2";
-    this.masterFineTuning = 0;
-    this.masterCoarseTuning = 0;
-  }
-  // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-  resetAllControllers(channelNumber, _value, scheduleTime) {
-    const keys = [
-      "channelPressure",
-      "pitchWheel",
-      "expressionMSB",
-      "modulationDepthMSB",
-      "sustainPedal",
-      "portamento",
-      "sostenutoPedal",
-      "softPedal"
-    ];
-    const channel3 = this.channels[channelNumber];
-    const state = channel3.state;
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      const { type, defaultValue } = defaultControllerState[key];
-      if (128 <= type) {
-        this.setControlChange(
-          channelNumber,
-          type - 128,
-          Math.ceil(defaultValue * 127),
-          scheduleTime
-        );
-      } else {
-        state[key] = defaultValue;
-      }
-    }
-    this.setPitchBend(channelNumber, 8192, scheduleTime);
-    const settingTypes = [
-      "rpnMSB",
-      "rpnLSB"
-    ];
-    for (let i = 0; i < settingTypes.length; i++) {
-      const type = settingTypes[i];
-      channel3[type] = this.constructor.channelSettings[type];
-    }
-  }
-  allNotesOff(channelNumber, _value, scheduleTime) {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    const channel3 = this.channels[channelNumber];
-    const promises = [];
-    this.processActiveNotes(channel3, scheduleTime, (note) => {
-      const promise = this.noteOff(
-        channelNumber,
-        note.noteNumber,
-        0,
-        // velocity
-        scheduleTime,
-        false
-        // force
-      );
-      promises.push(promise);
-    });
-    return Promise.all(promises);
-  }
-  omniOff(channelNumber, value, scheduleTime) {
-    this.allNotesOff(channelNumber, value, scheduleTime);
-  }
-  omniOn(channelNumber, value, scheduleTime) {
-    this.allNotesOff(channelNumber, value, scheduleTime);
-  }
-  monoOn(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.allNotesOff(channelNumber, value, scheduleTime);
-    channel3.mono = true;
-  }
-  polyOn(channelNumber, value, scheduleTime) {
-    const channel3 = this.channels[channelNumber];
-    this.allNotesOff(channelNumber, value, scheduleTime);
-    channel3.mono = false;
-  }
-  handleUniversalNonRealTimeExclusiveMessage(data3, scheduleTime) {
+  handleUniversalNonRealTimeExclusiveMessage(data3, scheduleTime, channels2 = this.channels) {
     switch (data3[2]) {
       case 8:
         switch (data3[3]) {
@@ -8849,12 +8672,12 @@ var MidyGM2 = class extends EventTarget {
       case 9:
         switch (data3[3]) {
           case 1:
-            this.GM1SystemOn(scheduleTime);
+            this.GM1SystemOn(scheduleTime, channels2);
             break;
           case 2:
             break;
           case 3:
-            this.GM2SystemOn(scheduleTime);
+            this.GM2SystemOn(scheduleTime, channels2);
             break;
           default:
             console.warn(`Unsupported Exclusive Message: ${data3}`);
@@ -8864,30 +8687,28 @@ var MidyGM2 = class extends EventTarget {
         console.warn(`Unsupported Exclusive Message: ${data3}`);
     }
   }
-  GM1SystemOn(scheduleTime) {
-    const channels2 = this.channels;
+  GM1SystemOn(scheduleTime, channels2 = this.channels) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    this.mode = "GM1";
+    if (channels2 === this.channels) this.mode = "GM1";
     for (let ch = 0; ch < channels2.length; ch++) {
-      this.allSoundOff(ch, 0, scheduleTime);
-      const channel3 = channels2[ch];
-      channel3.bankMSB = 0;
-      channel3.bankLSB = 0;
-      channel3.isDrum = false;
+      const channel2 = channels2[ch];
+      channel2.allSoundOff(scheduleTime);
+      channel2.bankMSB = 0;
+      channel2.bankLSB = 0;
+      channel2.isDrum = false;
     }
     channels2[9].bankMSB = 1;
     channels2[9].isDrum = true;
   }
-  GM2SystemOn(scheduleTime) {
-    const channels2 = this.channels;
+  GM2SystemOn(scheduleTime, channels2 = this.channels) {
     if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
-    this.mode = "GM2";
+    if (channels2 === this.channels) this.mode = "GM2";
     for (let ch = 0; ch < channels2.length; ch++) {
-      this.allSoundOff(ch, 0, scheduleTime);
-      const channel3 = channels2[ch];
-      channel3.bankMSB = 121;
-      channel3.bankLSB = 0;
-      channel3.isDrum = false;
+      const channel2 = channels2[ch];
+      channel2.allSoundOff(scheduleTime);
+      channel2.bankMSB = 121;
+      channel2.bankLSB = 0;
+      channel2.isDrum = false;
     }
     channels2[9].bankMSB = 120;
     channels2[9].isDrum = true;
@@ -8954,10 +8775,10 @@ var MidyGM2 = class extends EventTarget {
     const detuneChange = next - prev;
     const channels2 = this.channels;
     for (let ch = 0; ch < channels2.length; ch++) {
-      const channel3 = channels2[ch];
-      if (channel3.isDrum) continue;
-      channel3.detune += detuneChange;
-      this.updateChannelDetune(channel3, scheduleTime);
+      const channel2 = channels2[ch];
+      if (channel2.isDrum) continue;
+      channel2.detune += detuneChange;
+      this.updateChannelDetune(channel2, scheduleTime);
     }
   }
   handleMasterCoarseTuningSysEx(data3, scheduleTime) {
@@ -8971,10 +8792,10 @@ var MidyGM2 = class extends EventTarget {
     const detuneChange = next - prev;
     const channels2 = this.channels;
     for (let ch = 0; ch < channels2.length; ch++) {
-      const channel3 = channels2[ch];
-      if (channel3.isDrum) continue;
-      channel3.detune += detuneChange;
-      this.updateChannelDetune(channel3, scheduleTime);
+      const channel2 = channels2[ch];
+      if (channel2.isDrum) continue;
+      channel2.detune += detuneChange;
+      this.updateChannelDetune(channel2, scheduleTime);
     }
   }
   handleGlobalParameterControlSysEx(data3, scheduleTime) {
@@ -9171,110 +8992,110 @@ var MidyGM2 = class extends EventTarget {
     const channelBitmap = this.getChannelBitmap(data3);
     for (let i = 0; i < channelBitmap.length; i++) {
       if (!channelBitmap[i]) continue;
-      const channel3 = this.channels[i];
-      if (channel3.isDrum) continue;
+      const channel2 = this.channels[i];
+      if (channel2.isDrum) continue;
       for (let j = 0; j < 12; j++) {
         const centValue = data3[j + 7] - 64;
-        channel3.scaleOctaveTuningTable[j] = centValue;
+        channel2.scaleOctaveTuningTable[j] = centValue;
       }
-      if (realtime) this.updateChannelDetune(channel3, scheduleTime);
+      if (realtime) this.updateChannelDetune(channel2, scheduleTime);
     }
   }
-  calcEffectValue(channel3, destination) {
-    return this.calcChannelEffectValue(channel3, destination);
+  calcEffectValue(channel2, destination) {
+    return this.calcChannelEffectValue(channel2, destination);
   }
-  calcChannelEffectValue(channel3, destination) {
-    return this.calcControlChangeEffectValue(channel3, destination) + this.calcChannelPressureEffectValue(channel3, destination);
+  calcChannelEffectValue(channel2, destination) {
+    return this.calcControlChangeEffectValue(channel2, destination) + this.calcChannelPressureEffectValue(channel2, destination);
   }
-  calcControlChangeEffectValue(channel3, destination) {
-    const controlType = channel3.controlTable[destination];
+  calcControlChangeEffectValue(channel2, destination) {
+    const controlType = channel2.controlTable[destination];
     if (controlType < 0) return 0;
-    const pressure = channel3.state.array[controlType];
+    const pressure = channel2.state.array[controlType];
     if (pressure <= 0) return 0;
     const baseline = pressureBaselines[destination];
-    const tableValue = channel3.controlTable[destination + 6];
+    const tableValue = channel2.controlTable[destination + 6];
     const value = (tableValue - baseline) * pressure;
     return value * effectParameters[destination];
   }
-  calcChannelPressureEffectValue(channel3, destination) {
-    const pressure = channel3.state.channelPressure;
+  calcChannelPressureEffectValue(channel2, destination) {
+    const pressure = channel2.state.channelPressure;
     if (pressure <= 0) return 0;
     const baseline = pressureBaselines[destination];
-    const tableValue = channel3.channelPressureTable[destination];
+    const tableValue = channel2.channelPressureTable[destination];
     const value = (tableValue - baseline) * pressure;
     return value * effectParameters[destination];
   }
-  getChannelPitchControl(channel3) {
-    return this.calcChannelEffectValue(channel3, 0);
+  getChannelPitchControl(channel2) {
+    return this.calcChannelEffectValue(channel2, 0);
   }
-  getPitchControl(channel3, note) {
-    return this.calcEffectValue(channel3, note, 0);
+  getPitchControl(channel2, note) {
+    return this.calcEffectValue(channel2, note, 0);
   }
-  getFilterCutoffControl(channel3) {
-    return this.calcEffectValue(channel3, 1);
+  getFilterCutoffControl(channel2) {
+    return this.calcEffectValue(channel2, 1);
   }
-  getChannelAmplitudeControl(channel3) {
-    return this.calcChannelEffectValue(channel3, 2);
+  getChannelAmplitudeControl(channel2) {
+    return this.calcChannelEffectValue(channel2, 2);
   }
-  getAmplitudeControl(channel3) {
-    return this.calcEffectValue(channel3, 2);
+  getAmplitudeControl(channel2) {
+    return this.calcEffectValue(channel2, 2);
   }
-  getLFOPitchDepth(channel3) {
-    return this.calcEffectValue(channel3, 3);
+  getLFOPitchDepth(channel2) {
+    return this.calcEffectValue(channel2, 3);
   }
-  getLFOFilterDepth(channel3) {
-    return this.calcEffectValue(channel3, 4);
+  getLFOFilterDepth(channel2) {
+    return this.calcEffectValue(channel2, 4);
   }
-  getLFOAmplitudeDepth(channel3) {
-    return this.calcEffectValue(channel3, 5);
+  getLFOAmplitudeDepth(channel2) {
+    return this.calcEffectValue(channel2, 5);
   }
   createEffectHandlers() {
     const handlers = new Array(6);
-    handlers[0] = (channel3, note, scheduleTime) => {
-      if (this.isPortamento(channel3, note)) {
-        this.setPortamentoDetune(channel3, note, scheduleTime);
+    handlers[0] = (channel2, note, scheduleTime) => {
+      if (this.isPortamento(channel2, note)) {
+        this.setPortamentoDetune(channel2, note, scheduleTime);
       } else {
-        this.setDetune(channel3, note, scheduleTime);
+        this.setDetune(channel2, note, scheduleTime);
       }
     };
-    handlers[1] = (channel3, note, scheduleTime) => {
-      if (0.5 <= channel3.state.portamento && 0 <= note.portamentoNoteNumber) {
-        this.setPortamentoFilterEnvelope(channel3, note, scheduleTime);
+    handlers[1] = (channel2, note, scheduleTime) => {
+      if (0.5 <= channel2.state.portamento && 0 <= note.portamentoNoteNumber) {
+        this.setPortamentoFilterEnvelope(channel2, note, scheduleTime);
       } else {
-        this.setFilterEnvelope(channel3, note, scheduleTime);
+        this.setFilterEnvelope(channel2, note, scheduleTime);
       }
     };
-    handlers[2] = (channel3, _note, scheduleTime) => this.applyVolume(channel3, scheduleTime);
-    handlers[3] = (channel3, note, scheduleTime) => this.setModLfoToPitch(channel3, note, scheduleTime);
-    handlers[4] = (channel3, note, scheduleTime) => this.setModLfoToFilterFc(channel3, note, scheduleTime);
-    handlers[5] = (channel3, note, scheduleTime) => this.setModLfoToVolume(channel3, note, scheduleTime);
+    handlers[2] = (channel2, _note, scheduleTime) => this.applyVolume(channel2, scheduleTime);
+    handlers[3] = (channel2, note, scheduleTime) => this.setModLfoToPitch(channel2, note, scheduleTime);
+    handlers[4] = (channel2, note, scheduleTime) => this.setModLfoToFilterFc(channel2, note, scheduleTime);
+    handlers[5] = (channel2, note, scheduleTime) => this.setModLfoToVolume(channel2, note, scheduleTime);
     return handlers;
   }
-  setControlChangeEffects(channel3, note, scheduleTime) {
+  setControlChangeEffects(channel2, note, scheduleTime) {
     const handlers = this.effectHandlers;
     for (let i = 0; i < handlers.length; i++) {
       const baseline = pressureBaselines[i];
-      const tableValue = channel3.controlTable[i + 6];
+      const tableValue = channel2.controlTable[i + 6];
       if (baseline === tableValue) continue;
-      handlers[i](channel3, note, scheduleTime);
+      handlers[i](channel2, note, scheduleTime);
     }
   }
-  setChannelPressureEffects(channel3, note, scheduleTime) {
+  setChannelPressureEffects(channel2, note, scheduleTime) {
     this.setPressureEffects(
-      channel3,
+      channel2,
       note,
       "channelPressureTable",
       scheduleTime
     );
   }
-  setPressureEffects(channel3, note, tableName, scheduleTime) {
+  setPressureEffects(channel2, note, tableName, scheduleTime) {
     const handlers = this.effectHandlers;
-    const table = channel3[tableName];
+    const table = channel2[tableName];
     for (let i = 0; i < handlers.length; i++) {
       const baseline = pressureBaselines[i];
       const tableValue = table[i];
       if (baseline === tableValue) continue;
-      handlers[i](channel3, note, scheduleTime);
+      handlers[i](channel2, note, scheduleTime);
     }
   }
   handleChannelPressureSysEx(data3, scheduleTime) {
@@ -9282,24 +9103,24 @@ var MidyGM2 = class extends EventTarget {
   }
   handlePressureSysEx(data3, tableName, scheduleTime) {
     const channelNumber = data3[4];
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    const table = channel3[tableName];
+    const channel2 = this.channels[channelNumber];
+    if (channel2.isDrum) return;
+    const table = channel2[tableName];
     for (let i = 5; i < data3.length - 1; i += 2) {
       const pp = data3[i];
       const rr = data3[i + 1];
       table[pp] = rr;
       const handler = this.effectHandlers[pp];
-      this.processActiveNotes(channel3, scheduleTime, (note) => {
-        if (handler) handler(channel3, note, scheduleTime);
+      channel2.processActiveNotes(scheduleTime, (note) => {
+        if (handler) handler(channel2, note, scheduleTime);
       });
     }
   }
   handleControlChangeSysEx(data3, scheduleTime) {
     const channelNumber = data3[4];
-    const channel3 = this.channels[channelNumber];
-    if (channel3.isDrum) return;
-    const table = channel3.controlTable;
+    const channel2 = this.channels[channelNumber];
+    if (channel2.isDrum) return;
+    const table = channel2.controlTable;
     table.set(defaultControlValues);
     const controllerType = data3[5];
     for (let i = 6; i < data3.length; i += 2) {
@@ -9308,53 +9129,54 @@ var MidyGM2 = class extends EventTarget {
       table[pp] = controllerType;
       table[pp + 6] = rr;
       const handler = this.effectHandlers[pp];
-      this.processActiveNotes(channel3, scheduleTime, (note) => {
-        if (handler) handler(channel3, note, scheduleTime);
+      channel2.processActiveNotes(scheduleTime, (note) => {
+        if (handler) handler(channel2, note, scheduleTime);
       });
     }
   }
-  getKeyBasedValue(channel3, keyNumber, controllerType) {
+  getKeyBasedValue(channel2, keyNumber, controllerType) {
     const index = keyNumber * 128 + controllerType;
-    const controlValue = channel3.keyBasedTable[index];
+    const controlValue = channel2.keyBasedTable[index];
     return controlValue;
   }
   createKeyBasedControllerHandlers() {
     const handlers = new Array(128);
-    handlers[7] = (channel3, keyNumber, scheduleTime) => this.updateKeyBasedVolume(channel3, keyNumber, scheduleTime);
-    handlers[10] = (channel3, keyNumber, scheduleTime) => this.updateKeyBasedVolume(channel3, keyNumber, scheduleTime);
-    handlers[91] = (channel3, keyNumber, scheduleTime) => this.processScheduledNotes(channel3, (note) => {
+    handlers[7] = (channel2, keyNumber, scheduleTime) => this.updateKeyBasedVolume(channel2, keyNumber, scheduleTime);
+    handlers[10] = (channel2, keyNumber, scheduleTime) => this.updateKeyBasedVolume(channel2, keyNumber, scheduleTime);
+    handlers[91] = (channel2, keyNumber, scheduleTime) => channel2.processScheduledNotes((note) => {
       if (note.noteNumber === keyNumber) {
-        this.setReverbSend(channel3, note, scheduleTime);
+        this.setReverbSend(channel2, note, scheduleTime);
       }
     });
-    handlers[93] = (channel3, keyNumber, scheduleTime) => this.processScheduledNotes(channel3, (note) => {
+    handlers[93] = (channel2, keyNumber, scheduleTime) => channel2.processScheduledNotes((note) => {
       if (note.noteNumber === keyNumber) {
-        this.setChorusSend(channel3, note, scheduleTime);
+        this.setChorusSend(channel2, note, scheduleTime);
       }
     });
     return handlers;
   }
   handleKeyBasedInstrumentControlSysEx(data3, scheduleTime) {
     const channelNumber = data3[4];
-    const channel3 = this.channels[channelNumber];
-    if (!channel3.isDrum) return;
+    const channel2 = this.channels[channelNumber];
+    if (!channel2.isDrum) return;
     const keyNumber = data3[5];
-    const table = channel3.keyBasedTable;
+    const table = channel2.keyBasedTable;
     for (let i = 6; i < data3.length; i += 2) {
       const controllerType = data3[i];
       const value = data3[i + 1];
       const index = keyNumber * 128 + controllerType;
       table[index] = value;
       const handler = this.keyBasedControllerHandlers[controllerType];
-      if (handler) handler(channel3, keyNumber, scheduleTime);
+      if (handler) handler(channel2, keyNumber, scheduleTime);
     }
   }
-  handleSysEx(data3, scheduleTime) {
+  handleSysEx(data3, scheduleTime, channels2 = this.channels) {
     switch (data3[0]) {
       case 126:
         return this.handleUniversalNonRealTimeExclusiveMessage(
           data3,
-          scheduleTime
+          scheduleTime,
+          channels2
         );
       case 127:
         return this.handleUniversalRealTimeExclusiveMessage(data3, scheduleTime);
