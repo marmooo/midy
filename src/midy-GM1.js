@@ -2349,26 +2349,6 @@ export class MidyGM1 extends EventTarget {
     if (handler) handler(data, scheduleTime);
   }
 
-  handleChannelMessage(statusByte, data1, data2, scheduleTime) {
-    const channelNumber = statusByte & 0x0F;
-    const messageType = statusByte & 0xF0;
-    const channel = this.channels[channelNumber];
-    switch (messageType) {
-      case 0x80:
-        return channel.noteOff(data1, data2, scheduleTime);
-      case 0x90:
-        return channel.noteOn(data1, data2, scheduleTime);
-      case 0xB0:
-        return channel.setControlChange(data1, data2, scheduleTime);
-      case 0xC0:
-        return channel.setProgramChange(data1);
-      case 0xE0:
-        return channel.setPitchBend(data2 * 128 + data1, scheduleTime);
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
-  }
-
   setModLfoToPitch(channel, note, scheduleTime) {
     if (note.modLfoToPitch) {
       const modLfoToPitch = note.voiceParams.modLfoToPitch;
