@@ -2396,12 +2396,11 @@ export class MidyGMLite extends EventTarget {
       .setValueAtTime(depth, scheduleTime);
   }
 
-  setDelayModLFO(note, scheduleTime) {
-    const startTime = note.startTime;
-    if (startTime < scheduleTime) return;
-    note.modLfo.stop(scheduleTime);
-    note.modLfo.start(startTime + note.voiceParams.delayModLFO);
-    note.modLfo.connect(note.modLfoToFilterFc);
+  setDelayModLFO(note) {
+    const startTime = note.startTime + note.voiceParams.delayModLFO;
+    try {
+      note.modLfo.start(startTime);
+    } catch { /* empty */ }
   }
 
   setFreqModLFO(note, scheduleTime) {
