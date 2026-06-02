@@ -2061,7 +2061,7 @@ export class MidyGMLite extends EventTarget {
     if (!channel.isDrum) return;
     const drumExclusiveClass = drumExclusiveClasses[note.noteNumber];
     if (drumExclusiveClass === 0) return;
-    const index = drumExclusiveClass * this.channels.length +
+    const index = (drumExclusiveClass - 1) * this.channels.length +
       channel.channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
     if (prevNote && !prevNote.ending) {
