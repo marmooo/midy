@@ -2270,6 +2270,17 @@ export class Midy extends EventTarget {
     return channel.detune + noteDetune + pitchControl;
   }
 
+  setFilterQ(channel, note, scheduleTime) {
+    if (!note.filterEnvelopeNode) return;
+    const filterResonance = this.getRelativeKeyBasedValue(
+      channel,
+      note.noteNumber,
+      71,
+    );
+    const Q = note.voiceParams.initialFilterQ / 5 * filterResonance;
+    note.filterEnvelopeNode.Q.setValueAtTime(Q, scheduleTime);
+  }
+
   getPortamentoTime(channel, note) {
     const { portamentoTimeMSB, portamentoTimeLSB } = channel.state;
     const portamentoTime = portamentoTimeMSB + portamentoTimeLSB / 128;
