@@ -2715,9 +2715,7 @@ export class MidyGM2 extends EventTarget {
         this.setPitchEnvelope(note, now);
         this.setDetune(channel, note, now);
       }
-      if (0 < state.vibratoDepth) {
-        this.startVibrato(channel, note, now);
-      }
+      this.startVibrato(channel, note, now);
       if (0 < state.modulationDepthMSB) {
         this.startModulation(channel, note, now);
       }
