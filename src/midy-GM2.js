@@ -3024,6 +3024,24 @@ export class MidyGM2 extends EventTarget {
     return promises;
   }
 
+  releaseSostenutoPedal(channel, halfVelocity, scheduleTime) {
+    const velocity = halfVelocity * 2;
+    const sostenutoNotes = channel.sostenutoNotes;
+    const promises = [];
+    for (let i = 0; i < sostenutoNotes.length; i++) {
+      const note = sostenutoNotes[i];
+      const promise = channel.noteOff(
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        true,
+      );
+      promises.push(promise);
+    }
+    channel.sostenutoNotes = [];
+    return promises;
+  }
+
   soundOffNote(note, scheduleTime) {
     note.ending = true;
     if (!note.voice) return Promise.resolve();
@@ -3095,24 +3113,6 @@ export class MidyGM2 extends EventTarget {
 
   activeSensing() {
     this.lastActiveSensing = performance.now();
-  }
-
-  releaseSostenutoPedal(channel, halfVelocity, scheduleTime) {
-    const velocity = halfVelocity * 2;
-    const sostenutoNotes = channel.sostenutoNotes;
-    channel.state.sostenutoPedal = 0;
-    const promises = [];
-    for (let i = 0; i < sostenutoNotes.length; i++) {
-      const note = sostenutoNotes[i];
-      const promise = channel.noteOff(
-        note.noteNumber,
-        velocity,
-        scheduleTime,
-      );
-      promises.push(promise);
-    }
-    channel.sostenutoNotes = [];
-    return promises;
   }
 
   setModLfoToPitch(channel, note, scheduleTime) {
