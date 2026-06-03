@@ -3134,9 +3134,8 @@ export class MidyGM2 extends EventTarget {
 
   setVibLfoToPitch(channel, note, scheduleTime) {
     if (note.vibLfoToPitch) {
-      const vibratoDepth = channel.state.vibratoDepth * 2;
       const vibLfoToPitch = note.voiceParams.vibLfoToPitch;
-      const baseDepth = Math.abs(vibLfoToPitch) * vibratoDepth;
+      const baseDepth = Math.abs(vibLfoToPitch);
       const depth = baseDepth * Math.sign(vibLfoToPitch);
       note.vibLfoToPitch.gain
         .cancelScheduledValues(scheduleTime)
@@ -3232,21 +3231,19 @@ export class MidyGM2 extends EventTarget {
       .setValueAtTime(freqModLFO, scheduleTime);
   }
 
-  setDelayVibLFO(channel, note) {
-    const vibratoDelay = channel.state.vibratoDelay * 2;
+  setDelayVibLFO(note) {
     const value = note.voiceParams.delayVibLFO;
-    const startTime = note.startTime + value * vibratoDelay;
+    const startTime = note.startTime + value;
     try {
       note.vibLfo.start(startTime);
     } catch { /* empty */ }
   }
 
-  setFreqVibLFO(channel, note, scheduleTime) {
-    const vibratoRate = channel.state.vibratoRate * 2;
+  setFreqVibLFO(note, scheduleTime) {
     const freqVibLFO = note.voiceParams.freqVibLFO;
     note.vibLfo.frequency
       .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
+      .setValueAtTime(freqVibLFO, scheduleTime);
   }
 
   createVoiceParamsHandlers() {
@@ -3257,9 +3254,7 @@ export class MidyGM2 extends EventTarget {
         }
       },
       vibLfoToPitch: (channel, note, scheduleTime) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setVibLfoToPitch(channel, note, scheduleTime);
-        }
+        this.setVibLfoToPitch(channel, note, scheduleTime);
       },
       modLfoToFilterFc: (channel, note, scheduleTime) => {
         if (0 < channel.state.modulationDepthMSB) {
@@ -3287,16 +3282,9 @@ export class MidyGM2 extends EventTarget {
           this.setFreqModLFO(note, scheduleTime);
         }
       },
-      delayVibLFO: (channel, note, _scheduleTime) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setDelayVibLFO(channel, note);
-        }
-      },
-      freqVibLFO: (channel, note, scheduleTime) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setFreqVibLFO(channel, note, scheduleTime);
-        }
-      },
+      delayVibLFO: (_channel, note, _scheduleTime) => this.setDelayVibLFO(note),
+      freqVibLFO: (_channel, note, scheduleTime) =>
+        this.setFreqVibLFO(note, scheduleTime),
       detune: (channel, note, scheduleTime) => {
         if (this.isPortamento(channel, note)) {
           this.setPortamentoDetune(channel, note, scheduleTime);
