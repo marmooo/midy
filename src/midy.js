@@ -2079,21 +2079,6 @@ export class Midy extends EventTarget {
     return now + this.resumeTime - this.startTime;
   }
 
-  applyToMPEChannels(channelNumber, fn) {
-    fn(channelNumber);
-    const channel = this.channels[channelNumber];
-    if (!channel.isMPEManager) return;
-    if (channelNumber === 0) {
-      for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
-        fn(ch);
-      }
-    } else if (channelNumber === 15) {
-      for (let ch = 15 - this.upperMPEMembers; ch <= 14; ch++) {
-        fn(ch);
-      }
-    }
-  }
-
   generateDistributedArray(
     center,
     count,
@@ -3347,11 +3332,15 @@ export class Midy extends EventTarget {
   releaseSostenutoPedal(channel, halfVelocity, scheduleTime) {
     const velocity = halfVelocity * 2;
     const sostenutoNotes = channel.sostenutoNotes;
-    channel.state.sostenutoPedal = 0;
     const promises = [];
     for (let i = 0; i < sostenutoNotes.length; i++) {
       const note = sostenutoNotes[i];
-      const promise = channel.noteOff(note.noteNumber, velocity, scheduleTime);
+      const promise = channel.noteOff(
+        note.noteNumber,
+        velocity,
+        scheduleTime,
+        true,
+      );
       promises.push(promise);
     }
     channel.sostenutoNotes = [];
@@ -3383,6 +3372,49 @@ export class Midy extends EventTarget {
     if (!note) return Promise.resolve();
     this.removeFromActiveNotes(channel, note.noteNumber);
     return this.soundOffNote(note, scheduleTime);
+  }
+
+  applyToMPEChannels(channelNumber, fn) {
+    fn(channelNumber);
+    const channel = this.channels[channelNumber];
+    if (!channel.isMPEManager) return;
+    if (channelNumber === 0) {
+      for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
+        fn(ch);
+      }
+    } else if (channelNumber === 15) {
+      for (let ch = 15 - this.upperMPEMembers; ch <= 14; ch++) {
+        fn(ch);
+      }
+    }
+  }
+
+  setControlChange(channelNumber, controllerType, value, scheduleTime) {
+    const channels = this.channels;
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      channels[ch].setControlChange(controllerType, value, scheduleTime);
+    });
+  }
+
+  setProgramChange(channelNumber, programNumber) {
+    const channels = this.channels;
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      channels[ch].setProgramChange(programNumber);
+    });
+  }
+
+  setChannelPressure(channelNumber, value, scheduleTime) {
+    const channels = this.channels;
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      channels[ch].setChannelPressure(value, scheduleTime);
+    });
+  }
+
+  setPitchBend(channelNumber, value, scheduleTime) {
+    const channels = this.channels;
+    this.applyToMPEChannels(channelNumber, (ch) => {
+      channels[ch].setPitchBend(value, scheduleTime);
+    });
   }
 
   createMessageHandlers() {
