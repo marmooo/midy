@@ -1339,9 +1339,9 @@ export class MidyGM2 extends EventTarget {
   }
 
   resetAllStates() {
-    player.mode = "GM2";
-    player.masterFineTuning = 0;
-    player.masterCoarseTuning = 0;
+    this.mode = "GM2";
+    this.masterFineTuning = 0;
+    this.masterCoarseTuning = 0;
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();

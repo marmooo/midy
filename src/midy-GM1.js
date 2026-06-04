@@ -1014,7 +1014,7 @@ export class MidyGM1 extends EventTarget {
   }
 
   resetAllStates() {
-    player.mode = "GM1";
+    this.mode = "GM1";
     this.exclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();

@@ -988,7 +988,7 @@ export class MidyGMLite extends EventTarget {
   }
 
   resetAllStates() {
-    player.mode = "GM1";
+    this.mode = "GM1";
     this.exclusiveClassNotes.fill(undefined);
     this.drumExclusiveClassNotes.fill(undefined);
     this.voiceCache.clear();
