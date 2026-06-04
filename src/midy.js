@@ -192,11 +192,22 @@ class Channel {
   }
 
   async noteOn(noteNumber, velocity, startTime) {
-    return await this.player.noteOn(this, noteNumber, velocity, startTime);
+    return await this.player.noteOnChannel(
+      this,
+      noteNumber,
+      velocity,
+      startTime,
+    );
   }
 
-  noteOff(noteNumber, velocity, endTime, force) {
-    return this.player.noteOff(this, noteNumber, velocity, endTime, force);
+  async noteOff(noteNumber, velocity, endTime, force) {
+    return await this.player.noteOffChannel(
+      this,
+      noteNumber,
+      velocity,
+      endTime,
+      force,
+    );
   }
 
   setProgramChange(programNumber) {
