@@ -128,11 +128,15 @@ There are functions that handle MIDI messages as they are, as well as simplified
 functions.
 
 ```js
-const channel = midy.channels[0];
 midy.handleMessage(data, scheduleTime);
-channel.noteOn(noteNumber, velocity, startTime);
+const channel = midy.channels[0];
 channel.noteOff(noteNumber, velocity, endTime, force);
+channel.noteOn(noteNumber, velocity, startTime);
+channel.setPolyphonicKeyPressure(noteNumber, pressure);
+channel.setControlChange(controlType, value);
 channel.setProgramChange(programNumber);
+channel.setChannelPressure(value);
+channel.setPitchBend(value);
 ```
 
 ### Control Change
@@ -156,6 +160,17 @@ functions.
 midy.handleSysEx(data, scheduleTime); // SysEx data without F0/F7
 midy.handleMasterVolumeSysEx(data, scheduleTime); // [7F 7F 04 01 vv vv] data
 midy.setMasterVolume(volume); // [0-1] volume
+```
+
+### MPE (MIDI Polyphonic Expression)
+
+```js
+midy.noteOff(channelNumber, noteNumber, velocity, endTime, force);
+midy.noteOn(channelNumber, noteNumber, velocity, startTime);
+midy.setControlChange(channelNumber, controlType, value);
+midy.setProgramChange(channelNumber, programNumber);
+midy.setChannelPressure(channelNumber, value);
+midy.setPitchBend(channelNumber, value);
 ```
 
 ### Multiple Soundfonts

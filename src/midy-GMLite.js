@@ -149,11 +149,22 @@ class Channel {
   }
 
   async noteOn(noteNumber, velocity, startTime) {
-    return await this.player.noteOn(this, noteNumber, velocity, startTime);
+    return await this.player.noteOnChannel(
+      this,
+      noteNumber,
+      velocity,
+      startTime,
+    );
   }
 
-  noteOff(noteNumber, velocity, endTime, force) {
-    return this.player.noteOff(this, noteNumber, velocity, endTime, force);
+  async noteOff(noteNumber, velocity, endTime, force) {
+    return await this.player.noteOffChannel(
+      this,
+      noteNumber,
+      velocity,
+      endTime,
+      force,
+    );
   }
 
   setProgramChange(programNumber) {
@@ -1806,7 +1817,12 @@ export class MidyGMLite extends EventTarget {
     dstChannel.modulationDepthRange = channel.modulationDepthRange;
     dstChannel.detune = channel.detune;
     offlinePlayer.updateChannelVolume(dstChannel, 0);
-    await dstChannel.noteOn(note.noteNumber, note.velocity, 0);
+    await offlinePlayer.noteOnChannel(
+      dstChannel,
+      note.noteNumber,
+      note.velocity,
+      0,
+    );
     for (const event of noteEvents) {
       const t = event.startTime / this.tempo - noteStartTime;
       if (t < 0 || t > noteDuration) continue;
@@ -1814,7 +1830,13 @@ export class MidyGMLite extends EventTarget {
         channels: offlinePlayer.channels,
       });
     }
-    dstChannel.noteOff(note.noteNumber, 0, noteDuration, true);
+    offlinePlayer.noteOffChannel(
+      dstChannel,
+      note.noteNumber,
+      0,
+      noteDuration,
+      true,
+    );
     const buffer = await offlineContext.startRendering();
     return new RenderedBuffer(buffer, {
       isLoop: false,
@@ -2087,7 +2109,7 @@ export class MidyGMLite extends EventTarget {
     return new Note(noteNumber, velocity, startTime);
   }
 
-  async noteOn(channel, noteNumber, velocity, startTime, note) {
+  async noteOnChannel(channel, noteNumber, velocity, startTime, note) {
     const realtime = startTime === undefined;
     if (!note) {
       note = this.createNote(noteNumber, velocity, startTime);
@@ -2233,7 +2255,7 @@ export class MidyGMLite extends EventTarget {
     });
   }
 
-  noteOff(channel, noteNumber, _velocity, endTime, force) {
+  noteOffChannel(channel, noteNumber, _velocity, endTime, force) {
     if (!force) {
       if (channel.isDrum) {
         this.removeFromActiveNotes(channel, noteNumber);

@@ -1948,25 +1948,18 @@ export class Midy extends EventTarget {
           const { noteNumber, velocity } = event;
           const voice = this.resolveVoice(renderChannel, noteNumber, velocity);
           if (!voice) return;
-          const controllerState = this.getControllerState(
-            renderChannel,
-            noteNumber,
-            velocity,
-            0,
-          );
-          const voiceParams = voice.getAllParams(controllerState);
-          const fakeNote = {
-            voiceParams,
-            channel: event.channel,
-            noteNumber,
-            velocity,
-          };
           const promise = (async () => {
             try {
               return await this.createFullRenderedBuffer(
                 renderChannel,
-                fakeNote,
-                voiceParams,
+                { noteNumber: noteNumber, velocity: velocity },
+                voice.getAllParams(
+                  this.getControllerState(
+                    renderChannel,
+                    noteNumber,
+                    velocity,
+                  ),
+                ),
                 noteDuration,
                 noteEvent,
               );
@@ -2752,7 +2745,12 @@ export class Midy extends EventTarget {
     dstChannel.modulationDepthRange = channel.modulationDepthRange;
     dstChannel.detune = this.calcChannelDetune(dstChannel);
     offlinePlayer.updateChannelVolume(dstChannel, 0);
-    await dstChannel.noteOn(note.noteNumber, note.velocity, 0);
+    await offlinePlayer.noteOnChannel(
+      dstChannel,
+      note.noteNumber,
+      note.velocity,
+      0,
+    );
     for (const event of noteEvents) {
       const t = event.startTime / this.tempo - noteStartTime;
       if (t < 0 || t > noteDuration) continue;
@@ -2760,7 +2758,13 @@ export class Midy extends EventTarget {
         channels: offlinePlayer.channels,
       });
     }
-    dstChannel.noteOff(note.noteNumber, 0, noteDuration, true);
+    offlinePlayer.noteOffChannel(
+      dstChannel,
+      note.noteNumber,
+      0,
+      noteDuration,
+      true,
+    );
     const buffer = await offlineContext.startRendering();
     return new RenderedBuffer(buffer, {
       isLoop: false,
@@ -3078,12 +3082,7 @@ export class Midy extends EventTarget {
     return new Note(noteNumber, velocity, startTime);
   }
 
-  async noteOn(channel, noteNumber, velocity, startTime, note) {
-    if (this.mpeEnabled && !note) {
-      if (!this.mpeState.channelToNotes.has(channel.channelNumber)) {
-        this.mpeState.channelToNotes.set(channel.channelNumber, new Set());
-      }
-    }
+  async noteOnChannel(channel, noteNumber, velocity, startTime, note) {
     const realtime = startTime === undefined;
     if (!note) note = this.createNote(noteNumber, velocity, startTime);
     const programNumber = channel.programNumber;
@@ -3097,32 +3096,42 @@ export class Midy extends EventTarget {
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    note.voice = soundFont.getVoice(
-      bank,
-      programNumber,
-      noteNumber,
-      velocity,
-    );
+    note.voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     if (!note.voice) return;
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
     }
     channel.activeNotes[noteNumber].push(note);
-    if (this.mpeEnabled) {
-      const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
-      if (notes) notes.add(note);
-    }
     await this.setNoteAudioNode(channel, note, realtime);
     channel.lastNote = note;
-    this.setNoteRouting(channel, note, startTime);
+    this.setNoteRouting(
+      channel,
+      note,
+      startTime ?? this.audioContext.currentTime,
+    );
     note.resolveReady();
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
-    if (0.5 <= channel.state.sostenutoPedal) {
-      channel.sostenutoNotes.push(note);
-    }
+    if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
+    if (0.5 <= channel.state.sostenutoPedal) channel.sostenutoNotes.push(note);
     return note;
+  }
+
+  async noteOn(channel, noteNumber, velocity, startTime, note) {
+    if (this.mpeEnabled && channel.isMPEMember && !note) {
+      if (!this.mpeState.channelToNotes.has(channel.channelNumber)) {
+        this.mpeState.channelToNotes.set(channel.channelNumber, new Set());
+      }
+    }
+    const resolveNote = await this.noteOnChannel(
+      channel,
+      noteNumber,
+      velocity,
+      startTime,
+      note,
+    );
+    if (this.mpeEnabled && channel.isMPEMember && resolveNote) {
+      const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
+      if (notes) notes.add(resolveNote);
+    }
   }
 
   disconnectNote(note) {
@@ -3249,16 +3258,37 @@ export class Midy extends EventTarget {
     });
   }
 
-  noteOff(channel, noteNumber, _velocity, endTime, force) {
-    const state = channel.state;
+  noteOffChannel(channel, noteNumber, _velocity, endTime, force) {
+    if (!force) {
+      if (channel.isDrum && !this.isLoopDrum(channel, noteNumber)) {
+        this.removeFromActiveNotes(channel, noteNumber);
+        return;
+      }
+      const state = channel.state;
+      if (0.5 <= state.sustainPedal) return;
+      if (0.5 <= state.sostenutoPedal) return;
+    }
+    const note = this.findNoteForOff(channel, noteNumber);
+    if (!note) return;
+    note.ending = true;
+    this.removeFromActiveNotes(channel, noteNumber);
+    const promise = note.ready.then(() => {
+      if (!note.voice) return;
+      return this.releaseNote(channel, note, endTime);
+    });
+    this.notePromises.push(promise);
+    return promise;
+  }
+
+  noteOff(channel, noteNumber, velocity, endTime, force) {
     if (this.mpeEnabled && channel.isMPEMember) {
       const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
       if (!notes || notes.size === 0) return;
       if (!force) {
-        if (0.5 <= state.sustainPedal) return;
-        if (0.5 <= state.sostenutoPedal) return;
+        if (0.5 <= channel.state.sustainPedal) return;
+        if (0.5 <= channel.state.sostenutoPedal) return;
       }
-      let targetNote = undefined;
+      let targetNote;
       for (const note of notes) {
         if (note.noteNumber === noteNumber && !note.ending) {
           targetNote = note;
@@ -3279,24 +3309,7 @@ export class Midy extends EventTarget {
       this.notePromises.push(promise);
       return promise;
     }
-    if (!force) {
-      if (channel.isDrum && !this.isLoopDrum(channel, noteNumber)) {
-        this.removeFromActiveNotes(channel, noteNumber);
-        return;
-      }
-      if (0.5 <= state.sustainPedal) return;
-      if (0.5 <= state.sostenutoPedal) return;
-    }
-    const note = this.findNoteForOff(channel, noteNumber);
-    if (!note) return;
-    note.ending = true;
-    this.removeFromActiveNotes(channel, noteNumber);
-    const promise = note.ready.then(() => {
-      if (!note.voice) return;
-      return this.releaseNote(channel, note, endTime);
-    });
-    this.notePromises.push(promise);
-    return promise;
+    return this.noteOffChannel(channel, noteNumber, velocity, endTime, force);
   }
 
   findNoteForOff(channel, noteNumber) {
