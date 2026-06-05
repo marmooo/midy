@@ -2159,10 +2159,6 @@ export class MidyGMLite extends EventTarget {
   }
 
   releaseNote(note, endTime) {
-    const onEnded = () => {
-      this.disconnectNote(note);
-    };
-
     const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
@@ -2178,7 +2174,7 @@ export class MidyGMLite extends EventTarget {
         note.bufferSource.stop(volRelease);
       } else {
         if (naturalEndTime <= now) {
-          onEnded();
+          this.disconnectNote(note);
           this.releaseFullCache(note);
           return Promise.resolve();
         }
@@ -2186,7 +2182,7 @@ export class MidyGMLite extends EventTarget {
       }
       return new Promise((resolve) => {
         note.bufferSource.onended = () => {
-          onEnded();
+          this.disconnectNote(note);
           this.releaseFullCache(note);
           resolve();
         };
@@ -2223,7 +2219,7 @@ export class MidyGMLite extends EventTarget {
         }
         return new Promise((resolve) => {
           note.bufferSource.onended = () => {
-            onEnded();
+            this.disconnectNote(note);
             resolve();
           };
         });
@@ -2235,7 +2231,7 @@ export class MidyGMLite extends EventTarget {
     note.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        onEnded();
+        this.disconnectNote(note);
         resolve();
       };
     });

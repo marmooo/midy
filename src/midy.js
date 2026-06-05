@@ -3168,10 +3168,6 @@ export class Midy extends EventTarget {
   }
 
   releaseNote(channel, note, endTime) {
-    const onEnded = () => {
-      this.disconnectNote(note);
-    };
-
     const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
@@ -3189,7 +3185,7 @@ export class Midy extends EventTarget {
         note.bufferSource.stop(volRelease);
       } else {
         if (naturalEndTime <= now) {
-          onEnded();
+          this.disconnectNote(note);
           this.releaseFullCache(note);
           return Promise.resolve();
         }
@@ -3197,7 +3193,7 @@ export class Midy extends EventTarget {
       }
       return new Promise((resolve) => {
         note.bufferSource.onended = () => {
-          onEnded();
+          this.disconnectNote(note);
           this.releaseFullCache(note);
           resolve();
         };
@@ -3236,7 +3232,7 @@ export class Midy extends EventTarget {
         }
         return new Promise((resolve) => {
           note.bufferSource.onended = () => {
-            onEnded();
+            this.disconnectNote(note);
             resolve();
           };
         });
@@ -3248,7 +3244,7 @@ export class Midy extends EventTarget {
     note.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
       note.bufferSource.onended = () => {
-        onEnded();
+        this.disconnectNote(note);
         resolve();
       };
     });
