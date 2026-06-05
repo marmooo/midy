@@ -185,22 +185,15 @@ class Channel {
   }
 
   async noteOn(noteNumber, velocity, startTime) {
-    return await this.player.noteOnChannel(
-      this,
-      noteNumber,
-      velocity,
-      startTime,
-    );
+    const player = this.player;
+    const t = startTime ?? player.audioContext.currentTime;
+    return await player.noteOnChannel(this, noteNumber, velocity, t, note);
   }
 
   async noteOff(noteNumber, velocity, endTime, force) {
-    return await this.player.noteOffChannel(
-      this,
-      noteNumber,
-      velocity,
-      endTime,
-      force,
-    );
+    const player = this.player;
+    const t = endTime ?? player.audioContext.currentTime;
+    return await player.noteOffChannel(this, noteNumber, velocity, t, force);
   }
 
   setProgramChange(programNumber) {
@@ -1315,7 +1308,7 @@ export class MidyGM2 extends EventTarget {
       const startTime = t + schedulingOffset;
       this.processTimelineEvent(event, startTime, {
         onNoteOn: (channel, event, startTime) => {
-          const note = this.createNote(
+          const note = new Note(
             event.noteNumber,
             event.velocity,
             startTime,
@@ -2829,15 +2822,10 @@ export class MidyGM2 extends EventTarget {
     this.handleDrumExclusiveClass(note, channel, startTime);
   }
 
-  createNote(noteNumber, velocity, startTime) {
-    if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
-    return new Note(noteNumber, velocity, startTime);
-  }
-
   async noteOnChannel(channel, noteNumber, velocity, startTime, note) {
     const realtime = startTime === undefined;
     if (!note) {
-      note = this.createNote(noteNumber, velocity, startTime);
+      note = new Note(noteNumber, velocity, startTime);
     }
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
@@ -2865,12 +2853,9 @@ export class MidyGM2 extends EventTarget {
     channel.lastNote = note;
     this.setNoteRouting(channel, note, startTime);
     note.resolveReady();
-    if (0.5 <= channel.state.sustainPedal) {
-      channel.sustainNotes.push(note);
-    }
-    if (0.5 <= channel.state.sostenutoPedal) {
-      channel.sostenutoNotes.push(note);
-    }
+    const state = channel.state;
+    if (0.5 <= state.sustainPedal) channel.sustainNotes.push(note);
+    if (0.5 <= state.sostenutoPedal) channel.sostenutoNotes.push(note);
     return note;
   }
 
@@ -2910,13 +2895,11 @@ export class MidyGM2 extends EventTarget {
   }
 
   releaseNote(note, endTime) {
-    const now = this.audioContext.currentTime;
-    endTime ??= now;
-
     const onEnded = () => {
       this.disconnectNote(note);
     };
 
+    const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;

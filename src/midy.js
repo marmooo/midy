@@ -192,22 +192,15 @@ class Channel {
   }
 
   async noteOn(noteNumber, velocity, startTime) {
-    return await this.player.noteOnChannel(
-      this,
-      noteNumber,
-      velocity,
-      startTime,
-    );
+    const player = this.player;
+    const t = startTime ?? player.audioContext.currentTime;
+    return await player.noteOnChannel(this, noteNumber, velocity, t, note);
   }
 
   async noteOff(noteNumber, velocity, endTime, force) {
-    return await this.player.noteOffChannel(
-      this,
-      noteNumber,
-      velocity,
-      endTime,
-      force,
-    );
+    const player = this.player;
+    const t = endTime ?? player.audioContext.currentTime;
+    return await player.noteOffChannel(this, noteNumber, velocity, t, force);
   }
 
   setProgramChange(programNumber) {
@@ -3088,14 +3081,9 @@ export class Midy extends EventTarget {
     this.handleDrumExclusiveClass(note, channel, startTime);
   }
 
-  createNote(noteNumber, velocity, startTime) {
-    if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
-    return new Note(noteNumber, velocity, startTime);
-  }
-
   async noteOnChannel(channel, noteNumber, velocity, startTime, note) {
     const realtime = startTime === undefined;
-    if (!note) note = this.createNote(noteNumber, velocity, startTime);
+    if (!note) note = new Note(noteNumber, velocity, startTime);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
@@ -3115,18 +3103,16 @@ export class Midy extends EventTarget {
     channel.activeNotes[noteNumber].push(note);
     await this.setNoteAudioNode(channel, note, realtime);
     channel.lastNote = note;
-    this.setNoteRouting(
-      channel,
-      note,
-      startTime ?? this.audioContext.currentTime,
-    );
+    this.setNoteRouting(channel, note, startTime);
     note.resolveReady();
-    if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
-    if (0.5 <= channel.state.sostenutoPedal) channel.sostenutoNotes.push(note);
+    const state = channel.state;
+    if (0.5 <= state.sustainPedal) channel.sustainNotes.push(note);
+    if (0.5 <= state.sostenutoPedal) channel.sostenutoNotes.push(note);
     return note;
   }
 
   async noteOn(channelNumber, noteNumber, velocity, startTime, note) {
+    const t = startTime ?? this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (this.mpeEnabled && channel.isMPEMember && !note) {
       if (!this.mpeState.channelToNotes.has(channel.channelNumber)) {
@@ -3137,7 +3123,7 @@ export class Midy extends EventTarget {
       channel,
       noteNumber,
       velocity,
-      startTime,
+      t,
       note,
     );
     if (this.mpeEnabled && channel.isMPEMember && resolveNote) {
@@ -3182,13 +3168,11 @@ export class Midy extends EventTarget {
   }
 
   releaseNote(channel, note, endTime) {
-    const now = this.audioContext.currentTime;
-    endTime ??= now;
-
     const onEnded = () => {
       this.disconnectNote(note);
     };
 
+    const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;
@@ -3293,6 +3277,7 @@ export class Midy extends EventTarget {
   }
 
   noteOff(channelNumber, noteNumber, velocity, endTime, force) {
+    const t = endTime ?? this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (this.mpeEnabled && channel.isMPEMember) {
       const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
@@ -3318,12 +3303,12 @@ export class Midy extends EventTarget {
       this.removeFromActiveNotes(channel, noteNumber);
       const promise = targetNote.ready.then(() => {
         if (!targetNote.voice) return;
-        return this.releaseNote(channel, targetNote, endTime);
+        return this.releaseNote(channel, targetNote, t);
       });
       this.notePromises.push(promise);
       return promise;
     }
-    return this.noteOffChannel(channel, noteNumber, velocity, endTime, force);
+    return this.noteOffChannel(channel, noteNumber, velocity, t, force);
   }
 
   findNoteForOff(channel, noteNumber) {
