@@ -634,115 +634,7 @@ var require_browser = __commonJS({
 // src/midy-GMLite.js
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Stream.js
-var Stream = class {
-  constructor(data3, offset) {
-    Object.defineProperty(this, "data", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: data3
-    });
-    Object.defineProperty(this, "offset", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: offset
-    });
-  }
-  readString(size) {
-    const start = this.offset;
-    const end = start + size;
-    const data3 = this.data;
-    let nul = data3.subarray(start, end).indexOf(0);
-    if (nul < 0)
-      nul = size;
-    const arr = new Array(nul);
-    for (let i = 0; i < nul; i++) {
-      arr[i] = data3[start + i];
-    }
-    this.offset = end;
-    return String.fromCharCode(...arr);
-  }
-  readWORD() {
-    return this.data[this.offset++] | this.data[this.offset++] << 8;
-  }
-  readDWORD(bigEndian = false) {
-    if (bigEndian) {
-      return (this.data[this.offset++] << 24 | this.data[this.offset++] << 16 | this.data[this.offset++] << 8 | this.data[this.offset++]) >>> 0;
-    } else {
-      return (this.data[this.offset++] | this.data[this.offset++] << 8 | this.data[this.offset++] << 16 | this.data[this.offset++] << 24) >>> 0;
-    }
-  }
-  readByte() {
-    return this.data[this.offset++];
-  }
-  readAt(offset) {
-    return this.data[this.offset + offset];
-  }
-  /* helper */
-  readUInt8() {
-    return this.readByte();
-  }
-  readInt8() {
-    return this.readByte() << 24 >> 24;
-  }
-  readUInt16() {
-    return this.readWORD();
-  }
-  readInt16() {
-    return this.readWORD() << 16 >> 16;
-  }
-  readUInt32() {
-    return this.readDWORD();
-  }
-};
-
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
-function parseChunk(input, offset, bigEndian) {
-  const stream2 = new Stream(input, offset);
-  const type = stream2.readString(4);
-  const size = stream2.readDWORD(bigEndian);
-  return new Chunk(type, size, stream2.offset);
-}
-function parseRiff(input, index = 0, length2, { padding = true, bigEndian = false } = {}) {
-  const chunkList = [];
-  const end = length2 + index;
-  let offset = index;
-  while (offset < end) {
-    const chunk = parseChunk(input, offset, bigEndian);
-    offset = chunk.offset + chunk.size;
-    if (padding && (offset - index & 1) === 1) {
-      offset++;
-    }
-    chunkList.push(chunk);
-  }
-  return chunkList;
-}
-var Chunk = class {
-  constructor(type, size, offset) {
-    Object.defineProperty(this, "type", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: type
-    });
-    Object.defineProperty(this, "size", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: size
-    });
-    Object.defineProperty(this, "offset", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: offset
-    });
-  }
-};
-
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -810,7 +702,7 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Modulator.js
 var ModulatorSource = class _ModulatorSource {
   constructor(type, polarity, direction, cc, index) {
     Object.defineProperty(this, "type", {
@@ -885,7 +777,71 @@ var ModulatorSource = class _ModulatorSource {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Stream.js
+var Stream = class {
+  constructor(data3, offset) {
+    Object.defineProperty(this, "data", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: data3
+    });
+    Object.defineProperty(this, "offset", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: offset
+    });
+  }
+  readString(size) {
+    const start = this.offset;
+    const end = start + size;
+    const data3 = this.data;
+    let nul = data3.subarray(start, end).indexOf(0);
+    if (nul < 0)
+      nul = size;
+    const arr = new Array(nul);
+    for (let i = 0; i < nul; i++) {
+      arr[i] = data3[start + i];
+    }
+    this.offset = end;
+    return String.fromCharCode(...arr);
+  }
+  readWORD() {
+    return this.data[this.offset++] | this.data[this.offset++] << 8;
+  }
+  readDWORD(bigEndian = false) {
+    if (bigEndian) {
+      return (this.data[this.offset++] << 24 | this.data[this.offset++] << 16 | this.data[this.offset++] << 8 | this.data[this.offset++]) >>> 0;
+    } else {
+      return (this.data[this.offset++] | this.data[this.offset++] << 8 | this.data[this.offset++] << 16 | this.data[this.offset++] << 24) >>> 0;
+    }
+  }
+  readByte() {
+    return this.data[this.offset++];
+  }
+  readAt(offset) {
+    return this.data[this.offset + offset];
+  }
+  /* helper */
+  readUInt8() {
+    return this.readByte();
+  }
+  readInt8() {
+    return this.readByte() << 24 >> 24;
+  }
+  readUInt16() {
+    return this.readWORD();
+  }
+  readInt16() {
+    return this.readWORD() << 16 >> 16;
+  }
+  readUInt32() {
+    return this.readDWORD();
+  }
+};
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1354,178 +1310,7 @@ var BoundedValue = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
-var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
-var AudioTypesSet = new Set(AudioDataTypes);
-var AudioData = class {
-  constructor(type, sampleHeader, data3) {
-    Object.defineProperty(this, "type", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: void 0
-    });
-    Object.defineProperty(this, "sampleHeader", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: void 0
-    });
-    Object.defineProperty(this, "data", {
-      enumerable: true,
-      configurable: true,
-      writable: true,
-      value: void 0
-    });
-    if (!AudioTypesSet.has(type)) {
-      throw new Error(`Invalid AudioDataType: ${type}`);
-    }
-    this.type = type;
-    this.sampleHeader = sampleHeader;
-    this.data = data3;
-  }
-  decodePCM(data3) {
-    const { type } = this;
-    if (type === "pcm16") {
-      const bytesPerSample = 2;
-      const frameCount2 = data3.byteLength / bytesPerSample;
-      const result = new Float32Array(frameCount2);
-      const src = new Int16Array(data3.buffer, data3.byteOffset, data3.byteLength / bytesPerSample);
-      for (let i = 0; i < frameCount2; i++) {
-        result[i] = src[i] / 32768;
-      }
-      return result;
-    } else {
-      const bytesPerSample = 3;
-      const frameCount2 = data3.byteLength / bytesPerSample;
-      const result = new Float32Array(frameCount2);
-      for (let i = 0; i < frameCount2; i++) {
-        const idx = i * bytesPerSample;
-        let val = data3[idx] | data3[idx + 1] << 8 | data3[idx + 2] << 16;
-        if (val & 8388608)
-          val |= 4278190080;
-        result[i] = val / 8388608;
-      }
-      return result;
-    }
-  }
-};
-
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Parser.js
-function parse(input, option = {}) {
-  const chunkList = parseRiff(input, 0, input.length, option);
-  if (chunkList.length !== 1) {
-    throw new Error("wrong chunk length");
-  }
-  const chunk = chunkList[0];
-  if (chunk === null) {
-    throw new Error("chunk not found");
-  }
-  function parseRiffChunk(chunk2, data3, option2 = {}) {
-    const chunkList2 = getChunkList(chunk2, data3, "RIFF", "sfbk", option2);
-    if (chunkList2.length !== 3) {
-      throw new Error("invalid sfbk structure");
-    }
-    const info = parseInfoList(chunkList2[0], data3);
-    const isSF32 = info.version.major === 3;
-    if (isSF32 && chunkList2[2].type !== "LIST") {
-      chunkList2[2] = parseChunk(data3, chunkList2[2].offset - 9, false);
-    }
-    return {
-      // INFO-list
-      info,
-      // sdta-list
-      samplingData: parseSdtaList(chunkList2[1], data3),
-      // pdta-list
-      ...parsePdtaList(chunkList2[2], data3, isSF32)
-    };
-  }
-  function parsePdtaList(chunk2, data3, isSF32) {
-    const chunkList2 = getChunkList(chunk2, data3, "LIST", "pdta");
-    if (chunkList2.length !== 9) {
-      throw new Error("invalid pdta chunk");
-    }
-    return {
-      presetHeaders: parsePhdr(chunkList2[0], data3),
-      presetZone: parsePbag(chunkList2[1], data3),
-      presetModulators: parsePmod(chunkList2[2], data3),
-      presetGenerators: parsePgen(chunkList2[3], data3),
-      instruments: parseInst(chunkList2[4], data3),
-      instrumentZone: parseIbag(chunkList2[5], data3),
-      instrumentModulators: parseImod(chunkList2[6], data3),
-      instrumentGenerators: parseIgen(chunkList2[7], data3),
-      sampleHeaders: parseShdr(chunkList2[8], data3, isSF32)
-    };
-  }
-  const result = parseRiffChunk(chunk, input, option);
-  const isSF3 = result.info.version.major === 3;
-  return {
-    ...result,
-    samples: loadSamples(result.sampleHeaders, result.samplingData.offsetMSB, result.samplingData.offsetLSB, input, isSF3)
-  };
-}
-function getChunkList(chunk, data3, expectedType, expectedSignature, option = {}) {
-  if (chunk.type !== expectedType) {
-    throw new Error("invalid chunk type:" + chunk.type);
-  }
-  const stream2 = new Stream(data3, chunk.offset);
-  const signature = stream2.readString(4);
-  if (signature !== expectedSignature) {
-    throw new Error("invalid signature:" + signature);
-  }
-  return parseRiff(data3, stream2.offset, chunk.size - 4, option);
-}
-function parseInfoList(chunk, data3) {
-  const chunkList = getChunkList(chunk, data3, "LIST", "INFO");
-  return Info.parse(data3, chunkList);
-}
-function parseSdtaList(chunk, data3) {
-  const chunkList = getChunkList(chunk, data3, "LIST", "sdta");
-  return {
-    offsetMSB: chunkList[0].offset,
-    offsetLSB: chunkList[1]?.offset
-  };
-}
-function parseChunkObjects(chunk, data3, type, clazz, terminate, isSF3) {
-  const result = [];
-  if (chunk.type !== type) {
-    throw new Error("invalid chunk type:" + chunk.type);
-  }
-  const stream2 = new Stream(data3, chunk.offset);
-  const size = chunk.offset + chunk.size;
-  while (stream2.offset < size) {
-    const obj = clazz.parse(stream2, isSF3);
-    if (terminate && terminate(obj)) {
-      break;
-    }
-    result.push(obj);
-  }
-  return result;
-}
-var parsePhdr = (chunk, data3) => parseChunkObjects(chunk, data3, "phdr", PresetHeader, (p) => p.isEnd);
-var parsePbag = (chunk, data3) => parseChunkObjects(chunk, data3, "pbag", Bag);
-var parseInst = (chunk, data3) => parseChunkObjects(chunk, data3, "inst", Instrument, (i) => i.isEnd);
-var parseIbag = (chunk, data3) => parseChunkObjects(chunk, data3, "ibag", Bag);
-var parsePmod = (chunk, data3) => parseChunkObjects(chunk, data3, "pmod", ModulatorList);
-var parseImod = (chunk, data3) => parseChunkObjects(chunk, data3, "imod", ModulatorList);
-var parsePgen = (chunk, data3) => parseChunkObjects(chunk, data3, "pgen", GeneratorList, (g) => g.isEnd);
-var parseIgen = (chunk, data3) => parseChunkObjects(chunk, data3, "igen", GeneratorList);
-var parseShdr = (chunk, data3, isSF3) => parseChunkObjects(chunk, data3, "shdr", SampleHeader, (s) => s.isEnd, isSF3);
-function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB, data3, isSF3) {
-  const result = new Array(sampleHeader.length);
-  const factor = isSF3 ? 1 : 2;
-  const type = isSF3 ? "compressed" : samplingDataOffsetLSB ? "pcm24" : "pcm16";
-  for (let i = 0; i < sampleHeader.length; i++) {
-    const { start, end } = sampleHeader[i];
-    const startOffset = samplingDataOffsetMSB + start * factor;
-    const endOffset = samplingDataOffsetMSB + end * factor;
-    const sampleData = data3.subarray(startOffset, endOffset);
-    result[i] = new AudioData(type, sampleHeader[i], sampleData);
-  }
-  return result;
-}
-
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Generator.js
 var generatorKeyToIndex = /* @__PURE__ */ new Map();
 for (let i = 0; i < GeneratorKeys.length; i++) {
   generatorKeyToIndex.set(GeneratorKeys[i], i);
@@ -1710,7 +1495,64 @@ var DefaultInstrumentZone = {
   overridingRootKey: new BoundedValue(-1, -1, 127)
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/Voice.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/AudioData.js
+var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
+var AudioTypesSet = new Set(AudioDataTypes);
+var AudioData = class {
+  constructor(type, sampleHeader, data3) {
+    Object.defineProperty(this, "type", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: void 0
+    });
+    Object.defineProperty(this, "sampleHeader", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: void 0
+    });
+    Object.defineProperty(this, "data", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: void 0
+    });
+    if (!AudioTypesSet.has(type)) {
+      throw new Error(`Invalid AudioDataType: ${type}`);
+    }
+    this.type = type;
+    this.sampleHeader = sampleHeader;
+    this.data = data3;
+  }
+  decodePCM(data3) {
+    const { type } = this;
+    if (type === "pcm16") {
+      const bytesPerSample = 2;
+      const frameCount2 = data3.byteLength / bytesPerSample;
+      const result = new Float32Array(frameCount2);
+      const src = new Int16Array(data3.buffer, data3.byteOffset, data3.byteLength / bytesPerSample);
+      for (let i = 0; i < frameCount2; i++) {
+        result[i] = src[i] / 32768;
+      }
+      return result;
+    } else {
+      const bytesPerSample = 3;
+      const frameCount2 = data3.byteLength / bytesPerSample;
+      const result = new Float32Array(frameCount2);
+      for (let i = 0; i < frameCount2; i++) {
+        const idx = i * bytesPerSample;
+        let val = data3[idx] | data3[idx + 1] << 8 | data3[idx + 2] << 16;
+        if (val & 8388608)
+          val |= 4278190080;
+        result[i] = val / 8388608;
+      }
+      return result;
+    }
+  }
+};
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Voice.js
 function timecentToSecond(value) {
   return Math.pow(2, value / 1200);
 }
@@ -2051,7 +1893,165 @@ var Voice = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/RiffParser.js
+function parseChunk(input, offset, bigEndian) {
+  const stream2 = new Stream(input, offset);
+  const type = stream2.readString(4);
+  const size = stream2.readDWORD(bigEndian);
+  return new Chunk(type, size, stream2.offset);
+}
+function parseRiff(input, index = 0, length2, { padding = true, bigEndian = false } = {}) {
+  const chunkList = [];
+  const end = length2 + index;
+  let offset = index;
+  while (offset < end) {
+    const chunk = parseChunk(input, offset, bigEndian);
+    offset = chunk.offset + chunk.size;
+    if (padding && (offset - index & 1) === 1) {
+      offset++;
+    }
+    chunkList.push(chunk);
+  }
+  return chunkList;
+}
+var Chunk = class {
+  constructor(type, size, offset) {
+    Object.defineProperty(this, "type", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: type
+    });
+    Object.defineProperty(this, "size", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: size
+    });
+    Object.defineProperty(this, "offset", {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: offset
+    });
+  }
+};
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Parser.js
+function parse(input, option = {}) {
+  const chunkList = parseRiff(input, 0, input.length, option);
+  if (chunkList.length !== 1) {
+    throw new Error("wrong chunk length");
+  }
+  const chunk = chunkList[0];
+  if (chunk === null) {
+    throw new Error("chunk not found");
+  }
+  function parseRiffChunk(chunk2, data3, option2 = {}) {
+    const chunkList2 = getChunkList(chunk2, data3, "RIFF", "sfbk", option2);
+    if (chunkList2.length !== 3) {
+      throw new Error("invalid sfbk structure");
+    }
+    const info = parseInfoList(chunkList2[0], data3);
+    const isSF32 = info.version.major === 3;
+    if (isSF32 && chunkList2[2].type !== "LIST") {
+      chunkList2[2] = parseChunk(data3, chunkList2[2].offset - 9, false);
+    }
+    return {
+      // INFO-list
+      info,
+      // sdta-list
+      samplingData: parseSdtaList(chunkList2[1], data3),
+      // pdta-list
+      ...parsePdtaList(chunkList2[2], data3, isSF32)
+    };
+  }
+  function parsePdtaList(chunk2, data3, isSF32) {
+    const chunkList2 = getChunkList(chunk2, data3, "LIST", "pdta");
+    if (chunkList2.length !== 9) {
+      throw new Error("invalid pdta chunk");
+    }
+    return {
+      presetHeaders: parsePhdr(chunkList2[0], data3),
+      presetZone: parsePbag(chunkList2[1], data3),
+      presetModulators: parsePmod(chunkList2[2], data3),
+      presetGenerators: parsePgen(chunkList2[3], data3),
+      instruments: parseInst(chunkList2[4], data3),
+      instrumentZone: parseIbag(chunkList2[5], data3),
+      instrumentModulators: parseImod(chunkList2[6], data3),
+      instrumentGenerators: parseIgen(chunkList2[7], data3),
+      sampleHeaders: parseShdr(chunkList2[8], data3, isSF32)
+    };
+  }
+  const result = parseRiffChunk(chunk, input, option);
+  const isSF3 = result.info.version.major === 3;
+  return {
+    ...result,
+    samples: loadSamples(result.sampleHeaders, result.samplingData.offsetMSB, result.samplingData.offsetLSB, input, isSF3)
+  };
+}
+function getChunkList(chunk, data3, expectedType, expectedSignature, option = {}) {
+  if (chunk.type !== expectedType) {
+    throw new Error("invalid chunk type:" + chunk.type);
+  }
+  const stream2 = new Stream(data3, chunk.offset);
+  const signature = stream2.readString(4);
+  if (signature !== expectedSignature) {
+    throw new Error("invalid signature:" + signature);
+  }
+  return parseRiff(data3, stream2.offset, chunk.size - 4, option);
+}
+function parseInfoList(chunk, data3) {
+  const chunkList = getChunkList(chunk, data3, "LIST", "INFO");
+  return Info.parse(data3, chunkList);
+}
+function parseSdtaList(chunk, data3) {
+  const chunkList = getChunkList(chunk, data3, "LIST", "sdta");
+  return {
+    offsetMSB: chunkList[0].offset,
+    offsetLSB: chunkList[1]?.offset
+  };
+}
+function parseChunkObjects(chunk, data3, type, clazz, terminate, isSF3) {
+  const result = [];
+  if (chunk.type !== type) {
+    throw new Error("invalid chunk type:" + chunk.type);
+  }
+  const stream2 = new Stream(data3, chunk.offset);
+  const size = chunk.offset + chunk.size;
+  while (stream2.offset < size) {
+    const obj = clazz.parse(stream2, isSF3);
+    if (terminate && terminate(obj)) {
+      break;
+    }
+    result.push(obj);
+  }
+  return result;
+}
+var parsePhdr = (chunk, data3) => parseChunkObjects(chunk, data3, "phdr", PresetHeader, (p) => p.isEnd);
+var parsePbag = (chunk, data3) => parseChunkObjects(chunk, data3, "pbag", Bag);
+var parseInst = (chunk, data3) => parseChunkObjects(chunk, data3, "inst", Instrument, (i) => i.isEnd);
+var parseIbag = (chunk, data3) => parseChunkObjects(chunk, data3, "ibag", Bag);
+var parsePmod = (chunk, data3) => parseChunkObjects(chunk, data3, "pmod", ModulatorList);
+var parseImod = (chunk, data3) => parseChunkObjects(chunk, data3, "imod", ModulatorList);
+var parsePgen = (chunk, data3) => parseChunkObjects(chunk, data3, "pgen", GeneratorList, (g) => g.isEnd);
+var parseIgen = (chunk, data3) => parseChunkObjects(chunk, data3, "igen", GeneratorList);
+var parseShdr = (chunk, data3, isSF3) => parseChunkObjects(chunk, data3, "shdr", SampleHeader, (s) => s.isEnd, isSF3);
+function loadSamples(sampleHeader, samplingDataOffsetMSB, samplingDataOffsetLSB, data3, isSF3) {
+  const result = new Array(sampleHeader.length);
+  const factor = isSF3 ? 1 : 2;
+  const type = isSF3 ? "compressed" : samplingDataOffsetLSB ? "pcm24" : "pcm16";
+  for (let i = 0; i < sampleHeader.length; i++) {
+    const { start, end } = sampleHeader[i];
+    const startOffset = samplingDataOffsetMSB + start * factor;
+    const endOffset = samplingDataOffsetMSB + end * factor;
+    const sampleData = data3.subarray(startOffset, endOffset);
+    result[i] = new AudioData(type, sampleHeader[i], sampleData);
+  }
+  return result;
+}
+
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/DefaultModulators.js
 var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
   new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
@@ -2066,7 +2066,7 @@ var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.8/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/SoundFont.js
 var InstrumentZone = class {
   constructor(generators, modulators) {
     Object.defineProperty(this, "generators", {
@@ -5277,9 +5277,9 @@ var Channel = class {
       const stack = this.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
-        const note = stack[j];
-        if (note.ending) continue;
-        tasks.push(note.ready.then(() => callback(note)));
+        const note2 = stack[j];
+        if (note2.ending) continue;
+        tasks.push(note2.ready.then(() => callback(note2)));
       }
     }
     return Promise.all(tasks);
@@ -5290,41 +5290,45 @@ var Channel = class {
       const stack = this.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
-        const note = stack[j];
-        if (note.ending) continue;
-        if (scheduleTime < note.startTime) continue;
-        tasks.push(note.ready.then(() => callback(note)));
+        const note2 = stack[j];
+        if (note2.ending) continue;
+        if (scheduleTime < note2.startTime) continue;
+        tasks.push(note2.ready.then(() => callback(note2)));
       }
     }
     return Promise.all(tasks);
   }
   async noteOn(noteNumber, velocity, startTime) {
-    return await this.player.noteOn(this, noteNumber, velocity, startTime);
+    const player = this.player;
+    const t2 = startTime ?? player.audioContext.currentTime;
+    return await player.noteOnChannel(this, noteNumber, velocity, t2, note);
   }
-  noteOff(noteNumber, velocity, endTime, force) {
-    return this.player.noteOff(this, noteNumber, velocity, endTime, force);
+  async noteOff(noteNumber, velocity, endTime, force) {
+    const player = this.player;
+    const t2 = endTime ?? player.audioContext.currentTime;
+    return await player.noteOffChannel(this, noteNumber, velocity, t2, force);
   }
   setProgramChange(programNumber) {
     this.programNumber = programNumber;
   }
   setPitchBend(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     const state = this.state;
     const prev = state.pitchWheel * 2 - 1;
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     this.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
-    player2.updateChannelDetune(this, scheduleTime);
-    player2.applyVoiceParams(this, 14, scheduleTime);
+    player.updateChannelDetune(this, scheduleTime);
+    player.applyVoiceParams(this, 14, scheduleTime);
   }
   setControlChange(controllerType, value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
-    const handler = player2.controlChangeHandlers[controllerType];
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
+    const handler = player.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(player2, this, value, scheduleTime);
-      player2.applyVoiceParams(this, controllerType + 128, scheduleTime);
+      handler.call(player, this, value, scheduleTime);
+      player.applyVoiceParams(this, controllerType + 128, scheduleTime);
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`
@@ -5332,44 +5336,44 @@ var Channel = class {
     }
   }
   setModulationDepth(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     this.state.modulationDepthMSB = value / 127;
-    player2.updateModulation(this, scheduleTime);
+    player.updateModulation(this, scheduleTime);
   }
   setVolume(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     this.state.volumeMSB = value / 127;
-    player2.updateChannelVolume(this, scheduleTime);
+    player.updateChannelVolume(this, scheduleTime);
   }
   setPan(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     this.state.panMSB = value / 127;
-    player2.updateChannelVolume(this, scheduleTime);
+    player.updateChannelVolume(this, scheduleTime);
   }
   setExpression(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     this.state.expressionMSB = value / 127;
-    player2.updateChannelVolume(this, scheduleTime);
+    player.updateChannelVolume(this, scheduleTime);
   }
   setSustainPedal(value, scheduleTime) {
-    const player2 = this.player;
+    const player = this.player;
     if (this.isDrum) return;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     const state = this.state;
     const prevValue = state.sustainPedal;
     state.sustainPedal = value / 127;
     if (64 <= value) {
       if (prevValue < 0.5) {
-        this.processScheduledNotes((note) => {
-          this.sustainNotes.push(note);
+        this.processScheduledNotes((note2) => {
+          this.sustainNotes.push(note2);
         });
       }
     } else {
-      player2.releaseSustainPedal(this, value, scheduleTime);
+      player.releaseSustainPedal(this, value, scheduleTime);
     }
   }
   dataEntryMSB(value, scheduleTime) {
@@ -5422,28 +5426,28 @@ var Channel = class {
     this.setPitchBendRange(pitchBendRange, scheduleTime);
   }
   setPitchBendRange(value, scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     const state = this.state;
     const prev = state.pitchWheelSensitivity;
     const next = value / 12800;
     state.pitchWheelSensitivity = next;
     this.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
-    player2.updateChannelDetune(this, scheduleTime);
-    player2.applyVoiceParams(this, 16, scheduleTime);
+    player.updateChannelDetune(this, scheduleTime);
+    player.applyVoiceParams(this, 16, scheduleTime);
   }
   allSoundOff(scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     const promises = [];
-    this.processActiveNotes(scheduleTime, (note) => {
-      promises.push(player2.soundOffNote(note, scheduleTime));
+    this.processActiveNotes(scheduleTime, (note2) => {
+      promises.push(player.soundOffNote(note2, scheduleTime));
     });
     return Promise.all(promises);
   }
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
   resetAllControllers(scheduleTime) {
-    const player2 = this.player;
+    const player = this.player;
     const keys = [
       "pitchWheel",
       "expressionMSB",
@@ -5467,12 +5471,12 @@ var Channel = class {
     this.setPitchBend(8192, scheduleTime);
     const settingTypes = ["rpnMSB", "rpnLSB"];
     for (let i = 0; i < settingTypes.length; i++) {
-      this[settingTypes[i]] = player2.constructor.channelSettings[settingTypes[i]];
+      this[settingTypes[i]] = player.constructor.channelSettings[settingTypes[i]];
     }
   }
   resetChannelStates() {
-    const player2 = this.player;
-    const scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    const scheduleTime = player.audioContext.currentTime;
     const state = this.state;
     const entries = Object.entries(defaultControllerState);
     for (const [key, { type, defaultValue }] of entries) {
@@ -5486,14 +5490,14 @@ var Channel = class {
         state[key] = defaultValue;
       }
     }
-    this.resetSettings(player2.constructor.channelSettings);
+    this.resetSettings(player.constructor.channelSettings);
   }
   allNotesOff(scheduleTime) {
-    const player2 = this.player;
-    if (!(0 <= scheduleTime)) scheduleTime = player2.audioContext.currentTime;
+    const player = this.player;
+    if (!(0 <= scheduleTime)) scheduleTime = player.audioContext.currentTime;
     const promises = [];
-    this.processActiveNotes(scheduleTime, (note) => {
-      const promise = this.noteOff(note.noteNumber, 0, scheduleTime, false);
+    this.processActiveNotes(scheduleTime, (note2) => {
+      const promise = this.noteOff(note2.noteNumber, 0, scheduleTime, false);
       promises.push(promise);
     });
     return Promise.all(promises);
@@ -6045,18 +6049,18 @@ var MidyGMLite = class extends EventTarget {
       const startTime = t2 + schedulingOffset;
       this.processTimelineEvent(event, startTime, {
         onNoteOn: (channel2, event2, startTime2) => {
-          const note = this.createNote(
+          const note2 = new Note(
             event2.noteNumber,
             event2.velocity,
             startTime2
           );
-          note.timelineIndex = queueIndex;
+          note2.timelineIndex = queueIndex;
           this.noteOn(
             channel2,
             event2.noteNumber,
             event2.velocity,
             startTime2,
-            note
+            note2
           );
         },
         onNoteOff: (channel2, event2, startTime2) => {
@@ -6078,7 +6082,7 @@ var MidyGMLite = class extends EventTarget {
     return 0;
   }
   resetAllStates() {
-    player.mode = "GM1";
+    this.mode = "GM1";
     this.exclusiveClassNotes.fill(void 0);
     this.drumExclusiveClassNotes.fill(void 0);
     this.voiceCache.clear();
@@ -6335,13 +6339,13 @@ var MidyGMLite = class extends EventTarget {
       const stack = channel2.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
-        const note = stack[j];
-        const promise = note.ready.then(() => {
-          if (!note.voice) return;
+        const note2 = stack[j];
+        const promise = note2.ready.then(() => {
+          if (!note2.voice) return;
           const now = this.audioContext.currentTime;
           const startTime = Math.max(scheduleTime, now);
-          note.volumeNode.gain.cancelScheduledValues(startTime).setTargetAtTime(0, startTime, timeConstant);
-          note.bufferSource.stop(startTime + this.perceptualSmoothingTime);
+          note2.volumeNode.gain.cancelScheduledValues(startTime).setTargetAtTime(0, startTime, timeConstant);
+          note2.bufferSource.stop(startTime + this.perceptualSmoothingTime);
         });
         promises.push(promise);
       }
@@ -6535,38 +6539,38 @@ var MidyGMLite = class extends EventTarget {
     return pitchWheel * pitchWheelSensitivity;
   }
   updateChannelDetune(channel2, scheduleTime) {
-    channel2.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull) return;
-      this.setDetune(channel2, note, scheduleTime);
+    channel2.processScheduledNotes((note2) => {
+      if (note2.renderedBuffer?.isFull) return;
+      this.setDetune(channel2, note2, scheduleTime);
     });
   }
-  calcNoteDetune(channel2, note) {
-    return channel2.detune + note.voiceParams.detune;
+  calcNoteDetune(channel2, note2) {
+    return channel2.detune + note2.voiceParams.detune;
   }
-  setVolumeEnvelope(note, scheduleTime) {
-    if (!note.volumeEnvelopeNode) return;
-    const { voiceParams, startTime } = note;
+  setVolumeEnvelope(note2, scheduleTime) {
+    if (!note2.volumeEnvelopeNode) return;
+    const { voiceParams, startTime } = note2;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
-    note.volumeEnvelopeNode.gain.cancelScheduledValues(scheduleTime).setValueAtTime(0, startTime).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
+    note2.volumeEnvelopeNode.gain.cancelScheduledValues(scheduleTime).setValueAtTime(0, startTime).setValueAtTime(1e-6, volDelay).exponentialRampToValueAtTime(attackVolume, volAttack).setValueAtTime(attackVolume, volHold).setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
   }
-  setDetune(channel2, note, scheduleTime) {
-    const detune = this.calcNoteDetune(channel2, note);
+  setDetune(channel2, note2, scheduleTime) {
+    const detune = this.calcNoteDetune(channel2, note2);
     const timeConstant = this.perceptualSmoothingTime / 5;
-    note.bufferSource.detune.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(detune, scheduleTime, timeConstant);
+    note2.bufferSource.detune.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(detune, scheduleTime, timeConstant);
   }
-  setPitchEnvelope(note, scheduleTime) {
-    const { bufferSource, voiceParams } = note;
+  setPitchEnvelope(note2, scheduleTime) {
+    const { bufferSource, voiceParams } = note2;
     const baseRate = voiceParams.playbackRate;
     bufferSource.playbackRate.cancelScheduledValues(scheduleTime).setValueAtTime(baseRate, scheduleTime);
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const peekRate = baseRate * this.centToRate(modEnvToPitch);
-    const modDelay = note.startTime + voiceParams.modDelay;
+    const modDelay = note2.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = voiceParams.modDecay;
@@ -6577,9 +6581,9 @@ var MidyGMLite = class extends EventTarget {
     const maxFrequency = 2e4;
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
-  setFilterEnvelope(note, scheduleTime) {
-    if (!note.filterEnvelopeNode) return;
-    const { voiceParams, startTime } = note;
+  setFilterEnvelope(note2, scheduleTime) {
+    if (!note2.filterEnvelopeNode) return;
+    const { voiceParams, startTime } = note2;
     const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
     const baseCent = voiceParams.initialFilterFc;
     const peekCent = baseCent + modEnvToFilterFc;
@@ -6594,38 +6598,38 @@ var MidyGMLite = class extends EventTarget {
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
     const decayDuration = voiceParams.modDecay;
-    note.adjustedBaseFreq = adjustedBaseFreq;
-    note.filterEnvelopeNode.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(adjustedBaseFreq, startTime).setValueAtTime(adjustedBaseFreq, modDelay).exponentialRampToValueAtTime(adjustedPeekFreq, modAttack).setValueAtTime(adjustedPeekFreq, modHold).setTargetAtTime(
+    note2.adjustedBaseFreq = adjustedBaseFreq;
+    note2.filterEnvelopeNode.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(adjustedBaseFreq, startTime).setValueAtTime(adjustedBaseFreq, modDelay).exponentialRampToValueAtTime(adjustedPeekFreq, modAttack).setValueAtTime(adjustedPeekFreq, modHold).setTargetAtTime(
       adjustedSustainFreq,
       modHold,
       decayDuration * decayCurve
     );
   }
-  startModulation(channel2, note, scheduleTime) {
+  startModulation(channel2, note2, scheduleTime) {
     const audioContext = this.audioContext;
-    const { voiceParams } = note;
-    note.modLfo = new OscillatorNode(audioContext, {
+    const { voiceParams } = note2;
+    note2.modLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO)
     });
-    note.modLfoToFilterFc = new GainNode(audioContext, {
+    note2.modLfoToFilterFc = new GainNode(audioContext, {
       gain: voiceParams.modLfoToFilterFc
     });
-    note.modLfoToPitch = new GainNode(audioContext);
-    this.setModLfoToPitch(channel2, note, scheduleTime);
-    note.modLfoToVolume = new GainNode(audioContext);
-    this.setModLfoToVolume(note, scheduleTime);
-    note.modLfo.start(note.startTime + voiceParams.delayModLFO);
-    note.modLfo.connect(note.modLfoToFilterFc);
-    if (note.filterEnvelopeNode) {
-      note.modLfoToFilterFc.connect(note.filterEnvelopeNode.frequency);
+    note2.modLfoToPitch = new GainNode(audioContext);
+    this.setModLfoToPitch(channel2, note2, scheduleTime);
+    note2.modLfoToVolume = new GainNode(audioContext);
+    this.setModLfoToVolume(note2, scheduleTime);
+    note2.modLfo.start(note2.startTime + voiceParams.delayModLFO);
+    note2.modLfo.connect(note2.modLfoToFilterFc);
+    if (note2.filterEnvelopeNode) {
+      note2.modLfoToFilterFc.connect(note2.filterEnvelopeNode.frequency);
     }
-    note.modLfo.connect(note.modLfoToPitch);
-    note.modLfoToPitch.connect(note.bufferSource.detune);
-    note.modLfo.connect(note.modLfoToVolume);
-    const volumeTarget = note.volumeEnvelopeNode ?? note.volumeNode;
-    note.modLfoToVolume.connect(volumeTarget.gain);
+    note2.modLfo.connect(note2.modLfoToPitch);
+    note2.modLfoToPitch.connect(note2.bufferSource.detune);
+    note2.modLfo.connect(note2.modLfoToVolume);
+    const volumeTarget = note2.volumeEnvelopeNode ?? note2.volumeNode;
+    note2.modLfoToVolume.connect(volumeTarget.gain);
   }
-  async createAdsRenderedBuffer(note, voiceParams, audioBuffer, isDrum = false) {
+  async createAdsRenderedBuffer(note2, voiceParams, audioBuffer, isDrum = false) {
     const isLoop = isDrum ? false : voiceParams.sampleModes % 2 !== 0;
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
@@ -6664,7 +6668,7 @@ var MidyGMLite = class extends EventTarget {
     });
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = {
-      ...note,
+      ...note2,
       startTime: 0,
       bufferSource,
       filterEnvelopeNode,
@@ -6688,7 +6692,7 @@ var MidyGMLite = class extends EventTarget {
       loopDuration: outputLoopDuration
     });
   }
-  async createAdsrRenderedBuffer(note, voiceParams, audioBuffer, noteDuration) {
+  async createAdsrRenderedBuffer(note2, voiceParams, audioBuffer, noteDuration) {
     const isLoop = voiceParams.sampleModes % 2 !== 0;
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
@@ -6726,7 +6730,7 @@ var MidyGMLite = class extends EventTarget {
     });
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = {
-      ...note,
+      ...note2,
       startTime: 0,
       bufferSource,
       filterEnvelopeNode,
@@ -6773,7 +6777,7 @@ var MidyGMLite = class extends EventTarget {
       releaseDuration
     });
   }
-  async createFullRenderedBuffer(channel2, note, voiceParams, noteDuration, noteEvent = {}) {
+  async createFullRenderedBuffer(channel2, note2, voiceParams, noteDuration, noteEvent = {}) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent;
     const ch = channel2.channelNumber;
     const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
@@ -6798,7 +6802,12 @@ var MidyGMLite = class extends EventTarget {
     dstChannel.modulationDepthRange = channel2.modulationDepthRange;
     dstChannel.detune = channel2.detune;
     offlinePlayer.updateChannelVolume(dstChannel, 0);
-    await dstChannel.noteOn(note.noteNumber, note.velocity, 0);
+    await offlinePlayer.noteOnChannel(
+      dstChannel,
+      note2.noteNumber,
+      note2.velocity,
+      0
+    );
     for (const event of noteEvents) {
       const t2 = event.startTime / this.tempo - noteStartTime;
       if (t2 < 0 || t2 > noteDuration) continue;
@@ -6806,7 +6815,13 @@ var MidyGMLite = class extends EventTarget {
         channels: offlinePlayer.channels
       });
     }
-    dstChannel.noteOff(note.noteNumber, 0, noteDuration, true);
+    offlinePlayer.noteOffChannel(
+      dstChannel,
+      note2.noteNumber,
+      0,
+      noteDuration,
+      true
+    );
     const buffer2 = await offlineContext.startRendering();
     return new RenderedBuffer(buffer2, {
       isLoop: false,
@@ -6815,36 +6830,36 @@ var MidyGMLite = class extends EventTarget {
       releaseDuration: releaseEndDuration
     });
   }
-  async getAudioBuffer(channel2, note, realtime) {
+  async getAudioBuffer(channel2, note2, realtime) {
     const cacheMode = this.cacheMode;
-    const { noteNumber, velocity } = note;
+    const { noteNumber, velocity } = note2;
     const audioBufferId = this.getVoiceId(channel2, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getFullCachedBuffer(channel2, note, audioBufferId);
+        return await this.getFullCachedBuffer(channel2, note2, audioBufferId);
       } else if (cacheMode === "adsr") {
-        return await this.getAdsrCachedBuffer(note, audioBufferId);
+        return await this.getAdsrCachedBuffer(note2, audioBufferId);
       }
     }
     if (cacheMode === "none") {
-      return await this.createAudioBuffer(note.voiceParams);
+      return await this.createAudioBuffer(note2.voiceParams);
     }
     return await this.getAdsCachedBuffer(
       channel2,
-      note,
+      note2,
       audioBufferId,
       realtime
     );
   }
-  async getAdsCachedBuffer(channel2, note, audioBufferId, realtime) {
-    const cacheKey = audioBufferId + (note.noteNumber << 1) + 1;
-    const voiceParams = note.voiceParams;
+  async getAdsCachedBuffer(channel2, note2, audioBufferId, realtime) {
+    const cacheKey = audioBufferId + (note2.noteNumber << 1) + 1;
+    const voiceParams = note2.voiceParams;
     if (realtime) {
       const cached = this.realtimeVoiceCache.get(cacheKey);
       if (cached) return cached;
       const rawBuffer = await this.createAudioBuffer(voiceParams);
       const rendered = await this.createAdsRenderedBuffer(
-        note,
+        note2,
         voiceParams,
         rawBuffer,
         channel2.isDrum
@@ -6863,7 +6878,7 @@ var MidyGMLite = class extends EventTarget {
         const maxCount = this.voiceCounter.get(cacheKey) ?? 0;
         const rawBuffer = await this.createAudioBuffer(voiceParams);
         const rendered = await this.createAdsRenderedBuffer(
-          note,
+          note2,
           voiceParams,
           rawBuffer,
           channel2.isDrum
@@ -6874,9 +6889,9 @@ var MidyGMLite = class extends EventTarget {
       }
     }
   }
-  async getAdsrCachedBuffer(note, audioBufferId) {
-    const voiceParams = note.voiceParams;
-    const timelineIndex = note.timelineIndex;
+  async getAdsrCachedBuffer(note2, audioBufferId) {
+    const voiceParams = note2.voiceParams;
+    const timelineIndex = note2.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
     const noteDurationTicks = noteEvent?.durationTicks ?? 0;
     const safeTicks = noteDurationTicks === Infinity ? 0xFFFFFFFFn : BigInt(noteDurationTicks);
@@ -6902,7 +6917,7 @@ var MidyGMLite = class extends EventTarget {
       try {
         const rawBuffer = await this.createAudioBuffer(voiceParams);
         const rendered = await this.createAdsrRenderedBuffer(
-          note,
+          note2,
           voiceParams,
           rawBuffer,
           noteDuration
@@ -6917,9 +6932,9 @@ var MidyGMLite = class extends EventTarget {
     durationMap.set(cacheKey, renderPromise);
     return await renderPromise;
   }
-  async getFullCachedBuffer(channel2, note, audioBufferId) {
-    const voiceParams = note.voiceParams;
-    const timelineIndex = note.timelineIndex;
+  async getFullCachedBuffer(channel2, note2, audioBufferId) {
+    const voiceParams = note2.voiceParams;
+    const timelineIndex = note2.timelineIndex;
     const noteEvent = this.noteOnEvents.get(timelineIndex);
     const noteDuration = noteEvent?.duration ?? 0;
     const cacheKey = timelineIndex;
@@ -6930,20 +6945,20 @@ var MidyGMLite = class extends EventTarget {
     }
     const cached = durationMap.get(cacheKey);
     if (cached instanceof RenderedBuffer) {
-      note.fullCacheVoiceId = audioBufferId;
+      note2.fullCacheVoiceId = audioBufferId;
       return cached;
     }
     if (cached instanceof Promise) {
       const buf = await cached;
       if (buf == null) return await this.createAudioBuffer(voiceParams);
-      note.fullCacheVoiceId = audioBufferId;
+      note2.fullCacheVoiceId = audioBufferId;
       return buf;
     }
     const renderPromise = (async () => {
       try {
         const rendered2 = await this.createFullRenderedBuffer(
           channel2,
-          note,
+          note2,
           voiceParams,
           noteDuration,
           noteEvent
@@ -6957,71 +6972,71 @@ var MidyGMLite = class extends EventTarget {
     })();
     durationMap.set(cacheKey, renderPromise);
     const rendered = await renderPromise;
-    note.fullCacheVoiceId = audioBufferId;
+    note2.fullCacheVoiceId = audioBufferId;
     return rendered;
   }
-  async setNoteAudioNode(channel2, note, realtime) {
+  async setNoteAudioNode(channel2, note2, realtime) {
     const audioContext = this.audioContext;
     const now = audioContext.currentTime;
-    const { noteNumber, velocity, startTime } = note;
+    const { noteNumber, velocity, startTime } = note2;
     const state = channel2.state;
     const controllerState = this.getControllerState(
       channel2,
       noteNumber,
       velocity
     );
-    const voiceParams = note.voice.getAllParams(controllerState);
-    note.voiceParams = voiceParams;
-    const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
+    const voiceParams = note2.voice.getAllParams(controllerState);
+    note2.voiceParams = voiceParams;
+    const audioBuffer = await this.getAudioBuffer(channel2, note2, realtime);
     const isRendered = audioBuffer instanceof RenderedBuffer;
-    note.renderedBuffer = isRendered ? audioBuffer : null;
-    note.bufferSource = this.createBufferSource(
+    note2.renderedBuffer = isRendered ? audioBuffer : null;
+    note2.bufferSource = this.createBufferSource(
       channel2,
       voiceParams,
       audioBuffer
     );
-    note.volumeNode = new GainNode(audioContext);
+    note2.volumeNode = new GainNode(audioContext);
     const cacheMode = this.cacheMode;
     const isFullCached = isRendered && audioBuffer.isFull === true;
     if (cacheMode === "none") {
-      note.volumeEnvelopeNode = new GainNode(audioContext);
-      note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
+      note2.volumeEnvelopeNode = new GainNode(audioContext);
+      note2.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
         type: "lowpass",
         Q: voiceParams.initialFilterQ / 10
         // dB
       });
-      this.setVolumeEnvelope(note, now);
-      this.setFilterEnvelope(note, now);
-      this.setPitchEnvelope(note, now);
-      this.setDetune(channel2, note, now);
+      this.setVolumeEnvelope(note2, now);
+      this.setFilterEnvelope(note2, now);
+      this.setPitchEnvelope(note2, now);
+      this.setDetune(channel2, note2, now);
       if (0 < state.modulationDepthMSB) {
-        this.startModulation(channel2, note, now);
+        this.startModulation(channel2, note2, now);
       }
-      note.bufferSource.connect(note.filterEnvelopeNode);
-      note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
-      note.volumeEnvelopeNode.connect(note.volumeNode);
+      note2.bufferSource.connect(note2.filterEnvelopeNode);
+      note2.filterEnvelopeNode.connect(note2.volumeEnvelopeNode);
+      note2.volumeEnvelopeNode.connect(note2.volumeNode);
     } else if (isFullCached) {
-      note.volumeEnvelopeNode = null;
-      note.filterEnvelopeNode = null;
-      note.bufferSource.connect(note.volumeNode);
+      note2.volumeEnvelopeNode = null;
+      note2.filterEnvelopeNode = null;
+      note2.bufferSource.connect(note2.volumeNode);
     } else {
-      note.volumeEnvelopeNode = null;
-      note.filterEnvelopeNode = null;
-      this.setDetune(channel2, note, now);
+      note2.volumeEnvelopeNode = null;
+      note2.filterEnvelopeNode = null;
+      this.setDetune(channel2, note2, now);
       if (0 < state.modulationDepthMSB) {
-        this.startModulation(channel2, note, now);
+        this.startModulation(channel2, note2, now);
       }
-      note.bufferSource.connect(note.volumeNode);
+      note2.bufferSource.connect(note2.volumeNode);
     }
     if (voiceParams.sample.type === "compressed") {
-      note.bufferSource.start(startTime);
+      note2.bufferSource.start(startTime);
     } else {
-      note.bufferSource.start(startTime);
+      note2.bufferSource.start(startTime);
     }
-    return note;
+    return note2;
   }
-  handleExclusiveClass(note, channel2, startTime) {
-    const exclusiveClass = note.voiceParams.exclusiveClass;
+  handleExclusiveClass(note2, channel2, startTime) {
+    const exclusiveClass = note2.voiceParams.exclusiveClass;
     if (exclusiveClass === 0) return;
     const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
@@ -7030,38 +7045,34 @@ var MidyGMLite = class extends EventTarget {
         prevChannel.noteOff(prevNote.noteNumber, 0, startTime, true);
       }
     }
-    this.exclusiveClassNotes[exclusiveClass] = [note, channel2];
+    this.exclusiveClassNotes[exclusiveClass] = [note2, channel2];
   }
-  handleDrumExclusiveClass(note, channel2, startTime) {
+  handleDrumExclusiveClass(note2, channel2, startTime) {
     if (!channel2.isDrum) return;
-    const drumExclusiveClass = drumExclusiveClasses[note.noteNumber];
+    const drumExclusiveClass = drumExclusiveClasses[note2.noteNumber];
     if (drumExclusiveClass === 0) return;
-    const index = drumExclusiveClass * this.channels.length + channel2.channelNumber;
+    const index = (drumExclusiveClass - 1) * this.channels.length + channel2.channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
     if (prevNote && !prevNote.ending) {
       channel2.noteOff(prevNote.noteNumber, 0, startTime, true);
     }
-    this.drumExclusiveClassNotes[index] = note;
+    this.drumExclusiveClassNotes[index] = note2;
   }
-  setNoteRouting(channel2, note, startTime) {
-    const { volumeNode } = note;
-    if (note.renderedBuffer?.isFull) {
+  setNoteRouting(channel2, note2, startTime) {
+    const { volumeNode } = note2;
+    if (note2.renderedBuffer?.isFull) {
       volumeNode.connect(this.masterVolume);
     } else {
       volumeNode.connect(channel2.gainL);
       volumeNode.connect(channel2.gainR);
     }
-    this.handleExclusiveClass(note, channel2, startTime);
-    this.handleDrumExclusiveClass(note, channel2, startTime);
+    this.handleExclusiveClass(note2, channel2, startTime);
+    this.handleDrumExclusiveClass(note2, channel2, startTime);
   }
-  createNote(noteNumber, velocity, startTime) {
-    if (!(0 <= startTime)) startTime = this.audioContext.currentTime;
-    return new Note(noteNumber, velocity, startTime);
-  }
-  async noteOn(channel2, noteNumber, velocity, startTime, note) {
+  async noteOnChannel(channel2, noteNumber, velocity, startTime, note2) {
     const realtime = startTime === void 0;
-    if (!note) {
-      note = this.createNote(noteNumber, velocity, startTime);
+    if (!note2) {
+      note2 = new Note(noteNumber, velocity, startTime);
     }
     const programNumber = channel2.programNumber;
     const bankTable = this.soundFontTable[programNumber];
@@ -7074,120 +7085,116 @@ var MidyGMLite = class extends EventTarget {
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === void 0) return;
     const soundFont = this.soundFonts[soundFontIndex];
-    note.voice = soundFont.getVoice(
+    note2.voice = soundFont.getVoice(
       bank,
       programNumber,
       noteNumber,
       velocity
     );
-    if (!note.voice) return;
+    if (!note2.voice) return;
     if (!channel2.activeNotes[noteNumber]) {
       channel2.activeNotes[noteNumber] = [];
     }
-    channel2.activeNotes[noteNumber].push(note);
-    await this.setNoteAudioNode(channel2, note, realtime);
-    this.setNoteRouting(channel2, note, startTime);
-    note.resolveReady();
+    channel2.activeNotes[noteNumber].push(note2);
+    await this.setNoteAudioNode(channel2, note2, realtime);
+    this.setNoteRouting(channel2, note2, startTime);
+    note2.resolveReady();
     if (0.5 <= channel2.state.sustainPedal) {
-      channel2.sustainNotes.push(note);
+      channel2.sustainNotes.push(note2);
     }
-    return note;
+    return note2;
   }
-  disconnectNote(note) {
-    note.bufferSource.disconnect();
-    note.filterEnvelopeNode?.disconnect();
-    note.volumeEnvelopeNode?.disconnect();
-    note.volumeNode.disconnect();
-    if (note.modLfoToPitch) {
-      note.modLfoToVolume.disconnect();
-      note.modLfoToPitch.disconnect();
-      note.modLfo.stop();
+  disconnectNote(note2) {
+    note2.bufferSource.disconnect();
+    note2.filterEnvelopeNode?.disconnect();
+    note2.volumeEnvelopeNode?.disconnect();
+    note2.volumeNode.disconnect();
+    if (note2.modLfoToPitch) {
+      note2.modLfoToVolume.disconnect();
+      note2.modLfoToPitch.disconnect();
+      note2.modLfo.stop();
     }
   }
-  releaseFullCache(note) {
-    if (note.timelineIndex == null || note.fullCacheVoiceId == null) return;
-    const durationMap = this.fullVoiceCache.get(note.fullCacheVoiceId);
+  releaseFullCache(note2) {
+    if (note2.timelineIndex == null || note2.fullCacheVoiceId == null) return;
+    const durationMap = this.fullVoiceCache.get(note2.fullCacheVoiceId);
     if (!durationMap) return;
-    const entry = durationMap.get(note.timelineIndex);
+    const entry = durationMap.get(note2.timelineIndex);
     if (entry instanceof RenderedBuffer) {
-      durationMap.delete(note.timelineIndex);
+      durationMap.delete(note2.timelineIndex);
       if (durationMap.size === 0) {
-        this.fullVoiceCache.delete(note.fullCacheVoiceId);
+        this.fullVoiceCache.delete(note2.fullCacheVoiceId);
       }
     }
   }
-  releaseNote(note, endTime) {
+  releaseNote(note2, endTime) {
     const now = this.audioContext.currentTime;
-    endTime ??= now;
-    const onEnded = () => {
-      this.disconnectNote(note);
-    };
-    if (note.renderedBuffer?.isFull) {
-      const rb = note.renderedBuffer;
-      const naturalEndTime = note.startTime + rb.buffer.duration;
-      const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
+    if (note2.renderedBuffer?.isFull) {
+      const rb = note2.renderedBuffer;
+      const naturalEndTime = note2.startTime + rb.buffer.duration;
+      const noteOffTime = note2.startTime + (rb.noteDuration ?? 0);
       const isEarlyCut = endTime < noteOffTime;
       if (isEarlyCut) {
-        const volDuration2 = note.voiceParams.volRelease;
+        const volDuration2 = note2.voiceParams.volRelease;
         const volRelease2 = endTime + volDuration2;
-        note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
-        note.bufferSource.stop(volRelease2);
+        note2.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * releaseCurve);
+        note2.bufferSource.stop(volRelease2);
       } else {
         if (naturalEndTime <= now) {
-          onEnded();
-          this.releaseFullCache(note);
+          this.disconnectNote(note2);
+          this.releaseFullCache(note2);
           return Promise.resolve();
         }
-        note.bufferSource.stop(naturalEndTime);
+        note2.bufferSource.stop(naturalEndTime);
       }
       return new Promise((resolve) => {
-        note.bufferSource.onended = () => {
-          onEnded();
-          this.releaseFullCache(note);
+        note2.bufferSource.onended = () => {
+          this.disconnectNote(note2);
+          this.releaseFullCache(note2);
           resolve();
         };
       });
     }
-    const volDuration = note.voiceParams.volRelease;
+    const volDuration = note2.voiceParams.volRelease;
     const volRelease = endTime + volDuration;
-    if (note.volumeEnvelopeNode) {
-      note.filterEnvelopeNode.frequency.cancelScheduledValues(endTime).setTargetAtTime(
-        note.adjustedBaseFreq,
+    if (note2.volumeEnvelopeNode) {
+      note2.filterEnvelopeNode.frequency.cancelScheduledValues(endTime).setTargetAtTime(
+        note2.adjustedBaseFreq,
         endTime,
-        note.voiceParams.modRelease * releaseCurve
+        note2.voiceParams.modRelease * releaseCurve
       );
-      note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+      note2.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
     } else {
-      const isAdsr = note.renderedBuffer?.releaseDuration != null && !note.renderedBuffer.isFull;
+      const isAdsr = note2.renderedBuffer?.releaseDuration != null && !note2.renderedBuffer.isFull;
       if (isAdsr) {
-        const rb = note.renderedBuffer;
-        const naturalEndTime = note.startTime + rb.buffer.duration;
-        const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
+        const rb = note2.renderedBuffer;
+        const naturalEndTime = note2.startTime + rb.buffer.duration;
+        const noteOffTime = note2.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
-          note.bufferSource.stop(volRelease);
+          note2.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+          note2.bufferSource.stop(volRelease);
         } else {
-          note.bufferSource.stop(naturalEndTime);
+          note2.bufferSource.stop(naturalEndTime);
         }
         return new Promise((resolve) => {
-          note.bufferSource.onended = () => {
-            onEnded();
+          note2.bufferSource.onended = () => {
+            this.disconnectNote(note2);
             resolve();
           };
         });
       }
-      note.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
+      note2.volumeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * releaseCurve);
     }
-    note.bufferSource.stop(volRelease);
+    note2.bufferSource.stop(volRelease);
     return new Promise((resolve) => {
-      note.bufferSource.onended = () => {
-        onEnded();
+      note2.bufferSource.onended = () => {
+        this.disconnectNote(note2);
         resolve();
       };
     });
   }
-  noteOff(channel2, noteNumber, _velocity, endTime, force) {
+  noteOffChannel(channel2, noteNumber, _velocity, endTime, force) {
     if (!force) {
       if (channel2.isDrum) {
         this.removeFromActiveNotes(channel2, noteNumber);
@@ -7195,13 +7202,13 @@ var MidyGMLite = class extends EventTarget {
       }
       if (0.5 <= channel2.state.sustainPedal) return;
     }
-    const note = this.findNoteForOff(channel2, noteNumber);
-    if (!note) return;
-    note.ending = true;
+    const note2 = this.findNoteForOff(channel2, noteNumber);
+    if (!note2) return;
+    note2.ending = true;
     this.removeFromActiveNotes(channel2, noteNumber);
-    const promise = note.ready.then(() => {
-      if (!note.voice) return;
-      return this.releaseNote(note, endTime);
+    const promise = note2.ready.then(() => {
+      if (!note2.voice) return;
+      return this.releaseNote(note2, endTime);
     });
     this.notePromises.push(promise);
     return promise;
@@ -7233,28 +7240,28 @@ var MidyGMLite = class extends EventTarget {
     channel2.sustainNotes = [];
     return promises;
   }
-  soundOffNote(note, scheduleTime) {
-    note.ending = true;
-    if (!note.voice) return Promise.resolve();
+  soundOffNote(note2, scheduleTime) {
+    note2.ending = true;
+    if (!note2.voice) return Promise.resolve();
     const now = this.audioContext.currentTime;
     const startTime = Math.max(scheduleTime, now);
     const perceptualSmoothingTime = this.perceptualSmoothingTime;
     const timeConstant = perceptualSmoothingTime / 5;
-    note.volumeNode.gain.cancelScheduledValues(startTime).setTargetAtTime(0, startTime, timeConstant);
-    note.bufferSource.stop(startTime + perceptualSmoothingTime);
+    note2.volumeNode.gain.cancelScheduledValues(startTime).setTargetAtTime(0, startTime, timeConstant);
+    note2.bufferSource.stop(startTime + perceptualSmoothingTime);
     return new Promise((resolve) => {
-      note.bufferSource.onended = () => {
-        this.disconnectNote(note);
+      note2.bufferSource.onended = () => {
+        this.disconnectNote(note2);
         resolve();
       };
     });
   }
   soundOff(channelNumber, noteNumber, scheduleTime) {
     const channel2 = this.channels[channelNumber];
-    const note = this.findNoteForOff(channel2, noteNumber);
-    if (!note) return Promise.resolve();
-    this.removeFromActiveNotes(channel2, note.noteNumber);
-    return this.soundOffNote(note, scheduleTime);
+    const note2 = this.findNoteForOff(channel2, noteNumber);
+    if (!note2) return Promise.resolve();
+    this.removeFromActiveNotes(channel2, note2.noteNumber);
+    return this.soundOffNote(note2, scheduleTime);
   }
   createMessageHandlers() {
     const handlers = new Array(256);
@@ -7290,95 +7297,76 @@ var MidyGMLite = class extends EventTarget {
     const handler = this.messageHandlers[status];
     if (handler) handler(data3, scheduleTime);
   }
-  handleChannelMessage(statusByte, data1, data22, scheduleTime) {
-    const channelNumber = statusByte & 15;
-    const messageType = statusByte & 240;
-    const channel2 = this.channels[channelNumber];
-    switch (messageType) {
-      case 128:
-        return channel2.noteOff(data1, data22, scheduleTime);
-      case 144:
-        return channel2.noteOn(data1, data22, scheduleTime);
-      case 176:
-        return channel2.setControlChange(data1, data22, scheduleTime);
-      case 192:
-        return channel2.setProgramChange(data1);
-      case 224:
-        return channel2.setPitchBend(data22 * 128 + data1, scheduleTime);
-      default:
-        console.warn(`Unsupported MIDI message: ${messageType.toString(16)}`);
-    }
-  }
-  setModLfoToPitch(channel2, note, scheduleTime) {
-    if (note.modLfoToPitch) {
-      const modLfoToPitch = note.voiceParams.modLfoToPitch;
+  setModLfoToPitch(channel2, note2, scheduleTime) {
+    if (note2.modLfoToPitch) {
+      const modLfoToPitch = note2.voiceParams.modLfoToPitch;
       const baseDepth = Math.abs(modLfoToPitch) + channel2.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
-      note.modLfoToPitch.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
+      note2.modLfoToPitch.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
     } else {
-      this.startModulation(channel2, note, scheduleTime);
+      this.startModulation(channel2, note2, scheduleTime);
     }
   }
-  setModLfoToFilterFc(note, scheduleTime) {
-    const modLfoToFilterFc = note.voiceParams.modLfoToFilterFc;
-    note.modLfoToFilterFc.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modLfoToFilterFc, scheduleTime);
+  setModLfoToFilterFc(note2, scheduleTime) {
+    const modLfoToFilterFc = note2.voiceParams.modLfoToFilterFc;
+    note2.modLfoToFilterFc.gain.cancelScheduledValues(scheduleTime).setValueAtTime(modLfoToFilterFc, scheduleTime);
   }
-  setModLfoToVolume(note, scheduleTime) {
-    const modLfoToVolume = note.voiceParams.modLfoToVolume;
+  setModLfoToVolume(note2, scheduleTime) {
+    const modLfoToVolume = note2.voiceParams.modLfoToVolume;
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
     const depth = baseDepth * Math.sign(modLfoToVolume);
-    note.modLfoToVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
+    note2.modLfoToVolume.gain.cancelScheduledValues(scheduleTime).setValueAtTime(depth, scheduleTime);
   }
-  setDelayModLFO(note, scheduleTime) {
-    const startTime = note.startTime;
-    if (startTime < scheduleTime) return;
-    note.modLfo.stop(scheduleTime);
-    note.modLfo.start(startTime + note.voiceParams.delayModLFO);
-    note.modLfo.connect(note.modLfoToFilterFc);
+  setDelayModLFO(note2) {
+    const startTime = note2.startTime + note2.voiceParams.delayModLFO;
+    try {
+      note2.modLfo.start(startTime);
+    } catch {
+    }
   }
-  setFreqModLFO(note, scheduleTime) {
-    const freqModLFO = note.voiceParams.freqModLFO;
-    note.modLfo.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(freqModLFO, scheduleTime);
+  setFreqModLFO(note2, scheduleTime) {
+    const freqModLFO = note2.voiceParams.freqModLFO;
+    note2.modLfo.frequency.cancelScheduledValues(scheduleTime).setValueAtTime(freqModLFO, scheduleTime);
   }
   createVoiceParamsHandlers() {
     return {
-      modLfoToPitch: (channel2, note, scheduleTime) => {
+      modLfoToPitch: (channel2, note2, scheduleTime) => {
         if (0 < channel2.state.modulationDepthMSB) {
-          this.setModLfoToPitch(channel2, note, scheduleTime);
+          this.setModLfoToPitch(channel2, note2, scheduleTime);
         }
       },
       vibLfoToPitch: (_channel, _note, _scheduleTime) => {
       },
-      modLfoToFilterFc: (channel2, note, scheduleTime) => {
+      modLfoToFilterFc: (channel2, note2, scheduleTime) => {
         if (0 < channel2.state.modulationDepthMSB) {
-          this.setModLfoToFilterFc(note, scheduleTime);
+          this.setModLfoToFilterFc(note2, scheduleTime);
         }
       },
-      modLfoToVolume: (channel2, note, scheduleTime) => {
+      modLfoToVolume: (channel2, note2, scheduleTime) => {
         if (0 < channel2.state.modulationDepthMSB) {
-          this.setModLfoToVolume(note, scheduleTime);
+          this.setModLfoToVolume(note2, scheduleTime);
         }
       },
       chorusEffectsSend: (_channel, _note, _scheduleTime) => {
       },
       reverbEffectsSend: (_channel, _note, _scheduleTime) => {
       },
-      delayModLFO: (channel2, note, scheduleTime) => {
+      delayModLFO: (channel2, note2, scheduleTime) => {
         if (0 < channel2.state.modulationDepth) {
-          this.setDelayModLFO(note, scheduleTime);
+          this.setDelayModLFO(note2, scheduleTime);
         }
       },
-      freqModLFO: (channel2, note, scheduleTime) => {
+      freqModLFO: (channel2, note2, scheduleTime) => {
         if (0 < channel2.state.modulationDepthMSB) {
-          this.setFreqModLFO(note, scheduleTime);
+          this.setFreqModLFO(note2, scheduleTime);
         }
       },
       delayVibLFO: (_channel, _note, _scheduleTime) => {
       },
       freqVibLFO: (_channel, _note, _scheduleTime) => {
       },
-      detune: (channel2, note, scheduleTime) => {
-        this.setDetune(channel2, note, scheduleTime);
+      detune: (channel2, note2, scheduleTime) => {
+        this.setDetune(channel2, note2, scheduleTime);
       }
     };
   }
@@ -7390,32 +7378,32 @@ var MidyGMLite = class extends EventTarget {
     return state;
   }
   applyVoiceParams(channel2, controllerType, scheduleTime) {
-    channel2.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull) return;
+    channel2.processScheduledNotes((note2) => {
+      if (note2.renderedBuffer?.isFull) return;
       const controllerState = this.getControllerState(
         channel2,
-        note.noteNumber,
-        note.velocity
+        note2.noteNumber,
+        note2.velocity
       );
-      const voiceParams = note.voice.getParams(controllerType, controllerState);
+      const voiceParams = note2.voice.getParams(controllerType, controllerState);
       let applyVolumeEnvelope = false;
       let applyFilterEnvelope = false;
       let applyPitchEnvelope = false;
       for (const [key, value] of Object.entries(voiceParams)) {
-        const prevValue = note.voiceParams[key];
+        const prevValue = note2.voiceParams[key];
         if (value === prevValue) continue;
-        note.voiceParams[key] = value;
+        note2.voiceParams[key] = value;
         if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](channel2, note, scheduleTime);
+          this.voiceParamsHandlers[key](channel2, note2, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
           if (pitchEnvelopeKeySet.has(key)) applyPitchEnvelope = true;
         }
       }
-      if (applyVolumeEnvelope) this.setVolumeEnvelope(note, scheduleTime);
-      if (applyFilterEnvelope) this.setFilterEnvelope(note, scheduleTime);
-      if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
+      if (applyVolumeEnvelope) this.setVolumeEnvelope(note2, scheduleTime);
+      if (applyFilterEnvelope) this.setFilterEnvelope(note2, scheduleTime);
+      if (applyPitchEnvelope) this.setPitchEnvelope(note2, scheduleTime);
     });
   }
   createControlChangeHandlers() {
@@ -7436,12 +7424,12 @@ var MidyGMLite = class extends EventTarget {
   }
   updateModulation(channel2, scheduleTime) {
     const depth = channel2.state.modulationDepthMSB * channel2.modulationDepthRange;
-    channel2.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull) return;
-      if (note.modLfoToPitch) {
-        note.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
+    channel2.processScheduledNotes((note2) => {
+      if (note2.renderedBuffer?.isFull) return;
+      if (note2.modLfoToPitch) {
+        note2.modLfoToPitch.gain.setValueAtTime(depth, scheduleTime);
       } else {
-        this.startModulation(channel2, note, scheduleTime);
+        this.startModulation(channel2, note2, scheduleTime);
       }
     });
   }
