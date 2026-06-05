@@ -3126,7 +3126,8 @@ export class Midy extends EventTarget {
     return note;
   }
 
-  async noteOn(channel, noteNumber, velocity, startTime, note) {
+  async noteOn(channelNumber, noteNumber, velocity, startTime, note) {
+    const channel = this.channels[channelNumber];
     if (this.mpeEnabled && channel.isMPEMember && !note) {
       if (!this.mpeState.channelToNotes.has(channel.channelNumber)) {
         this.mpeState.channelToNotes.set(channel.channelNumber, new Set());
@@ -3291,13 +3292,15 @@ export class Midy extends EventTarget {
     return promise;
   }
 
-  noteOff(channel, noteNumber, velocity, endTime, force) {
+  noteOff(channelNumber, noteNumber, velocity, endTime, force) {
+    const channel = this.channels[channelNumber];
     if (this.mpeEnabled && channel.isMPEMember) {
       const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
       if (!notes || notes.size === 0) return;
       if (!force) {
-        if (0.5 <= channel.state.sustainPedal) return;
-        if (0.5 <= channel.state.sostenutoPedal) return;
+        const state = channel.state;
+        if (0.5 <= state.sustainPedal) return;
+        if (0.5 <= state.sostenutoPedal) return;
       }
       let targetNote;
       for (const note of notes) {
