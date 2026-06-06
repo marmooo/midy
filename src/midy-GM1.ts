@@ -1,12 +1,11 @@
 import { type MidiData, type MidiSetTempoEvent, parseMidi } from "midi-file";
-// import { parse, SoundFont } from "@marmooo/soundfont-parser";
 import {
   AudioData,
   parse,
   SoundFont,
   Voice,
   type VoiceParams,
-} from "../../soundfont-parser/src/mod.ts";
+} from "@marmooo/soundfont-parser";
 import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 
 // Cache mode
