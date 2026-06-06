@@ -625,6 +625,8 @@ interface PendingOffItem {
   ticks: number;
 }
 
+type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
+
 interface MessageHandler {
   [key: string]: (bytes: Uint8Array, time: number) => void;
 }
@@ -691,8 +693,7 @@ export class MidyGM1 extends EventTarget {
     string,
     (channel: Channel, note: Note, scheduleTime: number) => void
   >;
-  controlChangeHandlers!:
-    (((ch: Channel, v: number, t: number) => void) | undefined)[];
+  controlChangeHandlers!: ControlChangeHandler[];
   channels!: Channel[];
 
   static channelSettings = {
@@ -2744,30 +2745,20 @@ export class MidyGM1 extends EventTarget {
     });
   }
 
-  createControlChangeHandlers(): ((
-    ch: Channel,
-    v: number,
-    t: number,
-  ) => void)[] {
-    const handlers = new Array(
-      128,
-    ) as ((ch: Channel, v: number, t: number) => void)[];
-    handlers[1] = (ch: Channel, v: number, t: number) =>
-      ch.setModulationDepth(v, t);
-    handlers[6] = (ch: Channel, v: number, t: number) => ch.dataEntryMSB(v, t);
-    handlers[7] = (ch: Channel, v: number, t: number) => ch.setVolume(v, t);
-    handlers[10] = (ch: Channel, v: number, t: number) => ch.setPan(v, t);
-    handlers[11] = (ch: Channel, v: number, t: number) =>
-      ch.setExpression(v, t);
-    handlers[38] = (ch: Channel, v: number, t: number) => ch.dataEntryLSB(v, t);
-    handlers[64] = (ch: Channel, v: number, t: number) =>
-      ch.setSustainPedal(v, t);
-    handlers[100] = (ch: Channel, v: number, _t: number) => ch.setRPNLSB(v);
-    handlers[101] = (ch: Channel, v: number, _t: number) => ch.setRPNMSB(v);
-    handlers[120] = (ch: Channel, _v: number, t: number) => ch.allSoundOff(t);
-    handlers[121] = (ch: Channel, _v: number, t: number) =>
-      ch.resetAllControllers(t);
-    handlers[123] = (ch: Channel, _v: number, t: number) => ch.allNotesOff(t);
+  createControlChangeHandlers(): ControlChangeHandler[] {
+    const handlers: ControlChangeHandler[] = new Array(128);
+    handlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
+    handlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
+    handlers[7] = (ch, v, t) => ch.setVolume(v, t);
+    handlers[10] = (ch, v, t) => ch.setPan(v, t);
+    handlers[11] = (ch, v, t) => ch.setExpression(v, t);
+    handlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
+    handlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
+    handlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
+    handlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
+    handlers[120] = (ch, _v, t) => ch.allSoundOff(t);
+    handlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
+    handlers[123] = (ch, _v, t) => ch.allNotesOff(t);
     return handlers;
   }
 
