@@ -1078,9 +1078,7 @@ interface PendingOffItem {
   ticks: number;
 }
 
-interface MessageHandler {
-  [key: string]: (bytes: Uint8Array, time: number) => void;
-}
+type MessageHandler = (bytes: Uint8Array, time: number) => void;
 type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
 type VoiceParamsHandler = (
   channel: Channel,
@@ -1211,7 +1209,7 @@ export class Midy extends EventTarget {
   channels!: Channel[];
   reverbEffect!: ReverbEffect;
   chorusEffect!: ChorusEffect;
-  messageHandlers!: MessageHandler;
+  messageHandlers!: MessageHandler[];
   voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
   controlChangeHandlers!: ControlChangeHandler[];
   effectHandlers!: EffectHandler[];
@@ -3764,54 +3762,40 @@ export class Midy extends EventTarget {
     });
   }
 
-  createMessageHandlers(): MessageHandler {
-    const handlers: MessageHandler = {};
+  createMessageHandlers(): MessageHandler[] {
+    const handlers: MessageHandler[] = new Array(256);
     // Channel Message
-    handlers[0x80] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.noteOff(data[1], data[2], scheduleTime);
-    };
-    handlers[0x90] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.noteOn(data[1], data[2], scheduleTime);
-    };
-    handlers[0xA0] = (data, scheduleTime) => {
+    handlers[0x80] = (data, t) =>
+      this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
+    handlers[0x90] = (data, t) =>
+      this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
+    handlers[0xA0] = (data, t) =>
       this.channels[data[0] & 0x0F].setPolyphonicKeyPressure(
         data[1],
         data[2],
-        scheduleTime,
+        t,
       );
-    };
-    handlers[0xB0] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setControlChange(
-        data[1],
-        data[2],
-        scheduleTime,
-      );
-    };
-    handlers[0xC0] = (data: Uint8Array, _scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setProgramChange(data[1]);
-    };
-    handlers[0xD0] = (data, scheduleTime) => {
-      this.channels[data[0] & 0x0F].setChannelPressure(data[1], scheduleTime);
-    };
-    handlers[0xE0] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setPitchBend(
-        data[2] * 128 + data[1],
-        scheduleTime,
-      );
-    };
+    handlers[0xB0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
+    handlers[0xC0] = (data, _t) =>
+      this.channels[data[0] & 0x0F].setProgramChange(data[1]);
+    handlers[0xD0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setChannelPressure(data[1], t);
+    handlers[0xE0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setPitchBend(data[2] * 128 + data[1], t);
     // System Common Message
-    // handlers[0xF1] = (_data, _scheduleTime) => {}; // MTC Quarter Frame
-    // handlers[0xF2] = (_data, _scheduleTime) => {}; // Song Position Pointer
-    // handlers[0xF3] = (_data, _scheduleTime) => {}; // Song Select
-    // handlers[0xF6] = (_data, _scheduleTime) => {}; // Tune Request
-    // handlers[0xF7] = (_data, _scheduleTime) => {}; // End of Exclusive (EOX)
+    // handlers[0xF1] = (_data, _t) => {}; // MTC Quarter Frame
+    // handlers[0xF2] = (_data, _t) => {}; // Song Position Pointer
+    // handlers[0xF3] = (_data, _t) => {}; // Song Select
+    // handlers[0xF6] = (_data, _t) => {}; // Tune Request
+    // handlers[0xF7] = (_data, _t) => {}; // End of Exclusive (EOX)
     // System Real Time Message
-    // handlers[0xF8] = (_data, _scheduleTime) => {}; // Timing Clock
-    // handlers[0xFA] = (_data, _scheduleTime) => {}; // Start
-    // handlers[0xFB] = (_data, _scheduleTime) => {}; // Continue
-    // handlers[0xFC] = (_data, _scheduleTime) => {}; // Stop
-    handlers[0xFE] = (_data, _scheduleTime) => this.activeSensing();
-    // handlers[0xFF] = (_data, _scheduleTime) => {}; // Reset
+    // handlers[0xF8] = (_data, _t) => {}; // Timing Clock
+    // handlers[0xFA] = (_data, _t) => {}; // Start
+    // handlers[0xFB] = (_data, _t) => {}; // Continue
+    // handlers[0xFC] = (_data, _t) => {}; // Stop
+    handlers[0xFE] = (_data, _t) => this.activeSensing();
+    // handlers[0xFF] = (_data, _t) => {}; // Reset
     return handlers;
   }
 

@@ -891,9 +891,7 @@ interface PendingOffItem {
   ticks: number;
 }
 
-interface MessageHandler {
-  [key: string]: (bytes: Uint8Array, time: number) => void;
-}
+type MessageHandler = (bytes: Uint8Array, time: number) => void;
 type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
 type VoiceParamsHandler = (
   channel: Channel,
@@ -1011,7 +1009,7 @@ export class MidyGM2 extends EventTarget {
   channels!: Channel[];
   reverbEffect!: ReverbEffect;
   chorusEffect!: ChorusEffect;
-  messageHandlers!: MessageHandler;
+  messageHandlers!: MessageHandler[];
   voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
   controlChangeHandlers!: ControlChangeHandler[];
   effectHandlers!: EffectHandler[];
@@ -3364,34 +3362,21 @@ export class MidyGM2 extends EventTarget {
     return this.soundOffNote(note, scheduleTime);
   }
 
-  createMessageHandlers(): MessageHandler {
-    const handlers: MessageHandler = {};
+  createMessageHandlers(): MessageHandler[] {
+    const handlers: MessageHandler[] = new Array(256);
     // Channel Message
-    handlers[0x80] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.noteOff(data[1], data[2], scheduleTime);
-    };
-    handlers[0x90] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.noteOn(data[1], data[2], scheduleTime);
-    };
-    handlers[0xB0] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setControlChange(
-        data[1],
-        data[2],
-        scheduleTime,
-      );
-    };
-    handlers[0xC0] = (data: Uint8Array, _scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setProgramChange(data[1]);
-    };
-    handlers[0xD0] = (data, scheduleTime) => {
-      this.channels[data[0] & 0x0F].setChannelPressure(data[1], scheduleTime);
-    };
-    handlers[0xE0] = (data: Uint8Array, scheduleTime: number) => {
-      this.channels[data[0] & 0x0F]?.setPitchBend(
-        data[2] * 128 + data[1],
-        scheduleTime,
-      );
-    };
+    handlers[0x80] = (data, t) =>
+      this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
+    handlers[0x90] = (data, t) =>
+      this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
+    handlers[0xB0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
+    handlers[0xC0] = (data, _t) =>
+      this.channels[data[0] & 0x0F].setProgramChange(data[1]);
+    handlers[0xD0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setChannelPressure(data[1], t);
+    handlers[0xE0] = (data, t) =>
+      this.channels[data[0] & 0x0F].setPitchBend(data[2] * 128 + data[1], t);
     return handlers;
   }
 
