@@ -900,6 +900,16 @@ type VoiceParamsHandler = (
   note: Note,
   scheduleTime: number,
 ) => void;
+type EffectHandler = (
+  channel: Channel,
+  note: Note,
+  scheduleTime: number,
+) => void;
+type KeyBasedHandler = (
+  channel: Channel,
+  keyNumber: number,
+  scheduleTime: number,
+) => void;
 
 type PressureTableName = "channelPressureTable";
 
@@ -921,14 +931,6 @@ type ChorusEffect = {
   delayNodes: DelayNode[];
   feedbackGains: GainNode[];
 };
-type EffectHandler = (
-  channel: Channel,
-  note: Note,
-  scheduleTime: number,
-) => void;
-type KeyBasedHandler =
-  | ((channel: Channel, keyNumber: number, scheduleTime: number) => void)
-  | undefined;
 
 export class MidyGM2 extends EventTarget {
   // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
@@ -1006,12 +1008,12 @@ export class MidyGM2 extends EventTarget {
   masterVolume!: GainNode;
   scheduler!: GainNode;
   schedulerBuffer!: AudioBuffer;
-  messageHandlers!: MessageHandler;
-  voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
-  controlChangeHandlers!: ControlChangeHandler[];
   channels!: Channel[];
   reverbEffect!: ReverbEffect;
   chorusEffect!: ChorusEffect;
+  messageHandlers!: MessageHandler;
+  voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
+  controlChangeHandlers!: ControlChangeHandler[];
   effectHandlers!: EffectHandler[];
   keyBasedControllerHandlers!: KeyBasedHandler[];
 
@@ -4358,33 +4360,18 @@ export class MidyGM2 extends EventTarget {
   }
 
   createKeyBasedControllerHandlers(): KeyBasedHandler[] {
-    const handlers = new Array(128);
-    handlers[7] = (channel: Channel, keyNumber: number, scheduleTime: number) =>
-      this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
-    handlers[10] = (
-      channel: Channel,
-      keyNumber: number,
-      scheduleTime: number,
-    ) => this.updateKeyBasedVolume(channel, keyNumber, scheduleTime);
-    handlers[91] = (
-      channel: Channel,
-      keyNumber: number,
-      scheduleTime: number,
-    ) =>
+    const handlers: KeyBasedHandler[] = new Array(128);
+    handlers[7] = (channel, keyNumber, t) =>
+      this.updateKeyBasedVolume(channel, keyNumber, t);
+    handlers[10] = (channel, keyNumber, t) =>
+      this.updateKeyBasedVolume(channel, keyNumber, t);
+    handlers[91] = (channel, keyNumber, t) =>
       channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setReverbSend(channel, note, scheduleTime);
-        }
+        if (note.noteNumber === keyNumber) this.setReverbSend(channel, note, t);
       });
-    handlers[93] = (
-      channel: Channel,
-      keyNumber: number,
-      scheduleTime: number,
-    ) =>
+    handlers[93] = (channel, keyNumber, t) =>
       channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setChorusSend(channel, note, scheduleTime);
-        }
+        if (note.noteNumber === keyNumber) this.setChorusSend(channel, note, t);
       });
     return handlers;
   }

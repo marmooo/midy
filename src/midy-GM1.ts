@@ -692,10 +692,10 @@ export class MidyGM1 extends EventTarget {
   masterVolume!: GainNode;
   scheduler!: GainNode;
   schedulerBuffer!: AudioBuffer;
+  channels!: Channel[];
   messageHandlers!: MessageHandler;
   voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
   controlChangeHandlers!: ControlChangeHandler[];
-  channels!: Channel[];
 
   static channelSettings = {
     detune: 0,
