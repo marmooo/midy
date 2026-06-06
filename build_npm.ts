@@ -13,7 +13,7 @@ await build({
   },
   package: {
     name: "@marmooo/midy",
-    version: "0.5.4",
+    version: "0.5.5",
     description:
       "A MIDI player/synthesizer written in JavaScript that supports GM-Lite/GM1 and SF2/SF3.",
     license: "Apache-2.0",
