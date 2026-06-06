@@ -1,4 +1,7 @@
 {
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "es2022"]
+  },
   "imports": {
     "@deno/dnt": "jsr:@deno/dnt@^0.42.3",
     "@luca/esbuild-deno-loader": "jsr:@luca/esbuild-deno-loader@^0.11.1",
@@ -8,6 +11,6 @@
     "midi-file": "npm:midi-file@^1.2.4"
   },
   "tasks": {
-    "build": "deno run -RWE --allow-run build.js"
+    "build": "deno run -RWE --allow-run build.ts"
   }
 }

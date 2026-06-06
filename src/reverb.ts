@@ -7,9 +7,15 @@
 // - Freeverb (1999)
 // - Velvet Noise Reverb (2012)
 
+type AnyAudioContext = AudioContext | OfflineAudioContext;
+
 // Convolution Reverb
 
-export function createConvolutionReverbImpulse(audioContext, decay, preDecay) {
+export function createConvolutionReverbImpulse(
+  audioContext: AnyAudioContext,
+  decay: number,
+  preDecay: number,
+): AudioBuffer {
   const sampleRate = audioContext.sampleRate;
   const length = sampleRate * decay;
   const impulse = new AudioBuffer({ numberOfChannels: 2, length, sampleRate });
@@ -28,12 +34,20 @@ export function createConvolutionReverbImpulse(audioContext, decay, preDecay) {
   return impulse;
 }
 
-export function createConvolutionReverb(audioContext, impulse) {
+export function createConvolutionReverb(
+  audioContext: AnyAudioContext,
+  impulse: AudioBuffer,
+): { input: ConvolverNode; output: ConvolverNode } {
   const convolverNode = new ConvolverNode(audioContext, { buffer: impulse });
   return { input: convolverNode, output: convolverNode };
 }
 
-export function createCombFilter(audioContext, input, delay, feedback) {
+export function createCombFilter(
+  audioContext: AnyAudioContext,
+  input: AudioNode,
+  delay: number,
+  feedback: number,
+): DelayNode {
   const delayNode = new DelayNode(audioContext, {
     maxDelayTime: delay,
     delayTime: delay,
@@ -49,7 +63,12 @@ export function createCombFilter(audioContext, input, delay, feedback) {
 // Exact H(z) = (-g + z^-d) / (1 - g·z^-d) requires a feedforward path
 // that causes zero-delay loops in the Web Audio API graph, which is unstable.
 // This approximation omits the feedforward term and returns only the delay output.
-export function createAllpassFilter(audioContext, input, delay, feedback) {
+export function createAllpassFilter(
+  audioContext: AnyAudioContext,
+  input: AudioNode,
+  delay: number,
+  feedback: number,
+): GainNode {
   const delayNode = new DelayNode(audioContext, {
     maxDelayTime: delay,
     delayTime: delay,
@@ -67,12 +86,12 @@ export function createAllpassFilter(audioContext, input, delay, feedback) {
 // feedback loop contains a one-pole lowpass to simulate air absorption.
 // damping=0: bright tail, damping=1: dark tail
 export function createLPFCombFilter(
-  audioContext,
-  input,
-  delayTime,
-  feedback,
-  damping,
-) {
+  audioContext: AnyAudioContext,
+  input: AudioNode,
+  delayTime: number,
+  feedback: number,
+  damping: number,
+): DelayNode {
   const delayNode = new DelayNode(audioContext, {
     maxDelayTime: delayTime,
     delayTime,
@@ -97,12 +116,12 @@ export function createLPFCombFilter(
 //   J. Audio Eng. Soc., vol.10, p.219, 1962
 
 export function createSchroederReverb(
-  audioContext,
-  combFeedbacks,
-  combDelays,
-  allpassFeedbacks,
-  allpassDelays,
-) {
+  audioContext: AnyAudioContext,
+  combFeedbacks: number[],
+  combDelays: number[],
+  allpassFeedbacks: number[],
+  allpassDelays: number[],
+): { input: GainNode; output: GainNode } {
   const input = new GainNode(audioContext);
   const mergerGain = new GainNode(audioContext);
   for (let i = 0; i < combDelays.length; i++) {
@@ -114,9 +133,9 @@ export function createSchroederReverb(
     );
     comb.connect(mergerGain);
   }
-  const allpasses = [];
+  const allpasses: GainNode[] = [];
   for (let i = 0; i < allpassDelays.length; i++) {
-    const src = i === 0 ? mergerGain : allpasses.at(-1);
+    const src = i === 0 ? mergerGain : allpasses.at(-1)!;
     const allpass = createAllpassFilter(
       audioContext,
       src,
@@ -125,7 +144,7 @@ export function createSchroederReverb(
     );
     allpasses.push(allpass);
   }
-  return { input, output: allpasses.at(-1) };
+  return { input, output: allpasses.at(-1)! };
 }
 
 // Moorer Reverb (1979)
@@ -138,15 +157,15 @@ export function createSchroederReverb(
 //   2. LPF-comb filters instead of plain combs
 
 export function createMoorerReverb(
-  audioContext,
-  earlyTaps,
-  earlyGains,
-  combDelays,
-  combFeedbacks,
-  damping,
-  allpassDelays,
-  allpassFeedbacks,
-) {
+  audioContext: AnyAudioContext,
+  earlyTaps: number[],
+  earlyGains: number[],
+  combDelays: number[],
+  combFeedbacks: number[],
+  damping: number,
+  allpassDelays: number[],
+  allpassFeedbacks: number[],
+): { input: GainNode; output: GainNode } {
   const input = new GainNode(audioContext);
   const earlySum = new GainNode(audioContext);
   for (let i = 0; i < earlyTaps.length; i++) {
@@ -172,9 +191,9 @@ export function createMoorerReverb(
     comb.connect(lateSum);
   }
   // Allpass diffusers
-  const allpasses = [];
+  const allpasses: GainNode[] = [];
   for (let i = 0; i < allpassDelays.length; i++) {
-    const src = i === 0 ? lateSum : allpasses.at(-1);
+    const src = i === 0 ? lateSum : allpasses.at(-1)!;
     const allpass = createAllpassFilter(
       audioContext,
       src,
@@ -186,25 +205,30 @@ export function createMoorerReverb(
   // Mix early + late to output
   const output = new GainNode(audioContext);
   earlySum.connect(output);
-  allpasses.at(-1).connect(output);
+  allpasses.at(-1)!.connect(output);
   return { input, output };
 }
 
+interface MoorerReverbOptions {
+  rt60?: number;
+  damping?: number;
+}
+
 // Sensible defaults for Moorer at 44100 Hz
-export function createMoorerReverbDefault(audioContext, {
-  rt60 = 2.0,
-  damping = 0.3,
-} = {}) {
+export function createMoorerReverbDefault(
+  audioContext: AnyAudioContext,
+  { rt60 = 2.0, damping = 0.3 }: MoorerReverbOptions = {},
+): { input: GainNode; output: GainNode } {
   const sr = audioContext.sampleRate;
 
   // Early reflection taps (ms -> seconds), gains chosen for natural sounding
   const earlyTaps = [0.0043, 0.0215, 0.0225, 0.0268, 0.0270, 0.0298, 0.0458];
-  const earlyGains = [0.841, 0.504, 0.491, 0.379, 0.380, 0.346, 0.289];
+  const earlyGains = [0.841, 0.504, 0.491, 0.379, 0.38, 0.346, 0.289];
 
   // RT60 -> comb feedback: g = 10^(-3 * delay / rt60)
   const combSamples = [1309, 1635, 1811, 1926, 2053, 2667];
   const combDelays = combSamples.map((s) => s / sr);
-  const combFeedbacks = combDelays.map((d) => Math.pow(10, -3 * d / rt60));
+  const combFeedbacks = combDelays.map((d) => Math.pow(10, (-3 * d) / rt60));
   const allpassDelays = [0.005, 0.0017];
   const allpassFeedbacks = [0.7, 0.7];
   return createMoorerReverb(
@@ -232,12 +256,12 @@ export function createMoorerReverbDefault(audioContext, {
 // that fixed delay lengths produce. Set to 0 to disable.
 
 export function createFDN(
-  audioContext,
-  delayTimes,
-  gains,
+  audioContext: AnyAudioContext,
+  delayTimes: number[],
+  gains: number[],
   damping = 0.2,
   modulation = 0.0005,
-) {
+): { input: GainNode; output: GainNode } {
   const N = delayTimes.length;
 
   // Normalized 4×4 Hadamard matrix (only N=4 supported here)
@@ -257,11 +281,12 @@ export function createFDN(
   const output = new GainNode(audioContext);
 
   // Create delay lines with headroom for modulation depth
-  const delays = delayTimes.map((t) =>
-    new DelayNode(audioContext, {
-      maxDelayTime: t + modulation,
-      delayTime: t,
-    })
+  const delays = delayTimes.map(
+    (t) =>
+      new DelayNode(audioContext, {
+        maxDelayTime: t + modulation,
+        delayTime: t,
+      }),
   );
   // Per-line LPF for damping (air absorption)
   const lpfs = delays.map(() => {
@@ -312,17 +337,23 @@ export function createFDN(
   return { input, output };
 }
 
+interface FDNOptions {
+  rt60?: number;
+  damping?: number;
+  modulation?: number;
+}
+
 // Sensible defaults for FDN
 export function createFDNDefault(
-  audioContext,
-  { rt60 = 2.0, damping = 0.2, modulation = 0.0005 } = {},
-) {
+  audioContext: AnyAudioContext,
+  { rt60 = 2.0, damping = 0.2, modulation = 0.0005 }: FDNOptions = {},
+): { input: GainNode; output: GainNode } {
   const sr = audioContext.sampleRate;
   // Mutually prime delay lengths (samples) — avoids periodicity artifacts
   const delaySamples = [1049, 1327, 1601, 1873];
   const delayTimes = delaySamples.map((s) => s / sr);
   // Attenuation from RT60: g = 10^(-3 * delayTime / rt60)
-  const gains = delayTimes.map((d) => Math.pow(10, -3 * d / rt60));
+  const gains = delayTimes.map((d) => Math.pow(10, (-3 * d) / rt60));
   return createFDN(audioContext, delayTimes, gains, damping, modulation);
 }
 
@@ -338,11 +369,17 @@ export function createFDNDefault(
 //   each loop: allpass -> delay1 -> LPF -> delay2 -> decayGain -> cross-feed
 //   output tapped at multiple points from both loops
 
-export function createDattorroReverb(audioContext, {
-  decay = 0.7,
-  damping = 0.0005,
-  bandwidth = 0.9995,
-} = {}) {
+interface DattorroReverbOptions {
+  decay?: number;
+  damping?: number;
+  bandwidth?: number;
+}
+
+export function createDattorroReverb(
+  audioContext: AnyAudioContext,
+  { decay = 0.7, damping = 0.0005, bandwidth = 0.9995 }: DattorroReverbOptions =
+    {},
+): { input: GainNode; output: GainNode } {
   const sr = audioContext.sampleRate;
 
   // Pre-filter (bandwidth)
@@ -360,9 +397,9 @@ export function createDattorroReverb(audioContext, {
 
   const input = new GainNode(audioContext);
   input.connect(preLPF);
-  const preDiffs = [];
+  const preDiffs: GainNode[] = [];
   for (let i = 0; i < preDiffSamples.length; i++) {
-    const src = i === 0 ? preLPF : preDiffs.at(-1);
+    const src = i === 0 ? preLPF : preDiffs.at(-1)!;
     const allpass = createAllpassFilter(
       audioContext,
       src,
@@ -371,7 +408,7 @@ export function createDattorroReverb(audioContext, {
     );
     preDiffs.push(allpass);
   }
-  const preDiffOut = preDiffs.at(-1);
+  const preDiffOut = preDiffs.at(-1)!;
 
   // Tank: two cross-coupled loops
   // Each tank: allpass(modulated) -> delay1 -> LPF -> allpass -> delay2 -> decayGain -> cross-feed
@@ -386,7 +423,7 @@ export function createDattorroReverb(audioContext, {
   preDiffOut.connect(loopInput[0]);
   preDiffOut.connect(loopInput[1]);
 
-  const loopOutput = [];
+  const loopOutput: GainNode[] = [];
   for (let t = 0; t < 2; t++) {
     // allpass -> delay1 -> LPF -> allpass -> delay2 -> decayGain
     const allpass1 = createAllpassFilter(
@@ -442,14 +479,26 @@ const FREEVERB_STEREO_SPREAD = 23; // samples
 const FREEVERB_ALLPASS_SAMPLES = [225, 341, 441, 556];
 const FREEVERB_ALLPASS_FEEDBACK = 0.5;
 
+interface FreeverbOptions {
+  roomSize?: number;
+  damping?: number;
+}
+
 export function createFreeverb(
-  audioContext,
-  { roomSize = 0.84, damping = 0.2 } = {},
-) {
+  audioContext: AnyAudioContext,
+  { roomSize = 0.84, damping = 0.2 }: FreeverbOptions = {},
+): {
+  inputL: GainNode;
+  inputR: GainNode;
+  outputL: GainNode;
+  outputR: GainNode;
+} {
   const sr = audioContext.sampleRate;
   const feedback = roomSize * 0.28 + 0.7; // maps [0,1] -> [0.7, 0.98]
 
-  const buildChannel = (sampleOffsetPerComb) => {
+  const buildChannel = (
+    sampleOffsetPerComb: number,
+  ): { input: GainNode; output: GainNode } => {
     const inputGain = new GainNode(audioContext);
     const sumGain = new GainNode(audioContext);
     for (const samples of FREEVERB_COMB_SAMPLES_L) {
@@ -463,9 +512,9 @@ export function createFreeverb(
       );
       comb.connect(sumGain);
     }
-    const allpasses = [];
+    const allpasses: GainNode[] = [];
     for (let i = 0; i < FREEVERB_ALLPASS_SAMPLES.length; i++) {
-      const src = i === 0 ? sumGain : allpasses.at(-1);
+      const src = i === 0 ? sumGain : allpasses.at(-1)!;
       const allpass = createAllpassFilter(
         audioContext,
         src,
@@ -474,7 +523,7 @@ export function createFreeverb(
       );
       allpasses.push(allpass);
     }
-    return { input: inputGain, output: allpasses.at(-1) };
+    return { input: inputGain, output: allpasses.at(-1)! };
   };
 
   const L = buildChannel(0);
@@ -492,7 +541,11 @@ export function createFreeverb(
 //   V.Välimäki et al., "Fifty Years of Artificial Reverberation",
 //   IEEE Trans. Audio Speech Lang. Process., vol.20, no.5, 2012
 
-export function createVelvetNoiseImpulse(audioContext, decay, density = 2000) {
+export function createVelvetNoiseImpulse(
+  audioContext: AnyAudioContext,
+  decay: number,
+  density = 2000,
+): AudioBuffer {
   const sampleRate = audioContext.sampleRate;
   const length = Math.ceil(sampleRate * decay);
   const impulse = new AudioBuffer({ numberOfChannels: 2, length, sampleRate });
@@ -512,7 +565,11 @@ export function createVelvetNoiseImpulse(audioContext, decay, density = 2000) {
   return impulse;
 }
 
-export function createVelvetNoiseReverb(audioContext, decay, density) {
+export function createVelvetNoiseReverb(
+  audioContext: AnyAudioContext,
+  decay: number,
+  density?: number,
+): { input: ConvolverNode; output: ConvolverNode } {
   const impulse = createVelvetNoiseImpulse(audioContext, decay, density);
   return createConvolutionReverb(audioContext, impulse);
 }

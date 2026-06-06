@@ -1,6 +1,6 @@
 # Midy
 
-A MIDI player/synthesizer written in JavaScript that supports GM-Lite/GM1/GM2
+A MIDI player/synthesizer written in TypeScript that supports GM-Lite/GM1/GM2
 and SF2/SF3.
 
 This library provides several files depending on the implementation level.
