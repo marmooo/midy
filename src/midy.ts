@@ -1078,11 +1078,15 @@ interface PendingOffItem {
   ticks: number;
 }
 
-type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
-
 interface MessageHandler {
   [key: string]: (bytes: Uint8Array, time: number) => void;
 }
+type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
+type VoiceParamsHandler = (
+  channel: Channel,
+  note: Note,
+  scheduleTime: number,
+) => void;
 
 type PressureTableName =
   | "channelPressureTable"
@@ -1203,10 +1207,7 @@ export class Midy extends EventTarget {
   scheduler!: GainNode;
   schedulerBuffer!: AudioBuffer;
   messageHandlers!: MessageHandler;
-  voiceParamsHandlers!: Record<
-    string,
-    (channel: Channel, note: Note, scheduleTime: number) => void
-  >;
+  voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
   controlChangeHandlers!: ControlChangeHandler[];
   channels!: Channel[];
   reverbEffect!: ReverbEffect;
@@ -3965,58 +3966,55 @@ export class Midy extends EventTarget {
       .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
 
-  createVoiceParamsHandlers(): Record<
-    string,
-    (channel: Channel, note: Note, t: number) => void
-  > {
+  createVoiceParamsHandlers(): Record<string, VoiceParamsHandler> {
     return {
-      modLfoToPitch: (channel: Channel, note: Note, t: number) => {
+      modLfoToPitch: (channel, note, t) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setModLfoToPitch(channel, note, t);
         }
       },
-      vibLfoToPitch: (channel: Channel, note: Note, t: number) =>
+      vibLfoToPitch: (channel, note, t) =>
         this.setVibLfoToPitch(channel, note, t),
-      modLfoToFilterFc: (channel: Channel, note: Note, t: number) => {
+      modLfoToFilterFc: (channel, note, t) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setModLfoToFilterFc(channel, note, t);
         }
       },
-      modLfoToVolume: (channel: Channel, note: Note, t: number) => {
+      modLfoToVolume: (channel, note, t) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setModLfoToVolume(channel, note, t);
         }
       },
-      chorusEffectsSend: (channel: Channel, note: Note, t: number) =>
+      chorusEffectsSend: (channel, note, t) =>
         this.setChorusSend(channel, note, t),
-      reverbEffectsSend: (channel: Channel, note: Note, t: number) =>
+      reverbEffectsSend: (channel, note, t) =>
         this.setReverbSend(channel, note, t),
-      delayModLFO: (channel: Channel, note: Note, _t: number) => {
+      delayModLFO: (channel, note, _t) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setDelayModLFO(note);
         }
       },
-      freqModLFO: (channel: Channel, note: Note, t: number) => {
+      freqModLFO: (channel, note, t) => {
         const { modulationDepthMSB, modulationDepthLSB } = channel.state;
         if (0 < modulationDepthMSB + modulationDepthLSB) {
           this.setFreqModLFO(note, t);
         }
       },
-      delayVibLFO: (channel: Channel, note: Note, _t: number) => {
+      delayVibLFO: (channel, note, _t) => {
         if (0 < channel.state.vibratoDepth) {
           this.setDelayVibLFO(channel, note);
         }
       },
-      freqVibLFO: (channel: Channel, note: Note, t: number) => {
+      freqVibLFO: (channel, note, t) => {
         if (0 < channel.state.vibratoDepth) {
           this.setFreqVibLFO(channel, note, t);
         }
       },
-      detune: (channel: Channel, note: Note, t: number) => {
+      detune: (channel, note, t) => {
         if (this.isPortamento(channel, note)) {
           this.setPortamentoDetune(channel, note, t);
         } else {
