@@ -3410,9 +3410,11 @@ export class Midy extends EventTarget {
     const t: number = startTime ?? this.audioContext.currentTime;
     const channel = this.channels[channelNumber];
     if (this.mpeEnabled && channel.isMPEMember && !note) {
+      note = new Note(noteNumber, velocity, t);
       if (!this.mpeState.channelToNotes.has(channel.channelNumber)) {
         this.mpeState.channelToNotes.set(channel.channelNumber, new Set());
       }
+      this.mpeState.channelToNotes.get(channel.channelNumber)!.add(note);
     }
     const resolveNote = await this.noteOnChannel(
       channel,
@@ -3421,9 +3423,14 @@ export class Midy extends EventTarget {
       t,
       note,
     );
-    if (this.mpeEnabled && channel.isMPEMember && resolveNote) {
+    if (this.mpeEnabled && channel.isMPEMember && note && !resolveNote) {
       const notes = this.mpeState.channelToNotes.get(channel.channelNumber);
-      if (notes) notes.add(resolveNote);
+      if (notes) {
+        notes.delete(note);
+        if (notes.size === 0) {
+          this.mpeState.channelToNotes.delete(channel.channelNumber);
+        }
+      }
     }
   }
 
