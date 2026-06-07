@@ -70,7 +70,7 @@ function initDecoder(): Promise<OggVorbisDecoderWebWorker> {
   return decoderPromise;
 }
 
-class Note {
+export class Note {
   player?: MidyGMLite;
   noteNumber: number;
   velocity: number;
@@ -107,7 +107,7 @@ class Note {
 type ChannelSettings = typeof MidyGMLite.channelSettings;
 type ChannelAudioNodes = ReturnType<MidyGMLite["createChannelAudioNodes"]>;
 
-class Channel {
+export class Channel {
   player!: MidyGMLite;
   gainL!: GainNode;
   gainR!: GainNode;
@@ -465,7 +465,7 @@ const defaultControllerState = {
   // allNotesOff: { type: 128 + 123, defaultValue: 0 },
 };
 
-class ControllerState {
+export class ControllerState {
   array: Float32Array = new Float32Array(256);
   [key: string]: number | Float32Array;
 
@@ -523,7 +523,7 @@ const pitchEnvelopeKeys = [
 ];
 const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
 
-class RenderedBuffer {
+export class RenderedBuffer {
   buffer: AudioBuffer;
   isLoop: boolean;
   isFull: boolean;
