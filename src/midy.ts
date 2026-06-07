@@ -4247,7 +4247,9 @@ export class Midy extends EventTarget {
       const isUpper = upperMPEMembers > 0 && upperStart <= ch && ch <= upperEnd;
       const channel = channels[ch];
       channel.isMPEMember = mpeEnabled && (isLower || isUpper);
-      channel.isMPEManager = mpeEnabled && (ch === 0 || ch === 15);
+      channel.isMPEManager = mpeEnabled &&
+          (ch === 0 && lowerMPEMembers > 0) ||
+        (ch === 15 && upperMPEMembers > 0);
     }
   }
 
