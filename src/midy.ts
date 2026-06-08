@@ -411,7 +411,7 @@ export class Channel {
     player.updatePortamento(this, t);
   }
 
-  setSostenutoPedal(value: number, scheduleTime?: number): void {
+  async setSostenutoPedal(value: number, scheduleTime?: number): Promise<void> {
     const player = this.player;
     if (this.isDrum) return;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
@@ -421,7 +421,7 @@ export class Channel {
     if (64 <= value) {
       if (prevValue < 0.5) {
         const sostenutoNotes: Note[] = [];
-        this.processActiveNotes(t, (note) => {
+        await this.processActiveNotes(t, (note) => {
           sostenutoNotes.push(note);
         });
         this.sostenutoNotes = sostenutoNotes;
@@ -3396,7 +3396,6 @@ export class Midy extends EventTarget {
     this.setNoteRouting(channel, note, startTime);
     note.resolveReady();
     if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
-    if (0.5 <= channel.state.sostenutoPedal) channel.sostenutoNotes.push(note);
     return note;
   }
 
@@ -3570,7 +3569,10 @@ export class Midy extends EventTarget {
       }
       const state = channel.state;
       if (0.5 <= state.sustainPedal) return;
-      if (0.5 <= state.sostenutoPedal) return;
+      const heldBySostenuto = channel.sostenutoNotes.some(
+        (n) => n.noteNumber === noteNumber && !n.ending,
+      );
+      if (0.5 <= state.sostenutoPedal && heldBySostenuto) return;
     }
     const note = this.findNoteForOff(channel, noteNumber);
     if (!note) return;
