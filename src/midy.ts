@@ -3649,8 +3649,13 @@ export class Midy extends EventTarget {
     const velocity = halfVelocity * 2;
     const promises: (Promise<void> | void)[] = [];
     for (let i = 0; i < channel.sustainNotes.length; i++) {
+      const note = channel.sustainNotes[i];
+      const heldBySostenuto = channel.sostenutoNotes.some(
+        (n) => n === note && !n.ending,
+      );
+      if (heldBySostenuto) continue;
       const promise = channel.noteOff(
-        channel.sustainNotes[i].noteNumber,
+        note.noteNumber,
         velocity,
         scheduleTime,
         true,
