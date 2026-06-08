@@ -258,7 +258,7 @@ export class Channel {
     player.updateChannelVolume(this, t);
   }
 
-  setSustainPedal(value: number, scheduleTime?: number): void {
+  async setSustainPedal(value: number, scheduleTime?: number): Promise<void> {
     const player = this.player;
     if (this.isDrum) return;
     const state = this.state;
@@ -266,7 +266,7 @@ export class Channel {
     state.sustainPedal = value / 127;
     if (64 <= value) {
       if (prevValue < 0.5) {
-        this.processScheduledNotes((note) => {
+        await this.processScheduledNotes((note) => {
           this.sustainNotes.push(note);
         });
       }
