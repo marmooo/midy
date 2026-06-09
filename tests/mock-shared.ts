@@ -1,27 +1,17 @@
-/**
- * Shared test helpers for midy-mpe-mock-test suite.
- *
- * Import this module at the top of every split test file:
- *   import { setupMidyPlayer, setMockCurrentTime, flushNotePromises,
- *            activateLowerMPEZone, sanOptions } from "./midy-mpe-mock-setup.ts";
- */
+// Web Audio API mock utilities shared across all test suites.
+
 import {
   AudioBuffer as WebAudioBuffer,
   AudioContext as WebAudioContext,
-} from "npm:web-audio-api";
-import { Channel, Midy, Note } from "./midy.ts";
+} from "web-audio-api";
 
-export { Channel, Midy, Note };
-export {
-  assertEquals,
-  assertNotEquals,
-  assertAlmostEquals,
-} from "@std/assert";
+export { assertAlmostEquals, assertEquals, assertNotEquals } from "@std/assert";
 
 // =========================================================================
-// Inject web-audio-api node constructors into globalThis.
-// The library references these globals directly (e.g. `new GainNode(...)`),
-// so they must exist before the first `Midy` instance is created.
+// Inject Web Audio API node constructors into globalThis.
+// The library instantiates nodes with `new GainNode(ctx)` etc., so these
+// globals must exist before the first player instance is created.
+// This runs once when the module is first imported.
 // =========================================================================
 globalThis.AudioContext = WebAudioContext as unknown as typeof AudioContext;
 globalThis.AudioBuffer = WebAudioBuffer as unknown as typeof AudioBuffer;
@@ -29,9 +19,10 @@ globalThis.AudioBuffer = WebAudioBuffer as unknown as typeof AudioBuffer;
 const _bootstrapCtx = new WebAudioContext() as unknown as AudioContext;
 
 type FactoryName = keyof {
-  [K in keyof AudioContext as AudioContext[K] extends () => AudioNode
-    ? K
-    : never]: AudioContext[K];
+  [
+    K in keyof AudioContext as AudioContext[K] extends () => AudioNode ? K
+      : never
+  ]: AudioContext[K];
 };
 
 const nodeFactoryMap: Record<string, FactoryName> = {
@@ -68,6 +59,21 @@ for (const [nodeName, factoryMethod] of Object.entries(nodeFactoryMap)) {
 await (_bootstrapCtx as unknown as { close(): Promise<void> }).close();
 
 // =========================================================================
+// Generic player interface
+// Each concrete player class (MidyGMLite, MidyGM2, Midy …) satisfies this.
+// =========================================================================
+
+/** Minimal shape every midy player must expose for shared test helpers. */
+export interface AnyPlayer {
+  audioContext: AudioContext | OfflineAudioContext;
+  notePromises: Promise<void>[];
+  soundFontTable: number[][];
+  soundFonts: unknown[];
+  // deno-lint-ignore no-explicit-any
+  getAudioBuffer?: (...args: any[]) => Promise<unknown>;
+}
+
+// =========================================================================
 // Helpers
 // =========================================================================
 
@@ -81,20 +87,67 @@ export function setMockCurrentTime(ctx: BaseAudioContext, time: number): void {
 }
 
 /**
- * Patch every AudioBufferSourceNode created inside `player` so that calling
- * `stop()` immediately fires `onended`.
- *
- * In the npm:web-audio-api runtime the audio clock never actually advances, so
- * `stop(futureTime)` never triggers onended and release Promises hang forever.
- * We intercept construction via createBufferSource and the global constructor
- * so every node the library produces is wrapped.
- *
- * NOTE: this is also why setSostenutoPedal / setSustainPedal need to be
- * awaited via processActiveNotes/processScheduledNotes directly in some tests
- * — the extra microtask injected here delays note.ready resolution past the
- * point where those methods complete their await.
+ * Default soundfont voice params.
+ * Pass `exclusiveClass` to test mutual-exclusion behaviour.
  */
-function patchBufferSourceNodes(player: Midy): void {
+export function makeDefaultVoiceParams(exclusiveClass = 0) {
+  return {
+    initialAttenuation: 0,
+    volSustain: 0.5,
+    volDelay: 0,
+    volAttack: 0.01,
+    volHold: 0.01,
+    volDecay: 0.1,
+    volRelease: 0.2,
+    sampleRate: 44100,
+    playbackRate: 1,
+    initialFilterFc: 1000,
+    initialFilterQ: 1,
+    freqModLFO: 0,
+    freqVibLFO: 0,
+    delayModLFO: 0,
+    delayVibLFO: 0,
+    modLfoToPitch: 0,
+    modLfoToFilterFc: 0,
+    modLfoToVolume: 0,
+    vibLfoToPitch: 0,
+    loopStart: 0,
+    loopEnd: 0,
+    sampleModes: 0,
+    start: 0,
+    end: 0,
+    exclusiveClass,
+    modEnvToPitch: 0,
+    modEnvToFilterFc: 0,
+    modDelay: 0,
+    modAttack: 0,
+    modHold: 0,
+    modDecay: 0,
+    modSustain: 0,
+    modRelease: 0,
+    sample: {
+      type: "raw",
+      data: new Int16Array(0),
+      sampleHeader: { sampleRate: 44100 },
+      decodePCM: () => new Float32Array(0),
+    },
+  };
+}
+
+/**
+ * Patch every AudioBufferSourceNode created inside `player.audioContext` so
+ * that `stop()` immediately fires `onended`.
+ *
+ * In the npm:web-audio-api runtime the audio clock never advances, so
+ * `stop(futureTime)` never triggers onended and release Promises hang forever.
+ * We intercept both `createBufferSource()` on the context and the global
+ * `AudioBufferSourceNode` constructor so every node the library produces is
+ * wrapped.
+ *
+ * NOTE: the extra microtask this injects delays `note.ready` resolution past
+ * certain `await` boundaries; see suite-specific setup files for workarounds.
+ */
+export function patchBufferSourceNodes(player: AnyPlayer): void {
   const OriginalBufferSource = globalThis.AudioBufferSourceNode as unknown as {
     new (
       ctx: BaseAudioContext,
@@ -154,7 +207,7 @@ function patchBufferSourceNodes(player: Midy): void {
  * Drain all pending note-release Promises in `player.notePromises`.
  * Call at the end of every async test to keep the event loop clean.
  */
-export async function flushNotePromises(player: Midy): Promise<void> {
+export async function flushNotePromises(player: AnyPlayer): Promise<void> {
   for (let i = 0; i < 10; i++) {
     const snapshot = [...player.notePromises];
     if (snapshot.length === 0) break;
@@ -163,61 +216,14 @@ export async function flushNotePromises(player: Midy): Promise<void> {
   }
 }
 
-/** Default soundfont voice params with exclusiveClass=0 (no mutual exclusion). */
-export function makeDefaultVoiceParams(exclusiveClass = 0) {
-  return {
-    initialAttenuation: 0,
-    volSustain: 0.5,
-    volDelay: 0,
-    volAttack: 0.01,
-    volHold: 0.01,
-    volDecay: 0.1,
-    volRelease: 0.2,
-    sampleRate: 44100,
-    playbackRate: 1,
-    initialFilterFc: 1000,
-    initialFilterQ: 1,
-    freqModLFO: 0,
-    freqVibLFO: 0,
-    delayModLFO: 0,
-    delayVibLFO: 0,
-    modLfoToPitch: 0,
-    modLfoToFilterFc: 0,
-    modLfoToVolume: 0,
-    vibLfoToPitch: 0,
-    loopStart: 0,
-    loopEnd: 0,
-    sampleModes: 0,
-    start: 0,
-    end: 0,
-    exclusiveClass,
-    modEnvToPitch: 0,
-    modEnvToFilterFc: 0,
-    modDelay: 0,
-    modAttack: 0,
-    modHold: 0,
-    modDecay: 0,
-    modSustain: 0,
-    modRelease: 0,
-    sample: {
-      type: "raw",
-      data: new Int16Array(0),
-      sampleHeader: { sampleRate: 44100 },
-      decodePCM: () => new Float32Array(0),
-    },
-  };
-}
-
 /**
- * Build a `Midy` instance wired up for unit testing.
- * Pass `exclusiveClass` to override the soundfont voice's exclusiveClass.
+ * Wire up the minimal soundfont stub that all player classes need.
+ * `exclusiveClass` is forwarded to `makeDefaultVoiceParams`.
  */
-export function setupMidyPlayer(exclusiveClass = 0): Midy {
-  const ctx = new AudioContext();
-  setMockCurrentTime(ctx, 0);
-
-  const player = new Midy(ctx);
-
+export function installSoundFontStub(
+  player: AnyPlayer,
+  exclusiveClass = 0,
+): void {
   player.soundFontTable[0] = [0];
   player.soundFonts = [
     {
@@ -228,54 +234,10 @@ export function setupMidyPlayer(exclusiveClass = 0): Midy {
       }),
     } as unknown as import("@marmooo/soundfont-parser").SoundFont,
   ];
-
-  player.getAudioBuffer = (
-    _channel: Channel,
-    _note: Note,
-    _realtime: boolean,
-  ): Promise<AudioBuffer> =>
-    Promise.resolve(new AudioBuffer({ length: 100, sampleRate: 44100 }));
-
-  patchBufferSourceNodes(player);
-
-  return player;
 }
 
-/**
- * Activate MPE lower zone: ch 0 = manager, ch 1..members = members.
- */
-export function activateLowerMPEZone(player: Midy, members: number): void {
-  player.setMIDIPolyphonicExpression(0, members);
-}
-
-/**
- * Await processActiveNotes directly to capture notes into sostenutoNotes.
- *
- * setSostenutoPedal is async but patchBufferSourceNodes adds a microtask that
- * delays note.ready beyond its await. Use this helper instead of calling
- * setSostenutoPedal in tests that need sostenutoNotes to be populated.
- */
-export async function captureSostenutoNotes(
-  channel: Channel,
-  scheduleTime: number,
-): Promise<void> {
-  channel.state.sostenutoPedal = 1;
-  const captured: Note[] = [];
-  await (
-    channel as unknown as {
-      processActiveNotes(
-        t: number,
-        cb: (n: Note) => void,
-      ): Promise<void[]>;
-    }
-  ).processActiveNotes(scheduleTime, (note: Note) => {
-    captured.push(note);
-  });
-  channel.sostenutoNotes = captured;
-}
-
-// Disable resource/timer/op leak checks: audio graph nodes stay alive
-// intentionally across the test boundary.
+// Disable resource/timer/op leak checks — audio graph nodes intentionally
+// outlive test boundaries.
 export const sanOptions = {
   sanitizeOps: false,
   sanitizeExit: false,

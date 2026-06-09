@@ -1,12 +1,12 @@
 /**
- * Note lifecycle tests — Cases 1, 2, 4, 7, 21, 25, 37, 60
+ * Note lifecycle tests
  *
  * Covers: noteOn/noteOff basic lifecycle, race conditions, stacking, drums.
  *
  * What is NOT covered here (see other files):
- *   - Pedal interaction during noteOff  → midy-mpe-mock-pedal_test.ts
- *   - MPE routing of noteOn/noteOff     → midy-mpe-mock-mpe_test.ts
- *   - exclusiveClass eviction           → midy-mpe-mock-channel_test.ts
+ *   - Pedal interaction during noteOff  → tests/MPE-mock/pedal_test.ts
+ *   - MPE routing of noteOn/noteOff     → tests/MPE-mock/mpe_test.ts
+ *   - exclusiveClass eviction           → tests/MPE-mock/channel_test.ts
  */
 import {
   assertAlmostEquals,
@@ -16,7 +16,7 @@ import {
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
-} from "./midy-mpe-mock-setup.ts";
+} from "./setup.ts";
 
 Deno.test(
   "Case 1: noteOff immediately after noteOn triggers release on the note",
@@ -188,9 +188,17 @@ Deno.test(
     const player = setupMidyPlayer();
     const channel = player.channels[1];
 
-    assertEquals(channel.portamentoControl, false, "portamentoControl must start false");
+    assertEquals(
+      channel.portamentoControl,
+      false,
+      "portamentoControl must start false",
+    );
     channel.setPortamentoNoteNumber(60);
-    assertEquals(channel.portamentoControl, true, "portamentoControl must be true after setPortamentoNoteNumber");
+    assertEquals(
+      channel.portamentoControl,
+      true,
+      "portamentoControl must be true after setPortamentoNoteNumber",
+    );
     assertAlmostEquals(
       channel.state.portamentoNoteNumber,
       60 / 127,

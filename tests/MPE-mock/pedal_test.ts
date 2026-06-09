@@ -1,12 +1,12 @@
 /**
- * Pedal tests — Cases 6, 8, 18, 19, 20, 28, 36, 41, 50, 59
+ * Pedal tests
  *
  * Covers: sustain pedal defer/release, sostenuto pedal capture/release,
  * allSoundOff vs allNotesOff with pedal, resetAllControllers + pedal.
  *
  * What is NOT covered here:
- *   - MPE-specific pedal behaviour  → midy-mpe-mock-mpe_test.ts (Cases 15, 42)
- *   - Pedal state after reset        → midy-mpe-mock-channel_test.ts (Case 31)
+ *   - MPE-specific pedal behaviour  → tests/MPE-mock/mpe_test.ts
+ *   - Pedal state after reset        → tess/MPE-mock/channel_test.ts
  */
 import {
   assertEquals,
@@ -17,7 +17,7 @@ import {
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
-} from "./midy-mpe-mock-setup.ts";
+} from "./setup.ts";
 Deno.test(
   "Case 1: Sustain pedal defers noteOff (note stays alive)",
   sanOptions,
@@ -159,14 +159,13 @@ Deno.test(
 );
 
 Deno.test(
-  "Case 7: allNotesOff with sustain pedal held defers release",
+  "Case 7: allNotesOff releases sustain-held notes (RP-015)",
   sanOptions,
   async () => {
     const player = setupMidyPlayer();
     const channel = player.channels[1];
     setMockCurrentTime(player.audioContext, 340.0);
     const t = player.audioContext.currentTime;
-
     await channel.setSustainPedal(127, t);
     await Promise.all([
       channel.noteOn(60, 100, t),
@@ -174,9 +173,13 @@ Deno.test(
     ]);
     await channel.allNotesOff(t + 0.1);
     await flushNotePromises(player);
-
     for (const nn of [60, 64]) {
-      assertEquals(channel.activeNotes[nn]?.[0]?.ending, false);
+      const stack = channel.activeNotes[nn];
+      assertEquals(
+        stack === undefined || stack.length === 0,
+        true,
+        `note ${nn} must be released by allNotesOff per RP-015`,
+      );
     }
   },
 );
@@ -234,14 +237,12 @@ Deno.test(
 
     await channel.noteOn(60, 100, t);
     await channel.setSustainPedal(127, t + 0.01);
-    const countAfterFirst = channel.sustainNotes.filter((n: Note) =>
-      n.noteNumber === 60
-    ).length;
+    const countAfterFirst =
+      channel.sustainNotes.filter((n: Note) => n.noteNumber === 60).length;
 
     await channel.setSustainPedal(127, t + 0.02);
-    const countAfterSecond = channel.sustainNotes.filter((n: Note) =>
-      n.noteNumber === 60
-    ).length;
+    const countAfterSecond =
+      channel.sustainNotes.filter((n: Note) => n.noteNumber === 60).length;
 
     assertEquals(countAfterFirst, 1);
     assertEquals(countAfterSecond, 1);
@@ -262,8 +263,16 @@ Deno.test(
     await drum.setSostenutoPedal(127, t + 0.01);
 
     // Drum must have no sostenuto notes captured.
-    assertEquals(drum.sostenutoNotes.length, 0, "drum must not capture sostenutoNotes");
-    assertEquals(drum.state.sostenutoPedal, 0, "drum sostenutoPedal state must remain 0");
+    assertEquals(
+      drum.sostenutoNotes.length,
+      0,
+      "drum must not capture sostenutoNotes",
+    );
+    assertEquals(
+      drum.state.sostenutoPedal,
+      0,
+      "drum sostenutoPedal state must remain 0",
+    );
   },
 );
 
@@ -292,8 +301,16 @@ Deno.test(
     await flushNotePromises(player);
 
     // Both notes still alive (held by their respective pedals).
-    assertEquals(channel.activeNotes[60]?.[0]?.ending, false, "note 60 held by sostenuto");
-    assertEquals(channel.activeNotes[64]?.[0]?.ending, false, "note 64 held by sustain");
+    assertEquals(
+      channel.activeNotes[60]?.[0]?.ending,
+      false,
+      "note 60 held by sostenuto",
+    );
+    assertEquals(
+      channel.activeNotes[64]?.[0]?.ending,
+      false,
+      "note 64 held by sustain",
+    );
 
     // Lift sustain only — note 64 must release, note 60 must stay
     // because releaseSustainPedal skips notes that are also in sostenutoNotes.
@@ -302,7 +319,15 @@ Deno.test(
 
     const stack64 = channel.activeNotes[64];
     const last64 = stack64 ? stack64[stack64.length - 1] : undefined;
-    assertEquals(last64 ? last64.ending : true, true, "note 64 must release when sustain lifted");
-    assertEquals(channel.activeNotes[60]?.[0]?.ending, false, "note 60 must stay while sostenuto held");
+    assertEquals(
+      last64 ? last64.ending : true,
+      true,
+      "note 64 must release when sustain lifted",
+    );
+    assertEquals(
+      channel.activeNotes[60]?.[0]?.ending,
+      false,
+      "note 60 must stay while sostenuto held",
+    );
   },
 );

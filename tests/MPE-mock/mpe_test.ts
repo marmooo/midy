@@ -6,20 +6,20 @@
  * manager-to-member propagation of pitchBend/channelPressure/programChange.
  *
  * What is NOT covered here:
- *   - Basic noteOn/noteOff lifecycle   → midy-mpe-mock-note_test.ts
- *   - Non-MPE pedal behaviour          → midy-mpe-mock-pedal_test.ts
- *   - Channel CC state updates         → midy-mpe-mock-channel_test.ts
+ *   - Basic noteOn/noteOff lifecycle   → tests/MPE-mock/note_test.ts
+ *   - Non-MPE pedal behaviour          → tests/MPE-mock/pedal_test.ts
+ *   - Channel CC state updates         → tests/MPE-mock/channel_test.ts
  */
 import {
-  assertEquals,
-  assertAlmostEquals,
-  assertNotEquals,
   activateLowerMPEZone,
+  assertAlmostEquals,
+  assertEquals,
+  assertNotEquals,
   flushNotePromises,
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
-} from "./midy-mpe-mock-setup.ts";
+} from "./setup.ts";
 
 Deno.test(
   "Case 1: MPE — same note on two member channels stays isolated",
@@ -288,7 +288,9 @@ Deno.test(
     await flushNotePromises(player);
 
     const remaining = player.mpeState.channelToNotes.get(1);
-    const hasNonEnding = remaining ? [...remaining].some((n) => !n.ending) : false;
+    const hasNonEnding = remaining
+      ? [...remaining].some((n) => !n.ending)
+      : false;
     assertEquals(hasNonEnding, false);
   },
 );
@@ -310,7 +312,11 @@ Deno.test(
       assertAlmostEquals(player.channels[ch].state.pitchWheel, expected, 1e-6);
     }
     for (let ch = 4; ch <= 15; ch++) {
-      assertAlmostEquals(player.channels[ch].state.pitchWheel, defaultPitch, 1e-6);
+      assertAlmostEquals(
+        player.channels[ch].state.pitchWheel,
+        defaultPitch,
+        1e-6,
+      );
     }
   },
 );
@@ -329,7 +335,11 @@ Deno.test(
 
     assertAlmostEquals(player.channels[2].state.pitchWheel, 6000 / 16383, 1e-6);
     for (const ch of [0, 1, 3]) {
-      assertAlmostEquals(player.channels[ch].state.pitchWheel, defaultPitch, 1e-6);
+      assertAlmostEquals(
+        player.channels[ch].state.pitchWheel,
+        defaultPitch,
+        1e-6,
+      );
     }
   },
 );
@@ -406,7 +416,11 @@ Deno.test(
     player.setChannelPressure(0, 64, t);
 
     for (let ch = 0; ch <= 3; ch++) {
-      assertAlmostEquals(player.channels[ch].state.channelPressure, 64 / 127, 1e-6);
+      assertAlmostEquals(
+        player.channels[ch].state.channelPressure,
+        64 / 127,
+        1e-6,
+      );
     }
     for (let ch = 4; ch <= 15; ch++) {
       assertNotEquals(player.channels[ch].state.channelPressure, 64 / 127);

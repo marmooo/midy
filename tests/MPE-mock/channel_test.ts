@@ -9,20 +9,20 @@
  * resetChannelStates.
  *
  * What is NOT covered here:
- *   - Pedal lifecycle          → midy-mpe-mock-pedal_test.ts
- *   - MPE-specific propagation → midy-mpe-mock-mpe_test.ts
- *   - RPN/data entry           → midy-mpe-mock-rpn_test.ts
+ *   - Pedal lifecycle          → tests/MPE-mock/pedal_test.ts
+ *   - MPE-specific propagation → tests/MPE-mock/mpe_test.ts
+ *   - RPN/data entry           → tests/MPE-mock/rpn_test.ts
  */
 import {
-  assertEquals,
   assertAlmostEquals,
+  assertEquals,
   assertNotEquals,
   flushNotePromises,
   makeDefaultVoiceParams,
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
-} from "./midy-mpe-mock-setup.ts";
+} from "./setup.ts";
 
 Deno.test(
   "Case 1: allNotesOff clears all active notes on the channel",
@@ -70,7 +70,10 @@ Deno.test(
       const channel = player.channels[ch];
       let hasNote = false;
       for (let n = 0; n < 128; n++) {
-        if (channel.activeNotes[n]) { hasNote = true; break; }
+        if (channel.activeNotes[n]) {
+          hasNote = true;
+          break;
+        }
       }
       assertEquals(hasNote, false);
       assertEquals(channel.sustainNotes.length, 0);
@@ -216,7 +219,11 @@ Deno.test(
     const t = player.audioContext.currentTime;
 
     melodic.setModulationDepth(64, t);
-    assertAlmostEquals(melodic.state.modulationDepthMSB, Math.trunc(64) / 127, 1e-6);
+    assertAlmostEquals(
+      melodic.state.modulationDepthMSB,
+      Math.trunc(64) / 127,
+      1e-6,
+    );
 
     const prev = drum.state.modulationDepthMSB;
     drum.setModulationDepth(64, t);
@@ -437,8 +444,18 @@ Deno.test(
     channel.resetChannelStates();
 
     assertEquals(channel.programNumber, 0, "programNumber must be reset to 0");
-    assertAlmostEquals(channel.fineTuning, 0, 1e-9, "fineTuning must be reset to 0");
-    assertAlmostEquals(channel.coarseTuning, 0, 1e-9, "coarseTuning must be reset to 0");
+    assertAlmostEquals(
+      channel.fineTuning,
+      0,
+      1e-9,
+      "fineTuning must be reset to 0",
+    );
+    assertAlmostEquals(
+      channel.coarseTuning,
+      0,
+      1e-9,
+      "coarseTuning must be reset to 0",
+    );
     assertAlmostEquals(channel.detune, 0, 1e-9, "detune must be reset to 0");
   },
 );

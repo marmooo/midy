@@ -1,5 +1,5 @@
 /**
- * RPN / data entry tests — Cases 57, 58
+ * RPN / data entry tests
  *
  * Covers: setRPNMSB + setRPNLSB + dataEntryMSB (pitch bend range, fine tuning),
  * dataIncrement, dataDecrement.
@@ -19,7 +19,7 @@ import {
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
-} from "./midy-mpe-mock-setup.ts";
+} from "./setup.ts";
 
 Deno.test(
   "Case 1: RPN #0 (pitch bend range) via setRPN + dataEntryMSB",
@@ -61,10 +61,19 @@ Deno.test(
     const base = channel.fineTuning;
 
     channel.dataIncrement(t);
-    assertEquals(channel.fineTuning > base, true, "fineTuning must increase after increment");
+    assertEquals(
+      channel.fineTuning > base,
+      true,
+      "fineTuning must increase after increment",
+    );
 
     channel.dataDecrement(t);
-    assertAlmostEquals(channel.fineTuning, base, 1e-6, "fineTuning must return to base after decrement");
+    assertAlmostEquals(
+      channel.fineTuning,
+      base,
+      1e-6,
+      "fineTuning must return to base after decrement",
+    );
   },
 );
 
