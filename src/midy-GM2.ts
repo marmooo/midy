@@ -640,9 +640,11 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const promises: (Promise<void> | void)[] = [];
     this.processActiveNotes(t, (note) => {
-      const promise = this.noteOff(note.noteNumber, 0, t, false);
+      // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
+      const promise = this.noteOff(note.noteNumber, 0, t, true);
       if (promise !== undefined) promises.push(promise);
     });
+    this.sustainNotes = [];
     return Promise.all(
       promises.filter((p) => p !== undefined) as Promise<void>[],
     );
