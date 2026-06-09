@@ -1399,7 +1399,7 @@ export class MidyGMLite extends EventTarget {
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] || 2) - (priority[b.type] || 2);
+      return (priority[a.type] ?? 2) - (priority[b.type] ?? 2);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;

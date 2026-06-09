@@ -1817,7 +1817,7 @@ export class MidyGM2 extends EventTarget {
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] || 4) - (priority[b.type] || 4);
+      return (priority[a.type] ?? 4) - (priority[b.type] ?? 4);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
@@ -3304,7 +3304,7 @@ export class MidyGM2 extends EventTarget {
       );
       if (heldBySostenuto) continue;
       const promise = channel.noteOff(
-        channel.sustainNotes[i].noteNumber,
+        note.noteNumber,
         velocity,
         scheduleTime,
         true,

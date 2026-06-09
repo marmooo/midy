@@ -2035,7 +2035,7 @@ export class Midy extends EventTarget {
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] || 4) - (priority[b.type] || 4);
+      return (priority[a.type] ?? 4) - (priority[b.type] ?? 4);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
