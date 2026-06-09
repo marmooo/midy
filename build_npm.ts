@@ -5,8 +5,9 @@ await emptyDir("./npm");
 await build({
   entryPoints: ["./src/mod.ts"],
   outDir: "./npm",
+  scriptModule: false,
   compilerOptions: {
-    lib: ["DOM", "ES2022"],
+    lib: ["DOM", "ESNext"],
   },
   shims: {
     deno: true,
