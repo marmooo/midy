@@ -207,6 +207,14 @@ await midy.loadSoundFont(paths);
 deno task build
 ```
 
+## Test
+
+```
+deno test
+deno test tests/GMLite-mock
+deno test tests/MPE-mock
+```
+
 ## License
 
 Apache-2.0
