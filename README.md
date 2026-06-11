@@ -94,6 +94,7 @@ midy.addEventListener("stopped", func);
 midy.addEventListener("paused", func);
 midy.addEventListener("resumed", func);
 midy.addEventListener("seeked", func);
+midy.addEventListener("tempoChanged", func);
 ```
 
 ### Cache Mode

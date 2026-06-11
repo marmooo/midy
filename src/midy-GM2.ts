@@ -2182,6 +2182,7 @@ export class MidyGM2 extends EventTarget {
         );
       }
     }
+    this.dispatchEvent(new Event("tempoChanged"));
   }
 
   calcTotalTime(): number {

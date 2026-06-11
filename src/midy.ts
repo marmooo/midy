@@ -2403,6 +2403,7 @@ export class Midy extends EventTarget {
         );
       }
     }
+    this.dispatchEvent(new Event("tempoChanged"));
   }
 
   calcTotalTime(): number {

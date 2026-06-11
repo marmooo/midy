@@ -1659,6 +1659,7 @@ export class MidyGM1 extends EventTarget {
         );
       }
     }
+    this.dispatchEvent(new Event("tempoChanged"));
   }
 
   calcTotalTime(): number {

@@ -1634,6 +1634,7 @@ export class MidyGMLite extends EventTarget {
         );
       }
     }
+    this.dispatchEvent(new Event("tempoChanged"));
   }
 
   calcTotalTime(): number {
