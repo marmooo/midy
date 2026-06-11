@@ -4231,28 +4231,28 @@ export class MidyGM2 extends EventTarget {
   }
 
   createEffectHandlers(): EffectHandler[] {
-    const handlers = new Array(6);
-    handlers[0] = (channel: Channel, note: Note, scheduleTime: number) => {
+    const handlers: EffectHandler[] = new Array(6);
+    handlers[0] = (channel, note, scheduleTime) => {
       if (this.isPortamento(channel, note)) {
         this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
         this.setDetune(channel, note, scheduleTime);
       }
     };
-    handlers[1] = (channel: Channel, note: Note, scheduleTime: number) => {
+    handlers[1] = (channel, note, scheduleTime) => {
       if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (channel: Channel, _note: Note, scheduleTime: number) =>
+    handlers[2] = (channel, _note, scheduleTime) =>
       this.applyVolume(channel, scheduleTime);
-    handlers[3] = (channel: Channel, note: Note, scheduleTime: number) =>
+    handlers[3] = (channel, note, scheduleTime) =>
       this.setModLfoToPitch(channel, note, scheduleTime);
-    handlers[4] = (channel: Channel, note: Note, scheduleTime: number) =>
+    handlers[4] = (channel, note, scheduleTime) =>
       this.setModLfoToFilterFc(channel, note, scheduleTime);
-    handlers[5] = (channel: Channel, note: Note, scheduleTime: number) =>
+    handlers[5] = (channel, note, scheduleTime) =>
       this.setModLfoToVolume(channel, note, scheduleTime);
     return handlers;
   }

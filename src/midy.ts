@@ -4823,61 +4823,34 @@ export class Midy extends EventTarget {
   }
 
   createEffectHandlers(): EffectHandler[] {
-    const handlers = new Array(6);
-    handlers[0] = (
-      channel: Channel,
-      note: Note,
-      _tableName: PressureTableName,
-      scheduleTime: number,
-    ) => {
+    const handlers: EffectHandler[] = new Array(6);
+    handlers[0] = (channel, note, _tableName, scheduleTime) => {
       if (this.isPortamento(channel, note)) {
         this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
         this.setDetune(channel, note, scheduleTime);
       }
     };
-    handlers[1] = (
-      channel: Channel,
-      note: Note,
-      _tableName: PressureTableName,
-      scheduleTime: number,
-    ) => {
+    handlers[1] = (channel, note, _tableName, scheduleTime) => {
       if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
       }
     };
-    handlers[2] = (
-      channel: Channel,
-      note: Note,
-      tableName: PressureTableName,
-      scheduleTime: number,
-    ) => {
+    handlers[2] = (channel, note, tableName, scheduleTime) => {
       if (tableName === "polyphonicKeyPressureTable") {
         this.setVolumeNode(channel, note, scheduleTime);
       } else {
         this.applyVolume(channel, scheduleTime);
       }
     };
-    handlers[3] = (
-      channel: Channel,
-      note: Note,
-      _tableName: PressureTableName,
-      scheduleTime: number,
-    ) => this.setModLfoToPitch(channel, note, scheduleTime);
-    handlers[4] = (
-      channel: Channel,
-      note: Note,
-      _tableName: PressureTableName,
-      scheduleTime: number,
-    ) => this.setModLfoToFilterFc(channel, note, scheduleTime);
-    handlers[5] = (
-      channel: Channel,
-      note: Note,
-      _tableName: PressureTableName,
-      scheduleTime: number,
-    ) => this.setModLfoToVolume(channel, note, scheduleTime);
+    handlers[3] = (channel, note, _tableName, scheduleTime) =>
+      this.setModLfoToPitch(channel, note, scheduleTime);
+    handlers[4] = (channel, note, _tableName, scheduleTime) =>
+      this.setModLfoToFilterFc(channel, note, scheduleTime);
+    handlers[5] = (channel, note, _tableName, scheduleTime) =>
+      this.setModLfoToVolume(channel, note, scheduleTime);
     return handlers;
   }
 
