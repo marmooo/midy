@@ -1566,7 +1566,7 @@ export class MidyGM2 extends EventTarget {
     for (let i = queueIndex; i < nextQueueIndex; i++) {
       const event = timeline[i];
       const t = now - resumeTime + event.startTime * inverseTempo;
-      this.processTimelineEvent(event, t);
+      this.processTimelineEvent(event, Math.max(now, t));
     }
   }
 
