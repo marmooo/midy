@@ -675,8 +675,8 @@ export class MidyGM1 extends EventTarget {
     Map<bigint, RenderedBuffer | Promise<RenderedBuffer>>
   > = new Map();
   // "note" mode
-  noteOnDurations: Map<number, number> = new Map();
-  noteOnEvents: Map<number, NoteOnEventEntry> = new Map();
+  noteOnDurations: number[] = [];
+  noteOnEvents: (NoteOnEventEntry | undefined)[] = [];
   fullVoiceCache: Map<
     number,
     Map<number, RenderedBuffer | Promise<RenderedBuffer>>
@@ -790,8 +790,10 @@ export class MidyGM1 extends EventTarget {
   buildNoteOnDurations(): void {
     const { timeline, totalTime, noteOnDurations, noteOnEvents, numChannels } =
       this;
-    noteOnDurations.clear();
-    noteOnEvents.clear();
+    noteOnDurations.length = 0;
+    noteOnEvents.length = 0;
+    noteOnDurations.length = timeline.length;
+    noteOnEvents.length = timeline.length;
     const inverseTempo = 1 / this.tempo;
     const sustainPedal = new Uint8Array(numChannels);
     const activeNotes = new Map<number, NoteOnEntry[]>();
@@ -805,13 +807,13 @@ export class MidyGM1 extends EventTarget {
       const durationTicks = (endTicks == null || endTicks === Infinity)
         ? Infinity
         : Math.max(0, endTicks - entry.startTicks);
-      noteOnDurations.set(entry.idx, duration);
-      noteOnEvents.set(entry.idx, {
+      noteOnDurations[entry.idx] = duration;
+      noteOnEvents[entry.idx] = {
         duration,
         durationTicks,
         startTime: entry.startTime,
         events: entry.events,
-      });
+      };
     };
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
@@ -1549,9 +1551,9 @@ export class MidyGM1 extends EventTarget {
       this.processTimelineEvent(event, -1, {
         channels: renderChannels,
         onNoteOn: (renderChannel: Channel, event: TimelineEvent) => {
-          const noteEvent = this.noteOnEvents.get(i);
+          const noteEvent = this.noteOnEvents[i];
           const noteDuration = noteEvent?.duration ??
-            this.noteOnDurations.get(i) ?? 0;
+            this.noteOnDurations[i] ?? 0;
           if (noteDuration <= 0) return;
           const { noteNumber, velocity } = event;
           const voice = this.resolveVoice(
@@ -2162,7 +2164,7 @@ export class MidyGM1 extends EventTarget {
     if (!voiceParams) return undefined;
     const timelineIndex = note.timelineIndex;
     if (timelineIndex === null) return undefined;
-    const noteEvent = this.noteOnEvents.get(timelineIndex);
+    const noteEvent = this.noteOnEvents[timelineIndex];
     const noteDurationTicks = noteEvent?.durationTicks ?? 0;
     const safeTicks = noteDurationTicks === Infinity
       ? 0xFFFFFFFFn
@@ -2216,7 +2218,7 @@ export class MidyGM1 extends EventTarget {
     if (!voiceParams) return undefined;
     const timelineIndex = note.timelineIndex;
     if (!timelineIndex) return undefined;
-    const noteEvent = this.noteOnEvents.get(timelineIndex);
+    const noteEvent = this.noteOnEvents[timelineIndex];
     const noteDuration = noteEvent?.duration ?? 0;
     const cacheKey = timelineIndex;
     let durationMap = this.fullVoiceCache.get(audioBufferId);

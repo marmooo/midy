@@ -206,7 +206,7 @@ export function registerTimelineTests(
       const p = player as unknown as {
         extractMidiData(m: unknown): { timeline: unknown[] };
         buildNoteOnDurations(): void;
-        noteOnDurations: Map<number, number>;
+        noteOnDurations: number[];
         timeline: unknown[];
         ticksPerBeat: number;
         totalTime: number;
@@ -222,7 +222,7 @@ export function registerTimelineTests(
       const noteOnIdx = (timeline as { type: string }[]).findIndex(
         (e) => e.type === "noteOn",
       );
-      const duration = p.noteOnDurations.get(noteOnIdx);
+      const duration = p.noteOnDurations[noteOnIdx];
       assertAlmostEquals(
         duration ?? -1,
         0.5,
@@ -260,7 +260,7 @@ export function registerTimelineTests(
       const p = player as unknown as {
         extractMidiData(m: unknown): { timeline: unknown[] };
         buildNoteOnDurations(): void;
-        noteOnDurations: Map<number, number>;
+        noteOnDurations: number[];
         timeline: unknown[];
         ticksPerBeat: number;
         totalTime: number;
@@ -276,7 +276,7 @@ export function registerTimelineTests(
       const noteOnIdx = (timeline as { type: string }[]).findIndex(
         (e) => e.type === "noteOn",
       );
-      const duration = p.noteOnDurations.get(noteOnIdx);
+      const duration = p.noteOnDurations[noteOnIdx];
       // Sustain defers release until pedal OFF, but duration is computed from
       // the original noteOff timestamp (0.5s), not the pedal-release timestamp.
       assertAlmostEquals(
@@ -452,7 +452,7 @@ export function registerTimelineTests(
       const p = player as unknown as {
         extractMidiData(m: unknown): { timeline: unknown[] };
         buildNoteOnDurations(): void;
-        noteOnDurations: Map<number, number>;
+        noteOnDurations: number[];
         timeline: unknown[];
         ticksPerBeat: number;
         totalTime: number;
@@ -463,7 +463,7 @@ export function registerTimelineTests(
       p.totalTime = 2.0;
       p.buildNoteOnDurations();
 
-      const duration = p.noteOnDurations.get(0);
+      const duration = p.noteOnDurations[0];
       assertAlmostEquals(
         duration ?? -1,
         2.0,
@@ -496,7 +496,7 @@ export function registerTimelineTests(
       const p = player as unknown as {
         extractMidiData(m: unknown): { timeline: { type: string }[] };
         buildNoteOnDurations(): void;
-        noteOnDurations: Map<number, number>;
+        noteOnDurations: number[];
         timeline: { type: string }[];
         ticksPerBeat: number;
         totalTime: number;
@@ -514,13 +514,13 @@ export function registerTimelineTests(
 
       assertEquals(noteOnIndices.length, 2, "must have two noteOn events");
       assertAlmostEquals(
-        p.noteOnDurations.get(noteOnIndices[0]) ?? -1,
+        p.noteOnDurations[noteOnIndices[0]] ?? -1,
         0.5,
         1e-4,
         "first noteOn duration must be 0.5s",
       );
       assertAlmostEquals(
-        p.noteOnDurations.get(noteOnIndices[1]) ?? -1,
+        p.noteOnDurations[noteOnIndices[1]] ?? -1,
         0.5,
         1e-4,
         "second noteOn duration must be 0.5s",
