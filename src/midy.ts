@@ -329,7 +329,19 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const intPart = Math.trunc(value);
     this.state.modulationDepthMSB = intPart / 127;
-    this.state.modulationDepthLSB = value - intPart;
+    this.state.modulationDepthLSB = (value - intPart) / 127;
+    player.updateModulation(this, t);
+  }
+
+  setModulationDepthMSB(value: number, scheduleTime?: number): void {
+    this.setModulationDepth(value, scheduleTime);
+  }
+
+  setModulationDepthLSB(value: number, scheduleTime?: number): void {
+    if (this.isDrum) return;
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.modulationDepthLSB = value / 127;
     player.updateModulation(this, t);
   }
 
@@ -338,7 +350,19 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const intPart = Math.trunc(value);
     this.state.portamentoTimeMSB = intPart / 127;
-    this.state.portamentoTimeLSB = value - intPart;
+    this.state.portamentoTimeLSB = (value - intPart) / 127;
+    if (this.isDrum) return;
+    player.updatePortamento(this, t);
+  }
+
+  setPortamentoTimeMSB(value: number, scheduleTime?: number): void {
+    this.setPortamentoTime(value, scheduleTime);
+  }
+
+  setPortamentoTimeLSB(value: number, scheduleTime?: number): void {
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.portamentoTimeLSB = value / 127;
     if (this.isDrum) return;
     player.updatePortamento(this, t);
   }
@@ -348,7 +372,18 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const intPart = Math.trunc(value);
     this.state.volumeMSB = intPart / 127;
-    this.state.volumeLSB = value - intPart;
+    this.state.volumeLSB = (value - intPart) / 127;
+    player.applyVolume(this, t);
+  }
+
+  setVolumeMSB(value: number, scheduleTime?: number): void {
+    this.setVolume(value, scheduleTime);
+  }
+
+  setVolumeLSB(value: number, scheduleTime?: number): void {
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.volumeLSB = value / 127;
     player.applyVolume(this, t);
   }
 
@@ -357,7 +392,24 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const intPart = Math.trunc(value);
     this.state.panMSB = intPart / 127;
-    this.state.panLSB = value - intPart;
+    this.state.panLSB = (value - intPart) / 127;
+    if (this.isDrum) {
+      for (let i = 0; i < 128; i++) {
+        player.updateKeyBasedVolume(this, i, t);
+      }
+    } else {
+      player.updateChannelVolume(this, t);
+    }
+  }
+
+  setPanMSB(value: number, scheduleTime?: number): void {
+    this.setPan(value, scheduleTime);
+  }
+
+  setPanLSB(value: number, scheduleTime?: number): void {
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.panLSB = value / 127;
     if (this.isDrum) {
       for (let i = 0; i < 128; i++) {
         player.updateKeyBasedVolume(this, i, t);
@@ -372,7 +424,18 @@ export class Channel {
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const intPart = Math.trunc(value);
     this.state.expressionMSB = intPart / 127;
-    this.state.expressionLSB = value - intPart;
+    this.state.expressionLSB = (value - intPart) / 127;
+    player.updateChannelVolume(this, t);
+  }
+
+  setExpressionMSB(value: number, scheduleTime?: number): void {
+    this.setExpression(value, scheduleTime);
+  }
+
+  setExpressionLSB(value: number, scheduleTime?: number): void {
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.expressionLSB = value / 127;
     player.updateChannelVolume(this, t);
   }
 
@@ -4098,12 +4161,12 @@ export class Midy extends EventTarget {
     handlers[10] = (ch, v, t) => ch.setPan(v, t);
     handlers[11] = (ch, v, t) => ch.setExpression(v, t);
     handlers[32] = (ch, v, _t) => ch.setBankLSB(v);
-    handlers[33] = (ch, v, t) => ch.setModulationDepth(v, t);
-    handlers[37] = (ch, v, t) => ch.setPortamentoTime(v, t);
+    handlers[33] = (ch, v, t) => ch.setModulationDepthLSB(v, t);
+    handlers[37] = (ch, v, t) => ch.setPortamentoTimeLSB(v, t);
     handlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
-    handlers[39] = (ch, v, t) => ch.setVolume(v, t);
-    handlers[42] = (ch, v, t) => ch.setPan(v, t);
-    handlers[43] = (ch, v, t) => ch.setExpression(v, t);
+    handlers[39] = (ch, v, t) => ch.setVolumeLSB(v, t);
+    handlers[42] = (ch, v, t) => ch.setPanLSB(v, t);
+    handlers[43] = (ch, v, t) => ch.setExpressionLSB(v, t);
     handlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
     handlers[65] = (ch, v, t) => ch.setPortamento(v, t);
     handlers[66] = (ch, v, t) => ch.setSostenutoPedal(v, t);
