@@ -43,7 +43,11 @@ function controller(
     value,
   };
 }
-function programChange(deltaTime: number, channel: number, programNumber: number) {
+function programChange(
+  deltaTime: number,
+  channel: number,
+  programNumber: number,
+) {
   return { type: "programChange" as const, deltaTime, channel, programNumber };
 }
 function pitchBend(deltaTime: number, channel: number, value: number) {
@@ -340,7 +344,11 @@ export function registerPlaybackTests(
       player.seekTo(2.0);
 
       assertEquals(player.resumeTime, 2.0, "seekTo must update resumeTime");
-      assertEquals(player.isSeeking, true, "seekTo must set isSeeking when playing");
+      assertEquals(
+        player.isSeeking,
+        true,
+        "seekTo must set isSeeking when playing",
+      );
     },
   );
 
