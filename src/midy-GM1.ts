@@ -998,22 +998,18 @@ export class MidyGM1 extends EventTarget {
           // whole song (channel.programNumber keeps changing as this
           // same loop walks past later programChange events below).
           if (isSegmentMode) {
-            const isExcludedDrum = channel.isDrum &&
-              drumExclusiveClasses[event.noteNumber!] !== 0;
-            if (!isExcludedDrum) {
-              const voice = this.resolveVoice(
+            const voice = this.resolveVoice(
+              channel,
+              event.noteNumber!,
+              event.velocity!,
+            );
+            if (voice) {
+              const controllerState = this.getControllerState(
                 channel,
                 event.noteNumber!,
                 event.velocity!,
               );
-              if (voice) {
-                const controllerState = this.getControllerState(
-                  channel,
-                  event.noteNumber!,
-                  event.velocity!,
-                );
-                segmentVoiceParams[i] = voice.getAllParams(controllerState);
-              }
+              segmentVoiceParams[i] = voice.getAllParams(controllerState);
             }
           }
           break;

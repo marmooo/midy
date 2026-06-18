@@ -1605,6 +1605,33 @@ export class Midy extends EventTarget {
             audioBufferId!,
             (voiceCounter.get(audioBufferId!) ?? 0) + 1,
           );
+          // Resolved here, at this exact point in timeline order, so it
+          // reflects the program/bank this channel actually had AT this
+          // note rather than whatever programChange came last in the
+          // whole song (channel.programNumber keeps changing as this
+          // same loop walks past later programChange events below).
+          if (isSegmentMode) {
+            const isExcludedDrum = channel.isDrum &&
+              drumExclusiveClassesByKit[channel.programNumber][
+                  event.noteNumber!
+                ] !== 0;
+            if (!isExcludedDrum) {
+              const voice = this.resolveVoice(
+                channel,
+                event.noteNumber!,
+                event.velocity!,
+              );
+              if (voice) {
+                const controllerState = this.getControllerState(
+                  channel,
+                  event.noteNumber!,
+                  event.velocity!,
+                  event.amount!,
+                );
+                segmentVoiceParams[i] = voice.getAllParams(controllerState);
+              }
+            }
+          }
           break;
         }
         case "controller":

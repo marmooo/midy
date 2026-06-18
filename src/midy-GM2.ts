@@ -1345,7 +1345,9 @@ export class MidyGM2 extends EventTarget {
           // same loop walks past later programChange events below).
           if (isSegmentMode) {
             const isExcludedDrum = channel.isDrum &&
-              drumExclusiveClasses[event.noteNumber!] !== 0;
+              drumExclusiveClassesByKit[channel.programNumber][
+                  event.noteNumber!
+                ] !== 0;
             if (!isExcludedDrum) {
               const voice = this.resolveVoice(
                 channel,
