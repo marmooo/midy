@@ -3878,7 +3878,7 @@ export class MidyGM2 extends EventTarget {
     this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(value: number, scheduleTime: number): void {
+  setMasterVolume(value: number, scheduleTime?: number): void {
     const t: number = scheduleTime ?? this.audioContext.currentTime;
     const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     this.masterVolume.gain
