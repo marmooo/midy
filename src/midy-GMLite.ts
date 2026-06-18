@@ -2838,11 +2838,11 @@ export class MidyGMLite extends EventTarget {
   }
 
   setMasterVolume(value: number, scheduleTime: number): void {
-    if (!(0 <= scheduleTime)) scheduleTime = this.audioContext.currentTime;
+    const t: number = scheduleTime ?? this.audioContext.currentTime;
     const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     this.masterVolume.gain
-      .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(value * value, scheduleTime, timeConstant);
+      .cancelAndHoldAtTime(t)
+      .setTargetAtTime(value * value, t, timeConstant);
   }
 
   handleSysEx(
