@@ -1338,12 +1338,15 @@ export class MidyGM2 extends EventTarget {
             audioBufferId!,
             (voiceCounter.get(audioBufferId!) ?? 0) + 1,
           );
-          // Resolved here, at this exact point in timeline order, so it
-          // reflects the program/bank this channel actually had AT this
-          // note rather than whatever programChange came last in the
-          // whole song (channel.programNumber keeps changing as this
-          // same loop walks past later programChange events below).
+          // finalizeSegmentClassification() runs after this loop, at which point
+          // channel.programNumber reflects the last programChange in the song, not
+          // the one in effect at each individual note. So voiceParams must be
+          // resolved and snapshotted here, while programNumber is still correct.
           if (isSegmentMode) {
+            // Drum exclusive class notes are also excluded here: the kit lookup
+            // needs the current programNumber, and segmenting them would bring no
+            // benefit anyway since exclusive class guarantees at most one note of
+            // the same class sounds at a time — no polyphony explosion to prevent.
             const isExcludedDrum = channel.isDrum &&
               drumExclusiveClassesByKit[channel.programNumber][
                   event.noteNumber!
@@ -2985,6 +2988,7 @@ export class MidyGM2 extends EventTarget {
   // path is the only way to cut a note off early once it has started.
   // Cheap (no voice resolution), so tempoChange() can call this again
   // after buildNoteOnDurations() without redoing the full classification.
+
   finalizeSegmentClassification(): void {
     const { noteOnDurations, segmentVoiceParams } = this;
     const bakedSet = new Set<number>();

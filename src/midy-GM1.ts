@@ -992,11 +992,10 @@ export class MidyGM1 extends EventTarget {
             audioBufferId!,
             (voiceCounter.get(audioBufferId!) ?? 0) + 1,
           );
-          // Resolved here, at this exact point in timeline order, so it
-          // reflects the program/bank this channel actually had AT this
-          // note rather than whatever programChange came last in the
-          // whole song (channel.programNumber keeps changing as this
-          // same loop walks past later programChange events below).
+          // finalizeSegmentClassification() runs after this loop, at which point
+          // channel.programNumber reflects the last programChange in the song, not
+          // the one in effect at each individual note. So voiceParams must be
+          // resolved and snapshotted here, while programNumber is still correct.
           if (isSegmentMode) {
             const voice = this.resolveVoice(
               channel,
@@ -2290,6 +2289,7 @@ export class MidyGM1 extends EventTarget {
   // path is the only way to cut a note off early once it has started.
   // Cheap (no voice resolution), so tempoChange() can call this again
   // after buildNoteOnDurations() without redoing the full classification.
+
   finalizeSegmentClassification(): void {
     const { noteOnDurations, segmentVoiceParams } = this;
     const bakedSet = new Set<number>();
