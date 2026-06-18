@@ -19,11 +19,12 @@ import {
 } from "./reverb.ts";
 
 // Cache mode
-// - "none"  for full real-time control (dynamic CC, LFO, pitch)
-// - "ads"   for real-time playback with higher cache hit rate
-// - "adsr"  for real-time playback with accurate release envelope
-// - "note"  for efficient playback when note behavior is fixed
-// - "audio" for fully pre-rendered playback (lowest CPU)
+// - "none"    for full real-time control (dynamic CC, LFO, pitch)
+// - "ads"     for real-time playback with higher cache hit rate
+// - "adsr"    for real-time playback with accurate release envelope
+// - "note"    for efficient playback when note behavior is fixed
+// - "segment" for heavy polyphony with low CPU and live channel mixing
+// - "audio"   for fully pre-rendered playback (lowest CPU)
 //
 // "none"
 //   No caching. Envelope processing is done in real time on every note.
@@ -51,6 +52,22 @@ import {
 //   so no real-time processing is needed during playback. Greatly
 //   reduces CPU load for songs with many simultaneous notes.
 //   MIDI file playback only — does not respond to real-time CC changes.
+// "segment"
+//   Groups simultaneously-sounding notes per channel into short
+//   (segmentDuration-second) buffers instead of one AudioBufferSourceNode
+//   per note. Each note is fully baked the same way as "note" mode
+//   (envelope, pitch bend, LFO, CC#1 all included), but channel
+//   volume/pan/expression are deliberately left out of the bake so
+//   they keep responding in real time through channel.gainL/gainR,
+//   like "ads"/"adsr" mode does. This bounds the number of
+//   simultaneously active AudioBufferSourceNodes to roughly one per
+//   channel (occasionally a couple more while a long release tail
+//   overlaps the next segment), regardless of how dense the polyphony
+//   gets. Notes whose ring time exceeds maxSegmentNoteDuration, or that
+//   have a non-zero exclusiveClass (e.g. hi-hat choke groups), are
+//   excluded from tiling and fall back to normal per-note real-time
+//   ("ads"-style) scheduling so they can still be cut off early.
+//   MIDI file playback only, same as "note"/"adsr" mode.
 // "audio"
 //   Renders the entire MIDI file into a single AudioBuffer offline.
 //   Call render() to complete rendering before calling start().
@@ -59,7 +76,7 @@ import {
 //   A "rendering" event is dispatched when rendering starts, and a
 //   "rendered" event is dispatched when rendering completes.
 const DEFAULT_CACHE_MODE = "ads";
-type CacheMode = "none" | "ads" | "adsr" | "note" | "audio";
+type CacheMode = "none" | "ads" | "adsr" | "note" | "audio" | "segment";
 
 const _f64Buf = new ArrayBuffer(8);
 const _f64Array = new Float64Array(_f64Buf);
@@ -108,6 +125,10 @@ export class Note {
   reverbSend: GainNode | null = null;
   chorusSend: GainNode | null = null;
   portamentoNoteNumber: number = -1;
+  // "segment" mode
+  isSegmentGhost: boolean = false;
+  segmentNoteDuration: number = 0;
+  segmentBufferPromise: Promise<AudioBuffer | null> | null = null;
 
   constructor(noteNumber: number, velocity: number, startTime: number) {
     this.noteNumber = noteNumber;
@@ -893,6 +914,24 @@ interface PendingOffItem {
   ticks: number;
 }
 
+// "segment" mode
+interface OpenSegment {
+  segmentStart: number;
+  notes: { offset: number; promise: Promise<AudioBuffer | null> }[];
+}
+interface PendingSegment {
+  segmentStart: number;
+  buffer: AudioBuffer | null;
+  bufferReady: boolean;
+  bufferPromise: Promise<AudioBuffer | null>;
+  source: AudioBufferSourceNode | null;
+  done: boolean;
+}
+interface SegmentChannelState {
+  openSegment: OpenSegment | null;
+  pending: PendingSegment[];
+}
+
 type MessageHandler = (bytes: Uint8Array, time: number) => void;
 type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
 type VoiceParamsHandler = (
@@ -1001,6 +1040,14 @@ export class MidyGM2 extends EventTarget {
   renderedAudioBuffer: AudioBuffer | null = null;
   isRendering: boolean = false;
   audioModeBufferSource: AudioBufferSourceNode | null = null;
+  // "segment" mode
+  segmentDuration: number = 1;
+  maxSegmentNoteDuration: number = 8;
+  segmentBakedSet: Set<number> = new Set();
+  segmentNoteCache: Map<number, AudioBuffer | Promise<AudioBuffer | null>> =
+    new Map();
+  segmentChannelStates: (SegmentChannelState | null)[] = [];
+  segmentVoiceParams: (VoiceParams | null)[] = [];
 
   // Required properties
   audioContext!: AudioContext | OfflineAudioContext;
@@ -1273,12 +1320,17 @@ export class MidyGM2 extends EventTarget {
 
   cacheVoiceIds(): void {
     const { channels, timeline, voiceCounter, cacheMode } = this;
+    const isSegmentMode = cacheMode === "segment";
+    const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
+      ? new Array(timeline.length).fill(null)
+      : [];
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       switch (event.type) {
         case "noteOn": {
+          const channel = channels[event.channel!];
           const audioBufferId = this.getVoiceId(
-            channels[event.channel!],
+            channel,
             event.noteNumber!,
             event.velocity!,
           );
@@ -1286,6 +1338,30 @@ export class MidyGM2 extends EventTarget {
             audioBufferId!,
             (voiceCounter.get(audioBufferId!) ?? 0) + 1,
           );
+          // Resolved here, at this exact point in timeline order, so it
+          // reflects the program/bank this channel actually had AT this
+          // note rather than whatever programChange came last in the
+          // whole song (channel.programNumber keeps changing as this
+          // same loop walks past later programChange events below).
+          if (isSegmentMode) {
+            const isExcludedDrum = channel.isDrum &&
+              drumExclusiveClasses[event.noteNumber!] !== 0;
+            if (!isExcludedDrum) {
+              const voice = this.resolveVoice(
+                channel,
+                event.noteNumber!,
+                event.velocity!,
+              );
+              if (voice) {
+                const controllerState = this.getControllerState(
+                  channel,
+                  event.noteNumber!,
+                  event.velocity!,
+                );
+                segmentVoiceParams[i] = voice.getAllParams(controllerState);
+              }
+            }
+          }
           break;
         }
         case "controller":
@@ -1303,8 +1379,15 @@ export class MidyGM2 extends EventTarget {
       if (count === 1) voiceCounter.delete(audioBufferId);
     }
     this.GM2SystemOn(this.audioContext.currentTime);
-    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio") {
+    if (
+      cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
+      cacheMode === "segment"
+    ) {
       this.buildNoteOnDurations();
+    }
+    if (isSegmentMode) {
+      this.segmentVoiceParams = segmentVoiceParams;
+      this.finalizeSegmentClassification();
     }
   }
 
@@ -1500,6 +1583,7 @@ export class MidyGM2 extends EventTarget {
     const schedulingOffset = this.startDelay - timeOffset;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
+    const isSegmentMode = this.cacheMode === "segment";
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
       const t = event.startTime * inverseTempo;
@@ -1513,12 +1597,21 @@ export class MidyGM2 extends EventTarget {
             startTime,
           );
           note.timelineIndex = queueIndex;
+          const isSegmentNote = isSegmentMode &&
+            this.segmentBakedSet.has(queueIndex);
+          if (isSegmentNote) {
+            note.isSegmentGhost = true;
+            note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
+          }
           channel.noteOn(
             event.noteNumber!,
             event.velocity!,
             startTime,
             note,
           );
+          if (isSegmentNote) {
+            this.appendToSegmentQueue(channel.channelNumber, t, note);
+          }
         },
         onNoteOff: (channel, event, startTime) => {
           channel.noteOff(event.noteNumber!, event.velocity!, startTime, false);
@@ -1675,6 +1768,7 @@ export class MidyGM2 extends EventTarget {
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
+    if (this.cacheMode === "segment") this.initSegmentPipeline();
     let exitReason: string | undefined;
     this.notePromises = [];
     while (true) {
@@ -1700,9 +1794,11 @@ export class MidyGM2 extends EventTarget {
           this.startTime = audioContext.currentTime;
           this.resumeTime = 0;
           queueIndex = 0;
+          if (this.cacheMode === "segment") this.initSegmentPipeline();
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
+          if (this.cacheMode === "segment") this.stopSegmentSources();
           await this.suspendAudioContext();
           exitReason = "ended";
           break;
@@ -1710,27 +1806,35 @@ export class MidyGM2 extends EventTarget {
       }
       if (this.isPausing) {
         await this.stopNotes(now);
+        if (this.cacheMode === "segment") this.stopSegmentSources();
         await this.suspendAudioContext();
         this.isPausing = false;
         exitReason = "paused";
         break;
       } else if (this.isStopping) {
         await this.stopNotes(now);
+        if (this.cacheMode === "segment") this.stopSegmentSources();
         await this.suspendAudioContext();
         this.isStopping = false;
         exitReason = "stopped";
         break;
       } else if (this.isSeeking) {
         await this.stopNotes(now);
+        if (this.cacheMode === "segment") this.stopSegmentSources();
         this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
+        if (this.cacheMode === "segment") this.initSegmentPipeline();
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
       }
       queueIndex = this.scheduleTimelineEvents(now, queueIndex);
+      if (this.cacheMode === "segment") {
+        const timeOffset = this.resumeTime - this.startTime;
+        this.updateSegmentPipeline(now + timeOffset + this.lookAhead);
+      }
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
@@ -1858,7 +1962,7 @@ export class MidyGM2 extends EventTarget {
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
         const promise = note.ready.then(() => {
-          if (!note.voice) return;
+          if (!note.voice || note.isSegmentGhost) return;
           const now = this.audioContext.currentTime;
           const startTime = Math.max(scheduleTime, now);
           (note.volumeNode as GainNode).gain
@@ -1886,6 +1990,162 @@ export class MidyGM2 extends EventTarget {
     const stopPromise = Promise.all(this.notePromises);
     this.notePromises = [];
     return stopPromise;
+  }
+
+  // "segment" mode: per-channel pipeline that groups segment-baked notes into
+  // short combined buffers instead of one AudioBufferSourceNode per note.
+  //
+  // Grouping happens eagerly, in onNoteOn, in exact timeline order: a new
+  // segment opens at the first baked note's onset and stays open for up to
+  // segmentDuration seconds, after which the next baked note (or, if none
+  // arrives in time, the next updateSegmentPipeline tick) closes it. Each
+  // note is rendered individually (full per-note envelope/CC/LFO bake,
+  // like "note" mode, but without channel volume/pan/expression so the
+  // combined segment can still be mixed live through channel.gainL/gainR),
+  // then the segment's notes are summed into one buffer once they're all
+  // ready and scheduled as a single AudioBufferSourceNode.
+
+  initSegmentPipeline(): void {
+    this.segmentChannelStates = Array.from(
+      { length: this.numChannels },
+      () => ({ openSegment: null, pending: [] }),
+    );
+  }
+
+  stopSegmentSources(): void {
+    for (const state of this.segmentChannelStates) {
+      if (!state) continue;
+      for (const pending of state.pending) {
+        if (pending.source) {
+          try {
+            pending.source.stop();
+          } catch {
+            // already stopped/ended
+          }
+          pending.source.disconnect();
+        }
+      }
+      state.pending = [];
+      state.openSegment = null;
+    }
+  }
+
+  appendToSegmentQueue(channelNumber: number, t: number, note: Note): void {
+    const state = this.segmentChannelStates[channelNumber];
+    if (!state) return;
+    if (
+      state.openSegment &&
+      this.segmentDuration <= t - state.openSegment.segmentStart
+    ) {
+      this.closeSegment(state);
+    }
+    if (!state.openSegment) {
+      state.openSegment = { segmentStart: t, notes: [] };
+    }
+    state.openSegment.notes.push({
+      offset: t - state.openSegment.segmentStart,
+      promise: note.segmentBufferPromise ?? Promise.resolve(null),
+    });
+  }
+
+  closeSegment(state: SegmentChannelState): void {
+    const segment = state.openSegment;
+    state.openSegment = null;
+    if (!segment || segment.notes.length === 0) return;
+    const pending: PendingSegment = {
+      segmentStart: segment.segmentStart,
+      buffer: null,
+      bufferReady: false,
+      source: null,
+      done: false,
+      bufferPromise: Promise.resolve(null),
+    };
+    pending.bufferPromise = this.mixSegmentNotes(segment.notes)
+      .then((buffer) => {
+        pending.buffer = buffer;
+        pending.bufferReady = true;
+        return buffer;
+      })
+      .catch((err) => {
+        console.warn("midy-GMLite: segment mix failed", err);
+        pending.bufferReady = true;
+        return null;
+      });
+    state.pending.push(pending);
+  }
+
+  async mixSegmentNotes(
+    notes: { offset: number; promise: Promise<AudioBuffer | null> }[],
+  ): Promise<AudioBuffer | null> {
+    const resolved = await Promise.all(
+      notes.map(async ({ offset, promise }) => ({
+        offset,
+        buffer: await promise,
+      })),
+    );
+    let maxEnd = 0;
+    for (const { offset, buffer } of resolved) {
+      if (!buffer) continue;
+      maxEnd = Math.max(maxEnd, offset + buffer.duration);
+    }
+    if (maxEnd <= 0) return null;
+    const sampleRate = this.audioContext.sampleRate;
+    const length = Math.max(1, Math.ceil(maxEnd * sampleRate));
+    const offlineContext = new OfflineAudioContext(2, length, sampleRate);
+    for (const { offset, buffer } of resolved) {
+      if (!buffer) continue;
+      const source = new AudioBufferSourceNode(offlineContext, { buffer });
+      source.connect(offlineContext.destination);
+      source.start(Math.max(0, offset));
+    }
+    return await offlineContext.startRendering();
+  }
+
+  startPendingSegment(channel: Channel, pending: PendingSegment): void {
+    if (!pending.buffer) {
+      pending.done = true;
+      return;
+    }
+    const timeOffset = this.resumeTime - this.startTime;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const absoluteStart = Math.max(0, pending.segmentStart + schedulingOffset);
+    const source = new AudioBufferSourceNode(this.audioContext, {
+      buffer: pending.buffer,
+    });
+    source.connect(channel.gainL);
+    source.connect(channel.gainR);
+    source.onended = () => {
+      pending.done = true;
+      source.disconnect();
+    };
+    source.start(absoluteStart);
+    pending.source = source;
+  }
+
+  // A still-open segment whose nominal window ends at or before
+  // lookAheadCheckTime can be safely closed: onNoteOn has already run for
+  // every channel up to that point, so no baked note that could still
+  // belong to it has been left unprocessed.
+  updateSegmentPipeline(lookAheadCheckTime: number): void {
+    const channels = this.channels;
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      if (
+        state.openSegment &&
+        state.openSegment.segmentStart + this.segmentDuration <=
+          lookAheadCheckTime
+      ) {
+        this.closeSegment(state);
+      }
+      state.pending = state.pending.filter((pending) => !pending.done);
+      for (const pending of state.pending) {
+        if (!pending.source && pending.bufferReady) {
+          this.startPendingSegment(channels[ch], pending);
+        }
+      }
+    }
   }
 
   generateDistributedArray(
@@ -2171,10 +2431,17 @@ export class MidyGM2 extends EventTarget {
     this.tempo = tempo;
     this.totalTime = this.calcTotalTime();
     this.seekTo(this.currentTime() * timeScale);
-    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio") {
+    if (
+      cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
+      cacheMode === "segment"
+    ) {
       this.buildNoteOnDurations();
       this.fullVoiceCache.clear();
       this.adsrVoiceCache.clear();
+    }
+    if (cacheMode === "segment") {
+      this.segmentNoteCache.clear();
+      this.finalizeSegmentClassification();
     }
     if (cacheMode === "audio") {
       if (this.audioModeBufferSource) {
@@ -2706,6 +2973,131 @@ export class MidyGM2 extends EventTarget {
     });
   }
 
+  // "segment" mode: combine the voiceParams resolved during cacheVoiceIds()
+  // (at the correct point in program-change order) with noteOnDurations
+  // (which needs its own full-timeline pass and isn't ready until after
+  // that loop) to decide which notes are safe to bake into a segment.
+  // Notes that ring too long, or that participate in an exclusive class
+  // (hi-hat choke groups etc.), are left out so they keep going through
+  // normal per-note real-time ("ads"-style) scheduling instead — that
+  // path is the only way to cut a note off early once it has started.
+  // Cheap (no voice resolution), so tempoChange() can call this again
+  // after buildNoteOnDurations() without redoing the full classification.
+  finalizeSegmentClassification(): void {
+    const { noteOnDurations, segmentVoiceParams } = this;
+    const bakedSet = new Set<number>();
+    for (let i = 0; i < segmentVoiceParams.length; i++) {
+      const voiceParams = segmentVoiceParams[i];
+      if (!voiceParams) continue;
+      if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
+      const duration = noteOnDurations[i] ?? 0;
+      const releaseTail = voiceParams.volRelease * releaseCurve * 5;
+      if (this.maxSegmentNoteDuration < duration + releaseTail) continue;
+      bakedSet.add(i);
+    }
+    this.segmentBakedSet = bakedSet;
+  }
+
+  getSegmentNoteBuffer(
+    channel: Channel,
+    note: { noteNumber: number; velocity: number },
+    timelineIndex: number,
+    voiceParams: VoiceParams,
+    noteDuration: number,
+    noteEvent: NoteOnEventEntry | undefined,
+  ): Promise<AudioBuffer | null> {
+    const cached = this.segmentNoteCache.get(timelineIndex);
+    if (cached !== undefined) {
+      return cached instanceof Promise ? cached : Promise.resolve(cached);
+    }
+    const renderPromise: Promise<AudioBuffer | null> = this
+      .createSegmentNoteBuffer(
+        channel,
+        note,
+        voiceParams,
+        noteDuration,
+        noteEvent,
+      )
+      .then((buffer) => {
+        this.segmentNoteCache.set(timelineIndex, buffer);
+        return buffer;
+      })
+      .catch((err) => {
+        console.warn("midy-GMLite: segment note render failed", err);
+        this.segmentNoteCache.delete(timelineIndex);
+        return null;
+      });
+    this.segmentNoteCache.set(timelineIndex, renderPromise);
+    return renderPromise;
+  }
+
+  // Same per-note offline bake as createFullRenderedBuffer (full
+  // envelope/pitch-bend/LFO/CC#1 automation included), but channel
+  // volume/pan/expression are intentionally NOT baked in: updateChannelVolume
+  // is skipped, and the note's volumeNode is rewired to bypass the channel
+  // bus and connect straight to the OfflineAudioContext destination. That
+  // keeps the segment's combined buffer mixable through the real
+  // channel.gainL/gainR nodes in real time, the same way "ads"/"adsr" notes
+  // already are, instead of being frozen at note-on time like "note" mode.
+  async createSegmentNoteBuffer(
+    channel: Channel,
+    note: { noteNumber: number; velocity: number },
+    voiceParams: VoiceParams,
+    noteDuration: number,
+    noteEvent: NoteOnEventEntry | undefined = undefined,
+  ): Promise<AudioBuffer> {
+    const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+      noteEvent ?? {};
+    const ch = channel.channelNumber;
+    const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
+    const totalDuration = noteDuration + releaseEndDuration;
+    const sampleRate = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      2,
+      Math.ceil(totalDuration * sampleRate),
+      sampleRate,
+    );
+    const offlinePlayer = new (this.constructor as typeof MidyGMLite)(
+      offlineContext as unknown as AudioContext,
+    );
+    offlinePlayer.cacheMode = "none";
+    offlineContext.suspend = () => Promise.resolve();
+    offlineContext.resume = () => Promise.resolve();
+    offlinePlayer.soundFonts = this.soundFonts;
+    offlinePlayer.soundFontTable = this.soundFontTable;
+    const dstChannel = offlinePlayer.channels[ch];
+    dstChannel.state.array.set(channel.state.array);
+    dstChannel.isDrum = channel.isDrum;
+    dstChannel.programNumber = channel.programNumber;
+    dstChannel.modulationDepthRange = channel.modulationDepthRange;
+    dstChannel.detune = channel.detune;
+    const offlineNote = await offlinePlayer.noteOnChannel(
+      dstChannel,
+      note.noteNumber,
+      note.velocity,
+      0,
+    );
+    if (offlineNote?.volumeNode) {
+      offlineNote.volumeNode.disconnect();
+      offlineNote.volumeNode.connect(offlineContext.destination);
+    }
+    for (const event of noteEvents) {
+      const t = (event.startTime as number) / this.tempo - noteStartTime;
+      if (t < 0 || t > noteDuration) continue;
+      offlinePlayer.processTimelineEvent(event, t, {
+        channels: offlinePlayer.channels,
+      });
+    }
+    offlinePlayer.noteOffChannel(
+      dstChannel,
+      note.noteNumber,
+      0,
+      noteDuration,
+      true,
+    );
+    return await offlineContext.startRendering();
+  }
+
   async createFullRenderedBuffer(
     channel: Channel,
     note: { noteNumber: number; velocity: number },
@@ -2969,6 +3361,23 @@ export class MidyGM2 extends EventTarget {
     const voiceParams = note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
+    if (note.isSegmentGhost) {
+      // No real bufferSource/volumeNode is created: this note's sound
+      // comes from the combined segment buffer scheduled separately by the
+      // segment pipeline. This note object only exists so activeNotes/FIFO
+      // noteOff matching stays correct relative to any fallback notes.
+      if (note.timelineIndex != null) {
+        note.segmentBufferPromise = this.getSegmentNoteBuffer(
+          channel,
+          { noteNumber, velocity },
+          note.timelineIndex,
+          voiceParams,
+          note.segmentNoteDuration,
+          this.noteOnEvents[note.timelineIndex],
+        );
+      }
+      return;
+    }
 
     const audioBuffer = await this.getAudioBuffer(channel, note, realtime);
     const isRendered = audioBuffer instanceof RenderedBuffer;
@@ -3172,6 +3581,7 @@ export class MidyGM2 extends EventTarget {
   }
 
   releaseNote(note: Note, endTime: number): Promise<void> | void {
+    if (note.isSegmentGhost) return;
     const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
@@ -3344,7 +3754,7 @@ export class MidyGM2 extends EventTarget {
 
   soundOffNote(note: Note, scheduleTime: number): Promise<void> {
     note.ending = true;
-    if (!note.voice) return Promise.resolve();
+    if (!note.voice || note.isSegmentGhost) return Promise.resolve();
     const now = this.audioContext.currentTime;
     const startTime = Math.max(scheduleTime, now);
     const perceptualSmoothingTime = this.perceptualSmoothingTime;
@@ -3601,7 +4011,7 @@ export class MidyGM2 extends EventTarget {
     scheduleTime: number,
   ): void {
     channel.processScheduledNotes((note: Note) => {
-      if (note.renderedBuffer?.isFull) return;
+      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,
@@ -3672,7 +4082,7 @@ export class MidyGM2 extends EventTarget {
     const depth = channel.state.modulationDepthMSB *
       channel.modulationDepthRange;
     channel.processScheduledNotes((note: Note) => {
-      if (note.renderedBuffer?.isFull) return;
+      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
       if (note.modLfoToPitch) {
         note.modLfoToPitch?.gain.setValueAtTime(depth, scheduleTime);
       } else {
@@ -3878,7 +4288,7 @@ export class MidyGM2 extends EventTarget {
     this.setMasterVolume(volume, scheduleTime);
   }
 
-  setMasterVolume(value: number, scheduleTime?: number): void {
+  setMasterVolume(value: number, scheduleTime: number): void {
     const t: number = scheduleTime ?? this.audioContext.currentTime;
     const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
     this.masterVolume.gain

@@ -103,6 +103,7 @@ midy.addEventListener("tempoChanged", func);
 - "ads" - for real-time playback with higher cache hit rate
 - "adsr" - for real-time playback with accurate release envelope
 - "note" - for efficient playback when note behavior is fixed
+- "segment" - for heavy polyphony with low CPU and live channel mixing
 - "audio" - for fully pre-rendered playback (lowest CPU)
 
 ```
