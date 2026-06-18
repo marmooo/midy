@@ -3360,7 +3360,7 @@ export class Midy extends EventTarget {
       Math.ceil(totalDuration * sampleRate),
       sampleRate,
     );
-    const offlinePlayer = new (this.constructor as typeof MidyGMLite)(
+    const offlinePlayer = new (this.constructor as typeof Midy)(
       offlineContext as unknown as AudioContext,
     );
     offlinePlayer.cacheMode = "none";
