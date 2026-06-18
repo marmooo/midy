@@ -1342,7 +1342,7 @@ export class MidyGM1 extends EventTarget {
         exitReason = "stopped";
         break;
       } else if (this.isSeeking) {
-        this.stopNotes(now);
+        await this.stopNotes(now);
         this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
