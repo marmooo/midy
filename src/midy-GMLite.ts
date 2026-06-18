@@ -65,8 +65,8 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 //   is near zero. Seek and tempo changes are handled in real time.
 //   A "rendering" event is dispatched when rendering starts, and a
 //   "rendered" event is dispatched when rendering completes.
-const DEFAULT_CACHE_MODE = "ads";
-type CacheMode = "none" | "ads" | "adsr" | "note" | "audio" | "segment";
+const DEFAULT_CACHE_MODE = "segment";
+type CacheMode = "none" | "ads" | "adsr" | "note" | "segment" | "audio";
 
 const _f64Buf = new ArrayBuffer(8);
 const _f64Array = new Float64Array(_f64Buf);
