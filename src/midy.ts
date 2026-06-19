@@ -2793,7 +2793,7 @@ export class Midy extends EventTarget {
 
   updateChannelDetune(channel: Channel, scheduleTime: number): void {
     channel.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull) return;
+      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
       if (this.isPortamento(channel, note)) {
         this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
