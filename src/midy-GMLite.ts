@@ -1676,9 +1676,8 @@ export class MidyGMLite extends EventTarget {
     }
     if (maxEnd <= 0) return null;
     const length = Math.max(1, Math.ceil(maxEnd * sampleRate));
-    const mixed = this.audioContext.createBuffer(2, length, sampleRate);
-    const outL = mixed.getChannelData(0);
-    const outR = mixed.getChannelData(1);
+    const mixed = this.audioContext.createBuffer(1, length, sampleRate);
+    const out = mixed.getChannelData(0);
     for (let i = 0; i < notes.length; i++) {
       const buffer = buffers[i];
       if (!buffer) continue;
@@ -1686,13 +1685,10 @@ export class MidyGMLite extends EventTarget {
         0,
         Math.round(notes[i].offset * sampleRate),
       );
-      const inL = buffer.getChannelData(0);
-      const inR = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : inL;
+      const inData = buffer.getChannelData(0);
       const copyLength = Math.min(buffer.length, length - startSample);
       for (let j = 0; j < copyLength; j++) {
-        const dst = startSample + j;
-        outL[dst] += inL[j];
-        outR[dst] += inR[j];
+        out[startSample + j] += inData[j];
       }
     }
     return mixed;
@@ -2354,7 +2350,7 @@ export class MidyGMLite extends EventTarget {
     const totalDuration = noteDuration + releaseEndDuration;
     const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
-      2,
+      1,
       Math.ceil(totalDuration * sampleRate),
       sampleRate,
     );
