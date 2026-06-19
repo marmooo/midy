@@ -2372,11 +2372,14 @@ export class MidyGMLite extends EventTarget {
     dstChannel.programNumber = channel.programNumber;
     dstChannel.modulationDepthRange = channel.modulationDepthRange;
     dstChannel.detune = channel.detune;
+    const preNote = new Note(note.noteNumber, note.velocity, 0);
+    preNote.voiceParams = voiceParams;
     const offlineNote = await offlinePlayer.noteOnChannel(
       dstChannel,
       note.noteNumber,
       note.velocity,
       0,
+      preNote,
     );
     if (offlineNote?.volumeNode) {
       offlineNote.volumeNode.disconnect();
@@ -2655,7 +2658,8 @@ export class MidyGMLite extends EventTarget {
       noteNumber,
       velocity,
     );
-    const voiceParams = note.voice?.getAllParams(controllerState) ?? null;
+    const voiceParams = note.voiceParams ??
+      note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     if (note.isSegmentGhost) {
