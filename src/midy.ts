@@ -2364,28 +2364,41 @@ export class Midy extends EventTarget {
   async mixSegmentNotes(
     notes: { offset: number; promise: Promise<AudioBuffer | null> }[],
   ): Promise<AudioBuffer | null> {
-    const resolved = await Promise.all(
-      notes.map(async ({ offset, promise }) => ({
-        offset,
-        buffer: await promise,
-      })),
-    );
+    const promises = new Array<Promise<AudioBuffer | null>>(notes.length);
+    for (let i = 0; i < notes.length; i++) {
+      promises[i] = notes[i].promise;
+    }
+    const buffers = await Promise.all(promises);
+    const sampleRate = this.audioContext.sampleRate;
     let maxEnd = 0;
-    for (const { offset, buffer } of resolved) {
+    for (let i = 0; i < notes.length; i++) {
+      const buffer = buffers[i];
       if (!buffer) continue;
-      maxEnd = Math.max(maxEnd, offset + buffer.duration);
+      const end = notes[i].offset + buffer.duration;
+      if (end > maxEnd) maxEnd = end;
     }
     if (maxEnd <= 0) return null;
-    const sampleRate = this.audioContext.sampleRate;
     const length = Math.max(1, Math.ceil(maxEnd * sampleRate));
-    const offlineContext = new OfflineAudioContext(2, length, sampleRate);
-    for (const { offset, buffer } of resolved) {
+    const mixed = this.audioContext.createBuffer(2, length, sampleRate);
+    const outL = mixed.getChannelData(0);
+    const outR = mixed.getChannelData(1);
+    for (let i = 0; i < notes.length; i++) {
+      const buffer = buffers[i];
       if (!buffer) continue;
-      const source = new AudioBufferSourceNode(offlineContext, { buffer });
-      source.connect(offlineContext.destination);
-      source.start(Math.max(0, offset));
+      const startSample = Math.max(
+        0,
+        Math.round(notes[i].offset * sampleRate),
+      );
+      const inL = buffer.getChannelData(0);
+      const inR = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : inL;
+      const copyLength = Math.min(buffer.length, length - startSample);
+      for (let j = 0; j < copyLength; j++) {
+        const dst = startSample + j;
+        outL[dst] += inL[j];
+        outR[dst] += inR[j];
+      }
     }
-    return await offlineContext.startRendering();
+    return mixed;
   }
 
   startPendingSegment(channel: Channel, pending: PendingSegment): void {
