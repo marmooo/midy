@@ -2953,6 +2953,10 @@ export class MidyGM1 extends EventTarget {
             .setTargetAtTime(0, endTime, volDuration * releaseCurve);
           note.bufferSource?.stop(volRelease);
         } else {
+          if (naturalEndTime <= now) {
+            this.disconnectNote(note);
+            return;
+          }
           note.bufferSource?.stop(naturalEndTime);
         }
         return new Promise<void>((resolve) => {
