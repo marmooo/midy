@@ -2581,7 +2581,10 @@ export class MidyGMLite extends EventTarget {
         return cache.audioBuffer;
       } else {
         const maxCount = this.voiceCounter.get(cacheKey) ?? 0;
-        const rawBuffer = await this.createAudioBuffer(voiceParams);
+        const rawBuffer = await this.getRawAudioBuffer(
+          audioBufferId,
+          voiceParams,
+        );
         const rendered = await this.createAdsRenderedBuffer(
           note,
           voiceParams,
