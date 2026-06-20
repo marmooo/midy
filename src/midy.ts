@@ -1631,7 +1631,7 @@ export class Midy extends EventTarget {
                   channel,
                   event.noteNumber!,
                   event.velocity!,
-                  event.amount!,
+                  0,
                 );
                 segmentVoiceParams[i] = voice.getAllParams(controllerState);
               }
@@ -2648,7 +2648,7 @@ export class Midy extends EventTarget {
           const noteDuration = noteEvent?.duration ??
             this.noteOnDurations[i] ?? 0;
           if (noteDuration <= 0) return;
-          const { noteNumber, velocity, amount } = event;
+          const { noteNumber, velocity } = event;
           const voice = this.resolveVoice(
             renderChannel,
             noteNumber!,
@@ -2665,7 +2665,7 @@ export class Midy extends EventTarget {
                     renderChannel,
                     noteNumber!,
                     velocity!,
-                    amount!,
+                    0,
                   ),
                 ),
                 noteDuration,
