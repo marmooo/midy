@@ -694,6 +694,7 @@ export class MidyGM1 extends EventTarget {
   voiceCounter: Map<number, number> = new Map();
   voiceCache: Map<number, CacheEntry> = new Map();
   realtimeVoiceCache: Map<number, RenderedBuffer> = new Map();
+  rawAudioBufferCache: Map<number, AudioBuffer> = new Map();
   decodeMethod: string = "wasm-audio-decoders";
   isPlaying: boolean = false;
   isPausing: boolean = false;
@@ -801,6 +802,7 @@ export class MidyGM1 extends EventTarget {
     input: string | Uint8Array | (string | Uint8Array)[],
   ): Promise<void> {
     this.voiceCounter.clear();
+    this.rawAudioBufferCache.clear();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
       for (let i = 0; i < input.length; i++) {
@@ -1141,6 +1143,17 @@ export class MidyGM1 extends EventTarget {
       audioBuffer.getChannelData(0).set(pcm);
       return audioBuffer;
     }
+  }
+
+  async getRawAudioBuffer(
+    audioBufferId: number,
+    voiceParams: VoiceParams,
+  ): Promise<AudioBuffer> {
+    const cached = this.rawAudioBufferCache.get(audioBufferId);
+    if (cached) return cached;
+    const buffer = await this.createAudioBuffer(voiceParams);
+    this.rawAudioBufferCache.set(audioBufferId, buffer);
+    return buffer;
   }
 
   createBufferSource(
@@ -1870,10 +1883,41 @@ export class MidyGM1 extends EventTarget {
     return this.renderedAudioBuffer;
   }
 
-  async start(): Promise<void> {
+  async preloadSamples(): Promise<void> {
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    const channels = this.channels;
+    const seen = new Set<number>();
+    for (const event of this.timeline) {
+      if (event.type !== "noteOn") continue;
+      const channel = channels[event.channel!];
+      const audioBufferId = this.getVoiceId(
+        channel,
+        event.noteNumber!,
+        event.velocity!,
+      );
+      if (audioBufferId === undefined) continue;
+      if (seen.has(audioBufferId)) continue;
+      seen.add(audioBufferId);
+      if (this.rawAudioBufferCache.has(audioBufferId)) continue;
+      const voice = this.resolveVoice(
+        channel,
+        event.noteNumber!,
+        event.velocity!,
+      );
+      if (!voice) continue;
+      const voiceParams = voice.getAllParams(
+        this.getControllerState(channel, event.noteNumber!, event.velocity!),
+      );
+      await this.getRawAudioBuffer(audioBufferId, voiceParams);
+    }
+    this.GM1SystemOn(this.audioContext.currentTime);
+  }
+
+  async start({ preload = true }: { preload?: boolean } = {}): Promise<void> {
     if (this.isPlaying || this.isPaused) return;
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    if (preload) await this.preloadSamples();
     this.playPromise = this.playNotes();
     await this.playPromise;
   }
@@ -2381,6 +2425,7 @@ export class MidyGM1 extends EventTarget {
     offlineContext.resume = () => Promise.resolve();
     offlinePlayer.soundFonts = this.soundFonts;
     offlinePlayer.soundFontTable = this.soundFontTable;
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
     const dstChannel = offlinePlayer.channels[ch];
     dstChannel.state.array.set(channel.state.array);
     dstChannel.isDrum = channel.isDrum;
@@ -2443,6 +2488,7 @@ export class MidyGM1 extends EventTarget {
     offlineContext.resume = () => Promise.resolve();
     offlinePlayer.soundFonts = this.soundFonts;
     offlinePlayer.soundFontTable = this.soundFontTable;
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
     const dstChannel = offlinePlayer.channels[ch];
     dstChannel.state.array.set(channel.state.array);
     dstChannel.isDrum = channel.isDrum;
@@ -2495,7 +2541,13 @@ export class MidyGM1 extends EventTarget {
       }
     }
     if (cacheMode === "none") {
-      return await this.createAudioBuffer(note.voiceParams as VoiceParams);
+      if (!audioBufferId) {
+        return await this.createAudioBuffer(note.voiceParams as VoiceParams);
+      }
+      return await this.getRawAudioBuffer(
+        audioBufferId,
+        note.voiceParams as VoiceParams,
+      );
     }
     // fallback to ADS cache:
     // - "ads" (realtime or not)
@@ -2522,7 +2574,10 @@ export class MidyGM1 extends EventTarget {
     if (realtime) {
       const cached = this.realtimeVoiceCache.get(cacheKey);
       if (cached) return cached;
-      const rawBuffer = await this.createAudioBuffer(voiceParams);
+      const rawBuffer = await this.getRawAudioBuffer(
+        audioBufferId,
+        voiceParams,
+      );
       const rendered = await this.createAdsRenderedBuffer(
         note,
         voiceParams,
@@ -2541,7 +2596,10 @@ export class MidyGM1 extends EventTarget {
         return cache.audioBuffer;
       } else {
         const maxCount = this.voiceCounter.get(cacheKey) ?? 0;
-        const rawBuffer = await this.createAudioBuffer(voiceParams);
+        const rawBuffer = await this.getRawAudioBuffer(
+          audioBufferId,
+          voiceParams,
+        );
         const rendered = await this.createAdsRenderedBuffer(
           note,
           voiceParams,
@@ -2590,7 +2648,10 @@ export class MidyGM1 extends EventTarget {
     const noteDuration = noteEvent?.duration ?? 0;
     const renderPromise = (async () => {
       try {
-        const rawBuffer = await this.createAudioBuffer(voiceParams);
+        const rawBuffer = await this.getRawAudioBuffer(
+          audioBufferId!,
+          voiceParams,
+        );
         const rendered = await this.createAdsrRenderedBuffer(
           note,
           voiceParams,
