@@ -1870,7 +1870,9 @@ export class MidyGMLite extends EventTarget {
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     const channels = this.channels;
     const seen = new Set<number>();
-    for (const event of this.timeline) {
+    const timeline = this.timeline;
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
       if (event.type !== "noteOn") continue;
       const channel = channels[event.channel!];
       const audioBufferId = this.getVoiceId(
@@ -2426,7 +2428,8 @@ export class MidyGMLite extends EventTarget {
       offlineNote.volumeNode.disconnect();
       offlineNote.volumeNode.connect(offlineContext.destination);
     }
-    for (const event of noteEvents) {
+    for (let i = 0; i < noteEvents.length; i++) {
+      const event = noteEvents[i];
       const t = (event.startTime as number) / this.tempo - noteStartTime;
       if (t < 0 || t > noteDuration) continue;
       offlinePlayer.processTimelineEvent(event, t, {
@@ -2483,7 +2486,8 @@ export class MidyGMLite extends EventTarget {
       note.velocity,
       0,
     );
-    for (const event of noteEvents) {
+    for (let i = 0; i < noteEvents.length; i++) {
+      const event = noteEvents[i];
       const t = (event.startTime as number) / this.tempo - noteStartTime;
       if (t < 0 || t > noteDuration) continue;
       offlinePlayer.processTimelineEvent(event, t, {
