@@ -1988,6 +1988,7 @@ export class MidyGM1 extends EventTarget {
     const channels = this.channels;
     const seen = new Set<number>();
     const timeline = this.timeline;
+    const tasks: Promise<AudioBuffer>[] = [];
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       if (event.type !== "noteOn") continue;
@@ -2010,8 +2011,9 @@ export class MidyGM1 extends EventTarget {
       const voiceParams = voice.getAllParams(
         this.getControllerState(channel, event.noteNumber!, event.velocity!),
       );
-      await this.getRawAudioBuffer(audioBufferId, voiceParams);
+      tasks.push(this.getRawAudioBuffer(audioBufferId, voiceParams));
     }
+    await Promise.all(tasks);
     this.GM1SystemOn(this.audioContext.currentTime);
   }
 
