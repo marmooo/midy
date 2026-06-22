@@ -591,6 +591,12 @@ function cbToRatio(cb: number): number {
 const decayCurve = 1 / (-Math.log(cbToRatio(-1000)));
 const releaseCurve = 1 / (-Math.log(cbToRatio(-600)));
 
+// https://www.synthfont.com/sfspec24.pdf
+// SF2 spec's defined maximum (and default) value for the initialFilterFc
+// generator: 13500 cents (≈19913Hz via centToHz, see clampCutoffFrequency).
+// The spec treats this as "no filtering" / fully open by convention
+const FULLY_OPEN_FILTER_CENTS = 13500;
+
 interface TimelineEvent {
   type: string;
   ticks: number;
@@ -2291,11 +2297,15 @@ export class MidyGMLite extends EventTarget {
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-      type: "lowpass",
-      Q: voiceParams.initialFilterQ / 10,
-      frequency: initialFreq,
-    });
+    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+    const filterEnvelopeNode = filterIsAudible
+      ? new BiquadFilterNode(offlineContext, {
+        type: "lowpass",
+        Q: voiceParams.initialFilterQ / 10,
+        frequency: initialFreq,
+      })
+      : null;
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -2307,9 +2317,13 @@ export class MidyGMLite extends EventTarget {
       },
     );
     this.setVolumeEnvelope(offlineNote, 0);
-    this.setFilterEnvelope(offlineNote, 0);
-    bufferSource.connect(filterEnvelopeNode);
-    filterEnvelopeNode.connect(volumeEnvelopeNode);
+    if (filterEnvelopeNode) {
+      this.setFilterEnvelope(offlineNote, 0);
+      bufferSource.connect(filterEnvelopeNode);
+      filterEnvelopeNode.connect(volumeEnvelopeNode);
+    } else {
+      bufferSource.connect(volumeEnvelopeNode);
+    }
     volumeEnvelopeNode.connect(offlineContext.destination);
     if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
@@ -2366,11 +2380,15 @@ export class MidyGMLite extends EventTarget {
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-      type: "lowpass",
-      Q: voiceParams.initialFilterQ / 10,
-      frequency: initialFreq,
-    });
+    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+    const filterEnvelopeNode = filterIsAudible
+      ? new BiquadFilterNode(offlineContext, {
+        type: "lowpass",
+        Q: voiceParams.initialFilterQ / 10,
+        frequency: initialFreq,
+      })
+      : null;
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -2407,17 +2425,23 @@ export class MidyGMLite extends EventTarget {
       .cancelScheduledValues(noteOffTime)
       .setValueAtTime(gainAtNoteOff, noteOffTime)
       .setTargetAtTime(0, noteOffTime, releaseDuration * releaseCurve);
-    filterEnvelopeNode.frequency
-      .cancelScheduledValues(noteOffTime)
-      .setValueAtTime(initialFreq, noteOffTime)
-      .setTargetAtTime(
-        initialFreq,
-        noteOffTime,
-        voiceParams.modRelease * releaseCurve,
-      );
+    if (filterEnvelopeNode) {
+      filterEnvelopeNode.frequency
+        .cancelScheduledValues(noteOffTime)
+        .setValueAtTime(initialFreq, noteOffTime)
+        .setTargetAtTime(
+          initialFreq,
+          noteOffTime,
+          voiceParams.modRelease * releaseCurve,
+        );
+    }
 
-    bufferSource.connect(filterEnvelopeNode);
-    filterEnvelopeNode.connect(volumeEnvelopeNode);
+    if (filterEnvelopeNode) {
+      bufferSource.connect(filterEnvelopeNode);
+      filterEnvelopeNode.connect(volumeEnvelopeNode);
+    } else {
+      bufferSource.connect(volumeEnvelopeNode);
+    }
     volumeEnvelopeNode.connect(offlineContext.destination);
     if (isLoop) {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
@@ -2585,6 +2609,7 @@ export class MidyGMLite extends EventTarget {
       for (let j = 0; j < noteEvents.length; j++) {
         const event = noteEvents[j];
         if (appliedEvents.has(event)) continue;
+        if (event.type === "programChange") continue;
         const t = (event.startTime as number) / this.tempo - noteStartTime;
         if (t < 0 || t > n.noteDuration) continue;
         appliedEvents.add(event);
@@ -2922,19 +2947,30 @@ export class MidyGMLite extends EventTarget {
       (audioBuffer as RenderedBuffer).isFull === true;
     if (cacheMode === "none") {
       note.volumeEnvelopeNode = new GainNode(audioContext);
-      note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
-        type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10,
-      });
+      const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+        voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+      note.filterEnvelopeNode = filterIsAudible
+        ? new BiquadFilterNode(audioContext, {
+          type: "lowpass",
+          Q: voiceParams.initialFilterQ / 10,
+        })
+        : null;
       this.setVolumeEnvelope(note, now);
-      this.setFilterEnvelope(note, now);
+      if (note.filterEnvelopeNode) this.setFilterEnvelope(note, now);
       this.setPitchEnvelope(note, now);
       this.setDetune(channel, note, now);
-      if (0 < state.modulationDepthMSB) {
+      const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 ||
+        voiceParams.modLfoToFilterFc !== 0 ||
+        voiceParams.modLfoToVolume !== 0;
+      if (modLfoIsAudible && 0 < state.modulationDepthMSB) {
         this.startModulation(channel, note, now);
       }
-      note.bufferSource.connect(note.filterEnvelopeNode);
-      note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+      if (note.filterEnvelopeNode) {
+        note.bufferSource.connect(note.filterEnvelopeNode);
+        note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+      } else {
+        note.bufferSource.connect(note.volumeEnvelopeNode);
+      }
       note.volumeEnvelopeNode.connect(note.volumeNode);
     } else if (isFullCached) { // "note" mode
       note.volumeEnvelopeNode = null;

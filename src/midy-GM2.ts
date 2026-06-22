@@ -885,6 +885,12 @@ function cbToRatio(cb: number): number {
 const decayCurve = 1 / (-Math.log(cbToRatio(-1000)));
 const releaseCurve = 1 / (-Math.log(cbToRatio(-600)));
 
+// https://www.synthfont.com/sfspec24.pdf
+// SF2 spec's defined maximum (and default) value for the initialFilterFc
+// generator: 13500 cents (≈19913Hz via centToHz, see clampCutoffFrequency).
+// The spec treats this as "no filtering" / fully open by convention
+const FULLY_OPEN_FILTER_CENTS = 13500;
+
 interface TimelineEvent {
   type: string;
   ticks: number;
@@ -3008,11 +3014,15 @@ export class MidyGM2 extends EventTarget {
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-      type: "lowpass",
-      Q: voiceParams.initialFilterQ / 10,
-      frequency: initialFreq,
-    });
+    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+    const filterEnvelopeNode = filterIsAudible
+      ? new BiquadFilterNode(offlineContext, {
+        type: "lowpass",
+        Q: voiceParams.initialFilterQ / 10,
+        frequency: initialFreq,
+      })
+      : null;
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -3024,9 +3034,13 @@ export class MidyGM2 extends EventTarget {
       },
     );
     this.setVolumeEnvelope(channel, offlineNote, 0);
-    this.setFilterEnvelope(channel, offlineNote, 0);
-    bufferSource.connect(filterEnvelopeNode);
-    filterEnvelopeNode.connect(volumeEnvelopeNode);
+    if (filterEnvelopeNode) {
+      this.setFilterEnvelope(channel, offlineNote, 0);
+      bufferSource.connect(filterEnvelopeNode);
+      filterEnvelopeNode.connect(volumeEnvelopeNode);
+    } else {
+      bufferSource.connect(volumeEnvelopeNode);
+    }
     volumeEnvelopeNode.connect(offlineContext.destination);
     if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
@@ -3084,11 +3098,15 @@ export class MidyGM2 extends EventTarget {
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-      type: "lowpass",
-      Q: voiceParams.initialFilterQ / 10,
-      frequency: initialFreq,
-    });
+    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+    const filterEnvelopeNode = filterIsAudible
+      ? new BiquadFilterNode(offlineContext, {
+        type: "lowpass",
+        Q: voiceParams.initialFilterQ / 10,
+        frequency: initialFreq,
+      })
+      : null;
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -3125,17 +3143,23 @@ export class MidyGM2 extends EventTarget {
       .cancelScheduledValues(noteOffTime)
       .setValueAtTime(gainAtNoteOff, noteOffTime)
       .setTargetAtTime(0, noteOffTime, releaseDuration * releaseCurve);
-    filterEnvelopeNode.frequency
-      .cancelScheduledValues(noteOffTime)
-      .setValueAtTime(initialFreq, noteOffTime)
-      .setTargetAtTime(
-        initialFreq,
-        noteOffTime,
-        voiceParams.modRelease * releaseCurve,
-      );
+    if (filterEnvelopeNode) {
+      filterEnvelopeNode.frequency
+        .cancelScheduledValues(noteOffTime)
+        .setValueAtTime(initialFreq, noteOffTime)
+        .setTargetAtTime(
+          initialFreq,
+          noteOffTime,
+          voiceParams.modRelease * releaseCurve,
+        );
+    }
 
-    bufferSource.connect(filterEnvelopeNode);
-    filterEnvelopeNode.connect(volumeEnvelopeNode);
+    if (filterEnvelopeNode) {
+      bufferSource.connect(filterEnvelopeNode);
+      filterEnvelopeNode.connect(volumeEnvelopeNode);
+    } else {
+      bufferSource.connect(volumeEnvelopeNode);
+    }
     volumeEnvelopeNode.connect(offlineContext.destination);
     if (isLoop) {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
@@ -3303,6 +3327,7 @@ export class MidyGM2 extends EventTarget {
       for (let j = 0; j < noteEvents.length; j++) {
         const event = noteEvents[j];
         if (appliedEvents.has(event)) continue;
+        if (event.type === "programChange") continue;
         const t = (event.startTime as number) / this.tempo - noteStartTime;
         if (t < 0 || t > n.noteDuration) continue;
         appliedEvents.add(event);
@@ -3645,35 +3670,48 @@ export class MidyGM2 extends EventTarget {
       (audioBuffer as RenderedBuffer).isFull === true;
     if (cacheMode === "none") {
       note.volumeEnvelopeNode = new GainNode(audioContext);
-      note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
-        type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10,
-      });
+      const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
+        voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+      note.filterEnvelopeNode = filterIsAudible
+        ? new BiquadFilterNode(audioContext, {
+          type: "lowpass",
+          Q: voiceParams.initialFilterQ / 10,
+        })
+        : null;
       const prevNote = channel.lastNote;
       if (prevNote && prevNote.noteNumber !== noteNumber) {
         note.portamentoNoteNumber = prevNote.noteNumber;
       }
       if (!channel.isDrum && this.isPortamento(channel, note)) {
         this.setPortamentoVolumeEnvelope(channel, note, now);
-        this.setPortamentoFilterEnvelope(channel, note, now);
+        if (note.filterEnvelopeNode) {
+          this.setPortamentoFilterEnvelope(channel, note, now);
+        }
         this.setPortamentoPitchEnvelope(channel, note, now);
         this.setPortamentoDetune(channel, note, now);
       } else {
         this.setVolumeEnvelope(channel, note, now);
-        this.setFilterEnvelope(channel, note, now);
+        if (note.filterEnvelopeNode) this.setFilterEnvelope(channel, note, now);
         this.setPitchEnvelope(note, now);
         this.setDetune(channel, note, now);
       }
       this.startVibrato(channel, note, now);
-      if (0 < state.modulationDepthMSB) {
+      const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 ||
+        voiceParams.modLfoToFilterFc !== 0 ||
+        voiceParams.modLfoToVolume !== 0;
+      if (modLfoIsAudible && 0 < state.modulationDepthMSB) {
         this.startModulation(channel, note, now);
       }
       if (channel.mono && channel.currentBufferSource) {
         channel.currentBufferSource.stop(startTime);
         channel.currentBufferSource = note.bufferSource;
       }
-      note.bufferSource.connect(note.filterEnvelopeNode);
-      note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+      if (note.filterEnvelopeNode) {
+        note.bufferSource.connect(note.filterEnvelopeNode);
+        note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+      } else {
+        note.bufferSource.connect(note.volumeEnvelopeNode);
+      }
       note.volumeEnvelopeNode.connect(note.volumeNode);
       this.setChorusSend(channel, note, now);
       this.setReverbSend(channel, note, now);
@@ -3816,8 +3854,7 @@ export class MidyGM2 extends EventTarget {
     channel.lastNote = note;
     this.setNoteRouting(channel, note, startTime);
     note.resolveReady();
-    const state = channel.state;
-    if (0.5 <= state.sustainPedal) channel.sustainNotes.push(note);
+    if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
     return note;
   }
 
