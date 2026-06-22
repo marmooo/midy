@@ -791,7 +791,10 @@ export class MidyGMLite extends EventTarget {
     modulationDepthRange: 50, // cent
   };
 
-  constructor(audioContext: AudioContext | OfflineAudioContext) {
+  constructor(
+    audioContext: AudioContext | OfflineAudioContext,
+    options?: { activeChannelNumbers?: Iterable<number> },
+  ) {
     super();
     this.audioContext = audioContext;
     this.cacheMode = DEFAULT_CACHE_MODE;
@@ -804,7 +807,10 @@ export class MidyGMLite extends EventTarget {
     this.messageHandlers = this.createMessageHandlers();
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
-    this.channels = this.createChannels();
+    const activeChannelNumbers = options?.activeChannelNumbers
+      ? new Set(options.activeChannelNumbers)
+      : undefined;
+    this.channels = this.createChannels(activeChannelNumbers);
     this.masterVolume.connect(audioContext.destination);
     this.scheduler.connect(audioContext.destination);
     this.GM1SystemOn(audioContext.currentTime);
@@ -1115,17 +1121,29 @@ export class MidyGMLite extends EventTarget {
     return { gainL, gainR, merger };
   }
 
-  createChannels(): Channel[] {
+  createUnusedChannelAudioNodes(
+    audioContext: AudioContext | OfflineAudioContext,
+  ): { gainL: GainNode; gainR: GainNode; merger: ChannelMergerNode } {
+    return {
+      gainL: new GainNode(audioContext),
+      gainR: new GainNode(audioContext),
+      merger: new ChannelMergerNode(audioContext, { numberOfInputs: 2 }),
+    };
+  }
+
+  createChannels(activeChannelNumbers?: Set<number>): Channel[] {
     const settings = (this.constructor as typeof MidyGMLite).channelSettings;
     const audioContext = this.audioContext;
+    let unusedAudioNodes: ChannelAudioNodes | null = null;
     return Array.from(
       { length: this.numChannels },
       (_, ch) => {
-        const channel = new Channel(
-          ch,
-          settings,
-          this.createChannelAudioNodes(audioContext),
-        );
+        const audioNodes = !activeChannelNumbers || activeChannelNumbers.has(ch)
+          ? this.createChannelAudioNodes(audioContext)
+          : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
+            audioContext,
+          ));
+        const channel = new Channel(ch, settings, audioNodes);
         channel.player = this;
         return channel;
       },
@@ -2478,6 +2496,7 @@ export class MidyGMLite extends EventTarget {
     );
     const offlinePlayer = new (this.constructor as typeof MidyGMLite)(
       offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: [ch] },
     );
     offlinePlayer.cacheMode = "none";
     offlineContext.suspend = () => Promise.resolve();
@@ -2620,6 +2639,7 @@ export class MidyGMLite extends EventTarget {
     );
     const offlinePlayer = new (this.constructor as typeof MidyGMLite)(
       offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: [ch] },
     );
     offlinePlayer.cacheMode = "none";
     offlineContext.suspend = () => Promise.resolve();

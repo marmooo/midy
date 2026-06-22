@@ -1405,7 +1405,10 @@ export class Midy extends EventTarget {
     isMPEManager: false,
   };
 
-  constructor(audioContext: AudioContext | OfflineAudioContext) {
+  constructor(
+    audioContext: AudioContext | OfflineAudioContext,
+    options?: { activeChannelNumbers?: Iterable<number> },
+  ) {
     super();
     this.audioContext = audioContext;
     this.cacheMode = DEFAULT_CACHE_MODE;
@@ -1420,7 +1423,10 @@ export class Midy extends EventTarget {
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
     this.effectHandlers = this.createEffectHandlers();
-    this.channels = this.createChannels();
+    const activeChannelNumbers = options?.activeChannelNumbers
+      ? new Set(options.activeChannelNumbers)
+      : undefined;
+    this.channels = this.createChannels(activeChannelNumbers);
     this.reverbEffect = this.createReverbEffect(this.reverb.algorithm);
     this.chorusEffect = this.createChorusEffect();
     this.chorusEffect.output.connect(this.masterVolume);
@@ -1766,17 +1772,29 @@ export class Midy extends EventTarget {
     return { gainL, gainR, merger };
   }
 
-  createChannels(): Channel[] {
+  createUnusedChannelAudioNodes(
+    audioContext: AudioContext | OfflineAudioContext,
+  ): { gainL: GainNode; gainR: GainNode; merger: ChannelMergerNode } {
+    return {
+      gainL: new GainNode(audioContext),
+      gainR: new GainNode(audioContext),
+      merger: new ChannelMergerNode(audioContext, { numberOfInputs: 2 }),
+    };
+  }
+
+  createChannels(activeChannelNumbers?: Set<number>): Channel[] {
     const settings = (this.constructor as typeof Midy).channelSettings;
     const audioContext = this.audioContext;
+    let unusedAudioNodes: ChannelAudioNodes | null = null;
     return Array.from(
       { length: this.numChannels },
       (_, ch) => {
-        const channel = new Channel(
-          ch,
-          settings,
-          this.createChannelAudioNodes(audioContext),
-        );
+        const audioNodes = !activeChannelNumbers || activeChannelNumbers.has(ch)
+          ? this.createChannelAudioNodes(audioContext)
+          : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
+            audioContext,
+          ));
+        const channel = new Channel(ch, settings, audioNodes);
         channel.player = this;
         return channel;
       },
@@ -3525,6 +3543,7 @@ export class Midy extends EventTarget {
     );
     const offlinePlayer = new (this.constructor as typeof Midy)(
       offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: [ch] },
     );
     offlinePlayer.cacheMode = "none";
     offlineContext.suspend = () => Promise.resolve();
@@ -3667,6 +3686,7 @@ export class Midy extends EventTarget {
     );
     const offlinePlayer = new (this.constructor as typeof Midy)(
       offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: [ch] },
     );
     offlinePlayer.cacheMode = "none";
     offlineContext.suspend = () => Promise.resolve();
