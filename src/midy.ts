@@ -2228,7 +2228,7 @@ export class Midy extends EventTarget {
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
-          if (this.cacheMode === "segment") this.stopSegmentSources();
+          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
           await this.suspendAudioContext();
           exitReason = "ended";
           break;
@@ -2446,6 +2446,56 @@ export class Midy extends EventTarget {
       { length: this.numChannels },
       () => ({ openSegment: null, pending: [] }),
     );
+  }
+
+  async drainSegmentPipeline(): Promise<void> {
+    const channels = this.channels;
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      if (state.openSegment) {
+        this.closeSegment(state, channels[ch]);
+      }
+    }
+    const allBufferPromises: Promise<AudioBuffer | null>[] = [];
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        allBufferPromises.push(pending[i].bufferPromise);
+      }
+    }
+    await Promise.allSettled(allBufferPromises);
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        if (!pending[i].source && pending[i].bufferReady) {
+          this.startPendingSegment(channels[ch], pending[i]);
+        }
+      }
+    }
+    while (true) {
+      let allDone = true;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          if (!pending[i].done) {
+            allDone = false;
+            break;
+          }
+        }
+        if (!allDone) break;
+      }
+      if (allDone) break;
+      const now = this.audioContext.currentTime;
+      await this.scheduleTask(() => {}, now + this.noteCheckInterval);
+    }
   }
 
   stopSegmentSources(): void {
