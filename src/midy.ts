@@ -1205,6 +1205,7 @@ interface OpenSegment {
   // the replay starts from the correct baseline.
   channelDetune: number;
   channelStateArray: Float32Array;
+  programNumber: number;
 }
 interface PendingSegment {
   segmentStart: number;
@@ -1320,7 +1321,8 @@ export class Midy extends EventTarget {
   voiceCounter: Map<number, number> = new Map();
   voiceCache: Map<number, CacheEntry> = new Map();
   realtimeVoiceCache: Map<number, RenderedBuffer> = new Map();
-  rawAudioBufferCache: Map<number, AudioBuffer> = new Map();
+  rawAudioBufferCache: Map<number, AudioBuffer | Promise<AudioBuffer>> =
+    new Map();
   decodeMethod: string = "wasm-audio-decoders";
   isPlaying: boolean = false;
   isPausing: boolean = false;
@@ -1361,6 +1363,7 @@ export class Midy extends EventTarget {
   segmentBakedSet: Set<number> = new Set();
   segmentChannelStates: (SegmentChannelState | null)[] = [];
   segmentVoiceParams: (VoiceParams | null)[] = [];
+  preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
   // Bumped on every seek/stop/loop/pause. renderSegmentBuffer() calls are
   // tagged with the generation active when they started; if it no longer
   // matches this value once a render finishes, that render started before
@@ -1468,7 +1471,7 @@ export class Midy extends EventTarget {
     input: string | Uint8Array | (string | Uint8Array)[],
   ): Promise<void> {
     this.voiceCounter.clear();
-    this.rawAudioBufferCache.clear();
+    this.rawAudioBufferCache = new Map();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
       for (let i = 0; i < input.length; i++) {
@@ -1667,6 +1670,11 @@ export class Midy extends EventTarget {
     const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
+    const preloadEntries: {
+      audioBufferId: number;
+      voiceParams: VoiceParams;
+    }[] = [];
+    const seenPreloadIds = new Set<number>();
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       switch (event.type) {
@@ -1685,29 +1693,40 @@ export class Midy extends EventTarget {
           // channel.programNumber reflects the last programChange in the song, not
           // the one in effect at each individual note. So voiceParams must be
           // resolved and snapshotted here, while programNumber is still correct.
-          if (isSegmentMode) {
-            // Drum exclusive class notes are also excluded here: the kit lookup
-            // needs the current programNumber, and segmenting them would bring no
-            // benefit anyway since exclusive class guarantees at most one note of
-            // the same class sounds at a time — no polyphony explosion to prevent.
-            const isExcludedDrum = channel.isDrum &&
-              drumExclusiveClassesByKit[channel.programNumber][
-                  event.noteNumber!
-                ] !== 0;
-            if (!isExcludedDrum) {
-              const voice = this.resolveVoice(
+          //
+          // Drum exclusive class notes are also excluded from segmentVoiceParams:
+          // the kit lookup needs the current programNumber, and segmenting them
+          // would bring no benefit anyway since exclusive class guarantees at most
+          // one note of the same class sounds at a time.
+          const isExcludedDrum = channel.isDrum &&
+            drumExclusiveClassesByKit[channel.programNumber][event.noteNumber!] !== 0;
+          // Exclusive class drum notes are excluded from segmentVoiceParams
+          // (and therefore from segment.notes) because segmenting them would
+          // bring no benefit — exclusive class guarantees at most one note of
+          // the same class sounds at a time, so they're scheduled via the
+          // normal noteOnChannel path instead. However they still need their
+          // raw sample decoded and cached so that noteOnChannel path doesn't
+          // pay a decode penalty on first encounter. Preload them unconditionally.
+          if (audioBufferId !== undefined) {
+            const voice = this.resolveVoice(
+              channel,
+              event.noteNumber!,
+              event.velocity!,
+            );
+            if (voice) {
+              const controllerState = this.getControllerState(
                 channel,
                 event.noteNumber!,
                 event.velocity!,
+                0,
               );
-              if (voice) {
-                const controllerState = this.getControllerState(
-                  channel,
-                  event.noteNumber!,
-                  event.velocity!,
-                  0,
-                );
-                segmentVoiceParams[i] = voice.getAllParams(controllerState);
+              const voiceParams = voice.getAllParams(controllerState);
+              if (isSegmentMode && !isExcludedDrum) {
+                segmentVoiceParams[i] = voiceParams;
+              }
+              if (!seenPreloadIds.has(audioBufferId)) {
+                seenPreloadIds.add(audioBufferId);
+                preloadEntries.push({ audioBufferId, voiceParams });
               }
             }
           }
@@ -1724,6 +1743,7 @@ export class Midy extends EventTarget {
           channels[event.channel!].setProgramChange(event.programNumber!);
       }
     }
+    this.preloadEntries = preloadEntries;
     for (const [audioBufferId, count] of voiceCounter) {
       if (count === 1) voiceCounter.delete(audioBufferId);
     }
@@ -1873,8 +1893,10 @@ export class Midy extends EventTarget {
     voiceParams: VoiceParams,
   ): Promise<AudioBuffer> {
     const cached = this.rawAudioBufferCache.get(audioBufferId);
-    if (cached) return cached;
-    const buffer = await this.createAudioBuffer(voiceParams);
+    if (cached !== undefined) return cached;
+    const promise = this.createAudioBuffer(voiceParams);
+    this.rawAudioBufferCache.set(audioBufferId, promise);
+    const buffer = await promise;
     this.rawAudioBufferCache.set(audioBufferId, buffer);
     return buffer;
   }
@@ -2475,6 +2497,7 @@ export class Midy extends EventTarget {
         notes: [],
         channelDetune: channel.detune,
         channelStateArray: channel.state.array.slice(),
+        programNumber: channel.programNumber,
       };
     }
     state.openSegment.notes.push({
@@ -2827,36 +2850,16 @@ export class Midy extends EventTarget {
 
   async preloadSamples(): Promise<void> {
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    const channels = this.channels;
-    const seen = new Set<number>();
-    const timeline = this.timeline;
+    const entries = this.preloadEntries;
     const tasks: Promise<AudioBuffer>[] = [];
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      if (event.type !== "noteOn") continue;
-      const channel = channels[event.channel!];
-      const audioBufferId = this.getVoiceId(
-        channel,
-        event.noteNumber!,
-        event.velocity!,
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
+      tasks.push(
+        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams),
       );
-      if (audioBufferId === undefined) continue;
-      if (seen.has(audioBufferId)) continue;
-      seen.add(audioBufferId);
-      if (this.rawAudioBufferCache.has(audioBufferId)) continue;
-      const voice = this.resolveVoice(
-        channel,
-        event.noteNumber!,
-        event.velocity!,
-      );
-      if (!voice) continue;
-      const voiceParams = voice.getAllParams(
-        this.getControllerState(channel, event.noteNumber!, event.velocity!, 0),
-      );
-      tasks.push(this.getRawAudioBuffer(audioBufferId, voiceParams));
     }
     await Promise.all(tasks);
-    this.GM1SystemOn(this.audioContext.currentTime);
   }
 
   async start({ preload = true }: { preload?: boolean } = {}): Promise<void> {
@@ -3584,7 +3587,7 @@ export class Midy extends EventTarget {
     // apply them. See OpenSegment.channelDetune/channelStateArray doc comment.
     dstChannel.state.array.set(segment.channelStateArray);
     dstChannel.isDrum = channel.isDrum;
-    dstChannel.programNumber = channel.programNumber;
+    dstChannel.programNumber = segment.programNumber;
     dstChannel.modulationDepthRange = channel.modulationDepthRange;
     dstChannel.detune = segment.channelDetune;
 
