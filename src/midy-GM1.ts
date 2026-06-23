@@ -211,9 +211,13 @@ export class Channel {
     startTime: number | undefined,
     note?: Note,
   ): Promise<Note | void> {
-    const player = this.player;
-    const t: number = startTime ?? player.audioContext.currentTime;
-    return await player.noteOnChannel(this, noteNumber, velocity, t, note);
+    return await this.player.noteOnChannel(
+      this,
+      noteNumber,
+      velocity,
+      startTime,
+      note,
+    );
   }
 
   async noteOff(
@@ -3119,11 +3123,12 @@ export class MidyGM1 extends EventTarget {
     channel: Channel,
     noteNumber: number,
     velocity: number,
-    startTime: number,
+    startTime: number | undefined,
     note?: Note,
   ): Promise<Note | void> {
+    const t: number = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === undefined;
-    if (!note) note = new Note(noteNumber, velocity, startTime);
+    if (!note) note = new Note(noteNumber, velocity, t);
     const programNumber = channel.programNumber;
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return;
@@ -3142,11 +3147,7 @@ export class MidyGM1 extends EventTarget {
     }
     channel.activeNotes[noteNumber].push(note);
     await this.setNoteAudioNode(channel, note, realtime);
-    this.setNoteRouting(
-      channel,
-      note,
-      startTime ?? this.audioContext.currentTime,
-    );
+    this.setNoteRouting(channel, note, t);
     note.resolveReady();
     if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
     return note;
