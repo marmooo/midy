@@ -5025,7 +5025,7 @@ export class Midy extends EventTarget {
     if (channel.isDrum) return;
     channel.processScheduledNotes((note) => {
       if (this.isPortamento(channel, note)) {
-        this.ensureFilterEnvelopeNode(channel, note, scheduleTime);
+        this.ensureFilterEnvelopeNode(note);
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
         this.setPortamentoPitchEnvelope(channel, note, scheduleTime);
