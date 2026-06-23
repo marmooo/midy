@@ -530,6 +530,7 @@ export class Channel {
     this.state.softPedal = value / 127;
     this.processScheduledNotes((note) => {
       if (player.isPortamento(this, note)) {
+        player.ensureFilterEnvelopeNode(note);
         player.setPortamentoVolumeEnvelope(this, note, t);
         player.setPortamentoFilterEnvelope(this, note, t);
       } else {
@@ -1699,7 +1700,9 @@ export class Midy extends EventTarget {
           // would bring no benefit anyway since exclusive class guarantees at most
           // one note of the same class sounds at a time.
           const isExcludedDrum = channel.isDrum &&
-            drumExclusiveClassesByKit[channel.programNumber][event.noteNumber!] !== 0;
+            drumExclusiveClassesByKit[channel.programNumber][
+                event.noteNumber!
+              ] !== 0;
           // Exclusive class drum notes are excluded from segmentVoiceParams
           // (and therefore from segment.notes) because segmenting them would
           // bring no benefit — exclusive class guarantees at most one note of
@@ -3190,6 +3193,26 @@ export class Midy extends EventTarget {
     return Math.max(minFrequency, Math.min(frequency, maxFrequency));
   }
 
+  ensureFilterEnvelopeNode(note: Note): void {
+    if (note.filterEnvelopeNode) return;
+    const { voiceParams, bufferSource, volumeEnvelopeNode } = note;
+    if (!voiceParams || !bufferSource || !volumeEnvelopeNode) return;
+
+    const filter = new BiquadFilterNode(this.audioContext, {
+      type: "lowpass",
+      Q: voiceParams.initialFilterQ / 10,
+    });
+    note.filterEnvelopeNode = filter;
+
+    bufferSource.disconnect(volumeEnvelopeNode);
+    bufferSource.connect(filter);
+    filter.connect(volumeEnvelopeNode);
+
+    if (note.modLfoToFilterFc) {
+      note.modLfoToFilterFc.connect(filter.frequency);
+    }
+  }
+
   setPortamentoFilterEnvelope(
     channel: Channel,
     note: Note,
@@ -4003,23 +4026,23 @@ export class Midy extends EventTarget {
       (audioBuffer as RenderedBuffer).isFull === true;
     if (cacheMode === "none") {
       note.volumeEnvelopeNode = new GainNode(audioContext);
+      const prevNote = channel.lastNote;
+      if (prevNote && prevNote.noteNumber !== noteNumber) {
+        note.portamentoNoteNumber = prevNote.noteNumber;
+      }
+      const isPortamento = !channel.isDrum && this.isPortamento(channel, note);
       const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
-        voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+        voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS ||
+        isPortamento;
       note.filterEnvelopeNode = filterIsAudible
         ? new BiquadFilterNode(audioContext, {
           type: "lowpass",
           Q: voiceParams.initialFilterQ / 10,
         })
         : null;
-      const prevNote = channel.lastNote;
-      if (prevNote && prevNote.noteNumber !== noteNumber) {
-        note.portamentoNoteNumber = prevNote.noteNumber;
-      }
-      if (!channel.isDrum && this.isPortamento(channel, note)) {
+      if (isPortamento) {
         this.setPortamentoVolumeEnvelope(channel, note, now);
-        if (note.filterEnvelopeNode) {
-          this.setPortamentoFilterEnvelope(channel, note, now);
-        }
+        this.setPortamentoFilterEnvelope(channel, note, now);
         this.setPortamentoPitchEnvelope(channel, note, now);
         this.setPortamentoDetune(channel, note, now);
       } else {
@@ -4947,6 +4970,7 @@ export class Midy extends EventTarget {
     if (channel.isDrum) return;
     channel.processScheduledNotes((note) => {
       if (this.isPortamento(channel, note)) {
+        this.ensureFilterEnvelopeNode(channel, note, scheduleTime);
         this.setPortamentoVolumeEnvelope(channel, note, scheduleTime);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
         this.setPortamentoPitchEnvelope(channel, note, scheduleTime);
@@ -5630,7 +5654,8 @@ export class Midy extends EventTarget {
       }
     };
     handlers[1] = (channel, note, _tableName, scheduleTime) => {
-      if (0.5 <= channel.state.portamento && 0 <= note.portamentoNoteNumber) {
+      if (this.isPortamento(channel, note)) {
+        this.ensureFilterEnvelopeNode(note);
         this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
       } else {
         this.setFilterEnvelope(channel, note, scheduleTime);
