@@ -8,7 +8,7 @@
     "@marmooo/soundfont-parser": "npm:@marmooo/soundfont-parser@^0.1.9",
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "@wasm-audio-decoders/ogg-vorbis": "npm:@wasm-audio-decoders/ogg-vorbis@^0.1.20",
-    "esbuild": "npm:esbuild@^0.28.0",
+    "esbuild": "npm:esbuild@^0.28.1",
     "midi-file": "npm:midi-file@^1.2.4",
     "web-audio-api": "npm:web-audio-api@^1.5.1"
   },
