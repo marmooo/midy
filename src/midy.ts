@@ -138,6 +138,7 @@ export class Note {
   // "segment" mode
   isSegmentGhost: boolean = false;
   segmentNoteDuration: number = 0;
+  audioBufferId?: number;
 
   constructor(noteNumber: number, velocity: number, startTime: number) {
     this.noteNumber = noteNumber;
@@ -1427,12 +1428,19 @@ export class Midy extends EventTarget {
     this.audioContext = audioContext;
     this.cacheMode = DEFAULT_CACHE_MODE;
     this.masterVolume = new GainNode(audioContext);
-    this.scheduler = new GainNode(audioContext, { gain: 0 });
-    this.schedulerBuffer = new AudioBuffer({
-      length: 1,
-      sampleRate: audioContext.sampleRate,
-    });
-    this.messageHandlers = this.createMessageHandlers();
+    const isOffline = audioContext instanceof OfflineAudioContext;
+    if (isOffline) {
+      this.scheduler = null as unknown as GainNode;
+      this.schedulerBuffer = null as unknown as AudioBuffer;
+      this.messageHandlers = [];
+    } else {
+      this.scheduler = new GainNode(audioContext, { gain: 0 });
+      this.schedulerBuffer = new AudioBuffer({
+        length: 1,
+        sampleRate: audioContext.sampleRate,
+      });
+      this.messageHandlers = this.createMessageHandlers();
+    }
     this.voiceParamsHandlers = this.createVoiceParamsHandlers();
     this.controlChangeHandlers = this.createControlChangeHandlers();
     this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
@@ -1446,8 +1454,12 @@ export class Midy extends EventTarget {
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
     this.masterVolume.connect(audioContext.destination);
-    this.scheduler.connect(audioContext.destination);
-    this.GM2SystemOn(audioContext.currentTime);
+    if (!isOffline) {
+      this.scheduler.connect(audioContext.destination);
+      this.GM1SystemOn(audioContext.currentTime);
+    } else {
+      if (this.channels[9]) this.channels[9].isDrum = true;
+    }
   }
 
   addSoundFont(soundFont: SoundFont): void {
@@ -1675,6 +1687,12 @@ export class Midy extends EventTarget {
     const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
+    const segmentAudioBufferIds: (number | undefined)[] = isSegmentMode
+      ? new Array(timeline.length)
+      : [];
+    const segmentVoices: (Voice | null)[] = isSegmentMode
+      ? new Array(timeline.length).fill(null)
+      : [];
     const preloadEntries: {
       audioBufferId: number;
       voiceParams: VoiceParams;
@@ -1730,6 +1748,8 @@ export class Midy extends EventTarget {
               const voiceParams = voice.getAllParams(controllerState);
               if (isSegmentMode && !isExcludedDrum) {
                 segmentVoiceParams[i] = voiceParams;
+                segmentAudioBufferIds[i] = audioBufferId;
+                segmentVoices[i] = voice;
               }
               if (!seenPreloadIds.has(audioBufferId)) {
                 seenPreloadIds.add(audioBufferId);
@@ -1763,6 +1783,8 @@ export class Midy extends EventTarget {
     }
     if (isSegmentMode) {
       this.segmentVoiceParams = segmentVoiceParams;
+      this.segmentAudioBufferIds = segmentAudioBufferIds;
+      this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
     }
   }
@@ -1818,20 +1840,37 @@ export class Midy extends EventTarget {
   createChannels(activeChannelNumbers?: Set<number>): Channel[] {
     const settings = (this.constructor as typeof Midy).channelSettings;
     const audioContext = this.audioContext;
-    let unusedAudioNodes: ChannelAudioNodes | null = null;
-    return Array.from(
-      { length: this.numChannels },
-      (_, ch) => {
-        const audioNodes = !activeChannelNumbers || activeChannelNumbers.has(ch)
-          ? this.createChannelAudioNodes(audioContext)
-          : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
-            audioContext,
-          ));
-        const channel = new Channel(ch, settings, audioNodes);
-        channel.player = this;
-        return channel;
-      },
-    );
+    if (audioContext instanceof OfflineAudioContext) {
+      return Array.from(
+        { length: this.numChannels },
+        (_, ch) => {
+          const isActive = !activeChannelNumbers ||
+            activeChannelNumbers.has(ch);
+          const audioNodes = isActive
+            ? this.createChannelAudioNodes(audioContext)
+            : undefined;
+          const channel = new Channel(ch, settings, audioNodes);
+          channel.player = this;
+          return channel;
+        },
+      );
+    } else {
+      let unusedAudioNodes: ChannelAudioNodes | null = null;
+      return Array.from(
+        { length: this.numChannels },
+        (_, ch) => {
+          const audioNodes =
+            !activeChannelNumbers || activeChannelNumbers.has(ch)
+              ? this.createChannelAudioNodes(audioContext)
+              : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
+                audioContext,
+              ));
+          const channel = new Channel(ch, settings, audioNodes);
+          channel.player = this;
+          return channel;
+        },
+      );
+    }
   }
 
   decodeOggVorbis(sample: AudioData): Promise<AudioBuffer> {
@@ -3684,11 +3723,9 @@ export class Midy extends EventTarget {
     const seenAudioBufferIds = new Set<number>();
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const audioBufferId = offlinePlayer.getVoiceId(
-        dstChannel,
-        n.noteNumber,
-        n.velocity,
-      );
+      const audioBufferId = n.audioBufferId !== undefined
+        ? n.audioBufferId
+        : offlinePlayer.getVoiceId(dstChannel, n.noteNumber, n.velocity);
       if (
         audioBufferId === undefined || seenAudioBufferIds.has(audioBufferId)
       ) {
@@ -3722,6 +3759,8 @@ export class Midy extends EventTarget {
         n.noteEvent ?? {};
       const preNote = new Note(n.noteNumber, n.velocity, n.offset);
       preNote.voiceParams = n.voiceParams;
+      preNote.voice = n.voice ?? null;
+      preNote.audioBufferId = n.audioBufferId;
       const offlineNote = await offlinePlayer.noteOnChannel(
         dstChannel,
         n.noteNumber,
@@ -3843,7 +3882,9 @@ export class Midy extends EventTarget {
   ): Promise<RenderedBuffer | AudioBuffer | undefined> {
     const cacheMode = this.cacheMode;
     const { noteNumber, velocity } = note;
-    const audioBufferId = this.getVoiceId(channel, noteNumber, velocity);
+    const audioBufferId = note.audioBufferId !== undefined
+      ? note.audioBufferId
+      : this.getVoiceId(channel, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
         return await this.getFullCachedBuffer(channel, note, audioBufferId);
@@ -4247,18 +4288,25 @@ export class Midy extends EventTarget {
     const t: number = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === undefined;
     if (!note) note = new Note(noteNumber, velocity, t);
-    const programNumber = channel.programNumber;
-    const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return;
-    let bank = channel.isDrum ? 128 : channel.bankLSB;
-    if (bankTable[bank] === undefined) {
-      if (channel.isDrum) return;
-      bank = 0;
+    if (!note.voice) {
+      const programNumber = channel.programNumber;
+      const bankTable = this.soundFontTable[programNumber];
+      if (!bankTable) return;
+      let bank = channel.isDrum ? 128 : channel.bankLSB;
+      if (bankTable[bank] === undefined) {
+        if (channel.isDrum) return;
+        bank = 0;
+      }
+      const soundFontIndex = bankTable[bank];
+      if (soundFontIndex === undefined) return;
+      const soundFont = this.soundFonts[soundFontIndex];
+      note.voice = soundFont.getVoice(
+        bank,
+        programNumber,
+        noteNumber,
+        velocity,
+      );
     }
-    const soundFontIndex = bankTable[bank];
-    if (soundFontIndex === undefined) return;
-    const soundFont = this.soundFonts[soundFontIndex];
-    note.voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
     if (!note.voice) return;
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
