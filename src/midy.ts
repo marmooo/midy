@@ -1721,10 +1721,10 @@ export class Midy extends EventTarget {
           // the kit lookup needs the current programNumber, and segmenting them
           // would bring no benefit anyway since exclusive class guarantees at most
           // one note of the same class sounds at a time.
+          const kitTable = drumExclusiveClassesByKit[channel.programNumber];
           const isExcludedDrum = channel.isDrum &&
-            drumExclusiveClassesByKit[channel.programNumber][
-                event.noteNumber!
-              ] !== 0;
+            kitTable !== undefined &&
+            kitTable[event.noteNumber!] !== 0;
           // Exclusive class drum notes are excluded from segmentVoiceParams
           // (and therefore from segment.notes) because segmenting them would
           // bring no benefit — exclusive class guarantees at most one note of
