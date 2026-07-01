@@ -1251,6 +1251,201 @@ type KeyBasedHandler = (
   scheduleTime: number,
 ) => void;
 
+const voiceParamsHandlers: Record<string, VoiceParamsHandler> = {
+  modLfoToPitch: (channel, note, t) => {
+    const { modulationDepthMSB, modulationDepthLSB } = channel.state;
+    if (0 < modulationDepthMSB + modulationDepthLSB) {
+      channel.player.setModLfoToPitch(channel, note, t);
+    }
+  },
+  vibLfoToPitch: (channel, note, t) =>
+    channel.player.setVibLfoToPitch(channel, note, t),
+  modLfoToFilterFc: (channel, note, t) => {
+    const { modulationDepthMSB, modulationDepthLSB } = channel.state;
+    if (0 < modulationDepthMSB + modulationDepthLSB) {
+      channel.player.setModLfoToFilterFc(channel, note, t);
+    }
+  },
+  modLfoToVolume: (channel, note, t) => {
+    const { modulationDepthMSB, modulationDepthLSB } = channel.state;
+    if (0 < modulationDepthMSB + modulationDepthLSB) {
+      channel.player.setModLfoToVolume(channel, note, t);
+    }
+  },
+  chorusEffectsSend: (channel, note, t) =>
+    channel.player.setChorusSend(channel, note, t),
+  reverbEffectsSend: (channel, note, t) =>
+    channel.player.setReverbSend(channel, note, t),
+  delayModLFO: (channel, note, _t) => {
+    const { modulationDepthMSB, modulationDepthLSB } = channel.state;
+    if (0 < modulationDepthMSB + modulationDepthLSB) {
+      channel.player.setDelayModLFO(note);
+    }
+  },
+  freqModLFO: (channel, note, t) => {
+    const { modulationDepthMSB, modulationDepthLSB } = channel.state;
+    if (0 < modulationDepthMSB + modulationDepthLSB) {
+      channel.player.setFreqModLFO(note, t);
+    }
+  },
+  delayVibLFO: (channel, note, _t) => {
+    if (0 < channel.state.vibratoDepth) {
+      channel.player.setDelayVibLFO(channel, note);
+    }
+  },
+  freqVibLFO: (channel, note, t) => {
+    if (0 < channel.state.vibratoDepth) {
+      channel.player.setFreqVibLFO(channel, note, t);
+    }
+  },
+  detune: (channel, note, t) => {
+    if (channel.player.isPortamento(channel, note)) {
+      channel.player.setPortamentoDetune(channel, note, t);
+    } else {
+      channel.player.setDetune(channel, note, t);
+    }
+  },
+};
+
+const controlChangeHandlers: ControlChangeHandler[] = new Array(128);
+controlChangeHandlers[0] = (ch, v, _t) => ch.setBankMSB(v);
+controlChangeHandlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
+controlChangeHandlers[5] = (ch, v, t) => ch.setPortamentoTime(v, t);
+controlChangeHandlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
+controlChangeHandlers[7] = (ch, v, t) => ch.setVolume(v, t);
+controlChangeHandlers[10] = (ch, v, t) => ch.setPan(v, t);
+controlChangeHandlers[11] = (ch, v, t) => ch.setExpression(v, t);
+controlChangeHandlers[32] = (ch, v, _t) => ch.setBankLSB(v);
+controlChangeHandlers[33] = (ch, v, t) => ch.setModulationDepthLSB(v, t);
+controlChangeHandlers[37] = (ch, v, t) => ch.setPortamentoTimeLSB(v, t);
+controlChangeHandlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
+controlChangeHandlers[39] = (ch, v, t) => ch.setVolumeLSB(v, t);
+controlChangeHandlers[42] = (ch, v, t) => ch.setPanLSB(v, t);
+controlChangeHandlers[43] = (ch, v, t) => ch.setExpressionLSB(v, t);
+controlChangeHandlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
+controlChangeHandlers[65] = (ch, v, t) => ch.setPortamento(v, t);
+controlChangeHandlers[66] = (ch, v, t) => ch.setSostenutoPedal(v, t);
+controlChangeHandlers[67] = (ch, v, t) => ch.setSoftPedal(v, t);
+controlChangeHandlers[71] = (ch, v, t) => ch.setFilterResonance(v, t);
+controlChangeHandlers[72] = (ch, v, _t) => ch.setReleaseTime(v);
+controlChangeHandlers[73] = (ch, v, t) => ch.setAttackTime(v, t);
+controlChangeHandlers[74] = (ch, v, t) => ch.setBrightness(v, t);
+controlChangeHandlers[75] = (ch, v, t) => ch.setDecayTime(v, t);
+controlChangeHandlers[76] = (ch, v, t) => ch.setVibratoRate(v, t);
+controlChangeHandlers[77] = (ch, v, t) => ch.setVibratoDepth(v, t);
+controlChangeHandlers[78] = (ch, v, t) => ch.setVibratoDelay(v, t);
+controlChangeHandlers[84] = (ch, v, _t) => ch.setPortamentoNoteNumber(v);
+controlChangeHandlers[91] = (ch, v, t) => ch.setReverbSendLevel(v, t);
+controlChangeHandlers[93] = (ch, v, t) => ch.setChorusSendLevel(v, t);
+controlChangeHandlers[96] = (ch, _v, t) => ch.dataIncrement(t);
+controlChangeHandlers[97] = (ch, _v, t) => ch.dataDecrement(t);
+controlChangeHandlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
+controlChangeHandlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
+controlChangeHandlers[111] = (ch, _v, t) => ch.setRPGMakerLoop(t);
+controlChangeHandlers[120] = (ch, _v, t) => ch.allSoundOff(t);
+controlChangeHandlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
+controlChangeHandlers[123] = (ch, _v, t) => ch.allNotesOff(t);
+controlChangeHandlers[124] = (ch, _v, t) => ch.omniOff(t);
+controlChangeHandlers[125] = (ch, _v, t) => ch.omniOn(t);
+controlChangeHandlers[126] = (ch, _v, t) => ch.monoOn(t);
+controlChangeHandlers[127] = (ch, _v, t) => ch.polyOn(t);
+
+const keyBasedControllerHandlers: KeyBasedHandler[] = new Array(128);
+keyBasedControllerHandlers[7] = (channel, keyNumber, t) =>
+  channel.player.updateKeyBasedVolume(channel, keyNumber, t);
+keyBasedControllerHandlers[10] = (channel, keyNumber, t) =>
+  channel.player.updateKeyBasedVolume(channel, keyNumber, t);
+keyBasedControllerHandlers[71] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setFilterQ(channel, note, t);
+    }
+  });
+keyBasedControllerHandlers[73] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setVolumeEnvelope(channel, note, t);
+    }
+  });
+keyBasedControllerHandlers[74] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setFilterEnvelope(channel, note, t);
+    }
+  });
+keyBasedControllerHandlers[75] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setVolumeEnvelope(channel, note, t);
+    }
+  });
+keyBasedControllerHandlers[76] = (channel, keyNumber, t) => {
+  if (channel.state.vibratoDepth <= 0) return;
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setFreqVibLFO(channel, note, t);
+    }
+  });
+};
+keyBasedControllerHandlers[77] = (channel, keyNumber, t) => {
+  if (channel.state.vibratoDepth <= 0) return;
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setVibLfoToPitch(channel, note, t);
+    }
+  });
+};
+keyBasedControllerHandlers[78] = (channel, keyNumber, _t) => {
+  if (channel.state.vibratoDepth <= 0) return;
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setDelayVibLFO(channel, note);
+    }
+  });
+};
+keyBasedControllerHandlers[91] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setReverbSend(channel, note, t);
+    }
+  });
+keyBasedControllerHandlers[93] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setChorusSend(channel, note, t);
+    }
+  });
+
+const effectHandlers: EffectHandler[] = new Array(6);
+effectHandlers[0] = (channel, note, _tableName, scheduleTime) => {
+  if (channel.player.isPortamento(channel, note)) {
+    channel.player.setPortamentoDetune(channel, note, scheduleTime);
+  } else {
+    channel.player.setDetune(channel, note, scheduleTime);
+  }
+};
+effectHandlers[1] = (channel, note, _tableName, scheduleTime) => {
+  if (channel.player.isPortamento(channel, note)) {
+    channel.player.ensureFilterEnvelopeNode(note);
+    channel.player.setPortamentoFilterEnvelope(channel, note, scheduleTime);
+  } else {
+    channel.player.setFilterEnvelope(channel, note, scheduleTime);
+  }
+};
+effectHandlers[2] = (channel, note, tableName, scheduleTime) => {
+  if (tableName === "polyphonicKeyPressureTable") {
+    channel.player.setVolumeNode(channel, note, scheduleTime);
+  } else {
+    channel.player.applyVolume(channel, scheduleTime);
+  }
+};
+effectHandlers[3] = (channel, note, _tableName, scheduleTime) =>
+  channel.player.setModLfoToPitch(channel, note, scheduleTime);
+effectHandlers[4] = (channel, note, _tableName, scheduleTime) =>
+  channel.player.setModLfoToFilterFc(channel, note, scheduleTime);
+effectHandlers[5] = (channel, note, _tableName, scheduleTime) =>
+  channel.player.setModLfoToVolume(channel, note, scheduleTime);
+
 type PressureTableName =
   | "channelPressureTable"
   | "polyphonicKeyPressureTable"
@@ -1441,10 +1636,10 @@ export class Midy extends EventTarget {
       });
       this.messageHandlers = this.createMessageHandlers();
     }
-    this.voiceParamsHandlers = this.createVoiceParamsHandlers();
-    this.controlChangeHandlers = this.createControlChangeHandlers();
-    this.keyBasedControllerHandlers = this.createKeyBasedControllerHandlers();
-    this.effectHandlers = this.createEffectHandlers();
+    this.voiceParamsHandlers = voiceParamsHandlers;
+    this.controlChangeHandlers = controlChangeHandlers;
+    this.keyBasedControllerHandlers = keyBasedControllerHandlers;
+    this.effectHandlers = effectHandlers;
     const activeChannelNumbers = options?.activeChannelNumbers
       ? new Set(options.activeChannelNumbers)
       : undefined;
@@ -4892,64 +5087,6 @@ export class Midy extends EventTarget {
       .setValueAtTime(freqVibLFO * vibratoRate, scheduleTime);
   }
 
-  createVoiceParamsHandlers(): Record<string, VoiceParamsHandler> {
-    return {
-      modLfoToPitch: (channel, note, t) => {
-        const { modulationDepthMSB, modulationDepthLSB } = channel.state;
-        if (0 < modulationDepthMSB + modulationDepthLSB) {
-          this.setModLfoToPitch(channel, note, t);
-        }
-      },
-      vibLfoToPitch: (channel, note, t) =>
-        this.setVibLfoToPitch(channel, note, t),
-      modLfoToFilterFc: (channel, note, t) => {
-        const { modulationDepthMSB, modulationDepthLSB } = channel.state;
-        if (0 < modulationDepthMSB + modulationDepthLSB) {
-          this.setModLfoToFilterFc(channel, note, t);
-        }
-      },
-      modLfoToVolume: (channel, note, t) => {
-        const { modulationDepthMSB, modulationDepthLSB } = channel.state;
-        if (0 < modulationDepthMSB + modulationDepthLSB) {
-          this.setModLfoToVolume(channel, note, t);
-        }
-      },
-      chorusEffectsSend: (channel, note, t) =>
-        this.setChorusSend(channel, note, t),
-      reverbEffectsSend: (channel, note, t) =>
-        this.setReverbSend(channel, note, t),
-      delayModLFO: (channel, note, _t) => {
-        const { modulationDepthMSB, modulationDepthLSB } = channel.state;
-        if (0 < modulationDepthMSB + modulationDepthLSB) {
-          this.setDelayModLFO(note);
-        }
-      },
-      freqModLFO: (channel, note, t) => {
-        const { modulationDepthMSB, modulationDepthLSB } = channel.state;
-        if (0 < modulationDepthMSB + modulationDepthLSB) {
-          this.setFreqModLFO(note, t);
-        }
-      },
-      delayVibLFO: (channel, note, _t) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setDelayVibLFO(channel, note);
-        }
-      },
-      freqVibLFO: (channel, note, t) => {
-        if (0 < channel.state.vibratoDepth) {
-          this.setFreqVibLFO(channel, note, t);
-        }
-      },
-      detune: (channel, note, t) => {
-        if (this.isPortamento(channel, note)) {
-          this.setPortamentoDetune(channel, note, t);
-        } else {
-          this.setDetune(channel, note, t);
-        }
-      },
-    };
-  }
-
   getControllerState(
     channel: Channel,
     noteNumber: number,
@@ -5007,52 +5144,6 @@ export class Midy extends EventTarget {
       }
       if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
     });
-  }
-
-  createControlChangeHandlers(): ControlChangeHandler[] {
-    const handlers: ControlChangeHandler[] = new Array(128);
-    handlers[0] = (ch, v, _t) => ch.setBankMSB(v);
-    handlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
-    handlers[5] = (ch, v, t) => ch.setPortamentoTime(v, t);
-    handlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
-    handlers[7] = (ch, v, t) => ch.setVolume(v, t);
-    handlers[10] = (ch, v, t) => ch.setPan(v, t);
-    handlers[11] = (ch, v, t) => ch.setExpression(v, t);
-    handlers[32] = (ch, v, _t) => ch.setBankLSB(v);
-    handlers[33] = (ch, v, t) => ch.setModulationDepthLSB(v, t);
-    handlers[37] = (ch, v, t) => ch.setPortamentoTimeLSB(v, t);
-    handlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
-    handlers[39] = (ch, v, t) => ch.setVolumeLSB(v, t);
-    handlers[42] = (ch, v, t) => ch.setPanLSB(v, t);
-    handlers[43] = (ch, v, t) => ch.setExpressionLSB(v, t);
-    handlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
-    handlers[65] = (ch, v, t) => ch.setPortamento(v, t);
-    handlers[66] = (ch, v, t) => ch.setSostenutoPedal(v, t);
-    handlers[67] = (ch, v, t) => ch.setSoftPedal(v, t);
-    handlers[71] = (ch, v, t) => ch.setFilterResonance(v, t);
-    handlers[72] = (ch, v, _t) => ch.setReleaseTime(v);
-    handlers[73] = (ch, v, t) => ch.setAttackTime(v, t);
-    handlers[74] = (ch, v, t) => ch.setBrightness(v, t);
-    handlers[75] = (ch, v, t) => ch.setDecayTime(v, t);
-    handlers[76] = (ch, v, t) => ch.setVibratoRate(v, t);
-    handlers[77] = (ch, v, t) => ch.setVibratoDepth(v, t);
-    handlers[78] = (ch, v, t) => ch.setVibratoDelay(v, t);
-    handlers[84] = (ch, v, _t) => ch.setPortamentoNoteNumber(v);
-    handlers[91] = (ch, v, t) => ch.setReverbSendLevel(v, t);
-    handlers[93] = (ch, v, t) => ch.setChorusSendLevel(v, t);
-    handlers[96] = (ch, _v, t) => ch.dataIncrement(t);
-    handlers[97] = (ch, _v, t) => ch.dataDecrement(t);
-    handlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
-    handlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
-    handlers[111] = (ch, _v, t) => ch.setRPGMakerLoop(t);
-    handlers[120] = (ch, _v, t) => ch.allSoundOff(t);
-    handlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
-    handlers[123] = (ch, _v, t) => ch.allNotesOff(t);
-    handlers[124] = (ch, _v, t) => ch.omniOff(t);
-    handlers[125] = (ch, _v, t) => ch.omniOn(t);
-    handlers[126] = (ch, _v, t) => ch.monoOn(t);
-    handlers[127] = (ch, _v, t) => ch.polyOn(t);
-    return handlers;
   }
 
   updateModulation(channel: Channel, scheduleTime: number): void {
@@ -5747,39 +5838,6 @@ export class Midy extends EventTarget {
     return this.calcEffectValue(channel, note, 5);
   }
 
-  createEffectHandlers(): EffectHandler[] {
-    const handlers: EffectHandler[] = new Array(6);
-    handlers[0] = (channel, note, _tableName, scheduleTime) => {
-      if (this.isPortamento(channel, note)) {
-        this.setPortamentoDetune(channel, note, scheduleTime);
-      } else {
-        this.setDetune(channel, note, scheduleTime);
-      }
-    };
-    handlers[1] = (channel, note, _tableName, scheduleTime) => {
-      if (this.isPortamento(channel, note)) {
-        this.ensureFilterEnvelopeNode(note);
-        this.setPortamentoFilterEnvelope(channel, note, scheduleTime);
-      } else {
-        this.setFilterEnvelope(channel, note, scheduleTime);
-      }
-    };
-    handlers[2] = (channel, note, tableName, scheduleTime) => {
-      if (tableName === "polyphonicKeyPressureTable") {
-        this.setVolumeNode(channel, note, scheduleTime);
-      } else {
-        this.applyVolume(channel, scheduleTime);
-      }
-    };
-    handlers[3] = (channel, note, _tableName, scheduleTime) =>
-      this.setModLfoToPitch(channel, note, scheduleTime);
-    handlers[4] = (channel, note, _tableName, scheduleTime) =>
-      this.setModLfoToFilterFc(channel, note, scheduleTime);
-    handlers[5] = (channel, note, _tableName, scheduleTime) =>
-      this.setModLfoToVolume(channel, note, scheduleTime);
-    return handlers;
-  }
-
   setControlChangeEffects(
     channel: Channel,
     note: Note,
@@ -5910,65 +5968,6 @@ export class Midy extends EventTarget {
     const index = keyNumber * 128 + controllerType;
     const controlValue = channel.keyBasedTable[index];
     return controlValue;
-  }
-
-  createKeyBasedControllerHandlers(): KeyBasedHandler[] {
-    const handlers: KeyBasedHandler[] = new Array(128);
-    handlers[7] = (channel, keyNumber, t) =>
-      this.updateKeyBasedVolume(channel, keyNumber, t);
-    handlers[10] = (channel, keyNumber, t) =>
-      this.updateKeyBasedVolume(channel, keyNumber, t);
-    handlers[71] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) this.setFilterQ(channel, note, t);
-      });
-    handlers[73] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setVolumeEnvelope(channel, note, t);
-        }
-      });
-    handlers[74] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setFilterEnvelope(channel, note, t);
-        }
-      });
-    handlers[75] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setVolumeEnvelope(channel, note, t);
-        }
-      });
-    handlers[76] = (channel, keyNumber, t) => {
-      if (channel.state.vibratoDepth <= 0) return;
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) this.setFreqVibLFO(channel, note, t);
-      });
-    };
-    handlers[77] = (channel, keyNumber, t) => {
-      if (channel.state.vibratoDepth <= 0) return;
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) {
-          this.setVibLfoToPitch(channel, note, t);
-        }
-      });
-    };
-    handlers[78] = (channel, keyNumber, _t) => {
-      if (channel.state.vibratoDepth <= 0) return;
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) this.setDelayVibLFO(channel, note);
-      });
-    };
-    handlers[91] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) this.setReverbSend(channel, note, t);
-      });
-    handlers[93] = (channel, keyNumber, t) =>
-      channel.processScheduledNotes((note) => {
-        if (note.noteNumber === keyNumber) this.setChorusSend(channel, note, t);
-      });
-    return handlers;
   }
 
   handleKeyBasedInstrumentControlSysEx(

@@ -725,6 +725,54 @@ type VoiceParamsHandler = (
   scheduleTime: number,
 ) => void;
 
+const voiceParamsHandlers: Record<string, VoiceParamsHandler> = {
+  modLfoToPitch: (channel, note, t) => {
+    if (0 < channel.state.modulationDepthMSB) {
+      channel.player.setModLfoToPitch(channel, note, t);
+    }
+  },
+  vibLfoToPitch: (_channel, _note, _t) => {},
+  modLfoToFilterFc: (channel, note, t) => {
+    if (0 < channel.state.modulationDepthMSB) {
+      channel.player.setModLfoToFilterFc(note, t);
+    }
+  },
+  modLfoToVolume: (channel, note, t) => {
+    if (0 < channel.state.modulationDepthMSB) {
+      channel.player.setModLfoToVolume(note, t);
+    }
+  },
+  chorusEffectsSend: (_channel, _note, _t) => {},
+  reverbEffectsSend: (_channel, _note, _t) => {},
+  delayModLFO: (channel, note, _t) => {
+    if (0 < channel.state.modulationDepthMSB) {
+      channel.player.setDelayModLFO(note);
+    }
+  },
+  freqModLFO: (channel, note, t) => {
+    if (0 < channel.state.modulationDepthMSB) {
+      channel.player.setFreqModLFO(note, t);
+    }
+  },
+  delayVibLFO: (_channel, _note, _t) => {},
+  freqVibLFO: (_channel, _note, _t) => {},
+  detune: (channel, note, t) => channel.player.setDetune(channel, note, t),
+};
+
+const controlChangeHandlers: ControlChangeHandler[] = new Array(128);
+controlChangeHandlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
+controlChangeHandlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
+controlChangeHandlers[7] = (ch, v, t) => ch.setVolume(v, t);
+controlChangeHandlers[10] = (ch, v, t) => ch.setPan(v, t);
+controlChangeHandlers[11] = (ch, v, t) => ch.setExpression(v, t);
+controlChangeHandlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
+controlChangeHandlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
+controlChangeHandlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
+controlChangeHandlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
+controlChangeHandlers[120] = (ch, _v, t) => ch.allSoundOff(t);
+controlChangeHandlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
+controlChangeHandlers[123] = (ch, _v, t) => ch.allNotesOff(t);
+
 export class MidyGM1 extends EventTarget {
   // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
   // https://pubmed.ncbi.nlm.nih.gov/12488797/
@@ -858,8 +906,8 @@ export class MidyGM1 extends EventTarget {
       });
       this.messageHandlers = this.createMessageHandlers();
     }
-    this.voiceParamsHandlers = this.createVoiceParamsHandlers();
-    this.controlChangeHandlers = this.createControlChangeHandlers();
+    this.voiceParamsHandlers = voiceParamsHandlers;
+    this.controlChangeHandlers = controlChangeHandlers;
     const activeChannelNumbers = options?.activeChannelNumbers
       ? new Set(options.activeChannelNumbers)
       : undefined;
@@ -3470,42 +3518,6 @@ export class MidyGM1 extends EventTarget {
       .setValueAtTime(freqModLFO, scheduleTime);
   }
 
-  createVoiceParamsHandlers(): Record<string, VoiceParamsHandler> {
-    return {
-      modLfoToPitch: (channel, note, t) => {
-        if (0 < channel.state.modulationDepthMSB) {
-          this.setModLfoToPitch(channel, note, t);
-        }
-      },
-      vibLfoToPitch: (_channel, _note, _t) => {},
-      modLfoToFilterFc: (channel, note, t) => {
-        if (0 < channel.state.modulationDepthMSB) {
-          this.setModLfoToFilterFc(note, t);
-        }
-      },
-      modLfoToVolume: (channel, note, t) => {
-        if (0 < channel.state.modulationDepthMSB) {
-          this.setModLfoToVolume(note, t);
-        }
-      },
-      chorusEffectsSend: (_channel, _note, _t) => {},
-      reverbEffectsSend: (_channel, _note, _t) => {},
-      delayModLFO: (channel, note, _t) => {
-        if (0 < channel.state.modulationDepthMSB) {
-          this.setDelayModLFO(note);
-        }
-      },
-      freqModLFO: (channel, note, t) => {
-        if (0 < channel.state.modulationDepthMSB) {
-          this.setFreqModLFO(note, t);
-        }
-      },
-      delayVibLFO: (_channel, _note, _t) => {},
-      freqVibLFO: (_channel, _note, _t) => {},
-      detune: (channel, note, t) => this.setDetune(channel, note, t),
-    };
-  }
-
   getControllerState(
     channel: Channel,
     noteNumber: number,
@@ -3556,23 +3568,6 @@ export class MidyGM1 extends EventTarget {
       if (applyFilterEnvelope) this.setFilterEnvelope(note, scheduleTime);
       if (applyPitchEnvelope) this.setPitchEnvelope(note, scheduleTime);
     });
-  }
-
-  createControlChangeHandlers(): ControlChangeHandler[] {
-    const handlers: ControlChangeHandler[] = new Array(128);
-    handlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
-    handlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
-    handlers[7] = (ch, v, t) => ch.setVolume(v, t);
-    handlers[10] = (ch, v, t) => ch.setPan(v, t);
-    handlers[11] = (ch, v, t) => ch.setExpression(v, t);
-    handlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
-    handlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
-    handlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
-    handlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
-    handlers[120] = (ch, _v, t) => ch.allSoundOff(t);
-    handlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
-    handlers[123] = (ch, _v, t) => ch.allNotesOff(t);
-    return handlers;
   }
 
   updateModulation(channel: Channel, scheduleTime: number): void {
