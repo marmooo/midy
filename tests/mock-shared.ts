@@ -3,6 +3,7 @@
 import {
   AudioBuffer as WebAudioBuffer,
   AudioContext as WebAudioContext,
+  OfflineAudioContext as WebOfflineAudioContext,
 } from "web-audio-api";
 
 export { assertAlmostEquals, assertEquals, assertNotEquals } from "@std/assert";
@@ -13,8 +14,10 @@ export { assertAlmostEquals, assertEquals, assertNotEquals } from "@std/assert";
 // globals must exist before the first player instance is created.
 // This runs once when the module is first imported.
 // =========================================================================
-globalThis.AudioContext = WebAudioContext as unknown as typeof AudioContext;
 globalThis.AudioBuffer = WebAudioBuffer as unknown as typeof AudioBuffer;
+globalThis.AudioContext = WebAudioContext as unknown as typeof AudioContext;
+globalThis.OfflineAudioContext =
+  WebOfflineAudioContext as unknown as typeof OfflineAudioContext;
 
 const _bootstrapCtx = new WebAudioContext() as unknown as AudioContext;
 

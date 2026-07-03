@@ -2,6 +2,7 @@
 import {
   AudioBuffer as WebAudioBuffer,
   AudioContext as WebAudioContext,
+  OfflineAudioContext as WebOfflineAudioContext,
 } from "web-audio-api";
 import { Channel, Midy, Note } from "../../src/midy.ts";
 
@@ -13,8 +14,10 @@ export { assertAlmostEquals, assertEquals, assertNotEquals } from "@std/assert";
 // The library references these globals directly (e.g. `new GainNode(...)`),
 // so they must exist before the first `Midy` instance is created.
 // =========================================================================
-globalThis.AudioContext = WebAudioContext as unknown as typeof AudioContext;
 globalThis.AudioBuffer = WebAudioBuffer as unknown as typeof AudioBuffer;
+globalThis.AudioContext = WebAudioContext as unknown as typeof AudioContext;
+globalThis.OfflineAudioContext =
+  WebOfflineAudioContext as unknown as typeof OfflineAudioContext;
 
 const _bootstrapCtx = new WebAudioContext() as unknown as AudioContext;
 
