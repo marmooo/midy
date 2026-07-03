@@ -1192,6 +1192,8 @@ interface SegmentNoteEntry {
   voiceParams: VoiceParams;
   noteDuration: number;
   noteEvent: NoteOnEventEntry | undefined;
+  audioBufferId?: number;
+  voice?: Voice;
 }
 interface OpenSegment {
   segmentStart: number;
@@ -1564,6 +1566,8 @@ export class Midy extends EventTarget {
   segmentBakedSet: Set<number> = new Set();
   segmentChannelStates: (SegmentChannelState | null)[] = [];
   segmentVoiceParams: (VoiceParams | null)[] = [];
+  segmentAudioBufferIds: (number | undefined)[] = [];
+  segmentVoices: (Voice | null)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
   // Bumped on every seek/stop/loop/pause. renderSegmentBuffer() calls are
   // tagged with the generation active when they started; if it no longer
@@ -3948,25 +3952,32 @@ export class Midy extends EventTarget {
     // by identity and skip them on subsequent notes.
     const appliedEvents = new Set<TimelineEvent>();
 
+    const promises = new Array(notes.length);
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
-        n.noteEvent ?? {};
       const preNote = new Note(n.noteNumber, n.velocity, n.offset);
       preNote.voiceParams = n.voiceParams;
       preNote.voice = n.voice ?? null;
       preNote.audioBufferId = n.audioBufferId;
-      const offlineNote = await offlinePlayer.noteOnChannel(
+      promises[i] = offlinePlayer.noteOnChannel(
         dstChannel,
         n.noteNumber,
         n.velocity,
         n.offset,
         preNote,
       );
+    }
+    const offlineNotes = await Promise.all(promises);
+
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const offlineNote = offlineNotes[i];
       if (offlineNote?.volumeNode) {
         offlineNote.volumeNode.disconnect();
         offlineNote.volumeNode.connect(offlineContext.destination);
       }
+      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+        n.noteEvent ?? {};
       for (let j = 0; j < noteEvents.length; j++) {
         const event = noteEvents[j];
         if (appliedEvents.has(event)) continue;

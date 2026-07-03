@@ -2757,25 +2757,32 @@ export class MidyGM1 extends EventTarget {
     // by identity and skip them on subsequent notes.
     const appliedEvents = new Set<TimelineEvent>();
 
+    const promises = new Array(notes.length);
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
-        n.noteEvent ?? {};
       const preNote = new Note(n.noteNumber, n.velocity, n.offset);
       preNote.voiceParams = n.voiceParams;
       preNote.voice = n.voice ?? null;
       preNote.audioBufferId = n.audioBufferId;
-      const offlineNote = await offlinePlayer.noteOnChannel(
+      promises[i] = offlinePlayer.noteOnChannel(
         dstChannel,
         n.noteNumber,
         n.velocity,
         n.offset,
         preNote,
       );
+    }
+    const offlineNotes = await Promise.all(promises);
+
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const offlineNote = offlineNotes[i];
       if (offlineNote?.volumeNode) {
         offlineNote.volumeNode.disconnect();
         offlineNote.volumeNode.connect(offlineContext.destination);
       }
+      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+        n.noteEvent ?? {};
       for (let j = 0; j < noteEvents.length; j++) {
         const event = noteEvents[j];
         if (appliedEvents.has(event)) continue;
