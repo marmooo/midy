@@ -27,6 +27,8 @@ This library provides several files depending on the implementation level.
   (WAV, MP3, AAC, FLAC, Opus)
 - [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
 - [Timidy](https://marmooo.github.io/timidy/) - Timidity++ style MIDI player
+- [Doremi Piano](https://marmooo.github.io/doremi-piano/) - Piano-style MPE MIDI
+  controller
 - [4x4pad](https://marmooo.github.io/4x4pad/) - 4x4 grid MPE MIDI controller
 - [Celltone](https://marmooo.github.io/celltone/) - Grid MPE MIDI controller
   with Janko-Piano layout
