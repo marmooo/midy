@@ -1012,47 +1012,235 @@ const defaultControllerState = {
 
 export class ControllerState {
   array: Float32Array = new Float32Array(256);
-  [key: string]: number | Float32Array;
 
-  channelPressure: number = 0;
-  pitchWheel: number = 0;
-  pitchWheelSensitivity: number = 0;
-  modulationDepthMSB: number = 0;
-  portamentoTimeMSB: number = 0;
-  volumeMSB: number = 0;
-  panMSB: number = 0;
-  expressionMSB: number = 0;
-  modulationDepthLSB: number = 0;
-  portamentoTimeLSB: number = 0;
-  volumeLSB: number = 0;
-  panLSB: number = 0;
-  expressionLSB: number = 0;
-  sustainPedal: number = 0;
-  portamento: number = 0;
-  sostenutoPedal: number = 0;
-  softPedal: number = 0;
-  filterResonance: number = 64 / 127;
-  releaseTime: number = 64 / 127;
-  attackTime: number = 64 / 127;
-  brightness: number = 64 / 127;
-  decayTime: number = 64 / 127;
-  vibratoRate: number = 64 / 127;
-  vibratoDepth: number = 64 / 127;
-  vibratoDelay: number = 64 / 127;
-  portamentoNoteNumber: number = 0;
-  reverbSendLevel: number = 0;
-  chorusSendLevel: number = 0;
+  get noteOnVelocity(): number {
+    return this.array[2];
+  }
+  set noteOnVelocity(value: number) {
+    this.array[2] = value;
+  }
+
+  get noteOnKeyNumber(): number {
+    return this.array[3];
+  }
+  set noteOnKeyNumber(value: number) {
+    this.array[3] = value;
+  }
+
+  get polyphonicKeyPressure(): number {
+    return this.array[10];
+  }
+  set polyphonicKeyPressure(value: number) {
+    this.array[10] = value;
+  }
+
+  get channelPressure(): number {
+    return this.array[13];
+  }
+  set channelPressure(value: number) {
+    this.array[13] = value;
+  }
+
+  get pitchWheel(): number {
+    return this.array[14];
+  }
+  set pitchWheel(value: number) {
+    this.array[14] = value;
+  }
+
+  get pitchWheelSensitivity(): number {
+    return this.array[16];
+  }
+  set pitchWheelSensitivity(value: number) {
+    this.array[16] = value;
+  }
+
+  get link(): number {
+    return this.array[127];
+  }
+  set link(value: number) {
+    this.array[127] = value;
+  }
+
+  get modulationDepthMSB(): number {
+    return this.array[128 + 1];
+  }
+  set modulationDepthMSB(value: number) {
+    this.array[128 + 1] = value;
+  }
+
+  get portamentoTimeMSB(): number {
+    return this.array[128 + 5];
+  }
+  set portamentoTimeMSB(value: number) {
+    this.array[128 + 5] = value;
+  }
+
+  get volumeMSB(): number {
+    return this.array[128 + 7];
+  }
+  set volumeMSB(value: number) {
+    this.array[128 + 7] = value;
+  }
+
+  get panMSB(): number {
+    return this.array[128 + 10];
+  }
+  set panMSB(value: number) {
+    this.array[128 + 10] = value;
+  }
+
+  get expressionMSB(): number {
+    return this.array[128 + 11];
+  }
+  set expressionMSB(value: number) {
+    this.array[128 + 11] = value;
+  }
+
+  get modulationDepthLSB(): number {
+    return this.array[128 + 33];
+  }
+  set modulationDepthLSB(value: number) {
+    this.array[128 + 33] = value;
+  }
+
+  get portamentoTimeLSB(): number {
+    return this.array[128 + 37];
+  }
+  set portamentoTimeLSB(value: number) {
+    this.array[128 + 37] = value;
+  }
+
+  get volumeLSB(): number {
+    return this.array[128 + 39];
+  }
+  set volumeLSB(value: number) {
+    this.array[128 + 39] = value;
+  }
+
+  get panLSB(): number {
+    return this.array[128 + 32];
+  }
+  set panLSB(value: number) {
+    this.array[128 + 32] = value;
+  }
+
+  get expressionLSB(): number {
+    return this.array[128 + 43];
+  }
+  set expressionLSB(value: number) {
+    this.array[128 + 43] = value;
+  }
+
+  get sustainPedal(): number {
+    return this.array[128 + 64];
+  }
+  set sustainPedal(value: number) {
+    this.array[128 + 64] = value;
+  }
+
+  get portamento(): number {
+    return this.array[128 + 65];
+  }
+  set portamento(value: number) {
+    this.array[128 + 65] = value;
+  }
+
+  get sostenutoPedal(): number {
+    return this.array[128 + 66];
+  }
+  set sostenutoPedal(value: number) {
+    this.array[128 + 66] = value;
+  }
+
+  get softPedal(): number {
+    return this.array[128 + 67];
+  }
+  set softPedal(value: number) {
+    this.array[128 + 67] = value;
+  }
+
+  get filterResonance(): number {
+    return this.array[128 + 71];
+  }
+  set filterResonance(value: number) {
+    this.array[128 + 71] = value;
+  }
+
+  get releaseTime(): number {
+    return this.array[128 + 72];
+  }
+  set releaseTime(value: number) {
+    this.array[128 + 72] = value;
+  }
+
+  get attackTime(): number {
+    return this.array[128 + 73];
+  }
+  set attackTime(value: number) {
+    this.array[128 + 73] = value;
+  }
+
+  get brightness(): number {
+    return this.array[128 + 74];
+  }
+  set brightness(value: number) {
+    this.array[128 + 74] = value;
+  }
+
+  get decayTime(): number {
+    return this.array[128 + 75];
+  }
+  set decayTime(value: number) {
+    this.array[128 + 75] = value;
+  }
+
+  get vibratoRate(): number {
+    return this.array[128 + 76];
+  }
+  set vibratoRate(value: number) {
+    this.array[128 + 76] = value;
+  }
+
+  get vibratoDepth(): number {
+    return this.array[128 + 77];
+  }
+  set vibratoDepth(value: number) {
+    this.array[128 + 77] = value;
+  }
+
+  get vibratoDelay(): number {
+    return this.array[128 + 78];
+  }
+  set vibratoDelay(value: number) {
+    this.array[128 + 78] = value;
+  }
+
+  get portamentoNoteNumber(): number {
+    return this.array[128 + 84];
+  }
+  set portamentoNoteNumber(value: number) {
+    this.array[128 + 84] = value;
+  }
+
+  get reverbSendLevel(): number {
+    return this.array[128 + 91];
+  }
+  set reverbSendLevel(value: number) {
+    this.array[128 + 91] = value;
+  }
+
+  get chorusSendLevel(): number {
+    return this.array[128 + 93];
+  }
+  set chorusSendLevel(value: number) {
+    this.array[128 + 93] = value;
+  }
 
   constructor() {
     const entries = Object.entries(defaultControllerState);
-    for (const [name, { type, defaultValue }] of entries) {
+    for (const [_, { type, defaultValue }] of entries) {
       this.array[type] = defaultValue;
-      Object.defineProperty(this, name, {
-        get: () => this.array[type],
-        set: (value: number) => this.array[type] = value,
-        enumerable: true,
-        configurable: true,
-      });
     }
   }
 }

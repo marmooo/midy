@@ -776,33 +776,130 @@ const defaultControllerState = {
 
 export class ControllerState {
   array: Float32Array = new Float32Array(256);
-  [key: string]: number | Float32Array;
 
-  channelPressure: number = 0;
-  pitchWheel: number = 0;
-  pitchWheelSensitivity: number = 0;
-  modulationDepthMSB: number = 0;
-  portamentoTimeMSB: number = 0;
-  volumeMSB: number = 0;
-  panMSB: number = 0;
-  expressionMSB: number = 0;
-  sustainPedal: number = 0;
-  portamento: number = 0;
-  sostenutoPedal: number = 0;
-  softPedal: number = 0;
-  reverbSendLevel: number = 0;
-  chorusSendLevel: number = 0;
+  get noteOnVelocity(): number {
+    return this.array[2];
+  }
+  set noteOnVelocity(value: number) {
+    this.array[2] = value;
+  }
+
+  get noteOnKeyNumber(): number {
+    return this.array[3];
+  }
+  set noteOnKeyNumber(value: number) {
+    this.array[3] = value;
+  }
+
+  get channelPressure(): number {
+    return this.array[13];
+  }
+  set channelPressure(value: number) {
+    this.array[13] = value;
+  }
+
+  get pitchWheel(): number {
+    return this.array[14];
+  }
+  set pitchWheel(value: number) {
+    this.array[14] = value;
+  }
+
+  get pitchWheelSensitivity(): number {
+    return this.array[16];
+  }
+  set pitchWheelSensitivity(value: number) {
+    this.array[16] = value;
+  }
+
+  get link(): number {
+    return this.array[127];
+  }
+  set link(value: number) {
+    this.array[127] = value;
+  }
+
+  get modulationDepthMSB(): number {
+    return this.array[128 + 1];
+  }
+  set modulationDepthMSB(value: number) {
+    this.array[128 + 1] = value;
+  }
+
+  get portamentoTimeMSB(): number {
+    return this.array[128 + 5];
+  }
+  set portamentoTimeMSB(value: number) {
+    this.array[128 + 5] = value;
+  }
+
+  get volumeMSB(): number {
+    return this.array[128 + 7];
+  }
+  set volumeMSB(value: number) {
+    this.array[128 + 7] = value;
+  }
+
+  get panMSB(): number {
+    return this.array[128 + 10];
+  }
+  set panMSB(value: number) {
+    this.array[128 + 10] = value;
+  }
+
+  get expressionMSB(): number {
+    return this.array[128 + 11];
+  }
+  set expressionMSB(value: number) {
+    this.array[128 + 11] = value;
+  }
+
+  get sustainPedal(): number {
+    return this.array[128 + 64];
+  }
+  set sustainPedal(value: number) {
+    this.array[128 + 64] = value;
+  }
+
+  get portamento(): number {
+    return this.array[128 + 65];
+  }
+  set portamento(value: number) {
+    this.array[128 + 65] = value;
+  }
+
+  get sostenutoPedal(): number {
+    return this.array[128 + 66];
+  }
+  set sostenutoPedal(value: number) {
+    this.array[128 + 66] = value;
+  }
+
+  get softPedal(): number {
+    return this.array[128 + 67];
+  }
+  set softPedal(value: number) {
+    this.array[128 + 67] = value;
+  }
+
+  get reverbSendLevel(): number {
+    return this.array[128 + 91];
+  }
+  set reverbSendLevel(value: number) {
+    this.array[128 + 91] = value;
+  }
+
+  get chorusSendLevel(): number {
+    return this.array[128 + 93];
+  }
+  set chorusSendLevel(value: number) {
+    this.array[128 + 93] = value;
+  }
 
   constructor() {
     const entries = Object.entries(defaultControllerState);
-    for (const [name, { type, defaultValue }] of entries) {
+    for (const [_, { type, defaultValue }] of entries) {
       this.array[type] = defaultValue;
-      Object.defineProperty(this, name, {
-        get: () => this.array[type],
-        set: (value: number) => this.array[type] = value,
-        enumerable: true,
-        configurable: true,
-      });
     }
   }
 }

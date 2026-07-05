@@ -532,26 +532,81 @@ const defaultControllerState = {
 
 export class ControllerState {
   array: Float32Array = new Float32Array(256);
-  [key: string]: number | Float32Array;
 
-  pitchWheel: number = 0;
-  pitchWheelSensitivity: number = 0;
-  modulationDepthMSB: number = 0;
-  volumeMSB: number = 0;
-  panMSB: number = 0;
-  expressionMSB: number = 0;
-  sustainPedal: number = 0;
+  get noteOnVelocity(): number {
+    return this.array[2];
+  }
+  set noteOnVelocity(value: number) {
+    this.array[2] = value;
+  }
+
+  get noteOnKeyNumber(): number {
+    return this.array[3];
+  }
+  set noteOnKeyNumber(value: number) {
+    this.array[3] = value;
+  }
+
+  get pitchWheel(): number {
+    return this.array[14];
+  }
+  set pitchWheel(value: number) {
+    this.array[14] = value;
+  }
+
+  get pitchWheelSensitivity(): number {
+    return this.array[16];
+  }
+  set pitchWheelSensitivity(value: number) {
+    this.array[16] = value;
+  }
+
+  get link(): number {
+    return this.array[127];
+  }
+  set link(value: number) {
+    this.array[127] = value;
+  }
+
+  get modulationDepthMSB(): number {
+    return this.array[128 + 1];
+  }
+  set modulationDepthMSB(value: number) {
+    this.array[128 + 1] = value;
+  }
+
+  get volumeMSB(): number {
+    return this.array[128 + 7];
+  }
+  set volumeMSB(value: number) {
+    this.array[128 + 7] = value;
+  }
+
+  get panMSB(): number {
+    return this.array[128 + 10];
+  }
+  set panMSB(value: number) {
+    this.array[128 + 10] = value;
+  }
+
+  get expressionMSB(): number {
+    return this.array[128 + 11];
+  }
+  set expressionMSB(value: number) {
+    this.array[128 + 11] = value;
+  }
+
+  get sustainPedal(): number {
+    return this.array[128 + 64];
+  }
+  set sustainPedal(value: number) {
+    this.array[128 + 64] = value;
+  }
 
   constructor() {
     const entries = Object.entries(defaultControllerState);
-    for (const [name, { type, defaultValue }] of entries) {
+    for (const [_, { type, defaultValue }] of entries) {
       this.array[type] = defaultValue;
-      Object.defineProperty(this, name, {
-        get: () => this.array[type],
-        set: (value: number) => this.array[type] = value,
-        enumerable: true,
-        configurable: true,
-      });
     }
   }
 }
