@@ -94,6 +94,7 @@ midy.tempoChange(tempo);
 ```js
 midy.addEventListener("looped", func);
 midy.addEventListener("started", func);
+midy.addEventListener("ended", func);
 midy.addEventListener("stopped", func);
 midy.addEventListener("paused", func);
 midy.addEventListener("resumed", func);
