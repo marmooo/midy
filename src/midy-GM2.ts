@@ -1305,6 +1305,7 @@ export class MidyGM2 extends EventTarget {
   drumExclusiveClassNotes: (Note | null)[] = new Array(
     16 * drumExclusiveClassCount,
   );
+  noteAudioBufferIds: (number | undefined)[] = [];
   // "adsr" mode
   adsrVoiceCache: Map<
     number,
@@ -1327,7 +1328,6 @@ export class MidyGM2 extends EventTarget {
   segmentBakedSet: Set<number> = new Set();
   segmentChannelStates: (SegmentChannelState | null)[] = [];
   segmentVoiceParams: (VoiceParams | null)[] = [];
-  segmentAudioBufferIds: (number | undefined)[] = [];
   segmentVoices: (Voice | null)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
   // Bumped on every seek/stop/loop/pause. renderSegmentBuffer() calls are
@@ -1635,12 +1635,12 @@ export class MidyGM2 extends EventTarget {
     const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
-    const segmentAudioBufferIds: (number | undefined)[] = isSegmentMode
-      ? new Array(timeline.length)
-      : [];
     const segmentVoices: (Voice | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
+    const noteAudioBufferIds: (number | undefined)[] = new Array(
+      timeline.length,
+    );
     const preloadEntries: {
       audioBufferId: number;
       voiceParams: VoiceParams;
@@ -1681,6 +1681,7 @@ export class MidyGM2 extends EventTarget {
           // raw sample decoded and cached so that noteOnChannel path doesn't
           // pay a decode penalty on first encounter. Preload them unconditionally.
           if (audioBufferId !== undefined) {
+            noteAudioBufferIds[i] = audioBufferId;
             const voice = this.resolveVoice(
               channel,
               event.noteNumber!,
@@ -1695,7 +1696,6 @@ export class MidyGM2 extends EventTarget {
               const voiceParams = voice.getAllParams(controllerState);
               if (isSegmentMode && !isExcludedDrum) {
                 segmentVoiceParams[i] = voiceParams;
-                segmentAudioBufferIds[i] = audioBufferId;
                 segmentVoices[i] = voice;
               }
               if (!seenPreloadIds.has(audioBufferId)) {
@@ -1717,6 +1717,7 @@ export class MidyGM2 extends EventTarget {
           channels[event.channel!].setProgramChange(event.programNumber!);
       }
     }
+    this.noteAudioBufferIds = noteAudioBufferIds;
     this.preloadEntries = preloadEntries;
     for (const [audioBufferId, count] of voiceCounter) {
       if (count === 1) voiceCounter.delete(audioBufferId);
@@ -1730,7 +1731,6 @@ export class MidyGM2 extends EventTarget {
     }
     if (isSegmentMode) {
       this.segmentVoiceParams = segmentVoiceParams;
-      this.segmentAudioBufferIds = segmentAudioBufferIds;
       this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
     }
@@ -1994,6 +1994,7 @@ export class MidyGM2 extends EventTarget {
             startTime,
           );
           note.timelineIndex = queueIndex;
+          note.audioBufferId = this.noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
             this.segmentBakedSet.has(queueIndex);
           if (isSegmentNote) {
@@ -2535,6 +2536,8 @@ export class MidyGM2 extends EventTarget {
       voiceParams,
       noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
       noteEvent: this.noteOnEvents[timelineIndex],
+      audioBufferId: this.noteAudioBufferIds[timelineIndex],
+      voice: this.segmentVoices[timelineIndex] ?? undefined,
     });
   }
 

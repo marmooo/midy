@@ -1734,6 +1734,7 @@ export class Midy extends EventTarget {
   drumExclusiveClassNotes: (Note | null)[] = new Array(
     16 * drumExclusiveClassCount,
   );
+  noteAudioBufferIds: (number | undefined)[] = [];
   // "adsr" mode
   adsrVoiceCache: Map<
     number,
@@ -1756,7 +1757,6 @@ export class Midy extends EventTarget {
   segmentBakedSet: Set<number> = new Set();
   segmentChannelStates: (SegmentChannelState | null)[] = [];
   segmentVoiceParams: (VoiceParams | null)[] = [];
-  segmentAudioBufferIds: (number | undefined)[] = [];
   segmentVoices: (Voice | null)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
   // Bumped on every seek/stop/loop/pause. renderSegmentBuffer() calls are
@@ -2076,12 +2076,12 @@ export class Midy extends EventTarget {
     const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
-    const segmentAudioBufferIds: (number | undefined)[] = isSegmentMode
-      ? new Array(timeline.length)
-      : [];
     const segmentVoices: (Voice | null)[] = isSegmentMode
       ? new Array(timeline.length).fill(null)
       : [];
+    const noteAudioBufferIds: (number | undefined)[] = new Array(
+      timeline.length,
+    );
     const preloadEntries: {
       audioBufferId: number;
       voiceParams: VoiceParams;
@@ -2137,7 +2137,6 @@ export class Midy extends EventTarget {
               const voiceParams = voice.getAllParams(controllerState);
               if (isSegmentMode && !isExcludedDrum) {
                 segmentVoiceParams[i] = voiceParams;
-                segmentAudioBufferIds[i] = audioBufferId;
                 segmentVoices[i] = voice;
               }
               if (!seenPreloadIds.has(audioBufferId)) {
@@ -2159,6 +2158,7 @@ export class Midy extends EventTarget {
           channels[event.channel!].setProgramChange(event.programNumber!);
       }
     }
+    this.noteAudioBufferIds = noteAudioBufferIds;
     this.preloadEntries = preloadEntries;
     for (const [audioBufferId, count] of voiceCounter) {
       if (count === 1) voiceCounter.delete(audioBufferId);
@@ -2172,7 +2172,6 @@ export class Midy extends EventTarget {
     }
     if (isSegmentMode) {
       this.segmentVoiceParams = segmentVoiceParams;
-      this.segmentAudioBufferIds = segmentAudioBufferIds;
       this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
     }
@@ -2443,6 +2442,7 @@ export class Midy extends EventTarget {
             startTime,
           );
           note.timelineIndex = queueIndex;
+          note.audioBufferId = this.noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
             this.segmentBakedSet.has(queueIndex);
           if (isSegmentNote) {
@@ -2992,6 +2992,8 @@ export class Midy extends EventTarget {
       voiceParams,
       noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
       noteEvent: this.noteOnEvents[timelineIndex],
+      audioBufferId: this.noteAudioBufferIds[timelineIndex],
+      voice: this.segmentVoices[timelineIndex] ?? undefined,
     });
   }
 
