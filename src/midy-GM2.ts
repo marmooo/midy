@@ -774,6 +774,11 @@ const defaultControllerState = {
   // polyOn: { type: 128 + 127, defaultValue: 0 },
 };
 
+const defaultControllerStateArray = new Float32Array(256);
+for (const { type, defaultValue } of Object.values(defaultControllerState)) {
+  defaultControllerStateArray[type] = defaultValue;
+}
+
 export class ControllerState {
   array: Float32Array = new Float32Array(256);
 
@@ -897,10 +902,7 @@ export class ControllerState {
   }
 
   constructor() {
-    const entries = Object.entries(defaultControllerState);
-    for (const [_, { type, defaultValue }] of entries) {
-      this.array[type] = defaultValue;
-    }
+    this.array.set(defaultControllerStateArray);
   }
 }
 
