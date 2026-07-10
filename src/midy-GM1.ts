@@ -2557,8 +2557,21 @@ export class MidyGM1 extends EventTarget {
   async render(): Promise<AudioBuffer | undefined> {
     if (this.isRendering) return;
     if (this.timeline.length === 0) return;
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    this.isRendering = true;
+    this.renderedAudioBuffer = null;
+    this.dispatchEvent(new Event("rendering"));
 
-    const settings = (this.constructor as typeof MidyGM1).channelSettings;
+    // Build a single OpenChunk covering the entire song, then delegate to
+    // renderChunkBuffer() — the same path used by "chunk" mode's per-window
+    // batching.  This replaces the old approach of calling
+    // createFullRenderedBuffer() (= one OfflineAudioContext per note,
+    // awaited serially) and then mixing the results into a second
+    // OfflineAudioContext.  The new approach pays the OfflineAudioContext +
+    // startRendering() setup cost exactly once regardless of note count,
+    // and all raw-sample decodes are parallelised via the prefetch step
+    // inside renderChunkBuffer().
+    const settings = (this.constructor as typeof MidyGMLite).channelSettings;
     const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
       const channel = new Channel(ch, settings);
       channel.player = this;
@@ -2566,25 +2579,13 @@ export class MidyGM1 extends EventTarget {
     });
     renderChannels[9].isDrum = true;
 
-    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    this.isRendering = true;
-    this.renderedAudioBuffer = null;
-    this.dispatchEvent(new Event("rendering"));
-
-    const sampleRate = this.audioContext.sampleRate;
-    const totalSamples = Math.ceil(
-      (this.totalTime + this.startDelay) * sampleRate,
-    );
-    const tasks: {
-      t: number;
-      promise: Promise<RenderedBuffer | AudioBuffer | null>;
-    }[] = [];
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
+    const notes: ChunkNoteEntry[] = [];
 
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
-      const t = event.startTime * inverseTempo + this.startDelay;
+      const offset = event.startTime * inverseTempo + this.startDelay;
       this.processTimelineEvent(event, -1, {
         channels: renderChannels,
         onNoteOn: (renderChannel: Channel, event: TimelineEvent) => {
@@ -2599,48 +2600,32 @@ export class MidyGM1 extends EventTarget {
             velocity!,
           );
           if (!voice) return;
-          const promise = (async () => {
-            try {
-              return await this.createFullRenderedBuffer(
-                renderChannel,
-                { noteNumber: noteNumber!, velocity: velocity! },
-                voice.getAllParams(
-                  this.getControllerState(
-                    renderChannel,
-                    noteNumber!,
-                    velocity!,
-                  ),
-                ),
-                noteDuration,
-                noteEvent,
-              );
-            } catch (err) {
-              console.warn("render: note render failed", err);
-              return null;
-            }
-          })();
-          tasks.push({ t, promise });
+          const voiceParams = voice.getAllParams(
+            this.getControllerState(renderChannel, noteNumber!, velocity!),
+          );
+          notes.push({
+            channelNumber: renderChannel.channelNumber,
+            offset,
+            noteNumber: noteNumber!,
+            velocity: velocity!,
+            voiceParams,
+            noteDuration,
+            noteEvent,
+            audioBufferId: this.noteAudioBufferIds[i],
+            voice,
+            channelDetune: renderChannel.detune,
+            channelStateArray: renderChannel.state.array.slice(),
+            programNumber: renderChannel.programNumber,
+            isDrum: renderChannel.isDrum,
+          });
         },
       });
     }
-    const offlineContext = new OfflineAudioContext(2, totalSamples, sampleRate);
-    for (let i = 0; i < tasks.length; i++) {
-      const { t, promise } = tasks[i];
-      const noteBuffer = await promise;
-      if (!noteBuffer) continue;
-      const audioBuffer = noteBuffer instanceof RenderedBuffer
-        ? noteBuffer.buffer
-        : noteBuffer;
-      const bufferSource = new AudioBufferSourceNode(offlineContext, {
-        buffer: audioBuffer,
-      });
-      bufferSource.connect(offlineContext.destination);
-      bufferSource.start(t);
-    }
-    this.renderedAudioBuffer = await offlineContext.startRendering();
+    const chunk: OpenChunk = { chunkStart: 0, notes };
+    this.renderedAudioBuffer = await this.renderChunkBuffer(chunk);
     this.isRendering = false;
     this.dispatchEvent(new Event("rendered"));
-    return this.renderedAudioBuffer;
+    return this.renderedAudioBuffer ?? undefined;
   }
 
   async preloadSamples(): Promise<void> {
