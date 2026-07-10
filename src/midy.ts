@@ -3678,7 +3678,7 @@ export class Midy extends EventTarget {
     // startRendering() setup cost exactly once regardless of note count,
     // and all raw-sample decodes are parallelised via the prefetch step
     // inside renderChunkBuffer().
-    const settings = (this.constructor as typeof MidyGMLite).channelSettings;
+    const settings = (this.constructor as typeof Midy).channelSettings;
     const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
       const channel = new Channel(ch, settings);
       channel.player = this;
@@ -3709,7 +3709,7 @@ export class Midy extends EventTarget {
           );
           if (!voice) return;
           const voiceParams = voice.getAllParams(
-            this.getControllerState(renderChannel, noteNumber!, velocity!),
+            this.getControllerState(renderChannel, noteNumber!, velocity!, 0),
           );
           notes.push({
             channelNumber: renderChannel.channelNumber,

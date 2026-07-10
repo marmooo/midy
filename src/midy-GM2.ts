@@ -3221,7 +3221,7 @@ export class MidyGM2 extends EventTarget {
     // startRendering() setup cost exactly once regardless of note count,
     // and all raw-sample decodes are parallelised via the prefetch step
     // inside renderChunkBuffer().
-    const settings = (this.constructor as typeof MidyGMLite).channelSettings;
+    const settings = (this.constructor as typeof MidyGM2).channelSettings;
     const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
       const channel = new Channel(ch, settings);
       channel.player = this;
