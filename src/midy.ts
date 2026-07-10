@@ -1350,8 +1350,18 @@ function cbToRatio(cb: number): number {
   return Math.pow(10, cb / 200);
 }
 
-const decayCurve = 1 / (-Math.log(cbToRatio(-1000)));
-const releaseCurve = 1 / (-Math.log(cbToRatio(-600)));
+// https://www.synthfont.com/sfspec24.pdf
+// SF2 spec (decayVolEnv/decayModEnv/releaseVolEnv/releaseModEnv):
+// both the decay and release phase timecent values are defined as
+// "the time ... for a 100dB decrease in level, or a 100% decrease in
+// filter cutoff frequency ... from the maximum value to the minimum
+// value" (decay), and "the time spent in release phase until 100dB
+// attenuation [or, for the Modulation Envelope, zero value] were reached"
+// starting from full scale (release). Both reference the same 100dB/100%
+// change from full scale, so decay and release share one curve constant
+// — used identically across every cache mode ("none"/"ads"/"adsr"/
+// "segment"/"full") for both the Volume and Modulation envelopes.
+const envelopeCurve = 1 / (-Math.log(cbToRatio(-1000)));
 
 // https://www.synthfont.com/sfspec24.pdf
 // SF2 spec's defined maximum (and default) value for the initialFilterFc
@@ -3382,7 +3392,7 @@ export class Midy extends EventTarget {
     // Compute total duration across all notes in all channels.
     let totalDuration = 0;
     for (const n of notes) {
-      const releaseEnd = n.voiceParams.volRelease * releaseCurve * 5;
+      const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > totalDuration) totalDuration = end;
     }
@@ -3996,37 +4006,7 @@ export class Midy extends EventTarget {
       .setValueAtTime(1e-6, volDelay)
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
-      .setTargetAtTime(sustainVolume, volHold, decayDuration * decayCurve);
-  }
-
-  setVolumeNode(channel: Channel, note: Note, scheduleTime: number): void {
-    const depth = 1 + this.getNoteAmplitudeControl(channel, note);
-    const timeConstant = this.perceptualSmoothingTime / 5; // 99.3% (5 * tau)
-    note.volumeNode?.gain
-      .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(depth, scheduleTime, timeConstant);
-  }
-
-  setPortamentoDetune(
-    channel: Channel,
-    note: Note,
-    scheduleTime: number,
-  ): void {
-    if (channel.portamentoControl) {
-      const state = channel.state;
-      const portamentoNoteNumber = Math.ceil(state.portamentoNoteNumber * 127);
-      note.portamentoNoteNumber = portamentoNoteNumber;
-      channel.portamentoControl = false;
-      state.portamentoNoteNumber = 0;
-    }
-    const detune = this.calcNoteDetune(channel, note);
-    const startTime = note.startTime;
-    const deltaCent = (note.noteNumber - note.portamentoNoteNumber) * 100;
-    const portamentoTime = startTime + this.getPortamentoTime(channel, note);
-    note.bufferSource?.detune
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(detune - deltaCent, scheduleTime)
-      .linearRampToValueAtTime(detune, portamentoTime);
+      .setTargetAtTime(sustainVolume, volHold, decayDuration * envelopeCurve);
   }
 
   setDetune(channel: Channel, note: Note, scheduleTime: number): void {
@@ -4069,7 +4049,7 @@ export class Midy extends EventTarget {
       .setValueAtTime(baseRate, modDelay)
       .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
-      .setTargetAtTime(baseRate, modHold, decayDuration * decayCurve);
+      .setTargetAtTime(baseRate, modHold, decayDuration * envelopeCurve);
   }
 
   clampCutoffFrequency(frequency: number): number {
@@ -4162,7 +4142,7 @@ export class Midy extends EventTarget {
       .setTargetAtTime(
         adjustedSustainFreq,
         modHold,
-        decayDuration * decayCurve,
+        decayDuration * envelopeCurve,
       );
   }
 
@@ -4226,7 +4206,7 @@ export class Midy extends EventTarget {
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration * decayCurve * 5;
+    const adsDuration = volHold + decayDuration * envelopeCurve * 5;
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -4311,7 +4291,7 @@ export class Midy extends EventTarget {
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration * decayCurve * 5;
+    const adsDuration = volHold + decayDuration * envelopeCurve * 5;
     const releaseDuration = voiceParams.volRelease;
     const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
     const loopDuration = isLoop
@@ -4381,12 +4361,12 @@ export class Midy extends EventTarget {
       const decayElapsed = noteOffTime - volHoldTime;
       gainAtNoteOff = sustainVolume +
         (attackVolume - sustainVolume) *
-          Math.exp(-decayElapsed / (decayCurve * voiceParams.volDecay));
+          Math.exp(-decayElapsed / (envelopeCurve * voiceParams.volDecay));
     }
     volumeEnvelopeNode.gain
       .cancelScheduledValues(noteOffTime)
       .setValueAtTime(gainAtNoteOff, noteOffTime)
-      .setTargetAtTime(0, noteOffTime, releaseDuration * releaseCurve);
+      .setTargetAtTime(0, noteOffTime, releaseDuration * envelopeCurve);
     if (filterEnvelopeNode) {
       const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
       const peekFreq = this.clampCutoffFrequency(
@@ -4421,7 +4401,7 @@ export class Midy extends EventTarget {
         .setTargetAtTime(
           initialFreq,
           noteOffTime,
-          voiceParams.modRelease * releaseCurve,
+          voiceParams.modRelease * envelopeCurve,
         );
     }
 
@@ -4466,7 +4446,7 @@ export class Midy extends EventTarget {
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
-      const releaseTail = voiceParams.volRelease * releaseCurve * 5;
+      const releaseTail = voiceParams.volRelease * envelopeCurve * 5;
       if (this.maxSegmentNoteDuration < duration + releaseTail) continue;
       bakedSet.add(i);
     }
@@ -4495,7 +4475,7 @@ export class Midy extends EventTarget {
     let totalDuration = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEndDuration = n.voiceParams.volRelease * releaseCurve * 5;
+      const releaseEndDuration = n.voiceParams.volRelease * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEndDuration;
       if (end > totalDuration) totalDuration = end;
     }
@@ -4650,7 +4630,7 @@ export class Midy extends EventTarget {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } =
       noteEvent ?? {};
     const ch = channel.channelNumber;
-    const releaseEndDuration = voiceParams.volRelease * releaseCurve * 5;
+    const releaseEndDuration = voiceParams.volRelease * envelopeCurve * 5;
     const totalDuration = noteDuration + releaseEndDuration;
     const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
@@ -5242,7 +5222,7 @@ export class Midy extends EventTarget {
         const volRelease = endTime + volDuration;
         note.volumeNode?.gain
           .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * releaseCurve);
+          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
         note.bufferSource?.stop(volRelease);
       } else {
         if (naturalEndTime <= now) {
@@ -5270,11 +5250,11 @@ export class Midy extends EventTarget {
         .setTargetAtTime(
           note.adjustedBaseFreq,
           endTime,
-          (note.voiceParams?.modRelease ?? 0) * releaseCurve,
+          (note.voiceParams?.modRelease ?? 0) * envelopeCurve,
         );
       note.volumeEnvelopeNode.gain
         .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * releaseCurve);
+        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
     } else { // "ads" / "adsr" mode
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
@@ -5286,7 +5266,7 @@ export class Midy extends EventTarget {
         if (isEarlyCut) {
           note.volumeNode?.gain
             .cancelScheduledValues(endTime)
-            .setTargetAtTime(0, endTime, volDuration * releaseCurve);
+            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           note.bufferSource?.stop(volRelease);
         } else {
           if (naturalEndTime <= now) {
@@ -5304,7 +5284,7 @@ export class Midy extends EventTarget {
       }
       note.volumeNode?.gain
         .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * releaseCurve);
+        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
     }
     note.bufferSource?.stop(volRelease);
     return new Promise<void>((resolve) => {
