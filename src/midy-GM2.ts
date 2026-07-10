@@ -2593,7 +2593,8 @@ export class MidyGM2 extends EventTarget {
           } catch {
             // already stopped/ended
           }
-          pending.source.disconnect();
+          // disconnect is handled by the source's onended handler
+          pending.source = null;
         }
       }
       state.pending = [];
@@ -2778,7 +2779,8 @@ export class MidyGM2 extends EventTarget {
         } catch {
           // already stopped/ended
         }
-        pending.source.disconnect();
+        // disconnect is handled by the source's onended handler
+        pending.source = null;
       }
     }
     state.pending = [];
