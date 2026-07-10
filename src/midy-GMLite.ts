@@ -3602,8 +3602,11 @@ export class MidyGMLite extends EventTarget {
         startTime,
       );
     }
-    if (voiceParams.sample.type === "compressed") {
-      note.bufferSource.start(startTime);
+    if (!isRendered && voiceParams.sample.type === "compressed") {
+      note.bufferSource.start(
+        startTime,
+        voiceParams.start / (audioBuffer as AudioBuffer).sampleRate,
+      );
     } else {
       note.bufferSource.start(startTime);
     }
