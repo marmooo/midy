@@ -1417,6 +1417,7 @@ export class MidyGM2 extends EventTarget {
   masterVolume!: GainNode;
   scheduler!: GainNode;
   schedulerBuffer!: AudioBuffer;
+  pendingSchedulerSources: Set<AudioBufferSourceNode> = new Set();
   channels!: Channel[];
   reverbEffect!: ReverbEffect;
   chorusEffect!: ChorusEffect;
@@ -2193,6 +2194,7 @@ export class MidyGM2 extends EventTarget {
           break outer;
         }
         if (this.isPausing) {
+          this.cancelScheduledTasks();
           this.resumeTime = this.currentTime();
           bufferSource.stop();
           bufferSource.disconnect();
@@ -2202,6 +2204,7 @@ export class MidyGM2 extends EventTarget {
           exitReason = "paused";
           break outer;
         } else if (this.isStopping) {
+          this.cancelScheduledTasks();
           bufferSource.stop();
           bufferSource.disconnect();
           this.audioModeBufferSource = null;
@@ -2210,6 +2213,7 @@ export class MidyGM2 extends EventTarget {
           exitReason = "stopped";
           break outer;
         } else if (this.isSeeking) {
+          this.cancelScheduledTasks();
           bufferSource.stop();
           bufferSource.disconnect();
           this.audioModeBufferSource = null;
@@ -2301,6 +2305,7 @@ export class MidyGM2 extends EventTarget {
         }
       }
       if (this.isPausing) {
+        this.cancelScheduledTasks();
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
         if (this.cacheMode === "chunk") this.stopChunkSources();
@@ -2309,6 +2314,7 @@ export class MidyGM2 extends EventTarget {
         exitReason = "paused";
         break;
       } else if (this.isStopping) {
+        this.cancelScheduledTasks();
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
         if (this.cacheMode === "chunk") this.stopChunkSources();
@@ -2317,6 +2323,7 @@ export class MidyGM2 extends EventTarget {
         exitReason = "stopped";
         break;
       } else if (this.isSeeking) {
+        this.cancelScheduledTasks();
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
         if (this.cacheMode === "chunk") this.stopChunkSources();
@@ -5777,13 +5784,25 @@ export class MidyGM2 extends EventTarget {
     }
   }
 
+  cancelScheduledTasks(): void {
+    for (const bufferSource of this.pendingSchedulerSources) {
+      try {
+        bufferSource.stop();
+      } catch {
+        // already stopped/ended
+      }
+    }
+  }
+
   scheduleTask(callback: () => void, scheduleTime: number): Promise<void> {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext, {
         buffer: this.schedulerBuffer,
       });
       bufferSource.connect(this.scheduler);
+      this.pendingSchedulerSources.add(bufferSource);
       bufferSource.onended = () => {
+        this.pendingSchedulerSources.delete(bufferSource);
         try {
           callback();
         } finally {
