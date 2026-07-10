@@ -3886,9 +3886,36 @@ export class MidyGM2 extends EventTarget {
       .setValueAtTime(gainAtNoteOff, noteOffTime)
       .setTargetAtTime(0, noteOffTime, releaseDuration * releaseCurve);
     if (filterEnvelopeNode) {
+      const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
+      const peekFreq = this.clampCutoffFrequency(
+        this.centToHz(voiceParams.initialFilterFc + modEnvToFilterFc),
+      );
+      const sustainFreq = this.clampCutoffFrequency(
+        this.centToHz(
+          voiceParams.initialFilterFc +
+            modEnvToFilterFc * (1 - voiceParams.modSustain),
+        ),
+      );
+      const modDelayTime = voiceParams.modDelay;
+      const modAttackTime = modDelayTime + voiceParams.modAttack;
+      const modHoldTime = modAttackTime + voiceParams.modHold;
+      let freqAtNoteOff;
+      if (noteOffTime <= modDelayTime) {
+        freqAtNoteOff = initialFreq;
+      } else if (noteOffTime <= modAttackTime) {
+        freqAtNoteOff = initialFreq + (peekFreq - initialFreq) *
+            (noteOffTime - modDelayTime) / voiceParams.modAttack;
+      } else if (noteOffTime <= modHoldTime) {
+        freqAtNoteOff = peekFreq;
+      } else {
+        const decayElapsed = noteOffTime - modHoldTime;
+        freqAtNoteOff = sustainFreq +
+          (peekFreq - sustainFreq) *
+            Math.exp(-decayElapsed / (envelopeCurve * voiceParams.modDecay));
+      }
       filterEnvelopeNode.frequency
         .cancelScheduledValues(noteOffTime)
-        .setValueAtTime(initialFreq, noteOffTime)
+        .setValueAtTime(freqAtNoteOff, noteOffTime)
         .setTargetAtTime(
           initialFreq,
           noteOffTime,
