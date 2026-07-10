@@ -14,6 +14,7 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 // - "adsr"    for real-time playback with accurate release envelope
 // - "note"    for efficient playback when note behavior is fixed
 // - "segment" for heavy polyphony with low CPU and live channel mixing
+// - "chunk"   for heavy polyphony, merging all channels into one offline render
 // - "audio"   for fully pre-rendered playback (lowest CPU)
 //
 // "none"
@@ -67,6 +68,20 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 //   console for "missed its scheduled start" warnings; raise
 //   maxSegmentNoteDuration's tier (or lookAhead) if they appear, at the
 //   cost of added playback latency.
+// "chunk"
+//   Like "segment" mode, but merges ALL channels into a single
+//   OfflineAudioContext / startRendering() call per time window instead of
+//   one call per channel per window. Each note still gets its own full
+//   envelope/pitch-bend/LFO/CC#1 bake (same fidelity as "segment" mode).
+//   Channel volume/pan/expression ARE baked into the combined buffer
+//   (unlike "segment" mode), so the result is a stereo mix ready to
+//   connect straight to masterVolume — there is no per-channel gainL/gainR
+//   live mixing. This halves the number of startRendering() calls (from
+//   one per active channel per window to one per window), reducing
+//   OfflineAudioContext setup overhead further. The trade-off is that
+//   channel volume/pan/expression changes are not reflected after the
+//   chunk is baked; they are snapshotted at chunk-open time.
+//   Same MIDI-file-only restriction as "segment" mode.
 // "audio"
 //   Renders the entire MIDI file into a single AudioBuffer offline.
 //   Call render() to complete rendering before calling start().
@@ -75,7 +90,14 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 //   A "rendering" event is dispatched when rendering starts, and a
 //   "rendered" event is dispatched when rendering completes.
 const DEFAULT_CACHE_MODE = "segment";
-type CacheMode = "none" | "ads" | "adsr" | "note" | "segment" | "audio";
+type CacheMode =
+  | "none"
+  | "ads"
+  | "adsr"
+  | "note"
+  | "segment"
+  | "chunk"
+  | "audio";
 
 const _f64Buf = new ArrayBuffer(8);
 const _f64Array = new Float64Array(_f64Buf);
@@ -745,6 +767,46 @@ interface SegmentChannelState {
   pending: PendingSegment[];
 }
 
+// "chunk" mode
+// ChunkNoteEntry mirrors SegmentNoteEntry, with a channelNumber added so
+// the renderer knows which channel each note belongs to.
+interface ChunkNoteEntry {
+  channelNumber: number;
+  offset: number;
+  noteNumber: number;
+  velocity: number;
+  voiceParams: VoiceParams;
+  noteDuration: number;
+  noteEvent: NoteOnEventEntry | undefined;
+  audioBufferId?: number;
+  voice?: Voice;
+  // Snapshot of per-channel state at the time this note was appended.
+  // Channel volume/pan/expression are baked into the chunk buffer so
+  // they must be captured here (before later events on the same channel
+  // change them).
+  channelDetune: number;
+  channelStateArray: Float32Array;
+  programNumber: number;
+  isDrum: boolean;
+}
+interface OpenChunk {
+  chunkStart: number;
+  notes: ChunkNoteEntry[];
+}
+interface PendingChunk {
+  chunkStart: number;
+  buffer: AudioBuffer | null;
+  bufferReady: boolean;
+  bufferPromise: Promise<AudioBuffer | null>;
+  source: AudioBufferSourceNode | null;
+  done: boolean;
+  generation: number;
+}
+interface ChunkState {
+  openChunk: OpenChunk | null;
+  pending: PendingChunk[];
+}
+
 type MessageHandler = (bytes: Uint8Array, time: number) => void;
 type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
 type VoiceParamsHandler = (
@@ -892,6 +954,13 @@ export class MidyGMLite extends EventTarget {
   // that should be playing now, pushing them past lookAhead and causing
   // them to start late/at the wrong moment (see warnIfStartTimeMissed).
   segmentGeneration: number = 0;
+  // "chunk" mode
+  // Same segmentDuration / maxSegmentNoteDuration / segmentBakedSet /
+  // segmentVoiceParams / segmentVoices are reused from segment mode —
+  // the per-note classification logic is identical.
+  chunkState: ChunkState = { openChunk: null, pending: [] };
+  // Same generation-stamp mechanism as segmentGeneration.
+  chunkGeneration: number = 0;
 
   // Required properties
   audioContext!: AudioContext | OfflineAudioContext;
@@ -1151,10 +1220,12 @@ export class MidyGMLite extends EventTarget {
   cacheVoiceIds(): void {
     const { channels, timeline, voiceCounter, cacheMode } = this;
     const isSegmentMode = cacheMode === "segment";
-    const segmentVoiceParams: (VoiceParams | null)[] = isSegmentMode
+    const isChunkMode = cacheMode === "chunk";
+    const needsSegmentData = isSegmentMode || isChunkMode;
+    const segmentVoiceParams: (VoiceParams | null)[] = needsSegmentData
       ? new Array(timeline.length).fill(null)
       : [];
-    const segmentVoices: (Voice | null)[] = isSegmentMode
+    const segmentVoices: (Voice | null)[] = needsSegmentData
       ? new Array(timeline.length).fill(null)
       : [];
     const noteAudioBufferIds: (number | undefined)[] = new Array(
@@ -1191,7 +1262,7 @@ export class MidyGMLite extends EventTarget {
           const isExcludedDrum = channel.isDrum &&
             drumExclusiveClasses[event.noteNumber!] !== 0;
           // Exclusive class drum notes are excluded from segmentVoiceParams
-          // (and therefore from segment.notes) because segmenting them would
+          // (and therefore from segment/chunk notes) because segmenting them would
           // bring no benefit — exclusive class guarantees at most one note of
           // the same class sounds at a time, so they're scheduled via the
           // normal noteOnChannel path instead. However they still need their
@@ -1211,7 +1282,7 @@ export class MidyGMLite extends EventTarget {
                 event.velocity!,
               );
               const voiceParams = voice.getAllParams(controllerState);
-              if (isSegmentMode && !isExcludedDrum) {
+              if (needsSegmentData && !isExcludedDrum) {
                 segmentVoiceParams[i] = voiceParams;
                 segmentVoices[i] = voice;
               }
@@ -1235,11 +1306,11 @@ export class MidyGMLite extends EventTarget {
     this.GM1SystemOn(this.audioContext.currentTime);
     if (
       cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
-      cacheMode === "segment"
+      cacheMode === "segment" || cacheMode === "chunk"
     ) {
       this.buildNoteOnDurations();
     }
-    if (isSegmentMode) {
+    if (needsSegmentData) {
       this.segmentVoiceParams = segmentVoiceParams;
       this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
@@ -1467,14 +1538,15 @@ export class MidyGMLite extends EventTarget {
   scheduleTimelineEvents(scheduleTime: number, queueIndex: number): number {
     const timeOffset = this.resumeTime - this.startTime;
     const isSegmentMode = this.cacheMode === "segment";
-    // Segment mode needs notes discovered far enough ahead that
-    // closeSegment + renderSegmentBuffer have time to finish before each
-    // segment's scheduled start time. The worst case render length scales
+    const isChunkMode = this.cacheMode === "chunk";
+    // Segment/chunk mode needs notes discovered far enough ahead that
+    // closeSegment/closeChunk + render have time to finish before each
+    // segment/chunk's scheduled start time. The worst case render length scales
     // with how long a single note in the segment can ring
     // (maxSegmentNoteDuration), on top of the segment's own discovery
-    // window (lookAhead), so segment mode adds the two rather than reusing
+    // window (lookAhead), so segment/chunk mode adds the two rather than reusing
     // the plain lookAhead other cache modes use for note-on scheduling.
-    const effectiveLookAhead = isSegmentMode
+    const effectiveLookAhead = (isSegmentMode || isChunkMode)
       ? this.lookAhead + this.maxSegmentNoteDuration
       : this.lookAhead;
     const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
@@ -1497,7 +1569,9 @@ export class MidyGMLite extends EventTarget {
           note.audioBufferId = this.noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
             this.segmentBakedSet.has(queueIndex);
-          if (isSegmentNote) {
+          const isChunkNote = isChunkMode &&
+            this.segmentBakedSet.has(queueIndex);
+          if (isSegmentNote || isChunkNote) {
             note.isSegmentGhost = true;
             note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
           }
@@ -1510,6 +1584,15 @@ export class MidyGMLite extends EventTarget {
           if (isSegmentNote) {
             this.appendToSegmentQueue(
               channel.channelNumber,
+              t,
+              queueIndex,
+              event.noteNumber!,
+              event.velocity!,
+            );
+          }
+          if (isChunkNote) {
+            this.appendToChunkQueue(
+              channel,
               t,
               queueIndex,
               event.noteNumber!,
@@ -1669,6 +1752,7 @@ export class MidyGMLite extends EventTarget {
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
     if (this.cacheMode === "segment") this.initSegmentPipeline();
+    if (this.cacheMode === "chunk") this.initChunkPipeline();
     let exitReason: string | undefined;
     this.notePromises = [];
     while (true) {
@@ -1689,10 +1773,15 @@ export class MidyGMLite extends EventTarget {
             this.segmentGeneration++;
             this.initSegmentPipeline();
           }
+          if (this.cacheMode === "chunk") {
+            this.chunkGeneration++;
+            this.initChunkPipeline();
+          }
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
           if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
           await this.suspendAudioContext();
           exitReason = "ended";
           break;
@@ -1701,6 +1790,7 @@ export class MidyGMLite extends EventTarget {
       if (this.isPausing) {
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
         await this.suspendAudioContext();
         this.isPausing = false;
         exitReason = "paused";
@@ -1708,6 +1798,7 @@ export class MidyGMLite extends EventTarget {
       } else if (this.isStopping) {
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
         await this.suspendAudioContext();
         this.isStopping = false;
         exitReason = "stopped";
@@ -1715,11 +1806,13 @@ export class MidyGMLite extends EventTarget {
       } else if (this.isSeeking) {
         await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
         this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
         if (this.cacheMode === "segment") this.initSegmentPipeline();
+        if (this.cacheMode === "chunk") this.initChunkPipeline();
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
@@ -1728,6 +1821,12 @@ export class MidyGMLite extends EventTarget {
       if (this.cacheMode === "segment") {
         const timeOffset = this.resumeTime - this.startTime;
         this.updateSegmentPipeline(
+          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
+        );
+      }
+      if (this.cacheMode === "chunk") {
+        const timeOffset = this.resumeTime - this.startTime;
+        this.updateChunkPipeline(
           now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
         );
       }
@@ -2108,6 +2207,314 @@ export class MidyGMLite extends EventTarget {
     }
   }
 
+  // "chunk" mode: same window-based grouping as "segment", but all active
+  // channels are merged into a SINGLE OfflineAudioContext per time window
+  // instead of one context per channel. Channel volume/pan/expression are
+  // baked into the combined stereo buffer (snapshotted at chunk-open time),
+  // so the resulting AudioBufferSourceNode connects straight to masterVolume
+  // with no per-channel gainL/gainR mixing needed at playback time.
+
+  initChunkPipeline(): void {
+    this.chunkState = { openChunk: null, pending: [] };
+  }
+
+  async drainChunkPipeline(): Promise<void> {
+    const state = this.chunkState;
+    if (state.openChunk) {
+      this.closeChunk(state);
+    }
+    const allBufferPromises = state.pending.map((p) => p.bufferPromise);
+    await Promise.allSettled(allBufferPromises);
+    for (const pending of state.pending) {
+      if (!pending.source && pending.bufferReady) {
+        this.startPendingChunk(pending);
+      }
+    }
+    while (true) {
+      if (state.pending.every((p) => p.done)) break;
+      const now = this.audioContext.currentTime;
+      await this.scheduleTask(() => {}, now + this.noteCheckInterval);
+    }
+  }
+
+  stopChunkSources(): void {
+    // Invalidate in-flight renderChunkBuffer() calls (same rationale as
+    // stopSegmentSources — stale renders must not be scheduled after a
+    // seek/stop/loop).
+    this.chunkGeneration++;
+    const state = this.chunkState;
+    for (const pending of state.pending) {
+      if (pending.source) {
+        try {
+          pending.source.stop();
+        } catch {
+          // already stopped/ended
+        }
+        pending.source.disconnect();
+      }
+    }
+    state.pending = [];
+    state.openChunk = null;
+  }
+
+  appendToChunkQueue(
+    channel: Channel,
+    t: number,
+    timelineIndex: number,
+    noteNumber: number,
+    velocity: number,
+  ): void {
+    const state = this.chunkState;
+    const voiceParams = this.segmentVoiceParams[timelineIndex];
+    if (!voiceParams) return;
+
+    if (
+      state.openChunk &&
+      this.segmentDuration <= t - state.openChunk.chunkStart
+    ) {
+      this.closeChunk(state);
+    }
+    if (!state.openChunk) {
+      state.openChunk = { chunkStart: t, notes: [] };
+    }
+    state.openChunk.notes.push({
+      channelNumber: channel.channelNumber,
+      offset: t - state.openChunk.chunkStart,
+      noteNumber,
+      velocity,
+      voiceParams,
+      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
+      noteEvent: this.noteOnEvents[timelineIndex],
+      audioBufferId: this.noteAudioBufferIds[timelineIndex],
+      voice: this.segmentVoices[timelineIndex] ?? undefined,
+      // Snapshot per-channel state now — channel volume/pan/expression
+      // are baked into the buffer so they must be captured at note-append
+      // time before subsequent events on the same channel change them.
+      channelDetune: channel.detune,
+      channelStateArray: channel.state.array.slice(),
+      programNumber: channel.programNumber,
+      isDrum: channel.isDrum,
+    });
+  }
+
+  closeChunk(state: ChunkState): void {
+    const chunk = state.openChunk;
+    state.openChunk = null;
+    if (!chunk || chunk.notes.length === 0) return;
+    const generation = this.chunkGeneration;
+    const pending: PendingChunk = {
+      chunkStart: chunk.chunkStart,
+      buffer: null,
+      bufferReady: false,
+      source: null,
+      done: false,
+      bufferPromise: Promise.resolve(null),
+      generation,
+    };
+    pending.bufferPromise = this.renderChunkBuffer(chunk)
+      .then((buffer) => {
+        if (this.chunkGeneration !== generation) {
+          const idx = state.pending.indexOf(pending);
+          if (idx !== -1) state.pending.splice(idx, 1);
+          pending.done = true;
+          return null;
+        }
+        pending.buffer = buffer;
+        pending.bufferReady = true;
+        return buffer;
+      })
+      .catch((err) => {
+        console.warn("chunk render failed", err);
+        pending.bufferReady = true;
+        return null;
+      });
+    state.pending.push(pending);
+  }
+
+  startPendingChunk(pending: PendingChunk): void {
+    if (!pending.buffer) {
+      pending.done = true;
+      return;
+    }
+    const timeOffset = this.resumeTime - this.startTime;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const nominalStart = pending.chunkStart + schedulingOffset;
+    const absoluteStart = Math.max(0, nominalStart);
+    this.warnIfStartTimeMissed("chunk", nominalStart);
+    const source = new AudioBufferSourceNode(this.audioContext, {
+      buffer: pending.buffer,
+    });
+    // chunk buffers are stereo and already include channel volume/pan,
+    // so connect directly to masterVolume (bypassing per-channel gainL/R).
+    source.connect(this.masterVolume);
+    source.onended = () => {
+      pending.done = true;
+      source.disconnect();
+    };
+    source.start(absoluteStart);
+    pending.source = source;
+  }
+
+  updateChunkPipeline(lookAheadCheckTime: number): void {
+    const state = this.chunkState;
+    if (
+      state.openChunk &&
+      state.openChunk.chunkStart + this.segmentDuration <= lookAheadCheckTime
+    ) {
+      this.closeChunk(state);
+    }
+    state.pending = state.pending.filter((p) => !p.done);
+    for (const pending of state.pending) {
+      if (!pending.source && pending.bufferReady) {
+        this.startPendingChunk(pending);
+      }
+    }
+  }
+
+  // Renders all notes from all channels within one chunk window into a
+  // single stereo AudioBuffer. Unlike renderSegmentBuffer (which renders
+  // one channel at a time and leaves volume/pan for real-time gainL/R),
+  // this method:
+  //   1. Creates one OfflineAudioContext for the whole chunk (stereo, 2 ch).
+  //   2. For each note, creates a per-channel offlinePlayer seeded from
+  //      the per-note channel snapshot (volume/pan/expression baked in).
+  //   3. Wires each note's volumeNode → channel gainL/gainR → merger →
+  //      offlineContext.destination so the stereo pan is baked correctly.
+  //   4. Returns the resulting stereo buffer ready to feed masterVolume.
+  async renderChunkBuffer(chunk: OpenChunk): Promise<AudioBuffer | null> {
+    const notes = chunk.notes;
+    if (notes.length === 0) return null;
+
+    // Compute total duration across all notes in all channels.
+    let totalDuration = 0;
+    for (const n of notes) {
+      const releaseEnd = n.voiceParams.volRelease * releaseCurve * 5;
+      const end = n.offset + n.noteDuration + releaseEnd;
+      if (end > totalDuration) totalDuration = end;
+    }
+    if (totalDuration <= 0) return null;
+
+    const sampleRate = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      2,
+      Math.ceil(totalDuration * sampleRate),
+      sampleRate,
+    );
+
+    // Build a lightweight offlinePlayer that shares soundFont/cache data.
+    // We need channel audio nodes wired to the offline destination, so we
+    // create a full MidyGMLite instance against the offline context but
+    // immediately override suspend/resume so they don't throw.
+    const allChannelNumbers = [...new Set(notes.map((n) => n.channelNumber))];
+    const offlinePlayer = new (this.constructor as typeof MidyGMLite)(
+      offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: allChannelNumbers },
+    );
+    offlinePlayer.cacheMode = "none";
+    offlineContext.suspend = () => Promise.resolve();
+    offlineContext.resume = () => Promise.resolve();
+    offlinePlayer.soundFonts = this.soundFonts;
+    offlinePlayer.soundFontTable = this.soundFontTable;
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
+
+    // Seed each channel from its per-note snapshot.  Multiple notes on the
+    // same channel may carry different snapshots (if a CC event fell between
+    // them); we seed once from the first note and let per-note event replay
+    // (below) handle any intra-chunk CC changes on shared state correctly.
+    // The appliedEvents dedup set below handles double-application just as
+    // renderSegmentBuffer does.
+    const seededChannels = new Set<number>();
+    for (const n of notes) {
+      const ch = n.channelNumber;
+      if (seededChannels.has(ch)) continue;
+      seededChannels.add(ch);
+      const dstChannel = offlinePlayer.channels[ch];
+      dstChannel.state.array.set(n.channelStateArray);
+      dstChannel.isDrum = n.isDrum;
+      dstChannel.programNumber = n.programNumber;
+      dstChannel.modulationDepthRange = this.channels[ch].modulationDepthRange;
+      dstChannel.detune = n.channelDetune;
+      // Apply channel volume/pan/expression so the offline gainL/gainR
+      // nodes are set correctly before any notes start.
+      offlinePlayer.updateChannelVolume(dstChannel, 0);
+    }
+
+    // Pre-fetch raw sample buffers in parallel (same optimisation as
+    // renderSegmentBuffer — avoids serialising decode latency).
+    const prefetchTasks: Promise<unknown>[] = [];
+    const seenAudioBufferIds = new Set<number>();
+    for (const n of notes) {
+      const id = n.audioBufferId !== undefined
+        ? n.audioBufferId
+        : offlinePlayer.getVoiceId(
+          offlinePlayer.channels[n.channelNumber],
+          n.noteNumber,
+          n.velocity,
+        );
+      if (id === undefined || seenAudioBufferIds.has(id)) continue;
+      seenAudioBufferIds.add(id);
+      prefetchTasks.push(
+        offlinePlayer.getRawAudioBuffer(id, n.voiceParams),
+      );
+    }
+    if (prefetchTasks.length > 0) await Promise.all(prefetchTasks);
+
+    // Same double-application guard as renderSegmentBuffer.
+    const appliedEvents = new Set<TimelineEvent>();
+
+    // Schedule all notes.
+    const promises = notes.map((n) => {
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const preNote = new Note(n.noteNumber, n.velocity, n.offset);
+      preNote.voiceParams = n.voiceParams;
+      preNote.voice = n.voice ?? null;
+      preNote.audioBufferId = n.audioBufferId;
+      return offlinePlayer.noteOnChannel(
+        dstChannel,
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+        preNote,
+      );
+    });
+    const offlineNotes = await Promise.all(promises);
+
+    // Replay per-note CC/pitchBend events and schedule noteOff.
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const offlineNote = offlineNotes[i];
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+        n.noteEvent ?? {};
+      for (const event of noteEvents) {
+        if (appliedEvents.has(event)) continue;
+        if (event.type === "programChange") continue;
+        const t = (event.startTime as number) / this.tempo - noteStartTime;
+        if (t < 0 || t > n.noteDuration) continue;
+        appliedEvents.add(event);
+        offlinePlayer.processTimelineEvent(event, n.offset + t, {
+          channels: offlinePlayer.channels,
+        });
+      }
+      // volumeNode is already connected to dstChannel.gainL/gainR (which
+      // includes baked channel volume/pan), so no rewiring needed unlike
+      // renderSegmentBuffer. The stereo mixer flows:
+      //   volumeNode → gainL/gainR → merger → masterVolume (offline dest)
+      if (offlineNote?.volumeNode) {
+        // Already wired by noteOnChannel → setNoteRouting; nothing to do.
+      }
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        n.noteNumber,
+        0,
+        n.offset + n.noteDuration,
+        true,
+      );
+    }
+    await Promise.resolve();
+    return await offlineContext.startRendering();
+  }
+
   resolveVoice(
     channel: Channel,
     noteNumber: number,
@@ -2279,13 +2686,13 @@ export class MidyGMLite extends EventTarget {
     this.seekTo(this.currentTime() * timeScale);
     if (
       cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
-      cacheMode === "segment"
+      cacheMode === "segment" || cacheMode === "chunk"
     ) {
       this.buildNoteOnDurations();
       this.fullVoiceCache.clear();
       this.adsrVoiceCache.clear();
     }
-    if (cacheMode === "segment") {
+    if (cacheMode === "segment" || cacheMode === "chunk") {
       this.finalizeSegmentClassification();
     }
     if (cacheMode === "audio") {
@@ -2668,10 +3075,10 @@ export class MidyGMLite extends EventTarget {
     });
   }
 
-  // "segment" mode: combine the voiceParams resolved during cacheVoiceIds()
+  // "segment" / "chunk" mode: combine the voiceParams resolved during cacheVoiceIds()
   // (at the correct point in program-change order) with noteOnDurations
   // (which needs its own full-timeline pass and isn't ready until after
-  // that loop) to decide which notes are safe to bake into a segment.
+  // that loop) to decide which notes are safe to bake into a segment/chunk.
   // Notes that ring too long, or that participate in an exclusive class
   // (hi-hat choke groups etc.), are left out so they keep going through
   // normal per-note real-time ("ads"-style) scheduling instead — that

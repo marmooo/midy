@@ -20,8 +20,8 @@ This library provides several files depending on the implementation level.
 
 ## Demo
 
-- [@marmooo/piano-visualizer](https://marmooo.github.io/piano-visualizer) - A
-  beautiful piano visualizer
+- [@marmooo/piano-visualizer](https://marmooo.github.io/piano-visualizer) -
+  Beautiful piano visualizer
 - [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
 - [midi2audio](https://marmooo.github.io/midi2audio/) - Convert MIDI to audio
   (WAV, MP3, AAC, FLAC, Opus)
@@ -109,6 +109,7 @@ midy.addEventListener("tempoChanged", func);
 - "adsr" - for real-time playback with accurate release envelope
 - "note" - for efficient playback when note behavior is fixed
 - "segment" - for heavy polyphony with low CPU and live channel mixing
+- "chunk" - for heavy polyphony, merging all channels into one offline render
 - "audio" - for fully pre-rendered playback (lowest CPU)
 
 ```
