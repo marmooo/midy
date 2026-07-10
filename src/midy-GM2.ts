@@ -3666,18 +3666,22 @@ export class MidyGM2 extends EventTarget {
     note.modLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
-    note.modLfoToFilterFc = new GainNode(audioContext, {
-      gain: voiceParams.modLfoToFilterFc,
-    });
     note.modLfoToPitch = new GainNode(audioContext);
     note.modLfoToVolume = new GainNode(audioContext);
+    if (note.filterEnvelopeNode) {
+      note.modLfoToFilterFc = new GainNode(audioContext, {
+        gain: voiceParams.modLfoToFilterFc,
+      });
+    } else {
+      note.modLfoToFilterFc = null;
+    }
     this.setModLfoToPitch(channel, note, scheduleTime);
     this.setModLfoToVolume(channel, note, scheduleTime);
 
     note.modLfo!.start(note.startTime + voiceParams.delayModLFO);
-    note.modLfo!.connect(note.modLfoToFilterFc);
-    if (note.filterEnvelopeNode) {
-      note.modLfoToFilterFc.connect(note.filterEnvelopeNode.frequency);
+    if (note.modLfoToFilterFc) {
+      note.modLfo!.connect(note.modLfoToFilterFc);
+      note.modLfoToFilterFc.connect(note.filterEnvelopeNode!.frequency);
     }
     note.modLfo!.connect(note.modLfoToPitch);
     note.modLfoToPitch.connect(note.bufferSource!.detune);
@@ -4613,6 +4617,7 @@ export class MidyGM2 extends EventTarget {
     note.volumeEnvelopeNode?.disconnect();
     note.volumeNode?.disconnect();
     if (note.modLfoToPitch) {
+      note.modLfoToFilterFc?.disconnect();
       note.modLfoToVolume?.disconnect?.();
       note.modLfoToPitch?.disconnect?.();
       note.modLfo?.stop();
