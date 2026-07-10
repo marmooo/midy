@@ -3954,9 +3954,10 @@ export class MidyGM1 extends EventTarget {
       const baseDepth = Math.abs(modLfoToPitch) +
         channel.state.modulationDepthMSB;
       const depth = baseDepth * Math.sign(modLfoToPitch);
+      const timeConstant = this.perceptualSmoothingTime / 5;
       note.modLfoToPitch?.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(depth, scheduleTime);
+        .cancelAndHoldAtTime(scheduleTime)
+        .setTargetAtTime(depth, scheduleTime, timeConstant);
     } else {
       this.startModulation(channel, note, scheduleTime);
     }
@@ -3964,18 +3965,20 @@ export class MidyGM1 extends EventTarget {
 
   setModLfoToFilterFc(note: Note, scheduleTime: number): void {
     const modLfoToFilterFc = note.voiceParams?.modLfoToFilterFc ?? 0;
+    const timeConstant = this.perceptualSmoothingTime / 5;
     note.modLfoToFilterFc?.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(modLfoToFilterFc, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(modLfoToFilterFc, scheduleTime, timeConstant);
   }
 
   setModLfoToVolume(note: Note, scheduleTime: number): void {
     const modLfoToVolume = note.voiceParams?.modLfoToVolume ?? 0;
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
     const depth = baseDepth * Math.sign(modLfoToVolume);
+    const timeConstant = this.perceptualSmoothingTime / 5;
     note.modLfoToVolume?.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(depth, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(depth, scheduleTime, timeConstant);
   }
 
   setDelayModLFO(note: Note): void {
@@ -4047,10 +4050,13 @@ export class MidyGM1 extends EventTarget {
   updateModulation(channel: Channel, scheduleTime: number): void {
     const depth = channel.state.modulationDepthMSB *
       channel.modulationDepthRange;
+    const timeConstant = this.perceptualSmoothingTime / 5;
     channel.processScheduledNotes((note: Note) => {
       if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
       if (note.modLfoToPitch) {
-        note.modLfoToPitch?.gain.setValueAtTime(depth, scheduleTime);
+        note.modLfoToPitch?.gain
+          .cancelAndHoldAtTime(scheduleTime)
+          .setTargetAtTime(depth, scheduleTime, timeConstant);
       } else {
         this.startModulation(channel, note, scheduleTime);
       }
@@ -4070,12 +4076,13 @@ export class MidyGM1 extends EventTarget {
     const state = channel.state;
     const gain = state.volumeMSB * state.expressionMSB;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
+    const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(gain * gainLeft, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
     channel.gainR.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(gain * gainRight, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(

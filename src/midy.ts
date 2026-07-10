@@ -5567,9 +5567,10 @@ export class Midy extends EventTarget {
         this.getLFOPitchDepth(channel, note);
       const baseDepth = Math.abs(modLfoToPitch) + modulationDepth;
       const depth = baseDepth * Math.sign(modLfoToPitch);
+      const timeConstant = this.perceptualSmoothingTime / 5;
       note.modLfoToPitch?.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(depth, scheduleTime);
+        .cancelAndHoldAtTime(scheduleTime)
+        .setTargetAtTime(depth, scheduleTime, timeConstant);
     } else {
       this.startModulation(channel, note, scheduleTime);
     }
@@ -5597,9 +5598,10 @@ export class Midy extends EventTarget {
   ): void {
     const modLfoToFilterFc = (note.voiceParams?.modLfoToFilterFc ?? 0) +
       this.getLFOFilterDepth(channel, note);
+    const timeConstant = this.perceptualSmoothingTime / 5;
     note.modLfoToFilterFc?.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(modLfoToFilterFc, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(modLfoToFilterFc, scheduleTime, timeConstant);
   }
 
   setModLfoToVolume(channel: Channel, note: Note, scheduleTime: number): void {
@@ -5607,9 +5609,10 @@ export class Midy extends EventTarget {
     const baseDepth = cbToRatio(Math.abs(modLfoToVolume)) - 1;
     const depth = baseDepth * Math.sign(modLfoToVolume) *
       (1 + this.getLFOAmplitudeDepth(channel, note));
+    const timeConstant = this.perceptualSmoothingTime / 5;
     note.modLfoToVolume?.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(depth, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(depth, scheduleTime, timeConstant);
   }
 
   setReverbSend(channel: Channel, note: Note, scheduleTime: number): void {
@@ -5762,10 +5765,13 @@ export class Midy extends EventTarget {
     const { modulationDepthMSB, modulationDepthLSB } = channel.state;
     const modulationDepth = modulationDepthMSB + modulationDepthLSB / 128;
     const depth = modulationDepth * channel.modulationDepthRange;
+    const timeConstant = this.perceptualSmoothingTime / 5;
     channel.processScheduledNotes((note: Note) => {
       if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
       if (note.modLfoToPitch) {
-        note.modLfoToPitch?.gain.setValueAtTime(depth, scheduleTime);
+        note.modLfoToPitch?.gain
+          .cancelAndHoldAtTime(scheduleTime)
+          .setTargetAtTime(depth, scheduleTime, timeConstant);
       } else {
         this.startModulation(channel, note, scheduleTime);
       }
@@ -5824,12 +5830,13 @@ export class Midy extends EventTarget {
     const effect = this.getChannelAmplitudeControl(channel);
     const gain = volume * expression * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(pan);
+    const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(gain * gainLeft, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
     channel.gainR.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(gain * gainRight, scheduleTime);
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
   }
 
   updateKeyBasedVolume(
