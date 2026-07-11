@@ -2767,7 +2767,8 @@ export class MidyGMLite extends EventTarget {
     const { voiceParams, startTime } = note;
     if (!voiceParams) return;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const sustainVolume = attackVolume *
+      cbToRatio(-1000 * voiceParams.volSustain);
     const volDelay = startTime + voiceParams.volDelay;
     const volAttack = volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
@@ -2778,7 +2779,7 @@ export class MidyGMLite extends EventTarget {
       .setValueAtTime(1e-6, volDelay)
       .exponentialRampToValueAtTime(attackVolume, volAttack)
       .setValueAtTime(attackVolume, volHold)
-      .setTargetAtTime(sustainVolume, volHold, decayDuration * envelopeCurve);
+      .exponentialRampToValueAtTime(sustainVolume, volHold + decayDuration);
   }
 
   setDetune(channel: Channel, note: Note, scheduleTime: number): void {
@@ -2799,6 +2800,8 @@ export class MidyGMLite extends EventTarget {
     const modEnvToPitch = voiceParams.modEnvToPitch;
     if (modEnvToPitch === 0) return;
     const peekRate = baseRate * this.centToRate(modEnvToPitch);
+    const sustainRate = baseRate *
+      this.centToRate(modEnvToPitch * (1 - voiceParams.modSustain));
     const modDelay = note.startTime + voiceParams.modDelay;
     const modAttack = modDelay + voiceParams.modAttack;
     const modHold = modAttack + voiceParams.modHold;
@@ -2807,7 +2810,7 @@ export class MidyGMLite extends EventTarget {
       .setValueAtTime(baseRate, modDelay)
       .exponentialRampToValueAtTime(peekRate, modAttack)
       .setValueAtTime(peekRate, modHold)
-      .setTargetAtTime(baseRate, modHold, decayDuration * envelopeCurve);
+      .exponentialRampToValueAtTime(sustainRate, modHold + decayDuration);
   }
 
   clampCutoffFrequency(frequency: number): number {
@@ -2842,10 +2845,9 @@ export class MidyGMLite extends EventTarget {
       .setValueAtTime(adjustedBaseFreq, modDelay)
       .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
       .setValueAtTime(adjustedPeekFreq, modHold)
-      .setTargetAtTime(
+      .exponentialRampToValueAtTime(
         adjustedSustainFreq,
-        modHold,
-        decayDuration * envelopeCurve,
+        modHold + decayDuration,
       );
   }
 
@@ -2890,7 +2892,7 @@ export class MidyGMLite extends EventTarget {
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration * envelopeCurve * 5;
+    const adsDuration = volHold + decayDuration;
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -2974,7 +2976,7 @@ export class MidyGMLite extends EventTarget {
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration * envelopeCurve * 5;
+    const adsDuration = volHold + decayDuration;
     const releaseDuration = voiceParams.volRelease;
     const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
     const loopDuration = isLoop
@@ -3028,7 +3030,8 @@ export class MidyGMLite extends EventTarget {
     this.setFilterEnvelope(offlineNote, 0);
 
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
-    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const sustainVolume = attackVolume *
+      cbToRatio(-1000 * voiceParams.volSustain);
     const volDelayTime = voiceParams.volDelay;
     const volAttackTime = volDelayTime + voiceParams.volAttack;
     const volHoldTime = volAttackTime + voiceParams.volHold;
@@ -3040,11 +3043,12 @@ export class MidyGMLite extends EventTarget {
           (noteOffTime - volDelayTime) / voiceParams.volAttack;
     } else if (noteOffTime <= volHoldTime) {
       gainAtNoteOff = attackVolume;
+    } else if (noteOffTime <= volHoldTime + voiceParams.volDecay) {
+      const decayFraction = (noteOffTime - volHoldTime) / voiceParams.volDecay;
+      gainAtNoteOff = attackVolume *
+        Math.pow(sustainVolume / attackVolume, decayFraction);
     } else {
-      const decayElapsed = noteOffTime - volHoldTime;
-      gainAtNoteOff = sustainVolume +
-        (attackVolume - sustainVolume) *
-          Math.exp(-decayElapsed / (envelopeCurve * voiceParams.volDecay));
+      gainAtNoteOff = sustainVolume;
     }
     volumeEnvelopeNode.gain
       .cancelScheduledValues(noteOffTime)
@@ -3072,19 +3076,20 @@ export class MidyGMLite extends EventTarget {
             (noteOffTime - modDelayTime) / voiceParams.modAttack;
       } else if (noteOffTime <= modHoldTime) {
         freqAtNoteOff = peekFreq;
+      } else if (noteOffTime <= modHoldTime + voiceParams.modDecay) {
+        const decayFraction = (noteOffTime - modHoldTime) /
+          voiceParams.modDecay;
+        freqAtNoteOff = peekFreq *
+          Math.pow(sustainFreq / peekFreq, decayFraction);
       } else {
-        const decayElapsed = noteOffTime - modHoldTime;
-        freqAtNoteOff = sustainFreq +
-          (peekFreq - sustainFreq) *
-            Math.exp(-decayElapsed / (envelopeCurve * voiceParams.modDecay));
+        freqAtNoteOff = sustainFreq;
       }
       filterEnvelopeNode.frequency
         .cancelScheduledValues(noteOffTime)
         .setValueAtTime(freqAtNoteOff, noteOffTime)
-        .setTargetAtTime(
+        .exponentialRampToValueAtTime(
           initialFreq,
-          noteOffTime,
-          voiceParams.modRelease * envelopeCurve,
+          noteOffTime + voiceParams.modRelease,
         );
     }
 
@@ -3828,10 +3833,9 @@ export class MidyGMLite extends EventTarget {
     if (note.volumeEnvelopeNode) { // "none" mode
       note.filterEnvelopeNode?.frequency
         .cancelScheduledValues(endTime)
-        .setTargetAtTime(
+        .exponentialRampToValueAtTime(
           note.adjustedBaseFreq,
-          endTime,
-          (note.voiceParams?.modRelease ?? 0) * envelopeCurve,
+          endTime + (note.voiceParams?.modRelease ?? 0),
         );
       note.volumeEnvelopeNode.gain
         .cancelScheduledValues(endTime)
