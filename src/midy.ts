@@ -1761,6 +1761,7 @@ export class Midy extends EventTarget {
   lastActiveSensing: number = 0;
   activeSensingThreshold: number = 0.3;
   noteCheckInterval: number = 0.1;
+  drainTimeoutMs: number = 5000;
   // How far ahead (in seconds) notes are scheduled/prepared before their
   // actual start time, for every cache mode. Must comfortably exceed
   // however long note/segment preparation can take on this device
@@ -2694,7 +2695,7 @@ export class Midy extends EventTarget {
     }
   }
 
-  private suspendAudioContext(): Promise<void> {
+  suspendAudioContext(): Promise<void> {
     if (this.audioContext instanceof AudioContext) {
       return this.audioContext.suspend();
     }
@@ -3027,24 +3028,16 @@ export class Midy extends EventTarget {
         }
       }
     }
-    while (true) {
-      let allDone = true;
+    await this.waitForPendingSources("drainSegmentPipeline", () => {
+      const result: PendingSegment[] = [];
       for (let ch = 0; ch < states.length; ch++) {
         const state = states[ch];
         if (!state) continue;
         const pending = state.pending;
-        for (let i = 0; i < pending.length; i++) {
-          if (!pending[i].done) {
-            allDone = false;
-            break;
-          }
-        }
-        if (!allDone) break;
+        for (let i = 0; i < pending.length; i++) result.push(pending[i]);
       }
-      if (allDone) break;
-      const now = this.audioContext.currentTime;
-      await this.scheduleTask(() => {}, now + this.noteCheckInterval);
-    }
+      return result;
+    });
   }
 
   stopSegmentSources(): void {
@@ -3233,11 +3226,7 @@ export class Midy extends EventTarget {
         this.startPendingChunk(pending);
       }
     }
-    while (true) {
-      if (state.pending.every((p) => p.done)) break;
-      const now = this.audioContext.currentTime;
-      await this.scheduleTask(() => {}, now + this.noteCheckInterval);
-    }
+    await this.waitForPendingSources("drainChunkPipeline", () => state.pending);
   }
 
   stopChunkSources(): void {
@@ -6679,6 +6668,56 @@ export class Midy extends EventTarget {
         // already stopped/ended
       }
     }
+  }
+
+  async waitForPendingSources(
+    label: string,
+    getPending: () => { source: AudioBufferSourceNode | null; done: boolean }[],
+  ): Promise<void> {
+    const deadline = Date.now() + this.drainTimeoutMs;
+    while (true) {
+      const pending = getPending();
+      let allDone = true;
+      for (let i = 0; i < pending.length; i++) {
+        if (!pending[i].done) {
+          allDone = false;
+          break;
+        }
+      }
+      if (allDone) break;
+      if (Date.now() > deadline) {
+        console.warn(
+          `${label}: timed out waiting for sources to end; forcing stop`,
+        );
+        for (const p of pending) {
+          if (p.source) {
+            try {
+              p.source.stop();
+            } catch {
+              // already stopped/ended
+            }
+            p.source.disconnect();
+          }
+          p.done = true;
+        }
+        break;
+      }
+      await this.waitTick();
+    }
+  }
+
+  waitTick(): Promise<void> {
+    const now = this.audioContext.currentTime;
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      this.scheduleTask(() => {}, now + this.noteCheckInterval).then(settle);
+      setTimeout(settle, this.noteCheckInterval * 1000);
+    });
   }
 
   scheduleTask(callback: () => void, scheduleTime: number): Promise<void> {
