@@ -3763,9 +3763,12 @@ export class MidyGM1 extends EventTarget {
       channel.activeNotes[noteNumber] = [];
     }
     channel.activeNotes[noteNumber].push(note);
-    await this.setNoteAudioNode(channel, note, realtime);
-    this.setNoteRouting(channel, note, t);
-    note.resolveReady();
+    try {
+      await this.setNoteAudioNode(channel, note, realtime);
+      this.setNoteRouting(channel, note, t);
+    } finally {
+      note.resolveReady();
+    }
     if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
     return note;
   }
