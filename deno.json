@@ -10,7 +10,7 @@
     "@wasm-audio-decoders/ogg-vorbis": "npm:@wasm-audio-decoders/ogg-vorbis@^0.1.20",
     "esbuild": "npm:esbuild@^0.28.1",
     "midi-file": "npm:midi-file@^1.2.4",
-    "web-audio-api": "npm:web-audio-api@^1.5.1"
+    "web-audio-api": "npm:web-audio-api@^1.5.3"
   },
   "tasks": {
     "build": "deno run -RWE --allow-run build.ts"
