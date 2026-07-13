@@ -23,6 +23,8 @@ This library provides several files depending on the implementation level.
 - [@marmooo/piano-visualizer](https://marmooo.github.io/piano-visualizer) -
   Beautiful piano visualizer
 - [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
+- [Free MIDI](https://marmooo.github.io/free-midi/) - Free MIDI search for
+  everyone. Free to listen, copy, play, etc.
 - [midi2audio](https://marmooo.github.io/midi2audio/) - Convert MIDI to audio
   (WAV, MP3, AAC, FLAC, Opus)
 - [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
