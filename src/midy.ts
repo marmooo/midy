@@ -2766,6 +2766,7 @@ export class Midy extends EventTarget {
         } else {
           if (this.cacheMode === "segment") await this.drainSegmentPipeline();
           if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+          await this.stopNotes(now);
           await this.suspendAudioContext();
           exitReason = "ended";
           break;
