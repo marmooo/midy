@@ -2447,12 +2447,12 @@ export class MidyGM2 extends EventTarget {
     const priority: { [key: string]: number } = {
       controller: 0,
       sysEx: 1,
-      noteOff: 2, // for portamento
-      noteOn: 3,
+      noteOff: 2,
+      noteOn: 2,
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] ?? 4) - (priority[b.type] ?? 4);
+      return (priority[a.type] ?? 3) - (priority[b.type] ?? 3);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
