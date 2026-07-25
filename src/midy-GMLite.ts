@@ -1921,11 +1921,12 @@ export class MidyGMLite extends EventTarget {
     }
     const priority: { [key: string]: number } = {
       controller: 0,
-      sysEx: 1,
+      programChange: 0,
+      sysEx: 0,
     };
     timeline.sort((a, b) => {
       if (a.ticks !== b.ticks) return a.ticks - b.ticks;
-      return (priority[a.type] ?? 2) - (priority[b.type] ?? 2);
+      return (priority[a.type] ?? 1) - (priority[b.type] ?? 1);
     });
     let prevTempoTime = 0;
     let prevTempoTicks = 0;
@@ -4157,6 +4158,7 @@ export class MidyGMLite extends EventTarget {
       channel.isDrum = false;
     }
     channels[9].isDrum = true;
+    this.setMasterVolume(1, scheduleTime);
   }
 
   handleUniversalRealTimeExclusiveMessage(
