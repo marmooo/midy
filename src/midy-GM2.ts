@@ -668,9 +668,9 @@ export class Channel {
     }
   }
 
-  resetChannelStates(): void {
+  resetChannelStates(scheduleTime?: number): void {
     const player = this.player;
-    const scheduleTime = player.audioContext.currentTime;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
     const entries = Object.entries(defaultControllerState) as [
       keyof typeof defaultControllerState,
@@ -681,7 +681,7 @@ export class Channel {
         this.setControlChange(
           type - 128,
           Math.ceil(defaultValue * 127),
-          scheduleTime,
+          t,
         );
       } else {
         state[key] = defaultValue;
@@ -690,6 +690,8 @@ export class Channel {
     this.resetSettings(
       (player.constructor as typeof MidyGM2).channelSettings,
     );
+    this.mono = false;
+    this.resetTable();
   }
 
   allNotesOff(scheduleTime?: number): Promise<void[]> {
@@ -2132,24 +2134,35 @@ export class MidyGM2 extends EventTarget {
     return 0;
   }
 
-  resetAllStates(): void {
-    this.mode = "GM2";
-    this.masterFineTuning = 0;
-    this.masterCoarseTuning = 0;
-    this.exclusiveClassNotes.fill(null);
-    this.drumExclusiveClassNotes.fill(null);
+  clearPlaybackCaches(): void {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
-    const channels = this.channels;
+    this.fullVoiceCache.clear();
+  }
+
+  resetChannels(
+    channels: Channel[] = this.channels,
+    scheduleTime?: number,
+  ): void {
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
       channel.lastNote = null;
+      channel.currentBufferSource = null;
       channel.activeNotes = new Array(128);
       channel.sustainNotes = [];
       channel.sostenutoNotes = [];
-      channel.resetChannelStates();
+      channel.isDrum = false;
+      channel.resetChannelStates(scheduleTime);
     }
+    if (channels[9]) channels[9].isDrum = true;
+  }
+
+  resetAllStates(): void {
+    this.masterFineTuning = 0;
+    this.masterCoarseTuning = 0;
+    this.clearPlaybackCaches();
+    this.GM2SystemOn(this.audioContext.currentTime, this.channels);
   }
 
   updateStates(queueIndex: number, nextQueueIndex: number): void {
@@ -5261,29 +5274,45 @@ export class MidyGM2 extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) this.mode = "GM1";
-    for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.allSoundOff(scheduleTime);
-      channel.bankMSB = 0;
-      channel.bankLSB = 0;
-      channel.isDrum = false;
+    if (channels === this.channels) {
+      this.mode = "GM1";
+      this.exclusiveClassNotes.fill(null);
+      this.drumExclusiveClassNotes.fill(null);
     }
-    channels[9].bankMSB = 1;
-    channels[9].isDrum = true;
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].allSoundOff(scheduleTime);
+    }
+    this.resetChannels(channels, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].bankMSB = 0;
+      channels[ch].bankLSB = 0;
+    }
+    if (channels[9]) {
+      channels[9].bankMSB = 1;
+      channels[9].isDrum = true;
+    }
+    this.setMasterVolume(1, scheduleTime);
   }
 
   GM2SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) this.mode = "GM2";
-    for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.allSoundOff(scheduleTime);
-      channel.bankMSB = 121;
-      channel.bankLSB = 0;
-      channel.isDrum = false;
+    if (channels === this.channels) {
+      this.mode = "GM2";
+      this.exclusiveClassNotes.fill(null);
+      this.drumExclusiveClassNotes.fill(null);
     }
-    channels[9].bankMSB = 120;
-    channels[9].isDrum = true;
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].allSoundOff(scheduleTime);
+    }
+    this.resetChannels(channels, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].bankMSB = 121;
+      channels[ch].bankLSB = 0;
+    }
+    if (channels[9]) {
+      channels[9].bankMSB = 120;
+      channels[9].isDrum = true;
+    }
+    this.setMasterVolume(1, scheduleTime);
   }
 
   handleUniversalRealTimeExclusiveMessage(

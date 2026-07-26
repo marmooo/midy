@@ -491,9 +491,9 @@ export class Channel {
     }
   }
 
-  resetChannelStates(): void {
+  resetChannelStates(scheduleTime?: number): void {
     const player = this.player;
-    const scheduleTime = player.audioContext.currentTime;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
     const entries = Object.entries(defaultControllerState) as [
       keyof typeof defaultControllerState,
@@ -504,7 +504,7 @@ export class Channel {
         this.setControlChange(
           type - 128,
           Math.ceil(defaultValue * 127),
-          scheduleTime,
+          t,
         );
       } else {
         state[key] = defaultValue;
@@ -1649,19 +1649,30 @@ export class MidyGM1 extends EventTarget {
     return 0;
   }
 
-  resetAllStates(): void {
-    this.mode = "GM1";
-    this.exclusiveClassNotes.fill(null);
+  clearPlaybackCaches(): void {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
-    const channels = this.channels;
+    this.fullVoiceCache.clear();
+  }
+
+  resetChannels(
+    channels: Channel[] = this.channels,
+    scheduleTime?: number,
+  ): void {
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
       channel.activeNotes = new Array(128);
       channel.sustainNotes = [];
-      channel.resetChannelStates();
+      channel.isDrum = false;
+      channel.resetChannelStates(scheduleTime);
     }
+    if (channels[9]) channels[9].isDrum = true;
+  }
+
+  resetAllStates(): void {
+    this.clearPlaybackCaches();
+    this.GM1SystemOn(this.audioContext.currentTime, this.channels);
   }
 
   updateStates(queueIndex: number, nextQueueIndex: number): void {
@@ -4144,13 +4155,15 @@ export class MidyGM1 extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) this.mode = "GM1";
-    for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.allSoundOff(scheduleTime);
-      channel.isDrum = false;
+    if (channels === this.channels) {
+      this.mode = "GM1";
+      this.exclusiveClassNotes.fill(null);
     }
-    channels[9].isDrum = true;
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].allSoundOff(scheduleTime);
+    }
+    this.resetChannels(channels, scheduleTime);
+    this.setMasterVolume(1, scheduleTime);
   }
 
   handleUniversalRealTimeExclusiveMessage(

@@ -2581,25 +2581,35 @@ export class Midy extends EventTarget {
     return 0;
   }
 
-  resetAllStates(): void {
-    this.mode = "GM2";
-    this.masterFineTuning = 0;
-    this.masterCoarseTuning = 0;
-    this.exclusiveClassNotes.fill(null);
-    this.drumExclusiveClassNotes.fill(null);
+  clearPlaybackCaches(): void {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
-    const channels = this.channels;
+    this.fullVoiceCache.clear();
+  }
+
+  resetChannels(
+    channels: Channel[] = this.channels,
+    scheduleTime?: number,
+  ): void {
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
       channel.lastNote = null;
+      channel.currentBufferSource = null;
       channel.activeNotes = new Array(128);
       channel.sustainNotes = [];
       channel.sostenutoNotes = [];
-      channel.resetChannelStates();
+      channel.isDrum = false;
+      channel.resetChannelStates(scheduleTime);
     }
-    this.mpeState.channelToNotes.clear();
+    if (channels[9]) channels[9].isDrum = true;
+  }
+
+  resetAllStates(): void {
+    this.masterFineTuning = 0;
+    this.masterCoarseTuning = 0;
+    this.clearPlaybackCaches();
+    this.GM2SystemOn(this.audioContext.currentTime, this.channels);
   }
 
   updateStates(queueIndex: number, nextQueueIndex: number): void {
@@ -5992,29 +6002,53 @@ export class Midy extends EventTarget {
   }
 
   GM1SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) this.mode = "GM1";
-    for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.allSoundOff(scheduleTime);
-      channel.bankMSB = 0;
-      channel.bankLSB = 0;
-      channel.isDrum = false;
+    if (channels === this.channels) {
+      this.mode = "GM1";
+      this.mpeEnabled = false;
+      this.lowerMPEMembers = 0;
+      this.upperMPEMembers = 0;
+      this.mpeState.channelToNotes.clear();
+      this.exclusiveClassNotes.fill(null);
+      this.drumExclusiveClassNotes.fill(null);
     }
-    channels[9].bankMSB = 1;
-    channels[9].isDrum = true;
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].allSoundOff(scheduleTime);
+    }
+    this.resetChannels(channels, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].bankMSB = 0;
+      channels[ch].bankLSB = 0;
+    }
+    if (channels[9]) {
+      channels[9].bankMSB = 1;
+      channels[9].isDrum = true;
+    }
+    this.setMasterVolume(1, scheduleTime);
   }
 
   GM2SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) this.mode = "GM2";
-    for (let ch = 0; ch < channels.length; ch++) {
-      const channel = channels[ch];
-      channel.allSoundOff(scheduleTime);
-      channel.bankMSB = 121;
-      channel.bankLSB = 0;
-      channel.isDrum = false;
+    if (channels === this.channels) {
+      this.mode = "GM2";
+      this.mpeEnabled = false;
+      this.lowerMPEMembers = 0;
+      this.upperMPEMembers = 0;
+      this.mpeState.channelToNotes.clear();
+      this.exclusiveClassNotes.fill(null);
+      this.drumExclusiveClassNotes.fill(null);
     }
-    channels[9].bankMSB = 120;
-    channels[9].isDrum = true;
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].allSoundOff(scheduleTime);
+    }
+    this.resetChannels(channels, scheduleTime);
+    for (let ch = 0; ch < channels.length; ch++) {
+      channels[ch].bankMSB = 121;
+      channels[ch].bankLSB = 0;
+    }
+    if (channels[9]) {
+      channels[9].bankMSB = 120;
+      channels[9].isDrum = true;
+    }
+    this.setMasterVolume(1, scheduleTime);
   }
 
   handleUniversalRealTimeExclusiveMessage(
