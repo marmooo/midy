@@ -1773,7 +1773,7 @@ export class MidyGMLite extends EventTarget {
     while (true) {
       const now = audioContext.currentTime;
       if (
-        this.totalTime < this.currentTime() ||
+        this.totalTime < this.currentTime() &&
         this.timeline.length <= queueIndex
       ) {
         const pendingPromises = this.notePromises.slice();

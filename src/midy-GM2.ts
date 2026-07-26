@@ -2286,7 +2286,7 @@ export class MidyGM2 extends EventTarget {
         break;
       }
       if (
-        this.totalTime < this.currentTime() ||
+        this.totalTime < this.currentTime() &&
         this.timeline.length <= queueIndex
       ) {
         const pendingPromises = this.notePromises.slice();
