@@ -155,6 +155,7 @@ export class Note {
   vibLfoToPitch: GainNode | null = null;
   reverbSend: GainNode | null = null;
   chorusSend: GainNode | null = null;
+  delaySend: GainNode | null = null;
   portamentoNoteNumber: number = -1;
   pressure: number = 0;
   // "segment" mode
@@ -681,6 +682,15 @@ export class Channel {
     });
   }
 
+  setDelaySendLevel(value: number, scheduleTime?: number): void {
+    const player = this.player;
+    const t: number = scheduleTime ?? player.audioContext.currentTime;
+    this.state.delaySendLevel = value / 127;
+    this.processScheduledNotes((note) => {
+      player.setDelaySend(this, note, t);
+    });
+  }
+
   setRPNMSB(value: number): void {
     this.rpnMSB = value;
   }
@@ -1018,6 +1028,7 @@ const defaultControllerState = {
   portamentoNoteNumber: { type: 128 + 84, defaultValue: 0 },
   reverbSendLevel: { type: 128 + 91, defaultValue: 0 },
   chorusSendLevel: { type: 128 + 93, defaultValue: 0 },
+  delaySendLevel: { type: 128 + 94, defaultValue: 0 },
   // dataIncrement: { type: 128 + 96, defaultValue: 0 },
   // dataDecrement: { type: 128 + 97, defaultValue: 0 },
   // rpnLSB: { type: 128 + 100, defaultValue: 127 },
@@ -1262,6 +1273,13 @@ export class ControllerState {
   }
   set chorusSendLevel(value: number) {
     this.array[128 + 93] = value;
+  }
+
+  get delaySendLevel(): number {
+    return this.array[128 + 94];
+  }
+  set delaySendLevel(value: number) {
+    this.array[128 + 94] = value;
   }
 
   constructor() {
@@ -1601,6 +1619,7 @@ controlChangeHandlers[78] = (ch, v, t) => ch.setVibratoDelay(v, t);
 controlChangeHandlers[84] = (ch, v, _t) => ch.setPortamentoNoteNumber(v);
 controlChangeHandlers[91] = (ch, v, t) => ch.setReverbSendLevel(v, t);
 controlChangeHandlers[93] = (ch, v, t) => ch.setChorusSendLevel(v, t);
+controlChangeHandlers[94] = (ch, v, t) => ch.setDelaySendLevel(v, t);
 controlChangeHandlers[96] = (ch, _v, t) => ch.dataIncrement(t);
 controlChangeHandlers[97] = (ch, _v, t) => ch.dataDecrement(t);
 controlChangeHandlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
@@ -1679,6 +1698,12 @@ keyBasedControllerHandlers[93] = (channel, keyNumber, t) =>
       channel.player.setChorusSend(channel, note, t);
     }
   });
+keyBasedControllerHandlers[94] = (channel, keyNumber, t) =>
+  channel.processScheduledNotes((note) => {
+    if (note.noteNumber === keyNumber) {
+      channel.player.setDelaySend(channel, note, t);
+    }
+  });
 
 const effectHandlers: EffectHandler[] = new Array(6);
 effectHandlers[0] = (channel, note, _tableName, scheduleTime) => {
@@ -1733,6 +1758,13 @@ type ChorusEffect = {
   delayNodes: DelayNode[];
   feedbackGains: GainNode[];
 };
+type DelayEffect = {
+  input: GainNode;
+  output: GainNode;
+  delayNode: DelayNode;
+  feedbackGain: GainNode;
+  wetGain: GainNode;
+};
 
 export class Midy extends EventTarget {
   // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
@@ -1755,6 +1787,21 @@ export class Midy extends EventTarget {
     sendToReverb: this.getChorusSendToReverb(0),
     delayTimes: this.generateDistributedArray(0.02, 2, 0.5),
   };
+  // GS Delay defaults from public Roland docs (not a dump of internal code).
+  // CC#94 Delay Send Level: 0–127, initial 0
+  //   http://cdn.roland.com/assets/media/pdf/VE-GSPro_MI.pdf
+  //   (also SC-88Pro OM MIDI Implementation ~p.191)
+  // System Delay factory defaults (SysEx map):
+  //   https://cdn.roland.com/assets/media/pdf/SC-88PRO_OM.pdf
+  //   description ~p.54; address table ~p.197
+  //   Time C default 0x61 = 340 ms; Feedback default 0x50 = +16 (-64..+63 scale)
+  //   Delay Level default 64; Level C=127, L/R=0; Send→Reverb=0
+  delay = {
+    time: 0.34, // 340 ms
+    feedback: 16 / 63, // map GS +16 into ~0..1 positive feedback if needed
+    wet: 1,
+  };
+  delayEffect!: DelayEffect;
   numChannels: number = 16;
   ticksPerBeat: number = 120;
   totalTime: number = 0;
@@ -1921,8 +1968,10 @@ export class Midy extends EventTarget {
     this.channels = this.createChannels(activeChannelNumbers);
     this.reverbEffect = this.createReverbEffect(this.reverb.algorithm);
     this.chorusEffect = this.createChorusEffect();
+    this.delayEffect = this.createDelayEffect();
     this.chorusEffect.output.connect(this.masterVolume);
     this.reverbEffect.output.connect(this.masterVolume);
+    this.delayEffect.output.connect(this.masterVolume);
     this.masterVolume.connect(audioContext.destination);
     if (!isOffline) {
       this.scheduler.connect(audioContext.destination);
@@ -3647,6 +3696,28 @@ export class Midy extends EventTarget {
     };
   }
 
+  createDelayEffect(): DelayEffect {
+    const audioContext = this.audioContext;
+    const input = new GainNode(audioContext);
+    const output = new GainNode(audioContext);
+    const delayNode = new DelayNode(audioContext, {
+      maxDelayTime: 2,
+      delayTime: this.delay.time,
+    });
+    const feedbackGain = new GainNode(audioContext, {
+      gain: this.delay.feedback,
+    });
+    const wetGain = new GainNode(audioContext, {
+      gain: this.delay.wet,
+    });
+    input.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode);
+    delayNode.connect(wetGain);
+    wetGain.connect(output);
+    return { input, output, delayNode, feedbackGain, wetGain };
+  }
+
   resolveVoice(
     channel: Channel,
     noteNumber: number,
@@ -5014,12 +5085,14 @@ export class Midy extends EventTarget {
       note.volumeEnvelopeNode.connect(note.volumeNode);
       this.setChorusSend(channel, note, now);
       this.setReverbSend(channel, note, now);
+      this.setDelaySend(channel, note, now);
     } else if (isFullCached) { // "note" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
       this.setChorusSend(channel, note, now);
       this.setReverbSend(channel, note, now);
+      this.setDelaySend(channel, note, now);
     } else { // "ads" / "asdr" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
@@ -5030,6 +5103,7 @@ export class Midy extends EventTarget {
       note.bufferSource.connect(note.volumeNode);
       this.setChorusSend(channel, note, now);
       this.setReverbSend(channel, note, now);
+      this.setDelaySend(channel, note, now);
     }
     if (!realtime) {
       this.warnIfStartTimeMissed(
@@ -5225,6 +5299,9 @@ export class Midy extends EventTarget {
     }
     if (note.chorusSend) {
       note.chorusSend.disconnect();
+    }
+    if (note.delaySend) {
+      note.delaySend.disconnect();
     }
   }
 
@@ -5708,6 +5785,32 @@ export class Midy extends EventTarget {
       } else {
         try {
           note.volumeNode?.disconnect(note.chorusSend);
+        } catch { /* empty */ }
+      }
+    }
+  }
+
+  setDelaySend(channel: Channel, note: Note, scheduleTime: number): void {
+    let value = channel.state.delaySendLevel;
+    if (channel.isDrum) {
+      const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 94);
+      if (0 <= keyBasedValue) value = keyBasedValue / 127;
+    }
+    if (!note.delaySend) {
+      if (0 < value) {
+        note.delaySend = new GainNode(this.audioContext, { gain: value });
+        note.volumeNode?.connect(note.delaySend);
+        note.delaySend.connect(this.delayEffect.input);
+      }
+    } else {
+      note.delaySend.gain
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(value, scheduleTime);
+      if (0 < value) {
+        note.volumeNode?.connect(note.delaySend);
+      } else {
+        try {
+          note.volumeNode?.disconnect(note.delaySend);
         } catch { /* empty */ }
       }
     }
