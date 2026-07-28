@@ -973,17 +973,17 @@ export class MidyGMLite extends EventTarget {
   // Same generation-stamp mechanism as segmentGeneration.
   chunkGeneration: number = 0;
 
-  // Required properties
-  audioContext!: AudioContext | OfflineAudioContext;
-  cacheMode!: CacheMode;
-  masterVolume!: GainNode;
-  scheduler!: GainNode;
-  schedulerBuffer!: AudioBuffer;
+  audioContext: AudioContext | OfflineAudioContext;
+  cacheMode: CacheMode;
+  masterVolume: GainNode;
+  masterVolumeLocked: boolean = false;
+  scheduler: GainNode;
+  schedulerBuffer: AudioBuffer;
   pendingSchedulerSources: Set<AudioBufferSourceNode> = new Set();
-  channels!: Channel[];
-  messageHandlers!: MessageHandler[];
-  voiceParamsHandlers!: Record<string, VoiceParamsHandler>;
-  controlChangeHandlers!: ControlChangeHandler[];
+  channels: Channel[];
+  messageHandlers: MessageHandler[];
+  voiceParamsHandlers: Record<string, VoiceParamsHandler>;
+  controlChangeHandlers: ControlChangeHandler[];
 
   static channelSettings = {
     detune: 0,
@@ -4272,6 +4272,31 @@ export class MidyGMLite extends EventTarget {
       default:
         console.warn(`Unsupported Exclusive Message: ${data}`);
     }
+  }
+
+  fadeMasterVolumeTo(
+    value: number,
+    duration: number,
+    scheduleTime?: number,
+  ): void {
+    const t = scheduleTime ?? this.audioContext.currentTime;
+    const timeConstant = duration / 5;
+    this.masterVolumeLocked = true;
+    this.masterVolume.gain.cancelAndHoldAtTime(t).setTargetAtTime(
+      value * value,
+      t,
+      timeConstant,
+    );
+    setTimeout(
+      () => {
+        this.masterVolumeLocked = false;
+      },
+      (t - this.audioContext.currentTime + duration) * 1000,
+    );
+  }
+
+  fadeOutMasterVolume(duration: number, scheduleTime?: number): void {
+    this.fadeMasterVolumeTo(0, duration, scheduleTime);
   }
 
   handleMasterVolumeSysEx(data: Uint8Array, scheduleTime: number): void {
