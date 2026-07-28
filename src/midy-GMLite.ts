@@ -1334,21 +1334,10 @@ export class MidyGMLite extends EventTarget {
     noteNumber: number,
     velocity: number,
   ): number | undefined {
-    const programNumber = channel.programNumber;
-    const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return;
-    let bank = channel.isDrum ? 128 : 0;
-    if (bankTable[bank] === undefined) {
-      if (channel.isDrum) return;
-      bank = 0;
-    }
-    const soundFontIndex = bankTable[bank];
-    if (soundFontIndex === undefined) return;
-    const soundFont = this.soundFonts[soundFontIndex];
-    const voice = soundFont.getVoice(bank, programNumber, noteNumber, velocity);
-    if (!voice) return;
-    const { instrument, sampleID } = voice.generators;
-    return soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
+    const resolved = this.resolveVoiceResult(channel, noteNumber, velocity);
+    if (!resolved) return;
+    const { instrument, sampleID } = resolved.voice.generators;
+    return resolved.soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
       (sampleID << 8);
   }
 
@@ -2535,27 +2524,137 @@ export class MidyGMLite extends EventTarget {
     return await offlineContext.startRendering();
   }
 
-  resolveVoice(
-    channel: Channel,
+  tryGetVoice(
+    bank: number,
+    programNumber: number,
     noteNumber: number,
     velocity: number,
-  ): Voice | null {
-    const programNumber = channel.programNumber;
+  ): {
+    voice: Voice;
+    soundFontIndex: number;
+    bank: number;
+    programNumber: number;
+  } | null {
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return null;
-    let bank = channel.isDrum ? 128 : 0;
-    if (bankTable[bank] === undefined) {
-      if (channel.isDrum) return null;
-      bank = 0;
-    }
     const soundFontIndex = bankTable[bank];
     if (soundFontIndex === undefined) return null;
-    return this.soundFonts[soundFontIndex].getVoice(
+    const voice = this.soundFonts[soundFontIndex].getVoice(
       bank,
       programNumber,
       noteNumber,
       velocity,
     );
+    if (!voice) return null;
+    return { voice, soundFontIndex, bank, programNumber };
+  }
+
+  // GM instrument families are groups of 8 (0–7 Piano, 8–15 Chromatic, …).
+  // Returns other programs in the same family, closest to `program` first.
+  static gmFamilyCandidates(program: number): number[] {
+    const base = program & ~7;
+    const end = base + 7;
+    const candidates: number[] = [];
+    for (let dist = 1; dist <= 7; dist++) {
+      const lo = program - dist;
+      const hi = program + dist;
+      if (lo >= base) candidates.push(lo);
+      if (hi <= end) candidates.push(hi);
+    }
+    return candidates;
+  }
+
+  findFirstPresetVoice(
+    noteNumber: number,
+    velocity: number,
+    drumOnly: boolean,
+  ): {
+    voice: Voice;
+    soundFontIndex: number;
+    bank: number;
+    programNumber: number;
+  } | null {
+    for (let sfIndex = 0; sfIndex < this.soundFonts.length; sfIndex++) {
+      const headers = this.soundFonts[sfIndex].parsed.presetHeaders;
+      for (let i = 0; i < headers.length; i++) {
+        const { preset, bank } = headers[i];
+        if (drumOnly) {
+          if (bank !== 128) continue;
+        } else if (bank === 128) {
+          continue;
+        }
+        const voice = this.soundFonts[sfIndex].getVoice(
+          bank,
+          preset,
+          noteNumber,
+          velocity,
+        );
+        if (voice) {
+          return {
+            voice,
+            soundFontIndex: sfIndex,
+            bank,
+            programNumber: preset,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Fallback order (melodic):
+  //   1. bank 0 + same program (GM)
+  //   2. bank 0 + closest program in the same GM family of 8
+  //   3. bank 0, program 0 (Acoustic Grand Piano)
+  //   4. first melodic preset found across loaded soundfonts
+  //   5. null (silence)
+  // Fallback order (drum):
+  //   1. bank 128 + program
+  //   2. bank 128, program 0 (Standard Kit)
+  //   3. first drum preset (bank 128) found across loaded soundfonts
+  //   4. null (silence)
+  resolveVoiceResult(
+    channel: Channel,
+    noteNumber: number,
+    velocity: number,
+  ): {
+    voice: Voice;
+    soundFontIndex: number;
+    bank: number;
+    programNumber: number;
+  } | null {
+    const programNumber = channel.programNumber;
+    if (channel.isDrum) {
+      let result = this.tryGetVoice(128, programNumber, noteNumber, velocity);
+      if (result) return result;
+      if (programNumber !== 0) {
+        result = this.tryGetVoice(128, 0, noteNumber, velocity);
+        if (result) return result;
+      }
+      return this.findFirstPresetVoice(noteNumber, velocity, true);
+    }
+
+    let result = this.tryGetVoice(0, programNumber, noteNumber, velocity);
+    if (result) return result;
+    const family = MidyGMLite.gmFamilyCandidates(programNumber);
+    for (let i = 0; i < family.length; i++) {
+      result = this.tryGetVoice(0, family[i], noteNumber, velocity);
+      if (result) return result;
+    }
+    if (programNumber !== 0) {
+      result = this.tryGetVoice(0, 0, noteNumber, velocity);
+      if (result) return result;
+    }
+    return this.findFirstPresetVoice(noteNumber, velocity, false);
+  }
+
+  resolveVoice(
+    channel: Channel,
+    noteNumber: number,
+    velocity: number,
+  ): Voice | null {
+    return this.resolveVoiceResult(channel, noteNumber, velocity)?.voice ??
+      null;
   }
 
   async render(): Promise<AudioBuffer | undefined> {
@@ -3743,23 +3842,7 @@ export class MidyGMLite extends EventTarget {
     const realtime = startTime === undefined;
     if (!note) note = new Note(noteNumber, velocity, t);
     if (!note.voice) {
-      const programNumber = channel.programNumber;
-      const bankTable = this.soundFontTable[programNumber];
-      if (!bankTable) return;
-      let bank = channel.isDrum ? 128 : 0;
-      if (bankTable[bank] === undefined) {
-        if (channel.isDrum) return;
-        bank = 0;
-      }
-      const soundFontIndex = bankTable[bank];
-      if (soundFontIndex === undefined) return;
-      const soundFont = this.soundFonts[soundFontIndex];
-      note.voice = soundFont.getVoice(
-        bank,
-        programNumber,
-        noteNumber,
-        velocity,
-      );
+      note.voice = this.resolveVoice(channel, noteNumber, velocity);
     }
     if (!note.voice) return;
     if (!channel.activeNotes[noteNumber]) {

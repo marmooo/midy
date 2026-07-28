@@ -259,10 +259,14 @@ Deno.test(
     setMockCurrentTime(player.audioContext, 560.0);
     const t = player.audioContext.currentTime;
 
-    await drum.noteOn(38, 100, t);
-    await drum.setSostenutoPedal(127, t + 0.01);
+    // Install a fake active note without going through noteOn
+    // (noteOn needs a loaded soundfont preset and would throw here).
+    const fakeNote = new Note(38, 100, t);
+    drum.activeNotes[38] = [fakeNote];
 
-    // Drum must have no sostenuto notes captured.
+    await drum.setSostenutoPedal(127, t);
+
+    // Early return for isDrum: neither state nor sostenutoNotes must change.
     assertEquals(
       drum.sostenutoNotes.length,
       0,

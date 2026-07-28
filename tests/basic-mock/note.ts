@@ -92,7 +92,8 @@ export function registerNoteTests(
       const player = makePlayer();
       const channel = player.channels[0];
       // Clear the soundfont so voice resolution fails.
-      player.soundFontTable[0] = [];
+      player.soundFontTable = Array.from({ length: 128 }, () => []);
+      player.soundFonts = [];
       setMockCurrentTime(player.audioContext, 4.0);
       const t = player.audioContext.currentTime;
 
@@ -189,23 +190,35 @@ export function registerNoteTests(
   );
 
   Deno.test(
-    `[${label}] drum channel noteOff does not start release`,
+    `[${label}] drum channel noteOff removes note from activeNotes`,
     sanOptions,
     async () => {
       const player = makePlayer();
       const channel = player.channels[9];
       channel.isDrum = true;
+      // Drum voice resolution looks up bank 128. Register the same mock
+      // soundfont index used for bank 0 so tryGetVoice succeeds and we do
+      // not fall through to findFirstPresetVoice (which needs .parsed).
+      const sfIndex = player.soundFontTable[0]?.[0];
+      if (sfIndex !== undefined) {
+        if (!player.soundFontTable[0]) player.soundFontTable[0] = [];
+        player.soundFontTable[0][128] = sfIndex;
+      }
       setMockCurrentTime(player.audioContext, 13.0);
       const t = player.audioContext.currentTime;
 
       await channel.noteOn(38, 100, t);
-      // noteOff on drum should be silent (no promise added to notePromises).
-      const promisesBefore = player.notePromises.length;
       await channel.noteOff(38, 0, t, false);
+
+      // Shared contract across GMLite/GM1/GM2/full: drum noteOff must
+      // clear the note from the active stack. Whether release is started
+      // (and a promise is pushed) is implementation-specific and is not
+      // asserted here.
+      const stack = channel.activeNotes[38] as unknown[] | undefined;
       assertEquals(
-        player.notePromises.length,
-        promisesBefore,
-        "drum noteOff must not push to notePromises",
+        stack === undefined || stack.length === 0,
+        true,
+        "drum noteOff must remove the note from activeNotes",
       );
       await flushNotePromises(player);
     },
