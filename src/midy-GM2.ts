@@ -1008,8 +1008,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     const isOffline = audioContext instanceof OfflineAudioContext;
     // Player does not call finishConstruction automatically; wire the graph
     // and system-on here so reverb/chorus exist first.
+    this.masterVolume.connect(audioContext.destination);
     if (!isOffline) {
-      this.masterVolume.connect(audioContext.destination);
       this.scheduler!.connect(audioContext.destination);
       this.GM1SystemOn(audioContext.currentTime);
     } else {
