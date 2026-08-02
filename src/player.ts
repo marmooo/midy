@@ -1119,7 +1119,22 @@ export class Player<
   }
 
   async loadMIDI(input: string | Uint8Array): Promise<void> {
+    if (this.isPlaying || this.isPaused) {
+      await this.stop();
+    }
     this.voiceCounter.clear();
+    this.clearPlaybackCaches();
+    this.renderedAudioBuffer = null;
+    this.noteAudioBufferIds = [];
+    this.preloadEntries = [];
+    this.segmentBakedSet.clear();
+    this.segmentVoiceParams = [];
+    this.segmentVoices = [];
+    this.noteOnDurations = [];
+    this.noteOnEvents = [];
+    this.resumeTime = 0;
+    this.isPaused = false;
+
     const uint8Array = await this.toUint8Array(input);
     const midi = parseMidi(uint8Array);
     this.ticksPerBeat = midi.header.ticksPerBeat ?? 480;
@@ -2834,9 +2849,28 @@ export class Player<
   }
 
   async stop(): Promise<void> {
-    if (!this.isPlaying) return;
-    this.isStopping = true;
-    await this.playPromise;
+    if (this.isPlaying) {
+      this.isStopping = true;
+      await this.playPromise;
+      return;
+    }
+    if (this.isPaused) {
+      const now = this.audioContext.currentTime;
+      await this.stopNotes(now);
+      if (this.cacheMode === "segment") this.stopSegmentSources();
+      if (this.cacheMode === "chunk") this.stopChunkSources();
+      if (this.audioModeBufferSource) {
+        try {
+          this.audioModeBufferSource.stop();
+        } catch { /* already stopped */ }
+        this.audioModeBufferSource.disconnect();
+        this.audioModeBufferSource = null;
+      }
+      this.resetAllStates();
+      this.resumeTime = 0;
+      this.isPaused = false;
+      this.dispatchEvent(new Event("stopped"));
+    }
   }
 
   async pause(): Promise<void> {
