@@ -2479,7 +2479,12 @@ export class MidyGM2 extends Player<Note, Channel> {
     audioBuffer: AudioBuffer,
     isDrum = false,
   ): Promise<RenderedBuffer> {
-    const isLoop = isDrum ? false : (voiceParams.sampleModes % 2 !== 0);
+    // Match createBufferSource: only the GM2 loop-drum keys may loop; other
+    // drum hits stay one-shot even when the SF2 sample has loop points.
+    const isLoop = isDrum
+      ? (this.isLoopDrum(channel, note.noteNumber) &&
+        voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -2563,8 +2568,14 @@ export class MidyGM2 extends Player<Note, Channel> {
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     noteDuration: number,
+    isDrum = false,
   ): Promise<RenderedBuffer> {
-    const isLoop = voiceParams.sampleModes % 2 !== 0;
+    // Match createBufferSource / createAdsRenderedBuffer: non-loop drums
+    // never loop; loop-drum keys follow sampleModes.
+    const isLoop = isDrum
+      ? (this.isLoopDrum(channel, note.noteNumber) &&
+        voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -2692,7 +2703,10 @@ export class MidyGM2 extends Player<Note, Channel> {
       bufferSource.connect(volumeEnvelopeNode);
     }
     volumeEnvelopeNode.connect(offlineContext.destination);
-    if (isLoop) {
+    // Match createAdsRenderedBuffer: compressed samples keep the full
+    // decoded buffer, so the SF2 start offset must be applied here. PCM
+    // samples are already sliced to [start, end) in createAudioBuffer.
+    if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
     } else {
       bufferSource.start(0);
@@ -3284,8 +3298,15 @@ export class MidyGM2 extends Player<Note, Channel> {
   ): Promise<void> | void {
     if (!force) {
       if (channel.isDrum && !this.isLoopDrum(channel, noteNumber)) {
-        this.removeFromActiveNotes(channel, noteNumber);
-        return;
+        // One-shot behaviour applies to live MIDI input only. MIDI-file notes
+        // carry a timelineIndex and must release at note-off so their decay
+        // matches segment/chunk offline bakes (which force-release drums).
+        // Loop drums (isLoopDrum) already fall through and release.
+        const liveNote = this.findNoteForOff(channel, noteNumber);
+        if (!liveNote || liveNote.timelineIndex === null) {
+          this.removeFromActiveNotes(channel, noteNumber);
+          return;
+        }
       }
       const state = channel.state;
       if (0.5 <= state.sustainPedal) return;

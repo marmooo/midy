@@ -972,10 +972,13 @@ export class Player<
   drumExclusiveClassNotes: (TNote | null)[] = new Array(
     16 * DEFAULT_DRUM_EXCLUSIVE_CLASS_COUNT,
   );
-  // When true (default), Note Off on a drum channel only drops the note from
-  // activeNotes and does not run the release envelope — matching one-shot
-  // drum behaviour. Subclasses that should release drums on Note Off
-  // (historical MidyGM1) set this to false.
+  // When true (default), Note Off on a drum channel for *live* MIDI input
+  // only drops the note from activeNotes and does not run the release
+  // envelope — matching one-shot drum behaviour. MIDI-file notes (those
+  // with a timelineIndex) always release on Note Off so their decay matches
+  // segment/chunk offline bakes, which force-release drums. Subclasses that
+  // should also release live drums on Note Off (historical MidyGM1) set
+  // this to false.
   ignoreDrumNoteOff: boolean = true;
   noteAudioBufferIds: (number | undefined)[] = [];
   // "adsr" mode
@@ -3243,8 +3246,9 @@ export class Player<
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     noteDuration: number,
+    isDrum = false,
   ): Promise<RenderedBuffer> {
-    const isLoop = voiceParams.sampleModes % 2 !== 0;
+    const isLoop = isDrum ? false : (voiceParams.sampleModes % 2 !== 0);
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -3372,7 +3376,10 @@ export class Player<
       bufferSource.connect(volumeEnvelopeNode);
     }
     volumeEnvelopeNode.connect(offlineContext.destination);
-    if (isLoop) {
+    // Match createAdsRenderedBuffer: compressed samples keep the full
+    // decoded buffer, so the SF2 start offset must be applied here. PCM
+    // samples are already sliced to [start, end) in createAudioBuffer.
+    if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
     } else {
       bufferSource.start(0);
@@ -3793,6 +3800,7 @@ export class Player<
           voiceParams,
           rawBuffer,
           noteDuration,
+          channel.isDrum,
         );
         durationMap!.set(cacheKey, rendered);
         return rendered;
@@ -4277,8 +4285,14 @@ export class Player<
   ): Promise<void> | void {
     if (!force) {
       if (this.ignoreDrumNoteOff && channel.isDrum) {
-        this.removeFromActiveNotes(channel, noteNumber);
-        return;
+        // One-shot behaviour applies to live MIDI input only. MIDI-file notes
+        // carry a timelineIndex and must release at note-off so their decay
+        // matches segment/chunk offline bakes (which force-release drums).
+        const liveNote = this.findNoteForOff(channel, noteNumber);
+        if (!liveNote || liveNote.timelineIndex === null) {
+          this.removeFromActiveNotes(channel, noteNumber);
+          return;
+        }
       }
       if (0.5 <= channel.state.sustainPedal) return;
     }
