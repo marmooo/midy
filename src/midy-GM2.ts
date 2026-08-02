@@ -1748,32 +1748,29 @@ export class MidyGM2 extends Player<Note, Channel> {
     channel: Channel,
     scheduleTime: number,
   ): Promise<void> {
+    // Match Player.stopChannelNotes: mark ending first so in-flight
+    // noteOnChannel (awaiting setNoteAudioNode) will soundOff instead of
+    // routing, then properly disconnect via soundOffNote.
     const promises: Promise<void>[] = [];
-    const timeConstant = this.perceptualSmoothingTime / 5;
     for (let i = 0; i < 128; i++) {
       const stack = channel.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
-        const promise = note.ready.then(() => {
-          if (!note.voice || note.isSegmentGhost) return;
-          const now = this.audioContext.currentTime;
-          const startTime = Math.max(scheduleTime, now);
-          (note.volumeNode as GainNode).gain
-            .cancelScheduledValues(startTime)
-            .setTargetAtTime(0, startTime, timeConstant);
-          (note.bufferSource as AudioBufferSourceNode).stop(
-            startTime + this.perceptualSmoothingTime,
-          );
-        });
-        promises.push(promise);
+        if (note.isSegmentGhost) continue;
+        note.ending = true;
+        if (note.bufferSource || note.volumeNode) {
+          promises.push(this.soundOffNote(note, scheduleTime));
+        } else {
+          this.soundingNotes.delete(note);
+        }
       }
     }
     await Promise.all(promises);
     channel.lastNote = null;
     channel.activeNotes = new Array(128);
     channel.sustainNotes = [];
-    this.notePromises = [];
+    channel.sostenutoNotes = [];
   }
 
   override async renderChunkBuffer(
@@ -3120,6 +3117,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
     this.handleExclusiveClass(note, channel, startTime);
     this.handleDrumExclusiveClass(note, channel, startTime);
+    this.soundingNotes.add(note);
   }
 
   override async noteOnChannel(
@@ -3142,6 +3140,13 @@ export class MidyGM2 extends Player<Note, Channel> {
     channel.activeNotes[noteNumber].push(note);
     try {
       await this.setNoteAudioNode(channel, note, realtime);
+      // pause/stop may have set ending while setNoteAudioNode was in flight
+      if (note.ending) {
+        if (note.bufferSource || note.volumeNode) {
+          await this.soundOffNote(note, this.audioContext.currentTime);
+        }
+        return note;
+      }
       channel.lastNote = note;
       this.setNoteRouting(channel, note, t);
     } finally {
@@ -3152,6 +3157,7 @@ export class MidyGM2 extends Player<Note, Channel> {
   }
 
   override disconnectNote(note: Note): void {
+    this.soundingNotes.delete(note);
     note.bufferSource?.disconnect();
     note.filterEnvelopeNode?.disconnect();
     note.volumeEnvelopeNode?.disconnect();
@@ -3160,11 +3166,19 @@ export class MidyGM2 extends Player<Note, Channel> {
       note.modLfoToFilterFc?.disconnect();
       note.modLfoToVolume?.disconnect?.();
       note.modLfoToPitch?.disconnect?.();
-      note.modLfo?.stop();
+      try {
+        note.modLfo?.stop();
+      } catch {
+        // not started / already stopped
+      }
     }
     if (note.vibLfoToPitch) {
       note.vibLfoToPitch.disconnect();
-      note.vibLfo?.stop();
+      try {
+        note.vibLfo?.stop();
+      } catch {
+        // not started / already stopped
+      }
     }
     if (note.reverbSend) {
       note.reverbSend.disconnect();

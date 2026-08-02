@@ -892,8 +892,7 @@ const voiceParamsHandlers: Record<string, VoiceParamsHandler> = {
   },
   delayVibLFO: (_channel, _note, _t) => {},
   freqVibLFO: (_channel, _note, _t) => {},
-  detune: (channel, note, t) =>
-    channel.typedPlayer.setDetune(channel, note, t),
+  detune: (channel, note, t) => channel.typedPlayer.setDetune(channel, note, t),
 };
 
 const controlChangeHandlers: ControlChangeHandler[] = new Array(128);
@@ -1069,8 +1068,11 @@ export class Player<
       string,
       VoiceParamsHandler<TNote, TChannel>
     >;
-    this.controlChangeHandlers = controlChangeHandlers as unknown as
-      ControlChangeHandler<TNote, TChannel>[];
+    this.controlChangeHandlers =
+      controlChangeHandlers as unknown as ControlChangeHandler<
+        TNote,
+        TChannel
+      >[];
     const activeChannelNumbers = options?.activeChannelNumbers
       ? new Set(options.activeChannelNumbers)
       : undefined;
