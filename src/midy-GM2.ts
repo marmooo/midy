@@ -1010,7 +1010,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     // and system-on here so reverb/chorus exist first.
     if (!isOffline) {
       this.masterVolume.connect(audioContext.destination);
-      this.scheduler.connect(audioContext.destination);
+      this.scheduler!.connect(audioContext.destination);
       this.GM1SystemOn(audioContext.currentTime);
     } else {
       if (this.channels[9]) this.channels[9].isDrum = true;

@@ -119,9 +119,11 @@ function initDecoder(): Promise<OggVorbisDecoderWebWorker> {
 }
 
 export class Note {
-  // Widened so GM2/Midy can declare a more specific player subtype.
-  // deno-lint-ignore no-explicit-any
-  player?: Player<any, any>;
+  // Widened to unknown so GM2/Midy can declare a more specific player
+  // subtype (a generic Player<TNote,TChannel> can't be soundly widened to
+  // a fixed Player<Note,Channel<Note>> here because subclass methods take
+  // TNote/TChannel contravariantly). Access via the local casts below.
+  player?: unknown;
   noteNumber: number;
   velocity: number;
   startTime: number;
@@ -166,8 +168,19 @@ type ChannelSettings = typeof Player.channelSettings;
 type ChannelAudioNodes = ReturnType<Player["createChannelAudioNodes"]>;
 
 export class Channel<TNote extends Note = Note> {
-  // deno-lint-ignore no-explicit-any
-  player!: Player<TNote, any>;
+  // See Note.player above for why this is unknown rather than
+  // Player<TNote, Channel<TNote>>.
+  player!: unknown;
+  // Every Channel<TNote> is always constructed by, and only by, a matching
+  // Player<TNote, ...> (see Player.createChannels / createChannelInstance),
+  // so this cast is safe by construction even though TypeScript can't prove
+  // it generically. This is the single place that assertion is made; every
+  // other place that needs the owning player (in this class, its
+  // subclasses, or the default handlers below) should read
+  // `channel.typedPlayer` instead of casting `channel.player` itself.
+  get typedPlayer(): Player<TNote, Channel<TNote>> {
+    return this.player as Player<TNote, Channel<TNote>>;
+  }
   gainL!: GainNode;
   gainR!: GainNode;
   merger!: ChannelMergerNode;
@@ -239,7 +252,7 @@ export class Channel<TNote extends Note = Note> {
     startTime: number | undefined,
     note?: TNote,
   ): Promise<TNote | void> {
-    return await this.player.noteOnChannel(
+    return await this.typedPlayer.noteOnChannel(
       this,
       noteNumber,
       velocity,
@@ -254,7 +267,7 @@ export class Channel<TNote extends Note = Note> {
     endTime: number | undefined,
     force: boolean = false,
   ): Promise<void> {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = endTime ?? player.audioContext.currentTime;
     return await player.noteOffChannel(this, noteNumber, velocity, t, force);
   }
@@ -264,7 +277,7 @@ export class Channel<TNote extends Note = Note> {
   }
 
   setPitchBend(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
     const prev = state.pitchWheel * 2 - 1;
@@ -280,7 +293,7 @@ export class Channel<TNote extends Note = Note> {
     value: number,
     scheduleTime?: number,
   ): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const handler = player.controlChangeHandlers[controllerType];
     if (handler) {
@@ -294,35 +307,35 @@ export class Channel<TNote extends Note = Note> {
   }
 
   setModulationDepth(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     this.state.modulationDepthMSB = value / 127;
     player.updateModulation(this, t);
   }
 
   setVolume(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     this.state.volumeMSB = value / 127;
     player.updateChannelVolume(this, t);
   }
 
   setPan(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     this.state.panMSB = value / 127;
     player.updateChannelVolume(this, t);
   }
 
   setExpression(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     this.state.expressionMSB = value / 127;
     player.updateChannelVolume(this, t);
   }
 
   async setSustainPedal(value: number, scheduleTime?: number): Promise<void> {
-    const player = this.player;
+    const player = this.typedPlayer;
     if (this.isDrum) return;
     const state = this.state;
     const prevValue = state.sustainPedal;
@@ -401,7 +414,7 @@ export class Channel<TNote extends Note = Note> {
   }
 
   setPitchBendRange(value: number, scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
     const prev = state.pitchWheelSensitivity;
@@ -413,7 +426,7 @@ export class Channel<TNote extends Note = Note> {
   }
 
   allSoundOff(scheduleTime?: number): Promise<void[]> {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const promises: Promise<void>[] = [];
     this.processActiveNotes(t, (note) => {
@@ -424,7 +437,7 @@ export class Channel<TNote extends Note = Note> {
 
   // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
   resetAllControllers(scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const keys = [
       "pitchWheel",
       "expressionMSB",
@@ -456,7 +469,7 @@ export class Channel<TNote extends Note = Note> {
   }
 
   resetChannelStates(scheduleTime?: number): void {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
     const entries = Object.entries(defaultControllerState) as [
@@ -480,7 +493,7 @@ export class Channel<TNote extends Note = Note> {
   }
 
   allNotesOff(scheduleTime?: number): Promise<void[]> {
-    const player = this.player;
+    const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const promises: (Promise<void> | void)[] = [];
     this.processActiveNotes(t, (note) => {
@@ -831,49 +844,56 @@ export interface ChunkState {
 }
 
 export type MessageHandler = (bytes: Uint8Array, time: number) => void;
-// Channel subclasses (GM2/Midy) are not always assignable to base Channel
-// due to declare player refinements; accept the structural base surface.
-// deno-lint-ignore no-explicit-any
-export type ControlChangeHandler = (ch: any, v: number, t: number) => void;
-// deno-lint-ignore no-explicit-any
-type VoiceParamsHandler = (
-  channel: any,
-  note: any,
+export type ControlChangeHandler<
+  TNote extends Note = Note,
+  TChannel extends Channel<TNote> = Channel<TNote>,
+> = (
+  ch: TChannel,
+  v: number,
+  t: number,
+) => void;
+type VoiceParamsHandler<
+  TNote extends Note = Note,
+  TChannel extends Channel<TNote> = Channel<TNote>,
+> = (
+  channel: TChannel,
+  note: TNote,
   scheduleTime: number,
 ) => void;
 
 const voiceParamsHandlers: Record<string, VoiceParamsHandler> = {
   modLfoToPitch: (channel, note, t) => {
     if (0 < channel.state.modulationDepthMSB) {
-      channel.player.setModLfoToPitch(channel, note, t);
+      channel.typedPlayer.setModLfoToPitch(channel, note, t);
     }
   },
   vibLfoToPitch: (_channel, _note, _t) => {},
   modLfoToFilterFc: (channel, note, t) => {
     if (0 < channel.state.modulationDepthMSB) {
-      channel.player.setModLfoToFilterFc(channel, note, t);
+      channel.typedPlayer.setModLfoToFilterFc(channel, note, t);
     }
   },
   modLfoToVolume: (channel, note, t) => {
     if (0 < channel.state.modulationDepthMSB) {
-      channel.player.setModLfoToVolume(channel, note, t);
+      channel.typedPlayer.setModLfoToVolume(channel, note, t);
     }
   },
   chorusEffectsSend: (_channel, _note, _t) => {},
   reverbEffectsSend: (_channel, _note, _t) => {},
   delayModLFO: (channel, note, _t) => {
     if (0 < channel.state.modulationDepthMSB) {
-      channel.player.setDelayModLFO(note);
+      channel.typedPlayer.setDelayModLFO(note);
     }
   },
   freqModLFO: (channel, note, t) => {
     if (0 < channel.state.modulationDepthMSB) {
-      channel.player.setFreqModLFO(note, t);
+      channel.typedPlayer.setFreqModLFO(note, t);
     }
   },
   delayVibLFO: (_channel, _note, _t) => {},
   freqVibLFO: (_channel, _note, _t) => {},
-  detune: (channel, note, t) => channel.player.setDetune(channel, note, t),
+  detune: (channel, note, t) =>
+    channel.typedPlayer.setDetune(channel, note, t),
 };
 
 const controlChangeHandlers: ControlChangeHandler[] = new Array(128);
@@ -944,6 +964,7 @@ export class Player<
   playPromise?: Promise<void>;
   timeline: TimelineEvent[] = [];
   notePromises: Promise<void>[] = [];
+  soundingNotes: Set<TNote> = new Set();
   instruments: Set<string> = new Set();
   exclusiveClassNotes: ([TNote, TChannel] | null)[] = new Array(128);
   // GM drum-map exclusive groups. Subclasses may replace with
@@ -1005,13 +1026,13 @@ export class Player<
   cacheMode: CacheMode;
   masterVolume: GainNode;
   masterVolumeLocked: boolean = false;
-  scheduler: GainNode;
-  schedulerBuffer: AudioBuffer;
+  scheduler: GainNode | null;
+  schedulerBuffer: AudioBuffer | null;
   pendingSchedulerSources: Set<AudioBufferSourceNode> = new Set();
   channels: TChannel[];
   messageHandlers: MessageHandler[];
-  voiceParamsHandlers: Record<string, VoiceParamsHandler>;
-  controlChangeHandlers: ControlChangeHandler[];
+  voiceParamsHandlers: Record<string, VoiceParamsHandler<TNote, TChannel>>;
+  controlChangeHandlers: ControlChangeHandler<TNote, TChannel>[];
 
   static channelSettings = {
     detune: 0,
@@ -1033,8 +1054,8 @@ export class Player<
     this.masterVolume = new GainNode(audioContext);
     const isOffline = audioContext instanceof OfflineAudioContext;
     if (isOffline) {
-      this.scheduler = null as unknown as GainNode;
-      this.schedulerBuffer = null as unknown as AudioBuffer;
+      this.scheduler = null;
+      this.schedulerBuffer = null;
       this.messageHandlers = [];
     } else {
       this.scheduler = new GainNode(audioContext, { gain: 0 });
@@ -1044,8 +1065,12 @@ export class Player<
       });
       this.messageHandlers = this.createMessageHandlers();
     }
-    this.voiceParamsHandlers = voiceParamsHandlers;
-    this.controlChangeHandlers = controlChangeHandlers;
+    this.voiceParamsHandlers = voiceParamsHandlers as unknown as Record<
+      string,
+      VoiceParamsHandler<TNote, TChannel>
+    >;
+    this.controlChangeHandlers = controlChangeHandlers as unknown as
+      ControlChangeHandler<TNote, TChannel>[];
     const activeChannelNumbers = options?.activeChannelNumbers
       ? new Set(options.activeChannelNumbers)
       : undefined;
@@ -1065,7 +1090,7 @@ export class Player<
   ): void {
     this.masterVolume.connect(audioContext.destination);
     if (!isOffline) {
-      this.scheduler.connect(audioContext.destination);
+      this.scheduler!.connect(audioContext.destination);
       this.GM1SystemOn(audioContext.currentTime);
     } else {
       if (this.channels[9]) this.channels[9].isDrum = true;
@@ -1730,6 +1755,7 @@ export class Player<
   }
 
   resetAllStates(): void {
+    this.soundingNotes.clear();
     this.clearPlaybackCaches();
     this.GM1SystemOn(this.audioContext.currentTime, this.channels);
   }
@@ -1792,7 +1818,7 @@ export class Player<
           bufferSource.stop();
           bufferSource.disconnect();
           this.audioModeBufferSource = null;
-          await this.suspendAudioContext();
+          // await this.suspendAudioContext();
           this.isPausing = false;
           exitReason = "paused";
           break outer;
@@ -1891,18 +1917,18 @@ export class Player<
       }
       if (this.isPausing) {
         this.cancelScheduledTasks();
-        await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
         if (this.cacheMode === "chunk") this.stopChunkSources();
-        await this.suspendAudioContext();
+        await this.stopNotes(now);
+        // await this.suspendAudioContext();
         this.isPausing = false;
         exitReason = "paused";
         break;
       } else if (this.isStopping) {
         this.cancelScheduledTasks();
-        await this.stopNotes(now);
         if (this.cacheMode === "segment") this.stopSegmentSources();
         if (this.cacheMode === "chunk") this.stopChunkSources();
+        await this.stopNotes(now);
         await this.suspendAudioContext();
         this.isStopping = false;
         exitReason = "stopped";
@@ -2042,40 +2068,49 @@ export class Player<
     scheduleTime: number,
   ): Promise<void> {
     const promises: Promise<void>[] = [];
-    const timeConstant = this.perceptualSmoothingTime / 5;
     for (let i = 0; i < 128; i++) {
       const stack = channel.activeNotes[i];
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
-        const promise = note.ready.then(() => {
-          if (!note.voice || note.isSegmentGhost) return;
-          const now = this.audioContext.currentTime;
-          const startTime = Math.max(scheduleTime, now);
-          (note.volumeNode as GainNode).gain
-            .cancelScheduledValues(startTime)
-            .setTargetAtTime(0, startTime, timeConstant);
-          (note.bufferSource as AudioBufferSourceNode).stop(
-            startTime + this.perceptualSmoothingTime,
-          );
-        });
-        promises.push(promise);
+        if (note.isSegmentGhost) continue;
+        // Set the 'ending' flag beforehand to prevent start() from being called after getAudioBuffer() completes.
+        // Waiting for 'note.ready' could cause a hang during decoding or offline rendering,
+        // so we only call soundOff() for nodes that already exist.
+        note.ending = true;
+        if (note.bufferSource || note.volumeNode) {
+          promises.push(this.soundOffNote(note, scheduleTime));
+        } else {
+          this.soundingNotes.delete(note);
+        }
       }
     }
     await Promise.all(promises);
     channel.activeNotes = new Array(128);
     channel.sustainNotes = [];
-    this.notePromises = [];
   }
 
   async stopNotes(scheduleTime: number): Promise<void[]> {
     const channels = this.channels;
+    const channelPromises = new Array<Promise<void>>(channels.length);
     for (let ch = 0; ch < channels.length; ch++) {
-      await this.stopChannelNotes(channels[ch], scheduleTime);
+      channelPromises[ch] = this.stopChannelNotes(channels[ch], scheduleTime);
     }
-    const stopPromise = Promise.all(this.notePromises);
+    await Promise.all(channelPromises);
+
+    // Drum one-shot that has dropped out of activeNotes / release tail
+    const residual = Array.from(this.soundingNotes);
+    const residualPromises = new Array<Promise<void>>(residual.length);
+    for (let i = 0; i < residual.length; i++) {
+      residualPromises[i] = this.soundOffNote(residual[i], scheduleTime);
+    }
+    this.soundingNotes.clear();
+
+    // Discard the 'onended' wait queued by releaseNote
+    // Since soundOffNote overwrites 'onended', waiting would result in it never finishing.
     this.notePromises = [];
-    return stopPromise;
+
+    return Promise.all(residualPromises);
   }
 
   // "segment" mode: per-channel pipeline that groups segment-baked notes into
@@ -2840,7 +2875,11 @@ export class Player<
   }
 
   async start({ preload = true }: { preload?: boolean } = {}): Promise<void> {
-    if (this.isPlaying || this.isPaused) return;
+    if (this.isPlaying) return;
+    if (this.isPaused) {
+      await this.resume();
+      return;
+    }
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
@@ -2851,6 +2890,7 @@ export class Player<
   async stop(): Promise<void> {
     if (this.isPlaying) {
       this.isStopping = true;
+      this.cancelScheduledTasks();
       await this.playPromise;
       return;
     }
@@ -2879,11 +2919,16 @@ export class Player<
     this.resumeTime = now + this.resumeTime - this.startTime;
     this.startTime = now;
     this.isPausing = true;
+    this.cancelScheduledTasks();
     await this.playPromise;
   }
 
   async resume(): Promise<void> {
     if (!this.isPaused) return;
+    if (this.isPlaying) return;
+    if (this.audioContext.state === "suspended") {
+      await this.audioContext.resume();
+    }
     this.playPromise = this.playNotes();
     await this.playPromise;
   }
@@ -2892,6 +2937,7 @@ export class Player<
     this.resumeTime = second;
     if (this.isPlaying) {
       this.isSeeking = true;
+      this.cancelScheduledTasks();
     }
   }
 
@@ -3838,6 +3884,8 @@ export class Player<
     }
 
     const audioBuffer = await this.getAudioBuffer(channel, note, realtime);
+    // If pause()/stop() interrupts during preparation, abort without creating a node.
+    if (note.ending || !audioBuffer) return;
     const isRendered = audioBuffer instanceof RenderedBuffer;
     note.renderedBuffer = isRendered ? audioBuffer : null;
     note.bufferSource = this.createBufferSource(
@@ -3962,6 +4010,7 @@ export class Player<
   }
 
   setNoteRouting(channel: TChannel, note: TNote, startTime: number): void {
+    if (note.isSegmentGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
     if (note.renderedBuffer?.isFull) {
@@ -3972,6 +4021,7 @@ export class Player<
     }
     this.handleExclusiveClass(note, channel, startTime);
     this.handleDrumExclusiveClass(note, channel, startTime);
+    this.soundingNotes.add(note);
   }
 
   async noteOnChannel(
@@ -3994,6 +4044,13 @@ export class Player<
     channel.activeNotes[noteNumber].push(note);
     try {
       await this.setNoteAudioNode(channel, note, realtime);
+      if (note.ending) {
+        // When pause/stop is interrupted in the middle of setNoteAudioNode
+        if (note.bufferSource || note.volumeNode) {
+          await this.soundOffNote(note, this.audioContext.currentTime);
+        }
+        return note;
+      }
       this.setNoteRouting(channel, note, t);
     } finally {
       note.resolveReady();
@@ -4003,6 +4060,7 @@ export class Player<
   }
 
   disconnectNote(note: TNote): void {
+    this.soundingNotes.delete(note);
     note.bufferSource?.disconnect();
     note.filterEnvelopeNode?.disconnect();
     note.volumeEnvelopeNode?.disconnect();
@@ -4011,7 +4069,11 @@ export class Player<
       note.modLfoToFilterFc?.disconnect();
       note.modLfoToVolume?.disconnect?.();
       note.modLfoToPitch?.disconnect?.();
-      note.modLfo?.stop();
+      try {
+        note.modLfo?.stop();
+      } catch {
+        // not started / already stopped
+      }
     }
   }
 
@@ -4043,39 +4105,79 @@ export class Player<
       if (isEarlyCut) {
         const volDuration = note.voiceParams?.volRelease ?? 0;
         const volRelease = endTime + volDuration;
-        note.volumeNode?.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-        note.bufferSource?.stop(volRelease);
-      } else {
-        if (naturalEndTime <= now) {
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          return;
-        }
-        note.bufferSource?.stop(naturalEndTime);
+        try {
+          note.volumeNode?.gain
+            .cancelScheduledValues(endTime)
+            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        } catch { /* already closed */ }
+        return new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.disconnectNote(note);
+            this.releaseFullCache(note);
+            resolve();
+          };
+          const src = note.bufferSource;
+          if (!src) {
+            finish();
+            return;
+          }
+          src.onended = finish;
+          try {
+            src.stop(volRelease);
+          } catch {
+            finish();
+          }
+        });
+      }
+      if (naturalEndTime <= now) {
+        this.disconnectNote(note);
+        this.releaseFullCache(note);
+        return;
       }
       return new Promise<void>((resolve) => {
-        note.bufferSource!.onended = () => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
           this.disconnectNote(note);
           this.releaseFullCache(note);
           resolve();
         };
+        const src = note.bufferSource;
+        if (!src) {
+          finish();
+          return;
+        }
+        src.onended = finish;
+        try {
+          src.stop(naturalEndTime);
+        } catch {
+          finish();
+        }
       });
     }
+
     const volDuration = note.voiceParams?.volRelease ?? 0;
     const volRelease = endTime + volDuration;
-    if (note.volumeEnvelopeNode) { // "none" mode
-      note.filterEnvelopeNode?.frequency
-        .cancelScheduledValues(endTime)
-        .exponentialRampToValueAtTime(
-          note.adjustedBaseFreq,
-          endTime + (note.voiceParams?.modRelease ?? 0),
-        );
-      note.volumeEnvelopeNode.gain
-        .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-    } else { // "ads" / "adsr" mode
+
+    if (note.volumeEnvelopeNode) {
+      // "none" mode
+      try {
+        note.filterEnvelopeNode?.frequency
+          .cancelScheduledValues(endTime)
+          .exponentialRampToValueAtTime(
+            note.adjustedBaseFreq,
+            endTime + (note.voiceParams?.modRelease ?? 0),
+          );
+        note.volumeEnvelopeNode.gain
+          .cancelScheduledValues(endTime)
+          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch { /* already closed */ }
+    } else {
+      // "ads" / "adsr" mode
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
       if (isAdsr) {
@@ -4084,34 +4186,83 @@ export class Player<
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          note.volumeNode?.gain
-            .cancelScheduledValues(endTime)
-            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-          note.bufferSource?.stop(volRelease);
-        } else {
-          if (naturalEndTime <= now) {
-            this.disconnectNote(note);
-            return;
-          }
-          note.bufferSource?.stop(naturalEndTime);
+          try {
+            note.volumeNode?.gain
+              .cancelScheduledValues(endTime)
+              .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+          } catch { /* already closed */ }
+          return new Promise<void>((resolve) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              this.disconnectNote(note);
+              resolve();
+            };
+            const src = note.bufferSource;
+            if (!src) {
+              finish();
+              return;
+            }
+            src.onended = finish;
+            try {
+              src.stop(volRelease);
+            } catch {
+              finish();
+            }
+          });
+        }
+        if (naturalEndTime <= now) {
+          this.disconnectNote(note);
+          return;
         }
         return new Promise<void>((resolve) => {
-          note.bufferSource!.onended = () => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
             this.disconnectNote(note);
             resolve();
           };
+          const src = note.bufferSource;
+          if (!src) {
+            finish();
+            return;
+          }
+          src.onended = finish;
+          try {
+            src.stop(naturalEndTime);
+          } catch {
+            finish();
+          }
         });
       }
-      note.volumeNode?.gain
-        .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      try {
+        note.volumeNode?.gain
+          .cancelScheduledValues(endTime)
+          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch { /* already closed */ }
     }
-    note.bufferSource?.stop(volRelease);
+
     return new Promise<void>((resolve) => {
-      note.bufferSource!.onended = () => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         this.disconnectNote(note);
         resolve();
       };
+      const src = note.bufferSource;
+      if (!src) {
+        finish();
+        return;
+      }
+      src.onended = finish;
+      try {
+        src.stop(volRelease);
+      } catch {
+        finish();
+      }
     });
   }
 
@@ -4177,20 +4328,59 @@ export class Player<
 
   soundOffNote(note: TNote, scheduleTime: number): Promise<void> {
     note.ending = true;
-    if (!note.voice || note.isSegmentGhost) return Promise.resolve();
+    if (!note.voice || note.isSegmentGhost) {
+      this.soundingNotes.delete(note);
+      return Promise.resolve();
+    }
+    if (!note.bufferSource && !note.volumeNode) {
+      this.soundingNotes.delete(note);
+      return Promise.resolve();
+    }
+
     const now = this.audioContext.currentTime;
-    const startTime = Math.max(scheduleTime, now);
-    const perceptualSmoothingTime = this.perceptualSmoothingTime;
-    const timeConstant = perceptualSmoothingTime / 5;
-    note.volumeNode?.gain
-      .cancelScheduledValues(startTime)
-      .setTargetAtTime(0, startTime, timeConstant);
-    note.bufferSource?.stop(startTime + perceptualSmoothingTime);
+    const t = Math.max(scheduleTime, now);
+    const timeConstant = this.perceptualSmoothingTime / 5;
+
+    try {
+      note.volumeNode?.gain
+        .cancelScheduledValues(t)
+        .setTargetAtTime(0, t, timeConstant);
+    } catch { /* already closed */ }
+
     return new Promise((resolve) => {
-      note.bufferSource!.onended = () => {
-        this.disconnectNote(note);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try {
+          this.disconnectNote(note);
+        } catch {
+          // Ensure resolve is called even if an exception occurs during disconnect / modLfo.stop
+        }
         resolve();
       };
+
+      const src = note.bufferSource;
+      if (!src) {
+        finish();
+        return;
+      }
+
+      src.onended = finish;
+      try {
+        src.stop(t + this.perceptualSmoothingTime);
+      } catch {
+        // Already stopped/ended → onended will never fire again.
+        finish();
+        return;
+      }
+      // To prevent indefinite waiting for pause()/stop() in cases where 'onended' does not fire,
+      // force resolution after the fade completes.
+      const waitMs = Math.max(
+        50,
+        (t + this.perceptualSmoothingTime - now) * 1000 + 50,
+      );
+      setTimeout(finish, waitMs);
     });
   }
 
@@ -4452,12 +4642,27 @@ export class Player<
       t,
       timeConstant,
     );
-    setTimeout(
-      () => {
-        this.masterVolumeLocked = false;
-      },
-      (t - this.audioContext.currentTime + duration) * 1000,
-    );
+    // Unlock after the fade. Prefer the audio clock so background-tab
+    // setTimeout throttling does not leave masterVolumeLocked stuck true
+    // longer than intended. Fall back to setTimeout when the context is
+    // not running (suspended / offline), where the audio clock does not
+    // advance. If pause/stop/seek aborts the scheduleTask via
+    // cancelScheduledTasks(), that path clears masterVolumeLocked.
+    const unlockAt = t + duration;
+    const unlock = () => {
+      this.masterVolumeLocked = false;
+    };
+    const ac = this.audioContext;
+    if (
+      ac instanceof AudioContext && ac.state === "running" && this.scheduler
+    ) {
+      this.scheduleTask(unlock, unlockAt);
+    } else {
+      setTimeout(
+        unlock,
+        Math.max(0, (unlockAt - ac.currentTime) * 1000),
+      );
+    }
   }
 
   fadeOutMasterVolume(duration: number, scheduleTime?: number): void {
@@ -4497,6 +4702,10 @@ export class Player<
   }
 
   cancelScheduledTasks(): void {
+    // Any in-flight fadeMasterVolumeTo unlock was scheduled via
+    // scheduleTask; stopping those sources means the fade was aborted, so
+    // the lock is no longer meaningful.
+    this.masterVolumeLocked = false;
     for (const bufferSource of this.pendingSchedulerSources) {
       try {
         bufferSource.stop();
@@ -4543,25 +4752,30 @@ export class Player<
   }
 
   waitTick(): Promise<void> {
-    const now = this.audioContext.currentTime;
+    // Prefer the audio clock while the context is running — accurate even
+    // when the tab is backgrounded and setTimeout is heavily throttled.
+    // When suspended/offline the audio clock does not advance, so fall
+    // back to setTimeout to avoid hanging the drain loop forever.
+    const ac = this.audioContext;
+    if (
+      ac instanceof AudioContext && ac.state === "running" && this.scheduler
+    ) {
+      return this.scheduleTask(
+        () => {},
+        ac.currentTime + this.noteCheckInterval,
+      );
+    }
     return new Promise((resolve) => {
-      let settled = false;
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      this.scheduleTask(() => {}, now + this.noteCheckInterval).then(settle);
-      setTimeout(settle, this.noteCheckInterval * 1000);
+      setTimeout(resolve, this.noteCheckInterval * 1000);
     });
   }
 
   scheduleTask(callback: () => void, scheduleTime: number): Promise<void> {
     return new Promise((resolve) => {
       const bufferSource = new AudioBufferSourceNode(this.audioContext, {
-        buffer: this.schedulerBuffer,
+        buffer: this.schedulerBuffer!,
       });
-      bufferSource.connect(this.scheduler);
+      bufferSource.connect(this.scheduler!);
       this.pendingSchedulerSources.add(bufferSource);
       bufferSource.onended = () => {
         this.pendingSchedulerSources.delete(bufferSource);
