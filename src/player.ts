@@ -941,7 +941,7 @@ export class Player<
   // ring; raise maxSegmentNoteDuration's tier instead of lookAhead itself
   // if warnings only appear in segment mode.
   lookAhead: number = 1;
-  startDelay: number = 0.1;
+  startDelay: number = 0.5;
   startTime: number = 0;
   resumeTime: number = 0;
   soundFonts: SoundFont[] = [];
