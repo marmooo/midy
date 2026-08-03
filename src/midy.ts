@@ -1193,12 +1193,24 @@ export class Midy extends MidyGM2 {
 
   override createMessageHandlers(): MessageHandler[] {
     const handlers = super.createMessageHandlers();
+    handlers[0x80] = (data, t) =>
+      this.noteOff(data[0] & 0x0F, data[1], data[2], t);
+    handlers[0x90] = (data, t) =>
+      this.noteOn(data[0] & 0x0F, data[1], data[2], t);
     handlers[0xA0] = (data, t) =>
       (this.channels[data[0] & 0x0F] as Channel).setPolyphonicKeyPressure(
         data[1],
         data[2],
         t,
       );
+    handlers[0xB0] = (data, t) =>
+      this.setControlChange(data[0] & 0x0F, data[1], data[2], t);
+    handlers[0xC0] = (data, _t) =>
+      this.setProgramChange(data[0] & 0x0F, data[1]);
+    handlers[0xD0] = (data, t) =>
+      this.setChannelPressure(data[0] & 0x0F, data[1], t);
+    handlers[0xE0] = (data, t) =>
+      this.setPitchBend(data[0] & 0x0F, data[2] * 128 + data[1], t);
     return handlers;
   }
 
