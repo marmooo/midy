@@ -233,7 +233,6 @@ export class Channel extends GM2Channel {
     value: number,
     scheduleTime?: number,
   ): void {
-    if (this.isMPEMember) return;
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const handler = player.controlChangeHandlers[controllerType];
@@ -255,7 +254,6 @@ export class Channel extends GM2Channel {
     pressure: number,
     scheduleTime?: number,
   ): void {
-    if (this.isMPEMember) return;
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     this.processActiveNotes(t, (note) => {
@@ -630,6 +628,8 @@ export class Midy extends MidyGM2 {
   mpeEnabled: boolean = false;
   lowerMPEMembers: number = 0;
   upperMPEMembers: number = 0;
+  lowerFreeChannels: number[] = [];
+  upperFreeChannels: number[] = [];
   // Lazy so base-class constructor hooks (resetAllStates etc.) never see undefined.
   private _mpeState: { channelToNotes: Map<number, Set<Note>> } | undefined;
   get mpeState(): { channelToNotes: Map<number, Set<Note>> } {
@@ -679,7 +679,7 @@ export class Midy extends MidyGM2 {
     return new Note(noteNumber, velocity, startTime);
   }
 
-  /** Player-level noteOn with MPE channelToNotes tracking. */
+  // Player-level noteOn with MPE channelToNotes tracking.
   async noteOn(
     channelNumber: number,
     noteNumber: number,
@@ -702,7 +702,7 @@ export class Midy extends MidyGM2 {
     return note;
   }
 
-  /** Player-level noteOff with MPE channelToNotes cleanup. */
+  // Player-level noteOff with MPE channelToNotes cleanup.
   async noteOff(
     channelNumber: number,
     noteNumber: number,
@@ -755,7 +755,7 @@ export class Midy extends MidyGM2 {
     }
   }
 
-  /** Player-level pitch bend; propagates from MPE manager to zone members. */
+  // Player-level pitch bend; propagates from MPE manager to zone members.
   setPitchBend(
     channelNumber: number,
     value: number,
@@ -782,6 +782,26 @@ export class Midy extends MidyGM2 {
     }
   }
 
+  // Player-level control change; propagates from MPE manager to zone members.
+  setControlChange(
+    channelNumber: number,
+    controllerType: number,
+    value: number,
+    scheduleTime?: number,
+  ): void {
+    const channel = this.channels[channelNumber];
+    if (!channel) return;
+    const t = scheduleTime ?? this.audioContext.currentTime;
+    if (channel.isMPEManager && this.mpeEnabled) {
+      this.applyToMPEChannels(channelNumber, (ch) => {
+        this.channels[ch]?.setControlChange(controllerType, value, t);
+      });
+      channel.setControlChange(controllerType, value, t);
+    } else {
+      channel.setControlChange(controllerType, value, t);
+    }
+  }
+
   /** Player-level program change; propagates from MPE manager. */
   setProgramChange(channelNumber: number, programNumber: number): void {
     const channel = this.channels[channelNumber];
@@ -803,7 +823,7 @@ export class Midy extends MidyGM2 {
     }
   }
 
-  /** Player-level channel pressure; propagates from MPE manager. */
+  // Player-level channel pressure; propagates from MPE manager.
   setChannelPressure(
     channelNumber: number,
     value: number,
@@ -1009,7 +1029,7 @@ export class Midy extends MidyGM2 {
     const channel = this.channels[channelNumber] as Channel;
     if (channel?.isMPEManager) {
       const isLower = channelNumber === 0;
-      const start = isLower ? 1 : 16 - this.upperMPEMembers;
+      const start = isLower ? 1 : 15 - this.upperMPEMembers;
       const end = isLower ? this.lowerMPEMembers : 14;
       for (let ch = start; ch <= end; ch++) fn(ch);
     } else {
@@ -1033,7 +1053,7 @@ export class Midy extends MidyGM2 {
     this.mpeEnabled = this.lowerMPEMembers > 0 || this.upperMPEMembers > 0;
     const lowerStart = 1;
     const lowerEnd = this.lowerMPEMembers;
-    const upperStart = 16 - this.upperMPEMembers;
+    const upperStart = 15 - this.upperMPEMembers;
     const upperEnd = 14;
     const { channels, lowerMPEMembers, upperMPEMembers, mpeEnabled } = this;
     for (let ch = 0; ch < 16; ch++) {
@@ -1044,6 +1064,40 @@ export class Midy extends MidyGM2 {
       channel.isMPEManager = mpeEnabled &&
         ((ch === 0 && lowerMPEMembers > 0) ||
           (ch === 15 && upperMPEMembers > 0));
+    }
+    this.rebuildMPEFreeChannels();
+  }
+
+  rebuildMPEFreeChannels(): void {
+    this.lowerFreeChannels = [];
+    for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
+      this.lowerFreeChannels.push(ch);
+    }
+    this.upperFreeChannels = [];
+    const upperStart = 15 - this.upperMPEMembers;
+    for (let ch = upperStart; ch <= 14; ch++) {
+      this.upperFreeChannels.push(ch);
+    }
+  }
+
+  allocMPEChannel(zone: 0 | 1): number | null {
+    const pool = zone === 0 ? this.lowerFreeChannels : this.upperFreeChannels;
+    return pool.length > 0 ? pool.shift()! : null;
+  }
+
+  releaseMPEChannel(channelNumber: number): void {
+    if (1 <= channelNumber && channelNumber <= this.lowerMPEMembers) {
+      if (!this.lowerFreeChannels.includes(channelNumber)) {
+        this.lowerFreeChannels.push(channelNumber);
+      }
+    } else if (
+      this.upperMPEMembers > 0 &&
+      15 - this.upperMPEMembers <= channelNumber &&
+      channelNumber <= 14
+    ) {
+      if (!this.upperFreeChannels.includes(channelNumber)) {
+        this.upperFreeChannels.push(channelNumber);
+      }
     }
   }
 
@@ -1103,6 +1157,8 @@ export class Midy extends MidyGM2 {
     // mpeState is a derived-class field; base constructor may call this
     // before field initializers run, so guard against undefined.
     this.mpeState.channelToNotes.clear();
+    this.lowerFreeChannels = [];
+    this.upperFreeChannels = [];
   }
 
   override GM1SystemOn(
@@ -1114,6 +1170,8 @@ export class Midy extends MidyGM2 {
       this.lowerMPEMembers = 0;
       this.upperMPEMembers = 0;
       this.mpeState.channelToNotes.clear();
+      this.lowerFreeChannels = [];
+      this.upperFreeChannels = [];
     }
     super.GM1SystemOn(scheduleTime, channels);
   }
@@ -1127,6 +1185,8 @@ export class Midy extends MidyGM2 {
       this.lowerMPEMembers = 0;
       this.upperMPEMembers = 0;
       this.mpeState.channelToNotes.clear();
+      this.lowerFreeChannels = [];
+      this.upperFreeChannels = [];
     }
     super.GM2SystemOn(scheduleTime, channels as unknown as GM2Channel[]);
   }
