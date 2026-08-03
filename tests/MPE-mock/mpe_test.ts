@@ -189,7 +189,7 @@ Deno.test(
 );
 
 Deno.test(
-  "Case 9: Upper MPE zone flags ch 15 as manager and ch 13-14 as members",
+  "Case 9: Upper MPE zone flags ch 15 as manager and ch 12-14 as members",
   sanOptions,
   () => {
     const player = setupMidyPlayer();
@@ -198,11 +198,11 @@ Deno.test(
     assertEquals(player.mpeEnabled, true);
     assertEquals(player.channels[15].isMPEManager, true);
     assertEquals(player.channels[15].isMPEMember, false);
-    for (let ch = 13; ch <= 14; ch++) {
+    for (let ch = 12; ch <= 14; ch++) {
       assertEquals(player.channels[ch].isMPEMember, true);
       assertEquals(player.channels[ch].isMPEManager, false);
     }
-    for (let ch = 0; ch <= 12; ch++) {
+    for (let ch = 0; ch <= 11; ch++) {
       assertEquals(player.channels[ch].isMPEMember, false);
       assertEquals(player.channels[ch].isMPEManager, false);
     }
@@ -222,8 +222,10 @@ Deno.test(
     for (const ch of [1, 2]) {
       assertEquals(player.channels[ch].isMPEMember, true);
     }
-    assertEquals(player.channels[14].isMPEMember, true);
-    for (const ch of [3, 4, 11, 12, 13]) {
+    for (const ch of [13, 14]) {
+      assertEquals(player.channels[ch].isMPEMember, true);
+    }
+    for (const ch of [3, 4, 11, 12]) {
       assertEquals(player.channels[ch].isMPEMember, false);
     }
   },
