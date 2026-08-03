@@ -5789,7 +5789,7 @@ var Player = class _Player extends EventTarget {
   // ring; raise maxSegmentNoteDuration's tier instead of lookAhead itself
   // if warnings only appear in segment mode.
   lookAhead = 1;
-  startDelay = 0.1;
+  startDelay = 0.5;
   startTime = 0;
   resumeTime = 0;
   soundFonts = [];
@@ -5819,10 +5819,13 @@ var Player = class _Player extends EventTarget {
   drumExclusiveClassNotes = new Array(
     16 * DEFAULT_DRUM_EXCLUSIVE_CLASS_COUNT
   );
-  // When true (default), Note Off on a drum channel only drops the note from
-  // activeNotes and does not run the release envelope — matching one-shot
-  // drum behaviour. Subclasses that should release drums on Note Off
-  // (historical MidyGM1) set this to false.
+  // When true (default), Note Off on a drum channel for *live* MIDI input
+  // only drops the note from activeNotes and does not run the release
+  // envelope — matching one-shot drum behaviour. MIDI-file notes (those
+  // with a timelineIndex) always release on Note Off so their decay matches
+  // segment/chunk offline bakes, which force-release drums. Subclasses that
+  // should also release live drums on Note Off (historical MidyGM1) set
+  // this to false.
   ignoreDrumNoteOff = true;
   noteAudioBufferIds = [];
   // "adsr" mode
@@ -7673,8 +7676,8 @@ var Player = class _Player extends EventTarget {
       loopDuration: outputLoopDuration
     });
   }
-  async createAdsrRenderedBuffer(_channel, note, voiceParams, audioBuffer, noteDuration) {
-    const isLoop = voiceParams.sampleModes % 2 !== 0;
+  async createAdsrRenderedBuffer(_channel, note, voiceParams, audioBuffer, noteDuration, isDrum = false) {
+    const isLoop = isDrum ? false : voiceParams.sampleModes % 2 !== 0;
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -7778,7 +7781,7 @@ var Player = class _Player extends EventTarget {
       bufferSource.connect(volumeEnvelopeNode);
     }
     volumeEnvelopeNode.connect(offlineContext.destination);
-    if (isLoop) {
+    if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
     } else {
       bufferSource.start(0);
@@ -8096,7 +8099,8 @@ var Player = class _Player extends EventTarget {
           note,
           voiceParams,
           rawBuffer,
-          noteDuration
+          noteDuration,
+          channel2.isDrum
         );
         durationMap.set(cacheKey, rendered);
         return rendered;
@@ -8505,8 +8509,11 @@ var Player = class _Player extends EventTarget {
   noteOffChannel(channel2, noteNumber, _velocity, endTime, force) {
     if (!force) {
       if (this.ignoreDrumNoteOff && channel2.isDrum) {
-        this.removeFromActiveNotes(channel2, noteNumber);
-        return;
+        const liveNote = this.findNoteForOff(channel2, noteNumber);
+        if (!liveNote || liveNote.timelineIndex === null) {
+          this.removeFromActiveNotes(channel2, noteNumber);
+          return;
+        }
       }
       if (0.5 <= channel2.state.sustainPedal) return;
     }
@@ -8856,6 +8863,20 @@ var Player = class _Player extends EventTarget {
           p.done = true;
         }
         break;
+      }
+      await this.waitTick();
+    }
+  }
+  async waitUntil(predicate, maxSeconds) {
+    if (predicate()) return;
+    const ac = this.audioContext;
+    const useAudioClock = ac instanceof AudioContext && ac.state === "running" && !!this.scheduler;
+    const deadline = useAudioClock ? ac.currentTime + maxSeconds : Date.now() + maxSeconds * 1e3;
+    while (!predicate()) {
+      if (useAudioClock) {
+        if (ac.currentTime >= deadline) return;
+      } else {
+        if (Date.now() >= deadline) return;
       }
       await this.waitTick();
     }
