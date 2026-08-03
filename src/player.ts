@@ -4767,6 +4767,28 @@ export class Player<
     }
   }
 
+  async waitUntil(
+    predicate: () => boolean,
+    maxSeconds: number,
+  ): Promise<void> {
+    if (predicate()) return;
+    const ac = this.audioContext;
+    const useAudioClock = ac instanceof AudioContext &&
+      ac.state === "running" &&
+      !!this.scheduler;
+    const deadline = useAudioClock
+      ? ac.currentTime + maxSeconds
+      : Date.now() + maxSeconds * 1000;
+    while (!predicate()) {
+      if (useAudioClock) {
+        if (ac.currentTime >= deadline) return;
+      } else {
+        if (Date.now() >= deadline) return;
+      }
+      await this.waitTick();
+    }
+  }
+
   waitTick(): Promise<void> {
     // Prefer the audio clock while the context is running — accurate even
     // when the tab is backgrounded and setTimeout is heavily throttled.

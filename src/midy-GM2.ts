@@ -1567,7 +1567,25 @@ export class MidyGM2 extends Player<Note, Channel> {
       ) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        await Promise.allSettled(pendingPromises);
+
+        if (pendingPromises.length > 0) {
+          // Wait up to max(volRelease) for note-release promises to settle.
+          // soundingNotes is a worst-case estimate of remaining release time;
+          // drainTimeoutMs caps the wait so a never-settling promise cannot hang.
+          let maxRemain = 0;
+          for (const note of this.soundingNotes) {
+            const volRelease = note.voiceParams?.volRelease ?? 0;
+            maxRemain = Math.max(maxRemain, volRelease);
+          }
+          const waitSec = Math.min(maxRemain, this.drainTimeoutMs / 1000);
+
+          let settled = false;
+          Promise.allSettled(pendingPromises).then(() => {
+            settled = true;
+          });
+          await this.waitUntil(() => settled, waitSec);
+        }
+
         if (this.loop) {
           this.resetAllStates();
           this.startTime = audioContext.currentTime;
@@ -1651,7 +1669,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       this.dispatchEvent(new Event("paused"));
     } else {
       this.isPaused = false;
-      this.dispatchEvent(new Event(exitReason));
+      this.dispatchEvent(new Event(exitReason!));
     }
   }
 
@@ -3209,6 +3227,37 @@ export class MidyGM2 extends Player<Note, Channel> {
   ): Promise<void> | void {
     if (note.isSegmentGhost) return;
     const now = this.audioContext.currentTime;
+
+    const makePromise = (
+      stopTime: number,
+      onFinish?: () => void,
+    ): Promise<void> => {
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          this.disconnectNote(note);
+          onFinish?.();
+          resolve();
+        };
+        const src = note.bufferSource;
+        if (!src) {
+          finish();
+          return;
+        }
+        src.onended = finish;
+        try {
+          src.stop(stopTime);
+        } catch {
+          finish();
+          return;
+        }
+        const waitMs = Math.max(50, (stopTime - now) * 1000 + 100);
+        setTimeout(finish, waitMs);
+      });
+    };
+
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;
@@ -3217,39 +3266,37 @@ export class MidyGM2 extends Player<Note, Channel> {
       if (isEarlyCut) {
         const volDuration = note.voiceParams?.volRelease ?? 0;
         const volRelease = endTime + volDuration;
-        note.volumeNode?.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-        note.bufferSource?.stop(volRelease);
-      } else {
-        if (naturalEndTime <= now) {
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          return;
-        }
-        note.bufferSource?.stop(naturalEndTime);
+        try {
+          note.volumeNode?.gain
+            .cancelScheduledValues(endTime)
+            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        } catch { /* already closed */ }
+        return makePromise(volRelease, () => this.releaseFullCache(note));
       }
-      return new Promise<void>((resolve) => {
-        note.bufferSource!.onended = () => {
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          resolve();
-        };
-      });
+      if (naturalEndTime <= now) {
+        this.disconnectNote(note);
+        this.releaseFullCache(note);
+        return;
+      }
+      return makePromise(naturalEndTime, () => this.releaseFullCache(note));
     }
+
     const volDuration = note.voiceParams?.volRelease ?? 0;
     const volRelease = endTime + volDuration;
-    if (note.volumeEnvelopeNode) { // "none" mode
-      note.filterEnvelopeNode?.frequency
-        .cancelScheduledValues(endTime)
-        .exponentialRampToValueAtTime(
-          note.adjustedBaseFreq,
-          endTime + (note.voiceParams?.modRelease ?? 0),
-        );
-      note.volumeEnvelopeNode.gain
-        .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-    } else { // "ads" / "adsr" mode
+
+    if (note.volumeEnvelopeNode) {
+      try {
+        note.filterEnvelopeNode?.frequency
+          .cancelScheduledValues(endTime)
+          .exponentialRampToValueAtTime(
+            note.adjustedBaseFreq,
+            endTime + (note.voiceParams?.modRelease ?? 0),
+          );
+        note.volumeEnvelopeNode.gain
+          .cancelScheduledValues(endTime)
+          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch { /* already closed */ }
+    } else {
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
       if (isAdsr) {
@@ -3258,35 +3305,27 @@ export class MidyGM2 extends Player<Note, Channel> {
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
         const isEarlyCut = endTime < noteOffTime;
         if (isEarlyCut) {
-          note.volumeNode?.gain
-            .cancelScheduledValues(endTime)
-            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-          note.bufferSource?.stop(volRelease);
-        } else {
-          if (naturalEndTime <= now) {
-            this.disconnectNote(note);
-            return;
-          }
-          note.bufferSource?.stop(naturalEndTime);
+          try {
+            note.volumeNode?.gain
+              .cancelScheduledValues(endTime)
+              .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+          } catch { /* already closed */ }
+          return makePromise(volRelease);
         }
-        return new Promise<void>((resolve) => {
-          note.bufferSource!.onended = () => {
-            this.disconnectNote(note);
-            resolve();
-          };
-        });
+        if (naturalEndTime <= now) {
+          this.disconnectNote(note);
+          return;
+        }
+        return makePromise(naturalEndTime);
       }
-      note.volumeNode?.gain
-        .cancelScheduledValues(endTime)
-        .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      try {
+        note.volumeNode?.gain
+          .cancelScheduledValues(endTime)
+          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch { /* already closed */ }
     }
-    note.bufferSource?.stop(volRelease);
-    return new Promise<void>((resolve) => {
-      note.bufferSource!.onended = () => {
-        this.disconnectNote(note);
-        resolve();
-      };
-    });
+
+    return makePromise(volRelease);
   }
 
   override noteOffChannel(
