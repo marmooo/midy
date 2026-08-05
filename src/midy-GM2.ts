@@ -2185,7 +2185,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       const offset = event.startTime * inverseTempo + this.startDelay;
-      this.processTimelineEvent(event, -1, {
+      this.processTimelineEvent(event, 0, {
         channels: renderChannels,
         onNoteOn: (renderChannel: Channel, event: TimelineEvent) => {
           const noteEvent = this.noteOnEvents[i];
@@ -3742,7 +3742,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     scheduleTime: number,
     channels: Channel[] = this.channels,
   ): void {
-    if (channels === this.channels) {
+    const isPrimary = channels === this.channels;
+    if (isPrimary) {
       this.mode = "GM1";
       this.exclusiveClassNotes.fill(null);
       this.drumExclusiveClassNotes.fill(null);
@@ -3751,6 +3752,9 @@ export class MidyGM2 extends Player<Note, Channel> {
       channels[ch].allSoundOff(scheduleTime);
     }
     this.resetChannels(channels, scheduleTime);
+    if (isPrimary) {
+      this.setMasterVolume(1, scheduleTime);
+    }
     for (let ch = 0; ch < channels.length; ch++) {
       channels[ch].bankMSB = 0;
       channels[ch].bankLSB = 0;
@@ -3759,11 +3763,11 @@ export class MidyGM2 extends Player<Note, Channel> {
       channels[9].bankMSB = 1;
       channels[9].isDrum = true;
     }
-    this.setMasterVolume(1, scheduleTime);
   }
 
   GM2SystemOn(scheduleTime: number, channels: Channel[] = this.channels): void {
-    if (channels === this.channels) {
+    const isPrimary = channels === this.channels;
+    if (isPrimary) {
       this.mode = "GM2";
       this.exclusiveClassNotes.fill(null);
       this.drumExclusiveClassNotes.fill(null);
@@ -3772,6 +3776,9 @@ export class MidyGM2 extends Player<Note, Channel> {
       channels[ch].allSoundOff(scheduleTime);
     }
     this.resetChannels(channels, scheduleTime);
+    if (isPrimary) {
+      this.setMasterVolume(1, scheduleTime);
+    }
     for (let ch = 0; ch < channels.length; ch++) {
       channels[ch].bankMSB = 121;
       channels[ch].bankLSB = 0;
@@ -3780,7 +3787,6 @@ export class MidyGM2 extends Player<Note, Channel> {
       channels[9].bankMSB = 120;
       channels[9].isDrum = true;
     }
-    this.setMasterVolume(1, scheduleTime);
   }
 
   override handleUniversalRealTimeExclusiveMessage(

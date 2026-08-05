@@ -2823,7 +2823,7 @@ export class Player<
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
       const offset = event.startTime * inverseTempo + this.startDelay;
-      this.processTimelineEvent(event, -1, {
+      this.processTimelineEvent(event, 0, {
         channels: renderChannels,
         onNoteOn: (renderChannel: TChannel, event: TimelineEvent) => {
           const noteEvent = this.noteOnEvents[i];
@@ -4615,7 +4615,8 @@ export class Player<
     scheduleTime: number,
     channels: TChannel[] = this.channels,
   ): void {
-    if (channels === this.channels) {
+    const isPrimary = channels === this.channels;
+    if (isPrimary) {
       this.mode = "GM1";
       this.exclusiveClassNotes.fill(null);
       this.drumExclusiveClassNotes.fill(null);
@@ -4624,7 +4625,9 @@ export class Player<
       channels[ch].allSoundOff(scheduleTime);
     }
     this.resetChannels(channels, scheduleTime);
-    this.setMasterVolume(1, scheduleTime);
+    if (isPrimary) {
+      this.setMasterVolume(1, scheduleTime);
+    }
   }
 
   handleUniversalRealTimeExclusiveMessage(
