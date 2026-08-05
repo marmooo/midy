@@ -2172,7 +2172,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     // inside renderChunkBuffer().
     const settings = (this.constructor as typeof MidyGM2).channelSettings;
     const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
-      const channel = new Channel(ch, settings);
+      const channel = this.createChannelInstance(ch, settings);
       channel.player = this;
       return channel;
     });
