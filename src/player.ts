@@ -1578,9 +1578,13 @@ export class Player<
     return buffer;
   }
 
+  isLoopDrum(_channel: TChannel, _noteNumber: number): boolean {
+    return false;
+  }
+
   createBufferSource(
     channel: TChannel,
-    _noteNumber: number,
+    noteNumber: number,
     voiceParams: VoiceParams,
     renderedOrRaw: RenderedBuffer | AudioBuffer,
   ): AudioBufferSourceNode {
@@ -1589,7 +1593,7 @@ export class Player<
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
     bufferSource.buffer = audioBuffer;
     const isDrumLoop = channel.isDrum
-      ? false
+      ? this.isLoopDrum(channel, noteNumber)
       : voiceParams.sampleModes % 2 !== 0;
     const isLoop = isRendered ? renderedOrRaw.isLoop : isDrumLoop;
     bufferSource.loop = isLoop;
@@ -3233,13 +3237,16 @@ export class Player<
   }
 
   async createAdsRenderedBuffer(
-    _channel: TChannel,
+    channel: TChannel,
     note: TNote,
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     isDrum = false,
   ): Promise<RenderedBuffer> {
-    const isLoop = isDrum ? false : (voiceParams.sampleModes % 2 !== 0);
+    const isLoop = isDrum
+      ? (this.isLoopDrum(channel, note.noteNumber) &&
+        voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -3294,9 +3301,9 @@ export class Player<
         adjustedBaseFreq: note.adjustedBaseFreq,
       },
     ) as unknown as TNote;
-    this.setVolumeEnvelope(_channel, offlineNote, 0);
+    this.setVolumeEnvelope(channel, offlineNote, 0);
     if (filterEnvelopeNode) {
-      this.setFilterEnvelope(_channel, offlineNote, 0);
+      this.setFilterEnvelope(channel, offlineNote, 0);
       bufferSource.connect(filterEnvelopeNode);
       filterEnvelopeNode.connect(volumeEnvelopeNode);
     } else {
@@ -3318,14 +3325,17 @@ export class Player<
   }
 
   async createAdsrRenderedBuffer(
-    _channel: TChannel,
+    channel: TChannel,
     note: TNote,
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     noteDuration: number,
     isDrum = false,
   ): Promise<RenderedBuffer> {
-    const isLoop = isDrum ? false : (voiceParams.sampleModes % 2 !== 0);
+    const isLoop = isDrum
+      ? (this.isLoopDrum(channel, note.noteNumber) &&
+        voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
     const volAttack = voiceParams.volDelay + voiceParams.volAttack;
     const volHold = volAttack + voiceParams.volHold;
     const decayDuration = voiceParams.volDecay;
@@ -3379,8 +3389,8 @@ export class Player<
         adjustedBaseFreq: note.adjustedBaseFreq,
       },
     ) as unknown as TNote;
-    this.setVolumeEnvelope(_channel, offlineNote, 0);
-    this.setFilterEnvelope(_channel, offlineNote, 0);
+    this.setVolumeEnvelope(channel, offlineNote, 0);
+    this.setFilterEnvelope(channel, offlineNote, 0);
 
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume *
