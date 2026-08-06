@@ -2601,8 +2601,17 @@ export class Player<
     // Same double-application guard as renderSegmentBuffer.
     const appliedEvents = new Set<TimelineEvent>();
 
-    // Schedule all notes.
-    const promises = notes.map((n) => {
+    // Schedule noteOns in start-time order. Parallel Promise.all races
+    // exclusiveClass / drum-exclusive handling (a later-start note can be
+    // registered first and then get killed at the earlier note's onset, so
+    // it never sounds). Sequential + sorted matches realtime timeline order.
+    const orderedNotes = notes
+      .map((n, originalIndex) => ({ n, originalIndex }))
+      .sort((a, b) =>
+        a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
+      );
+    const offlineNotes: (TNote | void)[] = new Array(notes.length);
+    for (const { n, originalIndex } of orderedNotes) {
       const dstChannel = offlinePlayer.channels[n.channelNumber];
       const preNote = offlinePlayer.createNoteInstance(
         n.noteNumber,
@@ -2612,15 +2621,14 @@ export class Player<
       preNote.voiceParams = n.voiceParams;
       preNote.voice = n.voice ?? null;
       preNote.audioBufferId = n.audioBufferId;
-      return offlinePlayer.noteOnChannel(
+      offlineNotes[originalIndex] = await offlinePlayer.noteOnChannel(
         dstChannel,
         n.noteNumber,
         n.velocity,
         n.offset,
         preNote,
       );
-    });
-    const offlineNotes = await Promise.all(promises);
+    }
 
     // Replay per-note CC/pitchBend events and schedule noteOff.
     for (let i = 0; i < notes.length; i++) {
@@ -2799,18 +2807,14 @@ export class Player<
     this.renderedAudioBuffer = null;
     this.dispatchEvent(new Event("rendering"));
 
-    // Build a single OpenChunk covering the entire song, then delegate to
-    // renderChunkBuffer() — the same path used by "chunk" mode's per-window
-    // batching.  This replaces the old approach of calling
-    // createFullRenderedBuffer() (= one OfflineAudioContext per note,
-    // awaited serially) and then mixing the results into a second
-    // OfflineAudioContext.  The new approach pays the OfflineAudioContext +
-    // startRendering() setup cost exactly once regardless of note count,
-    // and all raw-sample decodes are parallelised via the prefetch step
-    // inside renderChunkBuffer().
+    // Collect every note into ChunkNoteEntry[], then bake in short time
+    // windows via renderChunkBuffer(). A single OfflineAudioContext holding
+    // the entire song can produce a buffer where only the opening attack is
+    // audible under heavy per-note graphs. Windowed renders keep the node
+    // count bounded; windows are mixed into one final AudioBuffer.
     const settings = (this.constructor as typeof Player).channelSettings;
     const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
-      const channel = new Channel(ch, settings) as unknown as TChannel;
+      const channel = this.createChannelInstance(ch, settings);
       channel.player = this;
       return channel;
     });
@@ -2858,11 +2862,84 @@ export class Player<
         },
       });
     }
-    const chunk: OpenChunk = { chunkStart: 0, notes };
-    this.renderedAudioBuffer = await this.renderChunkBuffer(chunk);
+
+    if (notes.length === 0) {
+      this.isRendering = false;
+      this.dispatchEvent(new Event("rendered"));
+      return undefined;
+    }
+
+    // Window length in seconds. Keep small enough that concurrent notes in
+    // one OfflineAudioContext stay manageable; large enough to limit the
+    // number of startRendering() calls.
+    const WINDOW_SEC = 4;
+    let maxEnd = 0;
+    for (const n of notes) {
+      const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
+      const end = n.offset + n.noteDuration + releaseEnd;
+      if (end > maxEnd) maxEnd = end;
+    }
+
+    const sampleRate = this.audioContext.sampleRate;
+    const totalFrames = Math.ceil(maxEnd * sampleRate);
+    const mixed = new AudioBuffer({
+      numberOfChannels: 2,
+      length: totalFrames,
+      sampleRate,
+    });
+    const mixedL = mixed.getChannelData(0);
+    const mixedR = mixed.getChannelData(1);
+
+    const windowCount = Math.max(1, Math.ceil(maxEnd / WINDOW_SEC));
+    for (let w = 0; w < windowCount; w++) {
+      const winStart = w * WINDOW_SEC;
+      const winEnd = winStart + WINDOW_SEC;
+      // Only notes whose onset falls inside [winStart, winEnd) are rendered
+      // in this window; each note is fully rendered (including its release)
+      // relative to onset, so release tails are not cut and there is no
+      // double-mixing across windows.
+      const windowNotes = notes.filter((n) =>
+        n.offset >= winStart && n.offset < winEnd
+      );
+      if (windowNotes.length === 0) continue;
+
+      // Shift offsets so the offline context starts near 0 (small context).
+      const localNotes: ChunkNoteEntry[] = windowNotes.map((n) => ({
+        ...n,
+        offset: n.offset - winStart,
+        // channelStateArray is a typed array — copy so mutations in one
+        // window can't affect another.
+        channelStateArray: n.channelStateArray.slice(),
+      }));
+
+      const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
+      const buf = await this.renderChunkBuffer(chunk);
+      if (!buf) continue;
+
+      // Mix into the final buffer at the correct absolute frame offset.
+      const destOffset = Math.floor(winStart * sampleRate);
+      const copyFrames = Math.min(buf.length, totalFrames - destOffset);
+      if (copyFrames <= 0) continue;
+      const srcL = buf.getChannelData(0);
+      const srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
+      for (let i = 0; i < copyFrames; i++) {
+        mixedL[destOffset + i] += srcL[i];
+        mixedR[destOffset + i] += srcR[i];
+      }
+    }
+
+    // Soft clip in case overlapping window tails summed above 1.0
+    for (let i = 0; i < totalFrames; i++) {
+      const l = mixedL[i];
+      const r = mixedR[i];
+      if (l > 1 || l < -1) mixedL[i] = Math.tanh(l);
+      if (r > 1 || r < -1) mixedR[i] = Math.tanh(r);
+    }
+
+    this.renderedAudioBuffer = mixed;
     this.isRendering = false;
     this.dispatchEvent(new Event("rendered"));
-    return this.renderedAudioBuffer ?? undefined;
+    return this.renderedAudioBuffer;
   }
 
   async preloadSamples(): Promise<void> {
