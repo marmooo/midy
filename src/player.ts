@@ -90,7 +90,7 @@ import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
 //   A "rendering" event is dispatched when rendering starts, and a
 //   "rendered" event is dispatched when rendering completes.
 export const DEFAULT_CACHE_MODE = "segment";
-type CacheMode =
+export type CacheMode =
   | "none"
   | "ads"
   | "adsr"
@@ -1317,6 +1317,20 @@ export class Player<
 
   cacheVoiceIds(): void {
     const { channels, timeline, voiceCounter, cacheMode } = this;
+    // Start from GM defaults so programNumber/isDrum don't depend on
+    // whatever live MIDI / previous song left on this.channels. Otherwise
+    // noteAudioBufferIds resolved here can disagree with a clean walk
+    // (e.g. audio mode's renderChannels), binding the wrong sample id.
+    const settings = (this.constructor as typeof Player).channelSettings;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
+      channel.resetSettings(settings);
+      channel.state = new ControllerState();
+      channel.isDrum = false;
+      channel.detune = 0;
+      channel.programNumber = 0;
+    }
+    if (channels[9]) channels[9].isDrum = true;
     const isSegmentMode = cacheMode === "segment";
     const isChunkMode = cacheMode === "chunk";
     const needsSegmentData = isSegmentMode || isChunkMode;
@@ -1424,8 +1438,19 @@ export class Player<
     const resolved = this.resolveVoiceResult(channel, noteNumber, velocity);
     if (!resolved) return;
     const { instrument, sampleID } = resolved.voice.generators;
+    // Include a coarse start-offset tag so two presets that share sampleID
+    // but slice different regions don't collide in rawAudioBufferCache
+    // (createAudioBuffer applies voiceParams.start/end for PCM).
+    const controllerState = this.getControllerState(
+      channel,
+      noteNumber,
+      velocity,
+      0,
+    );
+    const params = resolved.voice.getAllParams(controllerState);
+    const startTag = (params.start | 0) & 0xffff;
     return resolved.soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
-      (sampleID << 8);
+      ((sampleID & 0xffff) << 8) + startTag;
   }
 
   // Overridden by subclasses (e.g. Midy) that instantiate Player<TChannel,
@@ -2138,538 +2163,6 @@ export class Player<
   // can still be mixed live through channel.gainL/gainR), then the resulting
   // buffer is scheduled as a single AudioBufferSourceNode.
 
-  initSegmentPipeline(): void {
-    this.segmentChannelStates = Array.from(
-      { length: this.numChannels },
-      () => ({ openSegment: null, pending: [] }),
-    );
-  }
-
-  async drainSegmentPipeline(): Promise<void> {
-    const channels = this.channels;
-    const states = this.segmentChannelStates;
-    for (let ch = 0; ch < states.length; ch++) {
-      const state = states[ch];
-      if (!state) continue;
-      if (state.openSegment) {
-        this.closeSegment(state, channels[ch]);
-      }
-    }
-    const allBufferPromises: Promise<AudioBuffer | null>[] = [];
-    for (let ch = 0; ch < states.length; ch++) {
-      const state = states[ch];
-      if (!state) continue;
-      const pending = state.pending;
-      for (let i = 0; i < pending.length; i++) {
-        allBufferPromises.push(pending[i].bufferPromise);
-      }
-    }
-    await Promise.allSettled(allBufferPromises);
-    for (let ch = 0; ch < states.length; ch++) {
-      const state = states[ch];
-      if (!state) continue;
-      const pending = state.pending;
-      for (let i = 0; i < pending.length; i++) {
-        if (!pending[i].source && pending[i].bufferReady) {
-          this.startPendingSegment(channels[ch], pending[i]);
-        }
-      }
-    }
-    await this.waitForPendingSources("drainSegmentPipeline", () => {
-      const result: PendingSegment[] = [];
-      for (let ch = 0; ch < states.length; ch++) {
-        const state = states[ch];
-        if (!state) continue;
-        const pending = state.pending;
-        for (let i = 0; i < pending.length; i++) result.push(pending[i]);
-      }
-      return result;
-    });
-  }
-
-  stopSegmentSources(): void {
-    // Invalidate any renderSegmentBuffer() calls still in flight. They keep
-    // running in the background (OfflineAudioContext has no cancel API),
-    // but closeSegment()'s completion handler checks this generation and
-    // discards stale results instead of scheduling them or re-adding them
-    // to state.pending. Without this, a backlog of now-irrelevant renders
-    // from before a seek/stop/loop can play at the wrong moment once they
-    // finally finish, and — since startRendering() is serialized by the
-    // browser — can delay the fresh segments that should render next,
-    // pushing them past lookAhead too.
-    this.segmentGeneration++;
-    for (const state of this.segmentChannelStates) {
-      if (!state) continue;
-      for (const pending of state.pending) {
-        if (pending.source) {
-          try {
-            pending.source.stop();
-          } catch {
-            // already stopped/ended
-          }
-          // disconnect is handled by the source's onended handler
-          pending.source = null;
-        }
-      }
-      state.pending = [];
-      state.openSegment = null;
-    }
-  }
-
-  appendToSegmentQueue(
-    channelNumber: number,
-    t: number,
-    timelineIndex: number,
-    noteNumber: number,
-    velocity: number,
-  ): void {
-    const state = this.segmentChannelStates[channelNumber];
-    if (!state) return;
-    const voiceParams = this.segmentVoiceParams[timelineIndex];
-    if (!voiceParams) return;
-    const channel = this.channels[channelNumber];
-    if (
-      state.openSegment &&
-      this.segmentDuration <= t - state.openSegment.segmentStart
-    ) {
-      this.closeSegment(state, channel);
-    }
-    if (!state.openSegment) {
-      state.openSegment = {
-        segmentStart: t,
-        notes: [],
-        channelDetune: channel.detune,
-        channelStateArray: channel.state.array.slice(),
-        programNumber: channel.programNumber,
-      };
-    }
-    state.openSegment.notes.push({
-      offset: t - state.openSegment.segmentStart,
-      noteNumber,
-      velocity,
-      voiceParams,
-      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
-      noteEvent: this.noteOnEvents[timelineIndex],
-      audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.segmentVoices[timelineIndex] ?? undefined,
-    });
-  }
-
-  closeSegment(state: SegmentChannelState, channel: TChannel): void {
-    const segment = state.openSegment;
-    state.openSegment = null;
-    if (!segment || segment.notes.length === 0) return;
-    const generation = this.segmentGeneration;
-    const pending: PendingSegment = {
-      segmentStart: segment.segmentStart,
-      buffer: null,
-      bufferReady: false,
-      source: null,
-      done: false,
-      bufferPromise: Promise.resolve(null),
-      generation,
-    };
-    pending.bufferPromise = this.renderSegmentBuffer(channel, segment)
-      .then((buffer) => {
-        if (this.segmentGeneration !== generation) {
-          // A seek/stop/loop happened while this segment was rendering.
-          // Drop the result: scheduling it now would play audio at the
-          // wrong moment (its absoluteStart was computed against a
-          // startTime/resumeTime that's no longer current), and letting
-          // it linger in state.pending would let updateSegmentPipeline
-          // start it later regardless. Also remove it from state.pending
-          // in case it's a newer SegmentChannelState array than the one
-          // this closure captured (initSegmentPipeline replaces the whole
-          // array on seek), so it can't be picked up from there either.
-          const idx = state.pending.indexOf(pending);
-          if (idx !== -1) state.pending.splice(idx, 1);
-          pending.done = true;
-          return null;
-        }
-        pending.buffer = buffer;
-        pending.bufferReady = true;
-        return buffer;
-      })
-      .catch((err) => {
-        console.warn("segment render failed", err);
-        pending.bufferReady = true;
-        return null;
-      });
-    state.pending.push(pending);
-  }
-
-  startPendingSegment(channel: TChannel, pending: PendingSegment): void {
-    if (!pending.buffer) {
-      pending.done = true;
-      return;
-    }
-    const timeOffset = this.resumeTime - this.startTime;
-    const schedulingOffset = this.startDelay - timeOffset;
-    const nominalStart = pending.segmentStart + schedulingOffset;
-    const absoluteStart = Math.max(0, nominalStart);
-    this.warnIfStartTimeMissed(
-      `segment (channel ${channel.channelNumber})`,
-      nominalStart,
-    );
-    const source = new AudioBufferSourceNode(this.audioContext, {
-      buffer: pending.buffer,
-    });
-    source.connect(channel.gainL);
-    source.connect(channel.gainR);
-    source.onended = () => {
-      pending.done = true;
-      source.disconnect();
-    };
-    source.start(absoluteStart);
-    pending.source = source;
-  }
-
-  // A still-open segment whose nominal window ends at or before
-  // lookAheadCheckTime can be safely closed: onNoteOn has already run for
-  // every channel up to that point, so no baked note that could still
-  // belong to it has been left unprocessed.
-  updateSegmentPipeline(lookAheadCheckTime: number): void {
-    const channels = this.channels;
-    const states = this.segmentChannelStates;
-    for (let ch = 0; ch < states.length; ch++) {
-      const state = states[ch];
-      if (!state) continue;
-      if (
-        state.openSegment &&
-        state.openSegment.segmentStart + this.segmentDuration <=
-          lookAheadCheckTime
-      ) {
-        this.closeSegment(state, channels[ch]);
-      }
-      state.pending = state.pending.filter((pending) => !pending.done);
-      for (const pending of state.pending) {
-        if (!pending.source && pending.bufferReady) {
-          this.startPendingSegment(channels[ch], pending);
-        }
-      }
-    }
-  }
-
-  // "chunk" mode: same window-based grouping as "segment", but all active
-  // channels are merged into a SINGLE OfflineAudioContext per time window
-  // instead of one context per channel. TChannel volume/pan/expression are
-  // baked into the combined stereo buffer (snapshotted at chunk-open time),
-  // so the resulting AudioBufferSourceNode connects straight to masterVolume
-  // with no per-channel gainL/gainR mixing needed at playback time.
-
-  initChunkPipeline(): void {
-    this.chunkState = { openChunk: null, pending: [] };
-  }
-
-  async drainChunkPipeline(): Promise<void> {
-    const state = this.chunkState;
-    if (state.openChunk) {
-      this.closeChunk(state);
-    }
-    const allBufferPromises = state.pending.map((p) => p.bufferPromise);
-    await Promise.allSettled(allBufferPromises);
-    for (const pending of state.pending) {
-      if (!pending.source && pending.bufferReady) {
-        this.startPendingChunk(pending);
-      }
-    }
-    await this.waitForPendingSources("drainChunkPipeline", () => state.pending);
-  }
-
-  stopChunkSources(): void {
-    // Invalidate in-flight renderChunkBuffer() calls (same rationale as
-    // stopSegmentSources — stale renders must not be scheduled after a
-    // seek/stop/loop).
-    this.chunkGeneration++;
-    const state = this.chunkState;
-    for (const pending of state.pending) {
-      if (pending.source) {
-        try {
-          pending.source.stop();
-        } catch {
-          // already stopped/ended
-        }
-        // disconnect is handled by the source's onended handler
-        pending.source = null;
-      }
-    }
-    state.pending = [];
-    state.openChunk = null;
-  }
-
-  appendToChunkQueue(
-    channel: TChannel,
-    t: number,
-    timelineIndex: number,
-    noteNumber: number,
-    velocity: number,
-  ): void {
-    const state = this.chunkState;
-    const voiceParams = this.segmentVoiceParams[timelineIndex];
-    if (!voiceParams) return;
-
-    if (
-      state.openChunk &&
-      this.segmentDuration <= t - state.openChunk.chunkStart
-    ) {
-      this.closeChunk(state);
-    }
-    if (!state.openChunk) {
-      state.openChunk = { chunkStart: t, notes: [] };
-    }
-    state.openChunk.notes.push({
-      channelNumber: channel.channelNumber,
-      offset: t - state.openChunk.chunkStart,
-      noteNumber,
-      velocity,
-      voiceParams,
-      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
-      noteEvent: this.noteOnEvents[timelineIndex],
-      audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.segmentVoices[timelineIndex] ?? undefined,
-      // Snapshot per-channel state now — channel volume/pan/expression
-      // are baked into the buffer so they must be captured at note-append
-      // time before subsequent events on the same channel change them.
-      channelDetune: channel.detune,
-      channelStateArray: channel.state.array.slice(),
-      programNumber: channel.programNumber,
-      isDrum: channel.isDrum,
-    });
-  }
-
-  closeChunk(state: ChunkState): void {
-    const chunk = state.openChunk;
-    state.openChunk = null;
-    if (!chunk || chunk.notes.length === 0) return;
-    const generation = this.chunkGeneration;
-    const pending: PendingChunk = {
-      chunkStart: chunk.chunkStart,
-      buffer: null,
-      bufferReady: false,
-      source: null,
-      done: false,
-      bufferPromise: Promise.resolve(null),
-      generation,
-    };
-    pending.bufferPromise = this.renderChunkBuffer(chunk)
-      .then((buffer) => {
-        if (this.chunkGeneration !== generation) {
-          const idx = state.pending.indexOf(pending);
-          if (idx !== -1) state.pending.splice(idx, 1);
-          pending.done = true;
-          return null;
-        }
-        pending.buffer = buffer;
-        pending.bufferReady = true;
-        return buffer;
-      })
-      .catch((err) => {
-        console.warn("chunk render failed", err);
-        pending.bufferReady = true;
-        return null;
-      });
-    state.pending.push(pending);
-  }
-
-  startPendingChunk(pending: PendingChunk): void {
-    if (!pending.buffer) {
-      pending.done = true;
-      return;
-    }
-    const timeOffset = this.resumeTime - this.startTime;
-    const schedulingOffset = this.startDelay - timeOffset;
-    const nominalStart = pending.chunkStart + schedulingOffset;
-    const absoluteStart = Math.max(0, nominalStart);
-    this.warnIfStartTimeMissed("chunk", nominalStart);
-    const source = new AudioBufferSourceNode(this.audioContext, {
-      buffer: pending.buffer,
-    });
-    // chunk buffers are stereo and already include channel volume/pan,
-    // so connect directly to masterVolume (bypassing per-channel gainL/R).
-    source.connect(this.masterVolume);
-    source.onended = () => {
-      pending.done = true;
-      source.disconnect();
-    };
-    source.start(absoluteStart);
-    pending.source = source;
-  }
-
-  updateChunkPipeline(lookAheadCheckTime: number): void {
-    const state = this.chunkState;
-    if (
-      state.openChunk &&
-      state.openChunk.chunkStart + this.segmentDuration <= lookAheadCheckTime
-    ) {
-      this.closeChunk(state);
-    }
-    state.pending = state.pending.filter((p) => !p.done);
-    for (const pending of state.pending) {
-      if (!pending.source && pending.bufferReady) {
-        this.startPendingChunk(pending);
-      }
-    }
-  }
-
-  // Renders all notes from all channels within one chunk window into a
-  // single stereo AudioBuffer. Unlike renderSegmentBuffer (which renders
-  // one channel at a time and leaves volume/pan for real-time gainL/R),
-  // this method:
-  //   1. Creates one OfflineAudioContext for the whole chunk (stereo, 2 ch).
-  //   2. For each note, creates a per-channel offlinePlayer seeded from
-  //      the per-note channel snapshot (volume/pan/expression baked in).
-  //   3. Wires each note's volumeNode → channel gainL/gainR → merger →
-  //      offlineContext.destination so the stereo pan is baked correctly.
-  //   4. Returns the resulting stereo buffer ready to feed masterVolume.
-  async renderChunkBuffer(chunk: OpenChunk): Promise<AudioBuffer | null> {
-    const notes = chunk.notes;
-    if (notes.length === 0) return null;
-
-    // Compute total duration across all notes in all channels.
-    let totalDuration = 0;
-    for (const n of notes) {
-      const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
-      const end = n.offset + n.noteDuration + releaseEnd;
-      if (end > totalDuration) totalDuration = end;
-    }
-    if (totalDuration <= 0) return null;
-
-    const sampleRate = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
-      2,
-      Math.ceil(totalDuration * sampleRate),
-      sampleRate,
-    );
-
-    // Build a lightweight offlinePlayer that shares soundFont/cache data.
-    // We need channel audio nodes wired to the offline destination, so we
-    // create a full Player instance against the offline context but
-    // immediately override suspend/resume so they don't throw.
-    const allChannelNumbers = [...new Set(notes.map((n) => n.channelNumber))];
-    const offlinePlayer = new (this.constructor as new (
-      audioContext: AudioContext | OfflineAudioContext,
-      options?: { activeChannelNumbers?: Iterable<number> },
-    ) => Player<TNote, TChannel>)(
-      offlineContext as unknown as AudioContext,
-      { activeChannelNumbers: allChannelNumbers },
-    );
-    offlinePlayer.cacheMode = "none";
-    offlineContext.suspend = () => Promise.resolve();
-    offlineContext.resume = () => Promise.resolve();
-    offlinePlayer.soundFonts = this.soundFonts;
-    offlinePlayer.soundFontTable = this.soundFontTable;
-    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
-
-    // Seed each channel from its per-note snapshot.  Multiple notes on the
-    // same channel may carry different snapshots (if a CC event fell between
-    // them); we seed once from the first note and let per-note event replay
-    // (below) handle any intra-chunk CC changes on shared state correctly.
-    // The appliedEvents dedup set below handles double-application just as
-    // renderSegmentBuffer does.
-    const seededChannels = new Set<number>();
-    for (const n of notes) {
-      const ch = n.channelNumber;
-      if (seededChannels.has(ch)) continue;
-      seededChannels.add(ch);
-      const dstChannel = offlinePlayer.channels[ch];
-      dstChannel.state.array.set(n.channelStateArray);
-      dstChannel.isDrum = n.isDrum;
-      dstChannel.programNumber = n.programNumber;
-      dstChannel.modulationDepthRange = this.channels[ch].modulationDepthRange;
-      dstChannel.detune = n.channelDetune;
-      // Apply channel volume/pan/expression so the offline gainL/gainR
-      // nodes are set correctly before any notes start.
-      offlinePlayer.updateChannelVolume(dstChannel, 0);
-    }
-
-    // Pre-fetch raw sample buffers in parallel (same optimisation as
-    // renderSegmentBuffer — avoids serialising decode latency).
-    const prefetchTasks: Promise<unknown>[] = [];
-    const seenAudioBufferIds = new Set<number>();
-    for (const n of notes) {
-      const id = n.audioBufferId !== undefined
-        ? n.audioBufferId
-        : offlinePlayer.getVoiceId(
-          offlinePlayer.channels[n.channelNumber],
-          n.noteNumber,
-          n.velocity,
-        );
-      if (id === undefined || seenAudioBufferIds.has(id)) continue;
-      seenAudioBufferIds.add(id);
-      prefetchTasks.push(
-        offlinePlayer.getRawAudioBuffer(id, n.voiceParams),
-      );
-    }
-    if (prefetchTasks.length > 0) await Promise.all(prefetchTasks);
-
-    // Same double-application guard as renderSegmentBuffer.
-    const appliedEvents = new Set<TimelineEvent>();
-
-    // Schedule noteOns in start-time order. Parallel Promise.all races
-    // exclusiveClass / drum-exclusive handling (a later-start note can be
-    // registered first and then get killed at the earlier note's onset, so
-    // it never sounds). Sequential + sorted matches realtime timeline order.
-    const orderedNotes = notes
-      .map((n, originalIndex) => ({ n, originalIndex }))
-      .sort((a, b) =>
-        a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
-      );
-    const offlineNotes: (TNote | void)[] = new Array(notes.length);
-    for (const { n, originalIndex } of orderedNotes) {
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
-      const preNote = offlinePlayer.createNoteInstance(
-        n.noteNumber,
-        n.velocity,
-        n.offset,
-      );
-      preNote.voiceParams = n.voiceParams;
-      preNote.voice = n.voice ?? null;
-      preNote.audioBufferId = n.audioBufferId;
-      offlineNotes[originalIndex] = await offlinePlayer.noteOnChannel(
-        dstChannel,
-        n.noteNumber,
-        n.velocity,
-        n.offset,
-        preNote,
-      );
-    }
-
-    // Replay per-note CC/pitchBend events and schedule noteOff.
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
-      const offlineNote = offlineNotes[i] as TNote | undefined;
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
-        n.noteEvent ?? {};
-      for (const event of noteEvents) {
-        if (appliedEvents.has(event)) continue;
-        if (event.type === "programChange") continue;
-        const t = (event.startTime as number) / this.tempo - noteStartTime;
-        if (t < 0 || t > n.noteDuration) continue;
-        appliedEvents.add(event);
-        offlinePlayer.processTimelineEvent(event, n.offset + t, {
-          channels: offlinePlayer.channels,
-        });
-      }
-      // volumeNode is already connected to dstChannel.gainL/gainR (which
-      // includes baked channel volume/pan), so no rewiring needed unlike
-      // renderSegmentBuffer. The stereo mixer flows:
-      //   volumeNode → gainL/gainR → merger → masterVolume (offline dest)
-      if (offlineNote?.volumeNode) {
-        // Already wired by noteOnChannel → setNoteRouting; nothing to do.
-      }
-      offlinePlayer.noteOffChannel(
-        dstChannel,
-        n.noteNumber,
-        0,
-        n.offset + n.noteDuration,
-        true,
-      );
-    }
-    await Promise.resolve();
-    return await offlineContext.startRendering();
-  }
-
   tryGetVoice(
     bank: number,
     programNumber: number,
@@ -2801,163 +2294,6 @@ export class Player<
   ): Voice | null {
     return this.resolveVoiceResult(channel, noteNumber, velocity)?.voice ??
       null;
-  }
-
-  async render(): Promise<AudioBuffer | undefined> {
-    if (this.isRendering) return;
-    if (this.timeline.length === 0) return;
-    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    this.isRendering = true;
-    this.renderedAudioBuffer = null;
-    this.dispatchEvent(new Event("rendering"));
-
-    // Collect every note into ChunkNoteEntry[], then bake in short time
-    // windows via renderChunkBuffer(). A single OfflineAudioContext holding
-    // the entire song can produce a buffer where only the opening attack is
-    // audible under heavy per-note graphs. Windowed renders keep the node
-    // count bounded; windows are mixed into one final AudioBuffer.
-    const settings = (this.constructor as typeof Player).channelSettings;
-    const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
-      const channel = this.createChannelInstance(ch, settings);
-      channel.player = this;
-      return channel;
-    });
-    renderChannels[9].isDrum = true;
-
-    const timeline = this.timeline;
-    const inverseTempo = 1 / this.tempo;
-    const notes: ChunkNoteEntry[] = [];
-
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      const offset = event.startTime * inverseTempo + this.startDelay;
-      this.processTimelineEvent(event, 0, {
-        channels: renderChannels,
-        onNoteOn: (renderChannel: TChannel, event: TimelineEvent) => {
-          const noteEvent = this.noteOnEvents[i];
-          const noteDuration = noteEvent?.duration ??
-            this.noteOnDurations[i] ?? 0;
-          if (noteDuration <= 0) return;
-          const { noteNumber, velocity } = event;
-          const voice = this.resolveVoice(
-            renderChannel,
-            noteNumber!,
-            velocity!,
-          );
-          if (!voice) return;
-          const voiceParams = voice.getAllParams(
-            this.getControllerState(renderChannel, noteNumber!, velocity!, 0),
-          );
-          notes.push({
-            channelNumber: renderChannel.channelNumber,
-            offset,
-            noteNumber: noteNumber!,
-            velocity: velocity!,
-            voiceParams,
-            noteDuration,
-            noteEvent,
-            audioBufferId: this.noteAudioBufferIds[i],
-            voice,
-            channelDetune: renderChannel.detune,
-            channelStateArray: renderChannel.state.array.slice(),
-            programNumber: renderChannel.programNumber,
-            isDrum: renderChannel.isDrum,
-          });
-        },
-      });
-    }
-
-    if (notes.length === 0) {
-      this.isRendering = false;
-      this.dispatchEvent(new Event("rendered"));
-      return undefined;
-    }
-
-    // Window length in seconds. Keep small enough that concurrent notes in
-    // one OfflineAudioContext stay manageable; large enough to limit the
-    // number of startRendering() calls.
-    const WINDOW_SEC = 4;
-    let maxEnd = 0;
-    for (const n of notes) {
-      const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
-      const end = n.offset + n.noteDuration + releaseEnd;
-      if (end > maxEnd) maxEnd = end;
-    }
-
-    const sampleRate = this.audioContext.sampleRate;
-    const totalFrames = Math.ceil(maxEnd * sampleRate);
-    const mixed = new AudioBuffer({
-      numberOfChannels: 2,
-      length: totalFrames,
-      sampleRate,
-    });
-    const mixedL = mixed.getChannelData(0);
-    const mixedR = mixed.getChannelData(1);
-
-    const windowCount = Math.max(1, Math.ceil(maxEnd / WINDOW_SEC));
-    for (let w = 0; w < windowCount; w++) {
-      const winStart = w * WINDOW_SEC;
-      const winEnd = winStart + WINDOW_SEC;
-      // Only notes whose onset falls inside [winStart, winEnd) are rendered
-      // in this window; each note is fully rendered (including its release)
-      // relative to onset, so release tails are not cut and there is no
-      // double-mixing across windows.
-      const windowNotes = notes.filter((n) =>
-        n.offset >= winStart && n.offset < winEnd
-      );
-      if (windowNotes.length === 0) continue;
-
-      // Shift offsets so the offline context starts near 0 (small context).
-      const localNotes: ChunkNoteEntry[] = windowNotes.map((n) => ({
-        ...n,
-        offset: n.offset - winStart,
-        // channelStateArray is a typed array — copy so mutations in one
-        // window can't affect another.
-        channelStateArray: n.channelStateArray.slice(),
-      }));
-
-      const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
-      const buf = await this.renderChunkBuffer(chunk);
-      if (!buf) continue;
-
-      // Mix into the final buffer at the correct absolute frame offset.
-      const destOffset = Math.floor(winStart * sampleRate);
-      const copyFrames = Math.min(buf.length, totalFrames - destOffset);
-      if (copyFrames <= 0) continue;
-      const srcL = buf.getChannelData(0);
-      const srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
-      for (let i = 0; i < copyFrames; i++) {
-        mixedL[destOffset + i] += srcL[i];
-        mixedR[destOffset + i] += srcR[i];
-      }
-    }
-
-    // Soft clip in case overlapping window tails summed above 1.0
-    for (let i = 0; i < totalFrames; i++) {
-      const l = mixedL[i];
-      const r = mixedR[i];
-      if (l > 1 || l < -1) mixedL[i] = Math.tanh(l);
-      if (r > 1 || r < -1) mixedR[i] = Math.tanh(r);
-    }
-
-    this.renderedAudioBuffer = mixed;
-    this.isRendering = false;
-    this.dispatchEvent(new Event("rendered"));
-    return this.renderedAudioBuffer;
-  }
-
-  async preloadSamples(): Promise<void> {
-    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    const entries = this.preloadEntries;
-    const tasks: Promise<AudioBuffer>[] = [];
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
-      tasks.push(
-        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams),
-      );
-    }
-    await Promise.all(tasks);
   }
 
   async start({ preload = true }: { preload?: boolean } = {}): Promise<void> {
@@ -3234,6 +2570,676 @@ export class Player<
     note.modLfo!.connect(note.modLfoToVolume);
     const volumeTarget = note.volumeEnvelopeNode ?? note.volumeNode;
     if (volumeTarget) note.modLfoToVolume.connect(volumeTarget.gain);
+  }
+
+  // --- cache / offline-render implementations ---
+
+  initSegmentPipeline(): void {
+    this.segmentChannelStates = Array.from(
+      { length: this.numChannels },
+      () => ({ openSegment: null, pending: [] }),
+    );
+  }
+
+  async drainSegmentPipeline(): Promise<void> {
+    const channels = this.channels;
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      if (state.openSegment) {
+        this.closeSegment(state, channels[ch]);
+      }
+    }
+    const allBufferPromises: Promise<AudioBuffer | null>[] = [];
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        allBufferPromises.push(pending[i].bufferPromise);
+      }
+    }
+    await Promise.allSettled(allBufferPromises);
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        if (!pending[i].source && pending[i].bufferReady) {
+          this.startPendingSegment(channels[ch], pending[i]);
+        }
+      }
+    }
+    await this.waitForPendingSources("drainSegmentPipeline", () => {
+      const result: PendingSegment[] = [];
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) result.push(pending[i]);
+      }
+      return result;
+    });
+  }
+
+  stopSegmentSources(): void {
+    // Invalidate any renderSegmentBuffer() calls still in flight. They keep
+    // running in the background (OfflineAudioContext has no cancel API),
+    // but closeSegment()'s completion handler checks this generation and
+    // discards stale results instead of scheduling them or re-adding them
+    // to state.pending. Without this, a backlog of now-irrelevant renders
+    // from before a seek/stop/loop can play at the wrong moment once they
+    // finally finish, and — since startRendering() is serialized by the
+    // browser — can delay the fresh segments that should render next,
+    // pushing them past lookAhead too.
+    this.segmentGeneration++;
+    for (const state of this.segmentChannelStates) {
+      if (!state) continue;
+      for (const pending of state.pending) {
+        if (pending.source) {
+          try {
+            pending.source.stop();
+          } catch {
+            // already stopped/ended
+          }
+          // disconnect is handled by the source's onended handler
+          pending.source = null;
+        }
+      }
+      state.pending = [];
+      state.openSegment = null;
+    }
+  }
+
+  appendToSegmentQueue(
+    channelNumber: number,
+    t: number,
+    timelineIndex: number,
+    noteNumber: number,
+    velocity: number,
+  ): void {
+    const state = this.segmentChannelStates[channelNumber];
+    if (!state) return;
+    const voiceParams = this.segmentVoiceParams[timelineIndex];
+    if (!voiceParams) return;
+    const channel = this.channels[channelNumber];
+    if (
+      state.openSegment &&
+      this.segmentDuration <= t - state.openSegment.segmentStart
+    ) {
+      this.closeSegment(state, channel);
+    }
+    if (!state.openSegment) {
+      state.openSegment = {
+        segmentStart: t,
+        notes: [],
+        channelDetune: channel.detune,
+        channelStateArray: channel.state.array.slice(),
+        programNumber: channel.programNumber,
+      };
+    }
+    state.openSegment.notes.push({
+      offset: t - state.openSegment.segmentStart,
+      noteNumber,
+      velocity,
+      voiceParams,
+      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
+      noteEvent: this.noteOnEvents[timelineIndex],
+      audioBufferId: this.noteAudioBufferIds[timelineIndex],
+      voice: this.segmentVoices[timelineIndex] ?? undefined,
+    });
+  }
+
+  closeSegment(state: SegmentChannelState, channel: TChannel): void {
+    const segment = state.openSegment;
+    state.openSegment = null;
+    if (!segment || segment.notes.length === 0) return;
+    const generation = this.segmentGeneration;
+    const pending: PendingSegment = {
+      segmentStart: segment.segmentStart,
+      buffer: null,
+      bufferReady: false,
+      source: null,
+      done: false,
+      bufferPromise: Promise.resolve(null),
+      generation,
+    };
+    pending.bufferPromise = this.renderSegmentBuffer(channel, segment)
+      .then((buffer) => {
+        if (this.segmentGeneration !== generation) {
+          // A seek/stop/loop happened while this segment was rendering.
+          // Drop the result: scheduling it now would play audio at the
+          // wrong moment (its absoluteStart was computed against a
+          // startTime/resumeTime that's no longer current), and letting
+          // it linger in state.pending would let updateSegmentPipeline
+          // start it later regardless. Also remove it from state.pending
+          // in case it's a newer SegmentChannelState array than the one
+          // this closure captured (initSegmentPipeline replaces the whole
+          // array on seek), so it can't be picked up from there either.
+          const idx = state.pending.indexOf(pending);
+          if (idx !== -1) state.pending.splice(idx, 1);
+          pending.done = true;
+          return null;
+        }
+        pending.buffer = buffer;
+        pending.bufferReady = true;
+        return buffer;
+      })
+      .catch((err) => {
+        console.warn("segment render failed", err);
+        pending.bufferReady = true;
+        return null;
+      });
+    state.pending.push(pending);
+  }
+
+  startPendingSegment(channel: TChannel, pending: PendingSegment): void {
+    if (!pending.buffer) {
+      pending.done = true;
+      return;
+    }
+    const timeOffset = this.resumeTime - this.startTime;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const nominalStart = pending.segmentStart + schedulingOffset;
+    const absoluteStart = Math.max(0, nominalStart);
+    this.warnIfStartTimeMissed(
+      `segment (channel ${channel.channelNumber})`,
+      nominalStart,
+    );
+    const source = new AudioBufferSourceNode(this.audioContext, {
+      buffer: pending.buffer,
+    });
+    source.connect(channel.gainL);
+    source.connect(channel.gainR);
+    source.onended = () => {
+      pending.done = true;
+      source.disconnect();
+    };
+    source.start(absoluteStart);
+    pending.source = source;
+  }
+
+  updateSegmentPipeline(lookAheadCheckTime: number): void {
+    const channels = this.channels;
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      if (
+        state.openSegment &&
+        state.openSegment.segmentStart + this.segmentDuration <=
+          lookAheadCheckTime
+      ) {
+        this.closeSegment(state, channels[ch]);
+      }
+      state.pending = state.pending.filter((pending) => !pending.done);
+      for (const pending of state.pending) {
+        if (!pending.source && pending.bufferReady) {
+          this.startPendingSegment(channels[ch], pending);
+        }
+      }
+    }
+  }
+
+  initChunkPipeline(): void {
+    this.chunkState = { openChunk: null, pending: [] };
+  }
+
+  async drainChunkPipeline(): Promise<void> {
+    const state = this.chunkState;
+    if (state.openChunk) {
+      this.closeChunk(state);
+    }
+    const allBufferPromises = state.pending.map((p) => p.bufferPromise);
+    await Promise.allSettled(allBufferPromises);
+    for (const pending of state.pending) {
+      if (!pending.source && pending.bufferReady) {
+        this.startPendingChunk(pending);
+      }
+    }
+    await this.waitForPendingSources("drainChunkPipeline", () => state.pending);
+  }
+
+  stopChunkSources(): void {
+    // Invalidate in-flight renderChunkBuffer() calls (same rationale as
+    // stopSegmentSources — stale renders must not be scheduled after a
+    // seek/stop/loop).
+    this.chunkGeneration++;
+    const state = this.chunkState;
+    for (const pending of state.pending) {
+      if (pending.source) {
+        try {
+          pending.source.stop();
+        } catch {
+          // already stopped/ended
+        }
+        // disconnect is handled by the source's onended handler
+        pending.source = null;
+      }
+    }
+    state.pending = [];
+    state.openChunk = null;
+  }
+
+  appendToChunkQueue(
+    channel: TChannel,
+    t: number,
+    timelineIndex: number,
+    noteNumber: number,
+    velocity: number,
+  ): void {
+    const state = this.chunkState;
+    const voiceParams = this.segmentVoiceParams[timelineIndex];
+    if (!voiceParams) return;
+
+    if (
+      state.openChunk &&
+      this.segmentDuration <= t - state.openChunk.chunkStart
+    ) {
+      this.closeChunk(state);
+    }
+    if (!state.openChunk) {
+      state.openChunk = { chunkStart: t, notes: [] };
+    }
+    state.openChunk.notes.push({
+      channelNumber: channel.channelNumber,
+      offset: t - state.openChunk.chunkStart,
+      noteNumber,
+      velocity,
+      voiceParams,
+      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
+      noteEvent: this.noteOnEvents[timelineIndex],
+      audioBufferId: this.noteAudioBufferIds[timelineIndex],
+      voice: this.segmentVoices[timelineIndex] ?? undefined,
+      // Snapshot per-channel state now — channel volume/pan/expression
+      // are baked into the buffer so they must be captured at note-append
+      // time before subsequent events on the same channel change them.
+      channelDetune: channel.detune,
+      channelStateArray: channel.state.array.slice(),
+      programNumber: channel.programNumber,
+      isDrum: channel.isDrum,
+    });
+  }
+
+  closeChunk(state: ChunkState): void {
+    const chunk = state.openChunk;
+    state.openChunk = null;
+    if (!chunk || chunk.notes.length === 0) return;
+    const generation = this.chunkGeneration;
+    const pending: PendingChunk = {
+      chunkStart: chunk.chunkStart,
+      buffer: null,
+      bufferReady: false,
+      source: null,
+      done: false,
+      bufferPromise: Promise.resolve(null),
+      generation,
+    };
+    pending.bufferPromise = this.renderChunkBuffer(chunk)
+      .then((buffer) => {
+        if (this.chunkGeneration !== generation) {
+          const idx = state.pending.indexOf(pending);
+          if (idx !== -1) state.pending.splice(idx, 1);
+          pending.done = true;
+          return null;
+        }
+        pending.buffer = buffer;
+        pending.bufferReady = true;
+        return buffer;
+      })
+      .catch((err) => {
+        console.warn("chunk render failed", err);
+        pending.bufferReady = true;
+        return null;
+      });
+    state.pending.push(pending);
+  }
+
+  startPendingChunk(pending: PendingChunk): void {
+    if (!pending.buffer) {
+      pending.done = true;
+      return;
+    }
+    const timeOffset = this.resumeTime - this.startTime;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const nominalStart = pending.chunkStart + schedulingOffset;
+    const absoluteStart = Math.max(0, nominalStart);
+    this.warnIfStartTimeMissed("chunk", nominalStart);
+    const source = new AudioBufferSourceNode(this.audioContext, {
+      buffer: pending.buffer,
+    });
+    // chunk buffers are stereo and already include channel volume/pan,
+    // so connect directly to masterVolume (bypassing per-channel gainL/R).
+    source.connect(this.masterVolume);
+    source.onended = () => {
+      pending.done = true;
+      source.disconnect();
+    };
+    source.start(absoluteStart);
+    pending.source = source;
+  }
+
+  updateChunkPipeline(lookAheadCheckTime: number): void {
+    const state = this.chunkState;
+    if (
+      state.openChunk &&
+      state.openChunk.chunkStart + this.segmentDuration <= lookAheadCheckTime
+    ) {
+      this.closeChunk(state);
+    }
+    state.pending = state.pending.filter((p) => !p.done);
+    for (const pending of state.pending) {
+      if (!pending.source && pending.bufferReady) {
+        this.startPendingChunk(pending);
+      }
+    }
+  }
+
+  async renderChunkBuffer(chunk: OpenChunk): Promise<AudioBuffer | null> {
+    const notes = chunk.notes;
+    if (notes.length === 0) return null;
+
+    // Compute total duration across all notes in all channels.
+    let totalDuration = 0;
+    for (const n of notes) {
+      const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
+      const end = n.offset + n.noteDuration + releaseEnd;
+      if (end > totalDuration) totalDuration = end;
+    }
+    if (totalDuration <= 0) return null;
+
+    const sampleRate = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      2,
+      Math.ceil(totalDuration * sampleRate),
+      sampleRate,
+    );
+
+    // Build a lightweight offlinePlayer that shares soundFont/cache data.
+    // We need channel audio nodes wired to the offline destination, so we
+    // create a full Player instance against the offline context but
+    // immediately suspend/resume so they don't throw.
+    const allChannelNumbers = [...new Set(notes.map((n) => n.channelNumber))];
+    const offlinePlayer = new (this.constructor as new (
+      audioContext: AudioContext | OfflineAudioContext,
+      options?: { activeChannelNumbers?: Iterable<number> },
+    ) => Player<TNote, TChannel>)(
+      offlineContext as unknown as AudioContext,
+      { activeChannelNumbers: allChannelNumbers },
+    );
+    offlinePlayer.cacheMode = "none";
+    offlineContext.suspend = () => Promise.resolve();
+    offlineContext.resume = () => Promise.resolve();
+    offlinePlayer.soundFonts = this.soundFonts;
+    offlinePlayer.soundFontTable = this.soundFontTable;
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
+
+    // Seed each channel from its per-note snapshot.  Multiple notes on the
+    // same channel may carry different snapshots (if a CC event fell between
+    // them); we seed once from the first note and let per-note event replay
+    // (below) handle any intra-chunk CC changes on shared state correctly.
+    // The appliedEvents dedup set below handles double-application just as
+    // renderSegmentBuffer does.
+    const seededChannels = new Set<number>();
+    for (const n of notes) {
+      const ch = n.channelNumber;
+      if (seededChannels.has(ch)) continue;
+      seededChannels.add(ch);
+      const dstChannel = offlinePlayer.channels[ch];
+      dstChannel.state.array.set(n.channelStateArray);
+      dstChannel.isDrum = n.isDrum;
+      dstChannel.programNumber = n.programNumber;
+      dstChannel.modulationDepthRange = this.channels[ch].modulationDepthRange;
+      dstChannel.detune = n.channelDetune;
+      // Apply channel volume/pan/expression so the offline gainL/gainR
+      // nodes are set correctly before any notes start.
+      offlinePlayer.updateChannelVolume(dstChannel, 0);
+    }
+
+    // Pre-fetch raw sample buffers in parallel (same optimisation as
+    // renderSegmentBuffer — avoids serialising decode latency).
+    const prefetchTasks: Promise<unknown>[] = [];
+    const seenAudioBufferIds = new Set<number>();
+    for (const n of notes) {
+      const id = n.audioBufferId !== undefined
+        ? n.audioBufferId
+        : offlinePlayer.getVoiceId(
+          offlinePlayer.channels[n.channelNumber],
+          n.noteNumber,
+          n.velocity,
+        );
+      if (id === undefined || seenAudioBufferIds.has(id)) continue;
+      seenAudioBufferIds.add(id);
+      prefetchTasks.push(
+        offlinePlayer.getRawAudioBuffer(id, n.voiceParams),
+      );
+    }
+    if (prefetchTasks.length > 0) await Promise.all(prefetchTasks);
+
+    // Same double-application guard as renderSegmentBuffer.
+    const appliedEvents = new Set<TimelineEvent>();
+
+    // Schedule noteOns in start-time order. Parallel Promise.all races
+    // exclusiveClass / drum-exclusive handling (a later-start note can be
+    // registered first and then get killed at the earlier note's onset, so
+    // it never sounds). Sequential + sorted matches realtime timeline order.
+    const orderedNotes = notes
+      .map((n, originalIndex) => ({ n, originalIndex }))
+      .sort((a, b) =>
+        a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
+      );
+    const offlineNotes: (TNote | void)[] = new Array(notes.length);
+    for (const { n, originalIndex } of orderedNotes) {
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const preNote = offlinePlayer.createNoteInstance(
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+      );
+      preNote.voiceParams = n.voiceParams;
+      preNote.voice = n.voice ?? null;
+      preNote.audioBufferId = n.audioBufferId;
+      offlineNotes[originalIndex] = await offlinePlayer.noteOnChannel(
+        dstChannel,
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+        preNote,
+      );
+    }
+
+    // Replay per-note CC/pitchBend events and schedule noteOff.
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const offlineNote = offlineNotes[i] as TNote | undefined;
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+        n.noteEvent ?? {};
+      for (const event of noteEvents) {
+        if (appliedEvents.has(event)) continue;
+        if (event.type === "programChange") continue;
+        const t = (event.startTime as number) / this.tempo - noteStartTime;
+        if (t < 0 || t > n.noteDuration) continue;
+        appliedEvents.add(event);
+        offlinePlayer.processTimelineEvent(event, n.offset + t, {
+          channels: offlinePlayer.channels,
+        });
+      }
+      // volumeNode is already connected to dstChannel.gainL/gainR (which
+      // includes baked channel volume/pan), so no rewiring needed unlike
+      // renderSegmentBuffer. The stereo mixer flows:
+      //   volumeNode → gainL/gainR → merger → masterVolume (offline dest)
+      if (offlineNote?.volumeNode) {
+        // Already wired by noteOnChannel → setNoteRouting; nothing to do.
+      }
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        n.noteNumber,
+        0,
+        n.offset + n.noteDuration,
+        true,
+      );
+    }
+    await Promise.resolve();
+    return await offlineContext.startRendering();
+  }
+
+  async render(): Promise<AudioBuffer | undefined> {
+    if (this.isRendering) return;
+    if (this.timeline.length === 0) return;
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    this.isRendering = true;
+    this.renderedAudioBuffer = null;
+    this.dispatchEvent(new Event("rendering"));
+
+    // Collect every note into ChunkNoteEntry[], then bake in short time
+    // windows via renderChunkBuffer(). A single OfflineAudioContext holding
+    // the entire song can produce a buffer where only the opening attack is
+    // audible under heavy per-note graphs. Windowed renders keep the node
+    // count bounded; windows are mixed into one final AudioBuffer.
+    const settings = (this.constructor as typeof Player).channelSettings;
+    const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
+      const channel = this.createChannelInstance(ch, settings);
+      channel.player = this;
+      return channel;
+    });
+    renderChannels[9].isDrum = true;
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const notes: ChunkNoteEntry[] = [];
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo + this.startDelay;
+      this.processTimelineEvent(event, 0, {
+        channels: renderChannels,
+        onNoteOn: (renderChannel: TChannel, event: TimelineEvent) => {
+          const noteEvent = this.noteOnEvents[i];
+          const noteDuration = noteEvent?.duration ??
+            this.noteOnDurations[i] ?? 0;
+          if (noteDuration <= 0) return;
+          const { noteNumber, velocity } = event;
+          const voice = this.resolveVoice(
+            renderChannel,
+            noteNumber!,
+            velocity!,
+          );
+          if (!voice) return;
+          const voiceParams = voice.getAllParams(
+            this.getControllerState(renderChannel, noteNumber!, velocity!, 0),
+          );
+          notes.push({
+            channelNumber: renderChannel.channelNumber,
+            offset,
+            noteNumber: noteNumber!,
+            velocity: velocity!,
+            voiceParams,
+            noteDuration,
+            noteEvent,
+            audioBufferId: this.noteAudioBufferIds[i],
+            voice,
+            channelDetune: renderChannel.detune,
+            channelStateArray: renderChannel.state.array.slice(),
+            programNumber: renderChannel.programNumber,
+            isDrum: renderChannel.isDrum,
+          });
+        },
+      });
+    }
+
+    if (notes.length === 0) {
+      this.isRendering = false;
+      this.dispatchEvent(new Event("rendered"));
+      return undefined;
+    }
+
+    // Window length in seconds. Keep small enough that concurrent notes in
+    // one OfflineAudioContext stay manageable; large enough to limit the
+    // number of startRendering() calls.
+    const WINDOW_SEC = 4;
+    let maxEnd = 0;
+    for (const n of notes) {
+      const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
+      const end = n.offset + n.noteDuration + releaseEnd;
+      if (end > maxEnd) maxEnd = end;
+    }
+
+    const sampleRate = this.audioContext.sampleRate;
+    const totalFrames = Math.ceil(maxEnd * sampleRate);
+    const mixed = new AudioBuffer({
+      numberOfChannels: 2,
+      length: totalFrames,
+      sampleRate,
+    });
+    const mixedL = mixed.getChannelData(0);
+    const mixedR = mixed.getChannelData(1);
+
+    const windowCount = Math.max(1, Math.ceil(maxEnd / WINDOW_SEC));
+    for (let w = 0; w < windowCount; w++) {
+      const winStart = w * WINDOW_SEC;
+      const winEnd = winStart + WINDOW_SEC;
+      // Only notes whose onset falls inside [winStart, winEnd) are rendered
+      // in this window; each note is fully rendered (including its release)
+      // relative to onset, so release tails are not cut and there is no
+      // double-mixing across windows.
+      const windowNotes = notes.filter((n) =>
+        n.offset >= winStart && n.offset < winEnd
+      );
+      if (windowNotes.length === 0) continue;
+
+      // Shift offsets so the offline context starts near 0 (small context).
+      const localNotes: ChunkNoteEntry[] = windowNotes.map((n) => ({
+        ...n,
+        offset: n.offset - winStart,
+        // channelStateArray is a typed array — copy so mutations in one
+        // window can't affect another.
+        channelStateArray: n.channelStateArray.slice(),
+      }));
+
+      const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
+      const buf = await this.renderChunkBuffer(chunk);
+      if (!buf) continue;
+
+      // Mix into the final buffer at the correct absolute frame offset.
+      const destOffset = Math.floor(winStart * sampleRate);
+      const copyFrames = Math.min(buf.length, totalFrames - destOffset);
+      if (copyFrames <= 0) continue;
+      const srcL = buf.getChannelData(0);
+      const srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
+      for (let i = 0; i < copyFrames; i++) {
+        mixedL[destOffset + i] += srcL[i];
+        mixedR[destOffset + i] += srcR[i];
+      }
+    }
+
+    // Soft clip in case overlapping window tails summed above 1.0
+    for (let i = 0; i < totalFrames; i++) {
+      const l = mixedL[i];
+      const r = mixedR[i];
+      if (l > 1 || l < -1) mixedL[i] = Math.tanh(l);
+      if (r > 1 || r < -1) mixedR[i] = Math.tanh(r);
+    }
+
+    this.renderedAudioBuffer = mixed;
+    this.isRendering = false;
+    this.dispatchEvent(new Event("rendered"));
+    return this.renderedAudioBuffer;
+  }
+
+  async preloadSamples(): Promise<void> {
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    const entries = this.preloadEntries;
+    const tasks: Promise<AudioBuffer>[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
+      tasks.push(
+        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams),
+      );
+    }
+    await Promise.all(tasks);
   }
 
   async createAdsRenderedBuffer(
@@ -3951,6 +3957,19 @@ export class Player<
     return rendered;
   }
 
+  releaseFullCache(note: TNote): void {
+    if (note.timelineIndex == null || note.fullCacheVoiceId == null) return;
+    const durationMap = this.fullVoiceCache.get(note.fullCacheVoiceId);
+    if (!durationMap) return;
+    const entry = durationMap.get(note.timelineIndex);
+    if (entry instanceof RenderedBuffer) {
+      durationMap.delete(note.timelineIndex);
+      if (durationMap.size === 0) {
+        this.fullVoiceCache.delete(note.fullCacheVoiceId);
+      }
+    }
+  }
+
   async setNoteAudioNode(
     channel: TChannel,
     note: TNote,
@@ -4170,19 +4189,6 @@ export class Player<
         note.modLfo?.stop();
       } catch {
         // not started / already stopped
-      }
-    }
-  }
-
-  releaseFullCache(note: TNote): void {
-    if (note.timelineIndex == null || note.fullCacheVoiceId == null) return;
-    const durationMap = this.fullVoiceCache.get(note.fullCacheVoiceId);
-    if (!durationMap) return;
-    const entry = durationMap.get(note.timelineIndex);
-    if (entry instanceof RenderedBuffer) {
-      durationMap.delete(note.timelineIndex);
-      if (durationMap.size === 0) {
-        this.fullVoiceCache.delete(note.fullCacheVoiceId);
       }
     }
   }
