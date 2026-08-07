@@ -239,7 +239,10 @@ export class Player<
   > = new Map();
   renderedAudioBuffer: AudioBuffer | null = null;
   isRendering: boolean = false;
+  // audio mode
   audioModeBufferSource: AudioBufferSourceNode | null = null;
+  audioWindowDuration: number = 4;
+  // segment mode
   segmentDuration: number = 1;
   maxSegmentNoteDuration: number = 8;
   segmentBakedSet: Set<number> = new Set();
@@ -247,6 +250,7 @@ export class Player<
   segmentVoiceParams: (VoiceParams | null)[] = [];
   segmentVoices: (Voice | null)[] = [];
   segmentGeneration: number = 0;
+  // chunk mode
   chunkState: ChunkState = { openChunk: null, pending: [] };
   chunkGeneration: number = 0;
 
@@ -540,7 +544,10 @@ export class Player<
     }
   }
 
-  override scheduleTimelineEvents(scheduleTime: number, queueIndex: number): number {
+  override scheduleTimelineEvents(
+    scheduleTime: number,
+    queueIndex: number,
+  ): number {
     const timeOffset = this.resumeTime - this.startTime;
     const isSegmentMode = this.cacheMode === "segment";
     const isChunkMode = this.cacheMode === "chunk";
@@ -819,7 +826,9 @@ export class Player<
     }
   }
 
-  override async start({ preload = true }: { preload?: boolean } = {}): Promise<void> {
+  override async start(
+    { preload = true }: { preload?: boolean } = {},
+  ): Promise<void> {
     if (this.isPlaying) return;
     if (this.isPaused) {
       await this.resume();
@@ -1477,10 +1486,10 @@ export class Player<
       return undefined;
     }
 
-    // Window length in seconds. Keep small enough that concurrent notes in
-    // one OfflineAudioContext stay manageable; large enough to limit the
-    // number of startRendering() calls.
-    const WINDOW_SEC = 4;
+    // Window length in seconds (audioWindowDuration). Keep small enough that
+    // concurrent notes in one offlineAudioContext stay manageable; large
+    // enough to limit the number of startRendering() calls.
+    const windowSec = this.audioWindowDuration;
     let maxEnd = 0;
     for (const n of notes) {
       const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
@@ -1498,10 +1507,10 @@ export class Player<
     const mixedL = mixed.getChannelData(0);
     const mixedR = mixed.getChannelData(1);
 
-    const windowCount = Math.max(1, Math.ceil(maxEnd / WINDOW_SEC));
+    const windowCount = Math.max(1, Math.ceil(maxEnd / windowSec));
     for (let w = 0; w < windowCount; w++) {
-      const winStart = w * WINDOW_SEC;
-      const winEnd = winStart + WINDOW_SEC;
+      const winStart = w * windowSec;
+      const winEnd = winStart + windowSec;
       // Only notes whose onset falls inside [winStart, winEnd) are rendered
       // in this window; each note is fully rendered (including its release)
       // relative to onset, so release tails are not cut and there is no
@@ -1536,12 +1545,23 @@ export class Player<
       }
     }
 
-    // Soft clip in case overlapping window tails summed above 1.0
+    // Peak normalize instead of tanh soft-clip: linear gain preserves
+    // timbre when overlapping tails sum above 1.0. Only scale down when
+    // the peak exceeds the target; quiet songs keep their original level.
+    const PEAK_TARGET = 0.95;
+    let peak = 0;
     for (let i = 0; i < totalFrames; i++) {
-      const l = mixedL[i];
-      const r = mixedR[i];
-      if (l > 1 || l < -1) mixedL[i] = Math.tanh(l);
-      if (r > 1 || r < -1) mixedR[i] = Math.tanh(r);
+      const al = mixedL[i] < 0 ? -mixedL[i] : mixedL[i];
+      const ar = mixedR[i] < 0 ? -mixedR[i] : mixedR[i];
+      if (al > peak) peak = al;
+      if (ar > peak) peak = ar;
+    }
+    if (peak > PEAK_TARGET) {
+      const scale = PEAK_TARGET / peak;
+      for (let i = 0; i < totalFrames; i++) {
+        mixedL[i] *= scale;
+        mixedR[i] *= scale;
+      }
     }
 
     this.renderedAudioBuffer = mixed;
