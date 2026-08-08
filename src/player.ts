@@ -1306,17 +1306,23 @@ export class Player<
     offlinePlayer.soundFontTable = this.soundFontTable;
     offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
 
-    // Seed each channel from its per-note snapshot.  Multiple notes on the
-    // same channel may carry different snapshots (if a CC event fell between
-    // them); we seed once from the first note and let per-note event replay
-    // (below) handle any intra-chunk CC changes on shared state correctly.
-    // The appliedEvents dedup set below handles double-application just as
-    // renderSegmentBuffer does.
-    const seededChannels = new Set<number>();
-    for (const n of notes) {
+    // Seed each channel from the snapshot of its earliest note in this
+    // chunk. That snapshot was taken at the note's onset, so it already
+    // reflects every pitch-bend / CC that happened before the note (and
+    // therefore before this channel's first contribution to the chunk).
+    // Events that fall strictly after the seed time are applied below
+    // (including ones that occur in gaps between notes — those are absent
+    // from noteEvents and were the source of the pitch-bend corruption).
+    const orderedNotes = notes
+      .map((n, originalIndex) => ({ n, originalIndex }))
+      .sort((a, b) =>
+        a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
+      );
+    const seedOffsetByChannel = new Map<number, number>();
+    for (const { n } of orderedNotes) {
       const ch = n.channelNumber;
-      if (seededChannels.has(ch)) continue;
-      seededChannels.add(ch);
+      if (seedOffsetByChannel.has(ch)) continue;
+      seedOffsetByChannel.set(ch, n.offset);
       const dstChannel = offlinePlayer.channels[ch];
       dstChannel.state.array.set(n.channelStateArray);
       dstChannel.isDrum = n.isDrum;
@@ -1348,20 +1354,64 @@ export class Player<
     }
     if (prefetchTasks.length > 0) await Promise.all(prefetchTasks);
 
-    // Same double-application guard as renderSegmentBuffer.
-    const appliedEvents = new Set<TimelineEvent>();
+    // Collect every non-note timeline event that falls inside this chunk's
+    // time window. noteEvents only records events while a note is active,
+    // so pitch-bends / volume CCs that occur in gaps between notes (or
+    // after a note-off and before the next note-on) are missing from them.
+    // Those gap events still change channel.detune / gainL/gainR on the
+    // realtime player and must be baked here, otherwise subsequent notes
+    // start at the wrong pitch / volume. Scan the full timeline so gaps
+    // are covered; skip events at or before each channel's seed offset
+    // because those are already reflected in the snapshot.
+    const inverseTempo = 1 / this.tempo;
+    const chunkStart = chunk.chunkStart;
+    const channelSet = new Set(allChannelNumbers);
+    type TimedEvent = { t: number; event: TimelineEvent };
+    const windowEvents: TimedEvent[] = [];
+    for (let i = 0; i < this.timeline.length; i++) {
+      const event = this.timeline[i];
+      if (
+        event.type === "noteOn" ||
+        event.type === "noteOff" ||
+        event.type === "programChange"
+      ) {
+        continue;
+      }
+      if (event.channel !== undefined && !channelSet.has(event.channel)) {
+        continue;
+      }
+      const absT = event.startTime * inverseTempo;
+      const relT = absT - chunkStart;
+      if (relT < 0 || relT > totalDuration) continue;
+      if (event.channel !== undefined) {
+        const seedOff = seedOffsetByChannel.get(event.channel);
+        // Events at or before the seed are already in the snapshot
+        // (controllers at the same tick as the first noteOn are processed
+        // before the noteOn by timeline sort priority, so they land in the
+        // snapshot). Only replay strictly later events.
+        if (seedOff !== undefined && relT <= seedOff) continue;
+      }
+      windowEvents.push({ t: relT, event });
+    }
+    windowEvents.sort((a, b) => a.t - b.t);
 
-    // Schedule noteOns in start-time order. Parallel Promise.all races
-    // exclusiveClass / drum-exclusive handling (a later-start note can be
-    // registered first and then get killed at the earlier note's onset, so
-    // it never sounds). Sequential + sorted matches realtime timeline order.
-    const orderedNotes = notes
-      .map((n, originalIndex) => ({ n, originalIndex }))
-      .sort((a, b) =>
-        a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
-      );
+    // Interleave noteOns with window events in time order so that when a
+    // noteOn runs, channel.detune / state already reflect every pitch-bend
+    // and CC that precedes it (including gap events). Scheduling all
+    // noteOns first and replaying events afterwards left later notes with
+    // the pre-bend detune baked into their bufferSource at start time.
     const offlineNotes: (TNote | void)[] = new Array(notes.length);
+    let eventIdx = 0;
     for (const { n, originalIndex } of orderedNotes) {
+      while (
+        eventIdx < windowEvents.length &&
+        windowEvents[eventIdx].t <= n.offset
+      ) {
+        const { t, event } = windowEvents[eventIdx++];
+        offlinePlayer.processTimelineEvent(event, t, {
+          channels: offlinePlayer.channels,
+        });
+      }
       const dstChannel = offlinePlayer.channels[n.channelNumber];
       const preNote = offlinePlayer.createNoteInstance(
         n.noteNumber,
@@ -1379,31 +1429,22 @@ export class Player<
         preNote,
       );
     }
+    // Apply any remaining events that fall after the last noteOn (e.g. a
+    // pitch-bend during a release tail that still affects sounding notes).
+    while (eventIdx < windowEvents.length) {
+      const { t, event } = windowEvents[eventIdx++];
+      offlinePlayer.processTimelineEvent(event, t, {
+        channels: offlinePlayer.channels,
+      });
+    }
 
-    // Replay per-note CC/pitchBend events and schedule noteOff.
+    // Schedule noteOffs. volumeNode is already connected to
+    // dstChannel.gainL/gainR (which includes baked channel volume/pan), so
+    // no rewiring is needed unlike renderSegmentBuffer. The stereo mixer
+    // flows: volumeNode → gainL/gainR → merger → masterVolume (offline dest).
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const offlineNote = offlineNotes[i] as TNote | undefined;
       const dstChannel = offlinePlayer.channels[n.channelNumber];
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
-        n.noteEvent ?? {};
-      for (const event of noteEvents) {
-        if (appliedEvents.has(event)) continue;
-        if (event.type === "programChange") continue;
-        const t = (event.startTime as number) / this.tempo - noteStartTime;
-        if (t < 0 || t > n.noteDuration) continue;
-        appliedEvents.add(event);
-        offlinePlayer.processTimelineEvent(event, n.offset + t, {
-          channels: offlinePlayer.channels,
-        });
-      }
-      // volumeNode is already connected to dstChannel.gainL/gainR (which
-      // includes baked channel volume/pan), so no rewiring needed unlike
-      // renderSegmentBuffer. The stereo mixer flows:
-      //   volumeNode → gainL/gainR → merger → masterVolume (offline dest)
-      if (offlineNote?.volumeNode) {
-        // Already wired by noteOnChannel → setNoteRouting; nothing to do.
-      }
       offlinePlayer.noteOffChannel(
         dstChannel,
         n.noteNumber,
