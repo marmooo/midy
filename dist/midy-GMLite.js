@@ -31,7 +31,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // ../../../.cache/deno/deno_esbuild/registry.npmjs.org/midi-file@1.2.4/node_modules/midi-file/lib/midi-parser.js
 var require_midi_parser = __commonJS({
   "../../../.cache/deno/deno_esbuild/registry.npmjs.org/midi-file@1.2.4/node_modules/midi-file/lib/midi-parser.js"(exports, module) {
-    function parseMidi2(data3) {
+    function parseMidi3(data3) {
       var p = new Parser2(data3);
       var headerChunk = p.readChunk();
       if (headerChunk.id != "MThd")
@@ -325,7 +325,7 @@ var require_midi_parser = __commonJS({
         data: data3
       };
     };
-    module.exports = parseMidi2;
+    module.exports = parseMidi3;
   }
 });
 
@@ -635,7 +635,10 @@ var require_browser = __commonJS({
   }
 });
 
-// src/player-runtime.ts
+// src/player.ts
+var import_midi_file2 = __toESM(require_midi_file());
+
+// src/base-player.ts
 var import_midi_file = __toESM(require_midi_file());
 
 // ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont-parser@0.1.9/node_modules/@marmooo/soundfont-parser/esm/Constants.js
@@ -5205,8 +5208,7 @@ var OggVorbisDecoderWebWorker = class extends OggVorbisDecoder {
 assignNames(OggVorbisDecoder, "OggVorbisDecoder");
 assignNames(OggVorbisDecoderWebWorker, "OggVorbisDecoderWebWorker");
 
-// src/player-runtime.ts
-var DEFAULT_CACHE_MODE = "segment";
+// src/base-player.ts
 var _f64Buf = new ArrayBuffer(8);
 var _f64Array = new Float64Array(_f64Buf);
 var _u64Array = new BigUint64Array(_f64Buf);
@@ -5225,8 +5227,8 @@ function initDecoder() {
 }
 var Note = class {
   // Widened to unknown so GM2/Midy can declare a more specific player
-  // subtype (a generic PlayerRuntime<TNote,TChannel> can't be soundly widened to
-  // a fixed Player<Note,Channel<Note>> here because subclass methods take
+  // subtype (a generic Player<TNote,TChannel> can't be soundly widened to
+  // a fixed BasePlayer<Note,Channel<Note>> here because subclass methods take
   // TNote/TChannel contravariantly). Access via the local casts below.
   player;
   noteNumber;
@@ -5250,7 +5252,8 @@ var Note = class {
   modLfoToPitch = null;
   modLfoToFilterFc = null;
   modLfoToVolume = null;
-  // "segment" mode
+  // Set by Player subclass when a note is absorbed into an offline segment/chunk
+  // buffer (no per-note AudioBufferSourceNode). BasePlayer treats these as no-ops.
   isSegmentGhost = false;
   segmentNoteDuration = 0;
   audioBufferId;
@@ -5269,10 +5272,10 @@ var Note = class {
 };
 var Channel = class {
   // See Note.player above for why this is unknown rather than
-  // PlayerRuntime<TNote, Channel<TNote>>.
+  // BasePlayer<TNote, Channel<TNote>>.
   player;
   // Every Channel<TNote> is always constructed by, and only by, a matching
-  // PlayerRuntime<TNote, ...> (see Player.createChannels / createChannelInstance),
+  // BasePlayer<TNote, ...> (see Player.createChannels / createChannelInstance),
   // so this cast is safe by construction even though TypeScript can't prove
   // it generically. This is the single place that assertion is made; every
   // other place that needs the owning player (in this class, its
@@ -5760,9 +5763,8 @@ controlChangeHandlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
 controlChangeHandlers[120] = (ch, _v, t2) => ch.allSoundOff(t2);
 controlChangeHandlers[121] = (ch, _v, t2) => ch.resetAllControllers(t2);
 controlChangeHandlers[123] = (ch, _v, t2) => ch.allNotesOff(t2);
-var PlayerRuntime = class _PlayerRuntime extends EventTarget {
+var BasePlayer = class _BasePlayer extends EventTarget {
   // https://pmc.ncbi.nlm.nih.gov/articles/PMC4191557/
-  // https://pubmed.ncbi.nlm.nih.gov/12488797/
   // Gap detection studies indicate humans detect temporal discontinuities
   // around 2–3 ms. Smoothing over ~4 ms is perceived as continuous.
   perceptualSmoothingTime = 4e-3;
@@ -5772,22 +5774,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   totalTime = 0;
   noteCheckInterval = 0.1;
   drainTimeoutMs = 5e3;
-  // How far ahead (in seconds) notes are scheduled/prepared before their
-  // actual start time, for every cache mode. Must comfortably exceed
-  // however long note/segment preparation can take on this device
-  // (sample decode, envelope baking, or — for "segment" mode — a whole
-  // renderSegmentBuffer offline render covering every note in the
-  // segment): AudioBufferSourceNode.start(t) with a t that has already
-  // passed by the time start() runs doesn't wait for the right moment, it
-  // just starts immediately, so under-preparing makes notes/segments play
-  // late/at the wrong moment instead of on time. Watch the console for
-  // "missed its scheduled start" warnings and raise this if they appear,
-  // at the cost of added playback latency. "segment" mode automatically
-  // uses lookAhead + maxSegmentNoteDuration as its effective lookahead
-  // (for both note discovery and segment-close timing), since a segment's
-  // worst-case render cost scales with how long a single note in it can
-  // ring; raise maxSegmentNoteDuration's tier instead of lookAhead itself
-  // if warnings only appear in segment mode.
   lookAhead = 1;
   startDelay = 0.5;
   startTime = 0;
@@ -5795,8 +5781,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   soundFonts = [];
   soundFontTable = Array.from({ length: 128 }, () => []);
   voiceCounter = /* @__PURE__ */ new Map();
-  voiceCache = /* @__PURE__ */ new Map();
-  realtimeVoiceCache = /* @__PURE__ */ new Map();
   rawAudioBufferCache = /* @__PURE__ */ new Map();
   decodeMethod = "wasm-audio-decoders";
   isPlaying = false;
@@ -5813,59 +5797,14 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   soundingNotes = /* @__PURE__ */ new Set();
   instruments = /* @__PURE__ */ new Set();
   exclusiveClassNotes = new Array(128);
-  // GM drum-map exclusive groups. Subclasses may replace with
-  // `new Uint8Array(128)` to disable (all zeros → no drum-map choking).
   drumExclusiveClasses = createDefaultDrumExclusiveClasses();
   drumExclusiveClassNotes = new Array(
     16 * DEFAULT_DRUM_EXCLUSIVE_CLASS_COUNT
   );
-  // When true (default), Note Off on a drum channel for *live* MIDI input
-  // only drops the note from activeNotes and does not run the release
-  // envelope — matching one-shot drum behaviour. MIDI-file notes (those
-  // with a timelineIndex) always release on Note Off so their decay matches
-  // segment/chunk offline bakes, which force-release drums. Subclasses that
-  // should also release live drums on Note Off (historical MidyGM1) set
-  // this to false.
   ignoreDrumNoteOff = true;
   noteAudioBufferIds = [];
-  // "adsr" mode
-  adsrVoiceCache = /* @__PURE__ */ new Map();
-  // "note" mode
-  noteOnDurations = [];
-  noteOnEvents = [];
-  fullVoiceCache = /* @__PURE__ */ new Map();
-  // "audio" mode
-  renderedAudioBuffer = null;
-  isRendering = false;
-  audioModeBufferSource = null;
-  // "segment" mode
-  segmentDuration = 1;
-  maxSegmentNoteDuration = 8;
-  segmentBakedSet = /* @__PURE__ */ new Set();
-  segmentChannelStates = [];
-  segmentVoiceParams = [];
-  segmentVoices = [];
   preloadEntries = [];
-  // Bumped on every seek/stop/loop/pause. renderSegmentBuffer() calls are
-  // tagged with the generation active when they started; if it no longer
-  // matches this value once a render finishes, that render started before
-  // a seek (or stop/loop) and is stale, so its result is discarded instead
-  // of being scheduled or replacing a newer in-flight render's slot. This
-  // also matters under load: OfflineAudioContext.startRendering() calls
-  // are serialized by the browser, so a backlog of now-useless renders
-  // left over from before a seek can otherwise delay the fresh segments
-  // that should be playing now, pushing them past lookAhead and causing
-  // them to start late/at the wrong moment (see warnIfStartTimeMissed).
-  segmentGeneration = 0;
-  // "chunk" mode
-  // Same segmentDuration / maxSegmentNoteDuration / segmentBakedSet /
-  // segmentVoiceParams / segmentVoices are reused from segment mode —
-  // the per-note classification logic is identical.
-  chunkState = { openChunk: null, pending: [] };
-  // Same generation-stamp mechanism as segmentGeneration.
-  chunkGeneration = 0;
   audioContext;
-  cacheMode;
   masterVolume;
   masterVolumeLocked = false;
   scheduler;
@@ -5888,7 +5827,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   constructor(audioContext, options) {
     super();
     this.audioContext = audioContext;
-    this.cacheMode = DEFAULT_CACHE_MODE;
     this.masterVolume = new GainNode(audioContext);
     const isOffline = audioContext instanceof OfflineAudioContext;
     if (isOffline) {
@@ -5971,14 +5909,8 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     }
     this.voiceCounter.clear();
     this.clearPlaybackCaches();
-    this.renderedAudioBuffer = null;
     this.noteAudioBufferIds = [];
     this.preloadEntries = [];
-    this.segmentBakedSet.clear();
-    this.segmentVoiceParams = [];
-    this.segmentVoices = [];
-    this.noteOnDurations = [];
-    this.noteOnEvents = [];
     this.resumeTime = 0;
     this.isPaused = false;
     const uint8Array2 = await this.toUint8Array(input);
@@ -5988,222 +5920,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
     this.totalTime = this.calcTotalTime();
-    if (this.cacheMode === "audio") {
-      await this.render();
-    }
-  }
-  buildNoteOnDurations() {
-    const { timeline, totalTime, noteOnDurations, noteOnEvents, numChannels } = this;
-    noteOnDurations.length = 0;
-    noteOnEvents.length = 0;
-    noteOnDurations.length = timeline.length;
-    noteOnEvents.length = timeline.length;
-    const inverseTempo = 1 / this.tempo;
-    const sustainPedal = new Uint8Array(numChannels);
-    const activeNotes = /* @__PURE__ */ new Map();
-    const pendingOff = /* @__PURE__ */ new Map();
-    const finalizeEntry = (entry, endTime, endTicks) => {
-      const duration2 = Math.max(0, endTime - entry.startTime);
-      const durationTicks = endTicks == null || endTicks === Infinity ? Infinity : Math.max(0, endTicks - entry.startTicks);
-      noteOnDurations[entry.idx] = duration2;
-      noteOnEvents[entry.idx] = {
-        duration: duration2,
-        durationTicks,
-        startTime: entry.startTime,
-        events: entry.events
-      };
-    };
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      const t2 = event.startTime * inverseTempo;
-      switch (event.type) {
-        case "noteOn": {
-          const ch = event.channel ?? 0;
-          const key = event.noteNumber * numChannels + ch;
-          if (!activeNotes.has(key)) activeNotes.set(key, []);
-          activeNotes.get(key).push({
-            idx: i,
-            startTime: t2,
-            startTicks: event.ticks,
-            events: []
-          });
-          const pendingStack = pendingOff.get(key);
-          if (pendingStack && pendingStack.length > 0) pendingStack.shift();
-          break;
-        }
-        case "noteOff": {
-          const ch = event.channel ?? 0;
-          const key = event.noteNumber * numChannels + ch;
-          if (sustainPedal[ch]) {
-            if (!pendingOff.has(key)) pendingOff.set(key, []);
-            pendingOff.get(key).push({ t: t2, ticks: event.ticks });
-          } else {
-            const stack = activeNotes.get(key);
-            if (stack && stack.length > 0) {
-              finalizeEntry(stack.shift(), t2, event.ticks);
-              if (stack.length === 0) activeNotes.delete(key);
-            }
-          }
-          break;
-        }
-        case "controller": {
-          const ch = event.channel ?? 0;
-          for (const [key, entries] of activeNotes) {
-            if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
-          }
-          switch (event.controllerType) {
-            case 64: {
-              const on2 = event.value >= 64;
-              sustainPedal[ch] = on2 ? 1 : 0;
-              if (!on2) {
-                for (const [key, offItems] of pendingOff) {
-                  if (key % numChannels !== ch) continue;
-                  const activeStack = activeNotes.get(key);
-                  for (const { t: offTime, ticks: offTicks } of offItems) {
-                    if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift(), offTime, offTicks);
-                      if (activeStack.length === 0) activeNotes.delete(key);
-                    }
-                  }
-                  pendingOff.delete(key);
-                }
-              }
-              break;
-            }
-            case 121:
-              sustainPedal[ch] = 0;
-              break;
-            case 120:
-            // All Sound Off
-            case 123: {
-              for (const [key, stack] of activeNotes) {
-                if (key % numChannels !== ch) continue;
-                for (const entry of stack) finalizeEntry(entry, t2, event.ticks);
-                activeNotes.delete(key);
-              }
-              for (const key of pendingOff.keys()) {
-                if (key % numChannels === ch) pendingOff.delete(key);
-              }
-              break;
-            }
-          }
-          break;
-        }
-        case "sysEx": {
-          const data3 = event.data;
-          if (data3[0] === 126 && data3[1] === 9 && data3[2] === 3) {
-            if (data3[3] === 1) {
-              sustainPedal.fill(0);
-              pendingOff.clear();
-              for (const [, stack] of activeNotes) {
-                for (const entry of stack) finalizeEntry(entry, t2, event.ticks);
-              }
-              activeNotes.clear();
-            }
-          } else {
-            for (const [, entries] of activeNotes) {
-              for (const entry of entries) entry.events.push(event);
-            }
-          }
-          break;
-        }
-        case "pitchBend":
-        case "programChange": {
-          const ch = event.channel;
-          for (const [key, entries] of activeNotes) {
-            if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
-          }
-        }
-      }
-    }
-    for (const [, stack] of activeNotes) {
-      for (const entry of stack) finalizeEntry(entry, totalTime, Infinity);
-    }
-  }
-  cacheVoiceIds() {
-    const { channels: channels2, timeline, voiceCounter, cacheMode } = this;
-    const settings = this.constructor.channelSettings;
-    for (let ch = 0; ch < channels2.length; ch++) {
-      const channel2 = channels2[ch];
-      channel2.resetSettings(settings);
-      channel2.state = new ControllerState();
-      channel2.isDrum = false;
-      channel2.detune = 0;
-      channel2.programNumber = 0;
-    }
-    if (channels2[9]) channels2[9].isDrum = true;
-    const isSegmentMode = cacheMode === "segment";
-    const isChunkMode = cacheMode === "chunk";
-    const needsSegmentData = isSegmentMode || isChunkMode;
-    const segmentVoiceParams = needsSegmentData ? new Array(timeline.length).fill(null) : [];
-    const segmentVoices = needsSegmentData ? new Array(timeline.length).fill(null) : [];
-    const noteAudioBufferIds = new Array(
-      timeline.length
-    );
-    const preloadEntries = [];
-    const seenPreloadIds = /* @__PURE__ */ new Set();
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      switch (event.type) {
-        case "noteOn": {
-          const channel2 = channels2[event.channel];
-          const audioBufferId = this.getVoiceId(
-            channel2,
-            event.noteNumber,
-            event.velocity
-          );
-          voiceCounter.set(
-            audioBufferId,
-            (voiceCounter.get(audioBufferId) ?? 0) + 1
-          );
-          const isExcludedDrum = channel2.isDrum && this.drumExclusiveClasses[event.noteNumber] !== 0;
-          if (audioBufferId !== void 0) {
-            noteAudioBufferIds[i] = audioBufferId;
-            const voice = this.resolveVoice(
-              channel2,
-              event.noteNumber,
-              event.velocity
-            );
-            if (voice) {
-              const controllerState = this.getControllerState(
-                channel2,
-                event.noteNumber,
-                event.velocity,
-                0
-              );
-              const voiceParams = voice.getAllParams(controllerState);
-              if (needsSegmentData && !isExcludedDrum) {
-                segmentVoiceParams[i] = voiceParams;
-                segmentVoices[i] = voice;
-              }
-              if (!seenPreloadIds.has(audioBufferId)) {
-                seenPreloadIds.add(audioBufferId);
-                preloadEntries.push({ audioBufferId, voiceParams });
-              }
-            }
-          }
-          break;
-        }
-        case "programChange":
-          channels2[event.channel].setProgramChange(event.programNumber);
-      }
-    }
-    this.noteAudioBufferIds = noteAudioBufferIds;
-    this.preloadEntries = preloadEntries;
-    for (const [audioBufferId, count] of voiceCounter) {
-      if (count === 1) voiceCounter.delete(audioBufferId);
-    }
-    this.GM1SystemOn(this.audioContext.currentTime);
-    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" || cacheMode === "segment" || cacheMode === "chunk") {
-      this.buildNoteOnDurations();
-    }
-    if (needsSegmentData) {
-      this.segmentVoiceParams = segmentVoiceParams;
-      this.segmentVoices = segmentVoices;
-      this.finalizeSegmentClassification();
-    }
   }
   getVoiceId(channel2, noteNumber, velocity) {
     const resolved = this.resolveVoiceResult(channel2, noteNumber, velocity);
@@ -6221,9 +5937,8 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   }
   // Overridden by subclasses (e.g. Midy) that instantiate Player<TChannel,
   // TNote> with a richer TChannel/TNote subclass, so that base methods
-  // shared via inheritance (createChannels, scheduleTimelineEvents,
-  // renderChunkBuffer, renderSegmentBuffer, ...) still construct the right
-  // runtime type instead of the base one.
+  // shared via inheritance (createChannels, scheduleTimelineEvents, ...)
+  // still construct the right runtime type instead of the base one.
   createChannelInstance(channelNumber, settings, audioNodes) {
     return new Channel(channelNumber, settings, audioNodes);
   }
@@ -6393,10 +6108,7 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   }
   scheduleTimelineEvents(scheduleTime, queueIndex) {
     const timeOffset = this.resumeTime - this.startTime;
-    const isSegmentMode = this.cacheMode === "segment";
-    const isChunkMode = this.cacheMode === "chunk";
-    const effectiveLookAhead = isSegmentMode || isChunkMode ? this.lookAhead + this.maxSegmentNoteDuration : this.lookAhead;
-    const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
+    const lookAheadCheckTime = scheduleTime + timeOffset + this.lookAhead;
     const schedulingOffset = this.startDelay - timeOffset;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
@@ -6414,36 +6126,12 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
           );
           note.timelineIndex = queueIndex;
           note.audioBufferId = this.noteAudioBufferIds[queueIndex];
-          const isSegmentNote = isSegmentMode && this.segmentBakedSet.has(queueIndex);
-          const isChunkNote = isChunkMode && this.segmentBakedSet.has(queueIndex);
-          if (isSegmentNote || isChunkNote) {
-            note.isSegmentGhost = true;
-            note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
-          }
           channel2.noteOn(
             event2.noteNumber,
             event2.velocity,
             startTime2,
             note
           );
-          if (isSegmentNote) {
-            this.appendToSegmentQueue(
-              channel2.channelNumber,
-              t2,
-              queueIndex,
-              event2.noteNumber,
-              event2.velocity
-            );
-          }
-          if (isChunkNote) {
-            this.appendToChunkQueue(
-              channel2,
-              t2,
-              queueIndex,
-              event2.noteNumber,
-              event2.velocity
-            );
-          }
         },
         onNoteOff: (channel2, event2, startTime2) => {
           channel2.noteOff(event2.noteNumber, event2.velocity, startTime2, false);
@@ -6464,10 +6152,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     return 0;
   }
   clearPlaybackCaches() {
-    this.voiceCache.clear();
-    this.realtimeVoiceCache.clear();
-    this.adsrVoiceCache.clear();
-    this.fullVoiceCache.clear();
   }
   resetChannels(channels2 = this.channels, scheduleTime) {
     for (let ch = 0; ch < channels2.length; ch++) {
@@ -6495,86 +6179,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       this.processTimelineEvent(event, Math.max(now, t2));
     }
   }
-  async playAudioBuffer() {
-    const audioContext = this.audioContext;
-    const paused = this.isPaused;
-    this.isPlaying = true;
-    this.isPaused = false;
-    this.startTime = audioContext.currentTime;
-    if (paused) {
-      this.dispatchEvent(new Event("resumed"));
-    } else {
-      this.dispatchEvent(new Event("started"));
-    }
-    let exitReason;
-    outer: while (true) {
-      const buffer2 = this.renderedAudioBuffer;
-      const bufferSource = new AudioBufferSourceNode(audioContext, { buffer: buffer2 });
-      bufferSource.playbackRate.value = this.tempo;
-      bufferSource.connect(this.masterVolume);
-      const offset = Math.min(Math.max(this.resumeTime, 0), buffer2.duration);
-      bufferSource.start(audioContext.currentTime, offset);
-      this.audioModeBufferSource = bufferSource;
-      let naturalEnded = false;
-      bufferSource.onended = () => {
-        naturalEnded = true;
-      };
-      while (true) {
-        const now = audioContext.currentTime;
-        await this.scheduleTask(() => {
-        }, now + this.noteCheckInterval);
-        if (naturalEnded || this.currentTime() >= this.totalTime) {
-          bufferSource.disconnect();
-          this.audioModeBufferSource = null;
-          if (this.loop) {
-            this.resumeTime = 0;
-            this.startTime = audioContext.currentTime;
-            this.dispatchEvent(new Event("looped"));
-            continue outer;
-          }
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break outer;
-        }
-        if (this.isPausing) {
-          this.cancelScheduledTasks();
-          this.resumeTime = this.currentTime();
-          bufferSource.stop();
-          bufferSource.disconnect();
-          this.audioModeBufferSource = null;
-          this.isPausing = false;
-          exitReason = "paused";
-          break outer;
-        } else if (this.isStopping) {
-          this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
-          this.audioModeBufferSource = null;
-          await this.suspendAudioContext();
-          this.isStopping = false;
-          exitReason = "stopped";
-          break outer;
-        } else if (this.isSeeking) {
-          this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
-          this.audioModeBufferSource = null;
-          this.startTime = audioContext.currentTime;
-          this.isSeeking = false;
-          this.dispatchEvent(new Event("seeked"));
-          continue outer;
-        }
-      }
-    }
-    this.isPlaying = false;
-    if (exitReason === "paused") {
-      this.isPaused = true;
-      this.dispatchEvent(new Event("paused"));
-    } else if (exitReason !== void 0) {
-      this.isPaused = false;
-      this.dispatchEvent(new Event(exitReason));
-    }
-  }
   suspendAudioContext() {
     if (this.audioContext instanceof AudioContext) {
       return this.audioContext.suspend();
@@ -6586,9 +6190,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
-    if (this.cacheMode === "audio" && this.renderedAudioBuffer) {
-      return await this.playAudioBuffer();
-    }
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
@@ -6599,8 +6200,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    if (this.cacheMode === "segment") this.initSegmentPipeline();
-    if (this.cacheMode === "chunk") this.initChunkPipeline();
     let exitReason;
     this.notePromises = [];
     while (true) {
@@ -6614,19 +6213,9 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
           this.startTime = audioContext.currentTime;
           this.resumeTime = 0;
           queueIndex = 0;
-          if (this.cacheMode === "segment") {
-            this.segmentGeneration++;
-            this.initSegmentPipeline();
-          }
-          if (this.cacheMode === "chunk") {
-            this.chunkGeneration++;
-            this.initChunkPipeline();
-          }
           this.dispatchEvent(new Event("looped"));
           continue;
         } else {
-          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
           await this.stopNotes(now);
           await this.suspendAudioContext();
           exitReason = "ended";
@@ -6635,16 +6224,12 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       }
       if (this.isPausing) {
         this.cancelScheduledTasks();
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
         await this.stopNotes(now);
         this.isPausing = false;
         exitReason = "paused";
         break;
       } else if (this.isStopping) {
         this.cancelScheduledTasks();
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
         await this.stopNotes(now);
         await this.suspendAudioContext();
         this.isStopping = false;
@@ -6653,31 +6238,15 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       } else if (this.isSeeking) {
         this.cancelScheduledTasks();
         await this.stopNotes(now);
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
         this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        if (this.cacheMode === "segment") this.initSegmentPipeline();
-        if (this.cacheMode === "chunk") this.initChunkPipeline();
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
       }
       queueIndex = this.scheduleTimelineEvents(now, queueIndex);
-      if (this.cacheMode === "segment") {
-        const timeOffset = this.resumeTime - this.startTime;
-        this.updateSegmentPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration
-        );
-      }
-      if (this.cacheMode === "chunk") {
-        const timeOffset = this.resumeTime - this.startTime;
-        this.updateChunkPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration
-        );
-      }
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {
       }, waitTime);
@@ -6810,21 +6379,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     this.notePromises = [];
     return Promise.all(residualPromises);
   }
-  // "segment" mode: per-channel pipeline that groups segment-baked notes into
-  // short combined buffers instead of one AudioBufferSourceNode per note.
-  //
-  // Grouping happens eagerly, in onNoteOn, in exact timeline order: a new
-  // segment opens at the first baked note's onset and stays open for up to
-  // segmentDuration seconds, after which the next baked note (or, if none
-  // arrives in time, the next updateSegmentPipeline tick) closes it. Notes
-  // are queued as plain data (offset/noteNumber/velocity/voiceParams/
-  // duration/events) — no rendering happens yet at this point. Once the
-  // segment closes, all of its notes are baked together in renderSegmentBuffer
-  // using a single OfflineAudioContext / startRendering() call (each note
-  // still gets its own full envelope/pitch-bend/LFO/CC#1 bake, like "note"
-  // mode, but without channel volume/pan/expression so the combined segment
-  // can still be mixed live through channel.gainL/gainR), then the resulting
-  // buffer is scheduled as a single AudioBufferSourceNode.
   tryGetVoice(bank, programNumber, noteNumber, velocity) {
     const bankTable = this.soundFontTable[programNumber];
     if (!bankTable) return null;
@@ -6905,7 +6459,7 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     }
     let result = this.tryGetVoice(0, programNumber, noteNumber, velocity);
     if (result) return result;
-    const family = _PlayerRuntime.gmFamilyCandidates(programNumber);
+    const family = _BasePlayer.gmFamilyCandidates(programNumber);
     for (let i = 0; i < family.length; i++) {
       result = this.tryGetVoice(0, family[i], noteNumber, velocity);
       if (result) return result;
@@ -6926,8 +6480,8 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       return;
     }
     this.resumeTime = 0;
-    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
-    if (preload) await this.preloadSamples();
+    if (this.voiceCounter.size === 0) this.prepareVoices();
+    if (preload) await this.preloadSamplesBase();
     this.playPromise = this.playNotes();
     await this.playPromise;
   }
@@ -6941,16 +6495,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     if (this.isPaused) {
       const now = this.audioContext.currentTime;
       await this.stopNotes(now);
-      if (this.cacheMode === "segment") this.stopSegmentSources();
-      if (this.cacheMode === "chunk") this.stopChunkSources();
-      if (this.audioModeBufferSource) {
-        try {
-          this.audioModeBufferSource.stop();
-        } catch {
-        }
-        this.audioModeBufferSource.disconnect();
-        this.audioModeBufferSource = null;
-      }
       this.resetAllStates();
       this.resumeTime = 0;
       this.isPaused = false;
@@ -6983,28 +6527,11 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     }
   }
   tempoChange(tempo) {
-    const cacheMode = this.cacheMode;
     const timeScale = this.tempo / tempo;
     this.resumeTime = this.resumeTime * timeScale;
     this.tempo = tempo;
     this.totalTime = this.calcTotalTime();
     this.seekTo(this.currentTime() * timeScale);
-    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" || cacheMode === "segment" || cacheMode === "chunk") {
-      this.buildNoteOnDurations();
-      this.fullVoiceCache.clear();
-      this.adsrVoiceCache.clear();
-    }
-    if (cacheMode === "segment" || cacheMode === "chunk") {
-      this.finalizeSegmentClassification();
-    }
-    if (cacheMode === "audio") {
-      if (this.audioModeBufferSource) {
-        this.audioModeBufferSource.playbackRate.setValueAtTime(
-          this.tempo,
-          this.audioContext.currentTime
-        );
-      }
-    }
     this.dispatchEvent(new Event("tempoChanged"));
   }
   calcTotalTime() {
@@ -7023,9 +6550,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   currentTime() {
     if (!this.isPlaying) return this.resumeTime;
     const now = this.audioContext.currentTime;
-    if (this.cacheMode === "audio") {
-      return this.resumeTime + (now - this.startTime) * this.tempo;
-    }
     return now + this.resumeTime - this.startTime;
   }
   rateToCent(rate) {
@@ -7141,84 +6665,7 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     const volumeTarget = note.volumeEnvelopeNode ?? note.volumeNode;
     if (volumeTarget) note.modLfoToVolume.connect(volumeTarget.gain);
   }
-  // --- hooks overridden by Player (cache / offline render) ---
-  initSegmentPipeline() {
-  }
-  drainSegmentPipeline() {
-    return Promise.resolve();
-  }
-  stopSegmentSources() {
-  }
-  appendToSegmentQueue(_channelNumber, _t, _timelineIndex, _noteNumber, _velocity) {
-  }
-  closeSegment(_state, _channel) {
-  }
-  startPendingSegment(_channel, _pending) {
-  }
-  updateSegmentPipeline(_lookAheadCheckTime) {
-  }
-  initChunkPipeline() {
-  }
-  drainChunkPipeline() {
-    return Promise.resolve();
-  }
-  stopChunkSources() {
-  }
-  appendToChunkQueue(_channel, _t, _timelineIndex, _noteNumber, _velocity) {
-  }
-  closeChunk(_state) {
-  }
-  startPendingChunk(_pending) {
-  }
-  updateChunkPipeline(_lookAheadCheckTime) {
-  }
-  renderChunkBuffer(_chunk) {
-    return Promise.resolve(null);
-  }
-  render() {
-    return Promise.resolve(void 0);
-  }
-  preloadSamples() {
-    return Promise.resolve();
-  }
-  createAdsRenderedBuffer(_channel, _note, _voiceParams, audioBuffer, _isDrum = false) {
-    return Promise.resolve(new RenderedBuffer(audioBuffer));
-  }
-  createAdsrRenderedBuffer(_channel, _note, _voiceParams, audioBuffer, _noteDuration, _isDrum = false) {
-    return Promise.resolve(new RenderedBuffer(audioBuffer));
-  }
-  finalizeSegmentClassification() {
-  }
-  renderSegmentBuffer(_channel, _segment) {
-    return Promise.resolve(null);
-  }
-  createFullRenderedBuffer(_channel, _note, _voiceParams, _noteDuration, _noteEvent) {
-    return Promise.resolve(
-      new RenderedBuffer(
-        this.audioContext.createBuffer(1, 1, this.audioContext.sampleRate)
-      )
-    );
-  }
-  releaseFullCache(_note) {
-  }
-  async getAudioBuffer(channel2, note, _realtime) {
-    const { noteNumber, velocity } = note;
-    const audioBufferId = note.audioBufferId !== void 0 ? note.audioBufferId : this.getVoiceId(channel2, noteNumber, velocity);
-    if (!note.voiceParams) return void 0;
-    if (!audioBufferId) {
-      return await this.createAudioBuffer(note.voiceParams);
-    }
-    return await this.getRawAudioBuffer(audioBufferId, note.voiceParams);
-  }
-  getAdsCachedBuffer(channel2, note, _audioBufferId, realtime) {
-    return this.getAudioBuffer(channel2, note, realtime);
-  }
-  getAdsrCachedBuffer(channel2, note, _audioBufferId) {
-    return this.getAudioBuffer(channel2, note, false);
-  }
-  getFullCachedBuffer(channel2, note, _audioBufferId) {
-    return this.getAudioBuffer(channel2, note, false);
-  }
+  // --- cache / offline-render implementations ---
   async setNoteAudioNode(channel2, note, realtime) {
     const audioContext = this.audioContext;
     const now = audioContext.currentTime;
@@ -7233,13 +6680,16 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
     const voiceParams = note.voiceParams ?? note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
-    if (note.isSegmentGhost) {
-      return;
+    if (note.isSegmentGhost) return;
+    const audioBufferId = note.audioBufferId !== void 0 ? note.audioBufferId : this.getVoiceId(channel2, noteNumber, velocity);
+    let audioBuffer;
+    if (audioBufferId !== void 0) {
+      audioBuffer = await this.getRawAudioBuffer(audioBufferId, voiceParams);
+    } else {
+      audioBuffer = await this.createAudioBuffer(voiceParams);
     }
-    const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
     if (note.ending || !audioBuffer) return;
-    const isRendered = audioBuffer instanceof RenderedBuffer;
-    note.renderedBuffer = isRendered ? audioBuffer : null;
+    note.renderedBuffer = null;
     note.bufferSource = this.createBufferSource(
       channel2,
       note.noteNumber,
@@ -7247,50 +6697,34 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       audioBuffer
     );
     note.volumeNode = new GainNode(audioContext);
-    const cacheMode = this.cacheMode;
-    const isFullCached = isRendered && audioBuffer.isFull === true;
-    if (cacheMode === "none") {
-      note.volumeEnvelopeNode = new GainNode(audioContext);
-      const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 || voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
-      note.filterEnvelopeNode = filterIsAudible ? new BiquadFilterNode(audioContext, {
-        type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10
-      }) : null;
-      this.setVolumeEnvelope(channel2, note, now);
-      if (note.filterEnvelopeNode) this.setFilterEnvelope(channel2, note, now);
-      this.setPitchEnvelope(note, now);
-      this.setDetune(channel2, note, now);
-      const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 || voiceParams.modLfoToFilterFc !== 0 || voiceParams.modLfoToVolume !== 0;
-      if (modLfoIsAudible && 0 < state.modulationDepthMSB) {
-        this.startModulation(channel2, note, now);
-      }
-      if (note.filterEnvelopeNode) {
-        note.bufferSource.connect(note.filterEnvelopeNode);
-        note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
-      } else {
-        note.bufferSource.connect(note.volumeEnvelopeNode);
-      }
-      note.volumeEnvelopeNode.connect(note.volumeNode);
-    } else if (isFullCached) {
-      note.volumeEnvelopeNode = null;
-      note.filterEnvelopeNode = null;
-      note.bufferSource.connect(note.volumeNode);
-    } else {
-      note.volumeEnvelopeNode = null;
-      note.filterEnvelopeNode = null;
-      this.setDetune(channel2, note, now);
-      if (0 < state.modulationDepthMSB) {
-        this.startModulation(channel2, note, now);
-      }
-      note.bufferSource.connect(note.volumeNode);
+    note.volumeEnvelopeNode = new GainNode(audioContext);
+    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 || voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+    note.filterEnvelopeNode = filterIsAudible ? new BiquadFilterNode(audioContext, {
+      type: "lowpass",
+      Q: voiceParams.initialFilterQ / 10
+    }) : null;
+    this.setVolumeEnvelope(channel2, note, now);
+    if (note.filterEnvelopeNode) this.setFilterEnvelope(channel2, note, now);
+    this.setPitchEnvelope(note, now);
+    this.setDetune(channel2, note, now);
+    const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 || voiceParams.modLfoToFilterFc !== 0 || voiceParams.modLfoToVolume !== 0;
+    if (modLfoIsAudible && 0 < state.modulationDepthMSB) {
+      this.startModulation(channel2, note, now);
     }
+    if (note.filterEnvelopeNode) {
+      note.bufferSource.connect(note.filterEnvelopeNode);
+      note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+    } else {
+      note.bufferSource.connect(note.volumeEnvelopeNode);
+    }
+    note.volumeEnvelopeNode.connect(note.volumeNode);
     if (!realtime) {
       this.warnIfStartTimeMissed(
         `note (channel ${channel2.channelNumber}, note ${note.noteNumber})`,
         startTime
       );
     }
-    if (!isRendered && voiceParams.sample.type === "compressed") {
+    if (voiceParams.sample.type === "compressed") {
       note.bufferSource.start(
         startTime,
         voiceParams.start / audioBuffer.sampleRate
@@ -7325,9 +6759,8 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   // Shared across every cache mode: AudioBufferSourceNode.start(t) with a
   // t that has already passed doesn't throw or wait for the next bar — it
   // just starts immediately, on the next render quantum. If preparing a
-  // note/segment (decoding, envelope baking, or — for "segment" mode —
-  // the whole renderSegmentBuffer offline render) takes longer than
-  // lookAhead, the note/segment's intended start time silently passes
+  // note (decoding, envelope setup) takes longer than lookAhead,
+  // the note's intended start time silently passes
   // while still being prepared, so it ends up playing late and "snapped"
   // to whatever moment preparation finished, instead of on the beat. This
   // logs that so it's visible instead of just sounding subtly wrong.
@@ -7398,68 +6831,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
   }
   releaseNote(_channel, note, endTime) {
     if (note.isSegmentGhost) return;
-    const now = this.audioContext.currentTime;
-    if (note.renderedBuffer?.isFull) {
-      const rb = note.renderedBuffer;
-      const naturalEndTime = note.startTime + rb.buffer.duration;
-      const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-      const isEarlyCut = endTime < noteOffTime;
-      if (isEarlyCut) {
-        const volDuration2 = note.voiceParams?.volRelease ?? 0;
-        const volRelease2 = endTime + volDuration2;
-        try {
-          note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * envelopeCurve);
-        } catch {
-        }
-        return new Promise((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            this.releaseFullCache(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(volRelease2);
-          } catch {
-            finish();
-          }
-        });
-      }
-      if (naturalEndTime <= now) {
-        this.disconnectNote(note);
-        this.releaseFullCache(note);
-        return;
-      }
-      return new Promise((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          resolve();
-        };
-        const src = note.bufferSource;
-        if (!src) {
-          finish();
-          return;
-        }
-        src.onended = finish;
-        try {
-          src.stop(naturalEndTime);
-        } catch {
-          finish();
-        }
-      });
-    }
     const volDuration = note.voiceParams?.volRelease ?? 0;
     const volRelease = endTime + volDuration;
     if (note.volumeEnvelopeNode) {
@@ -7472,63 +6843,6 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       } catch {
       }
     } else {
-      const isAdsr = note.renderedBuffer?.releaseDuration != null && !note.renderedBuffer.isFull;
-      if (isAdsr) {
-        const rb = note.renderedBuffer;
-        const naturalEndTime = note.startTime + rb.buffer.duration;
-        const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-        const isEarlyCut = endTime < noteOffTime;
-        if (isEarlyCut) {
-          try {
-            note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
-          } catch {
-          }
-          return new Promise((resolve) => {
-            let settled = false;
-            const finish = () => {
-              if (settled) return;
-              settled = true;
-              this.disconnectNote(note);
-              resolve();
-            };
-            const src = note.bufferSource;
-            if (!src) {
-              finish();
-              return;
-            }
-            src.onended = finish;
-            try {
-              src.stop(volRelease);
-            } catch {
-              finish();
-            }
-          });
-        }
-        if (naturalEndTime <= now) {
-          this.disconnectNote(note);
-          return;
-        }
-        return new Promise((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(naturalEndTime);
-          } catch {
-            finish();
-          }
-        });
-      }
       try {
         note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
       } catch {
@@ -7965,10 +7279,688 @@ var PlayerRuntime = class _PlayerRuntime extends EventTarget {
       bufferSource.start(scheduleTime);
     });
   }
+  /** Resolve voice IDs / preload entries for the current timeline. */
+  prepareVoices() {
+    const { channels: channels2, timeline, voiceCounter } = this;
+    const settings = this.constructor.channelSettings;
+    for (let ch = 0; ch < channels2.length; ch++) {
+      const channel2 = channels2[ch];
+      channel2.resetSettings(settings);
+      channel2.state = new ControllerState();
+      channel2.isDrum = false;
+      channel2.detune = 0;
+      channel2.programNumber = 0;
+    }
+    if (channels2[9]) channels2[9].isDrum = true;
+    const noteAudioBufferIds = new Array(
+      timeline.length
+    );
+    const preloadEntries = [];
+    const seenPreloadIds = /* @__PURE__ */ new Set();
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      switch (event.type) {
+        case "noteOn": {
+          const channel2 = channels2[event.channel];
+          const audioBufferId = this.getVoiceId(
+            channel2,
+            event.noteNumber,
+            event.velocity
+          );
+          if (audioBufferId !== void 0) {
+            voiceCounter.set(
+              audioBufferId,
+              (voiceCounter.get(audioBufferId) ?? 0) + 1
+            );
+            noteAudioBufferIds[i] = audioBufferId;
+            const voice = this.resolveVoice(
+              channel2,
+              event.noteNumber,
+              event.velocity
+            );
+            if (voice) {
+              const controllerState = this.getControllerState(
+                channel2,
+                event.noteNumber,
+                event.velocity,
+                0
+              );
+              const voiceParams = voice.getAllParams(controllerState);
+              if (!seenPreloadIds.has(audioBufferId)) {
+                seenPreloadIds.add(audioBufferId);
+                preloadEntries.push({ audioBufferId, voiceParams });
+              }
+            }
+          }
+          break;
+        }
+        case "programChange":
+          channels2[event.channel].setProgramChange(event.programNumber);
+      }
+    }
+    this.noteAudioBufferIds = noteAudioBufferIds;
+    this.preloadEntries = preloadEntries;
+    for (const [audioBufferId, count] of voiceCounter) {
+      if (count === 1) voiceCounter.delete(audioBufferId);
+    }
+    this.GM1SystemOn(this.audioContext.currentTime);
+  }
+  async preloadSamplesBase() {
+    const entries = this.preloadEntries;
+    const tasks = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
+      tasks.push(
+        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams)
+      );
+    }
+    await Promise.all(tasks);
+  }
 };
 
 // src/player.ts
-var Player = class extends PlayerRuntime {
+var DEFAULT_CACHE_MODE = "segment";
+var Player = class extends BasePlayer {
+  cacheMode = DEFAULT_CACHE_MODE;
+  voiceCache = /* @__PURE__ */ new Map();
+  realtimeVoiceCache = /* @__PURE__ */ new Map();
+  adsrVoiceCache = /* @__PURE__ */ new Map();
+  noteOnDurations = [];
+  noteOnEvents = [];
+  fullVoiceCache = /* @__PURE__ */ new Map();
+  renderedAudioBuffer = null;
+  isRendering = false;
+  // audio mode
+  audioModeBufferSource = null;
+  audioWindowDuration = 4;
+  // segment mode
+  segmentDuration = 1;
+  maxSegmentNoteDuration = 8;
+  segmentBakedSet = /* @__PURE__ */ new Set();
+  segmentChannelStates = [];
+  segmentVoiceParams = [];
+  segmentVoices = [];
+  segmentGeneration = 0;
+  // chunk mode
+  chunkState = { openChunk: null, pending: [] };
+  chunkGeneration = 0;
+  constructor(audioContext, options) {
+    super(audioContext, options);
+    this.cacheMode = DEFAULT_CACHE_MODE;
+  }
+  async loadMIDI(input) {
+    if (this.isPlaying || this.isPaused) {
+      await this.stop();
+    }
+    this.voiceCounter.clear();
+    this.clearPlaybackCaches();
+    this.renderedAudioBuffer = null;
+    this.noteAudioBufferIds = [];
+    this.preloadEntries = [];
+    this.segmentBakedSet.clear();
+    this.segmentVoiceParams = [];
+    this.segmentVoices = [];
+    this.noteOnDurations = [];
+    this.noteOnEvents = [];
+    this.resumeTime = 0;
+    this.isPaused = false;
+    const uint8Array2 = await this.toUint8Array(input);
+    const midi = (0, import_midi_file2.parseMidi)(uint8Array2);
+    this.ticksPerBeat = midi.header.ticksPerBeat ?? 480;
+    const midiData = this.extractMidiData(midi);
+    this.instruments = midiData.instruments;
+    this.timeline = midiData.timeline;
+    this.totalTime = this.calcTotalTime();
+    if (this.cacheMode === "audio") {
+      await this.render();
+    }
+  }
+  buildNoteOnDurations() {
+    const { timeline, totalTime, noteOnDurations, noteOnEvents, numChannels } = this;
+    noteOnDurations.length = 0;
+    noteOnEvents.length = 0;
+    noteOnDurations.length = timeline.length;
+    noteOnEvents.length = timeline.length;
+    const inverseTempo = 1 / this.tempo;
+    const sustainPedal = new Uint8Array(numChannels);
+    const activeNotes = /* @__PURE__ */ new Map();
+    const pendingOff = /* @__PURE__ */ new Map();
+    const finalizeEntry = (entry, endTime, endTicks) => {
+      const duration2 = Math.max(0, endTime - entry.startTime);
+      const durationTicks = endTicks == null || endTicks === Infinity ? Infinity : Math.max(0, endTicks - entry.startTicks);
+      noteOnDurations[entry.idx] = duration2;
+      noteOnEvents[entry.idx] = {
+        duration: duration2,
+        durationTicks,
+        startTime: entry.startTime,
+        events: entry.events
+      };
+    };
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const t2 = event.startTime * inverseTempo;
+      switch (event.type) {
+        case "noteOn": {
+          const ch = event.channel ?? 0;
+          const key = event.noteNumber * numChannels + ch;
+          if (!activeNotes.has(key)) activeNotes.set(key, []);
+          activeNotes.get(key).push({
+            idx: i,
+            startTime: t2,
+            startTicks: event.ticks,
+            events: []
+          });
+          const pendingStack = pendingOff.get(key);
+          if (pendingStack && pendingStack.length > 0) pendingStack.shift();
+          break;
+        }
+        case "noteOff": {
+          const ch = event.channel ?? 0;
+          const key = event.noteNumber * numChannels + ch;
+          if (sustainPedal[ch]) {
+            if (!pendingOff.has(key)) pendingOff.set(key, []);
+            pendingOff.get(key).push({ t: t2, ticks: event.ticks });
+          } else {
+            const stack = activeNotes.get(key);
+            if (stack && stack.length > 0) {
+              finalizeEntry(stack.shift(), t2, event.ticks);
+              if (stack.length === 0) activeNotes.delete(key);
+            }
+          }
+          break;
+        }
+        case "controller": {
+          const ch = event.channel ?? 0;
+          for (const [key, entries] of activeNotes) {
+            if (key % numChannels !== ch) continue;
+            for (const entry of entries) entry.events.push(event);
+          }
+          switch (event.controllerType) {
+            case 64: {
+              const on2 = event.value >= 64;
+              sustainPedal[ch] = on2 ? 1 : 0;
+              if (!on2) {
+                for (const [key, offItems] of pendingOff) {
+                  if (key % numChannels !== ch) continue;
+                  const activeStack = activeNotes.get(key);
+                  for (const { t: offTime, ticks: offTicks } of offItems) {
+                    if (activeStack && activeStack.length > 0) {
+                      finalizeEntry(activeStack.shift(), offTime, offTicks);
+                      if (activeStack.length === 0) activeNotes.delete(key);
+                    }
+                  }
+                  pendingOff.delete(key);
+                }
+              }
+              break;
+            }
+            case 121:
+              sustainPedal[ch] = 0;
+              break;
+            case 120:
+            // All Sound Off
+            case 123: {
+              for (const [key, stack] of activeNotes) {
+                if (key % numChannels !== ch) continue;
+                for (const entry of stack) finalizeEntry(entry, t2, event.ticks);
+                activeNotes.delete(key);
+              }
+              for (const key of pendingOff.keys()) {
+                if (key % numChannels === ch) pendingOff.delete(key);
+              }
+              break;
+            }
+          }
+          break;
+        }
+        case "sysEx": {
+          const data3 = event.data;
+          if (data3[0] === 126 && data3[1] === 9 && data3[2] === 3) {
+            if (data3[3] === 1) {
+              sustainPedal.fill(0);
+              pendingOff.clear();
+              for (const [, stack] of activeNotes) {
+                for (const entry of stack) finalizeEntry(entry, t2, event.ticks);
+              }
+              activeNotes.clear();
+            }
+          } else {
+            for (const [, entries] of activeNotes) {
+              for (const entry of entries) entry.events.push(event);
+            }
+          }
+          break;
+        }
+        case "pitchBend":
+        case "programChange": {
+          const ch = event.channel;
+          for (const [key, entries] of activeNotes) {
+            if (key % numChannels !== ch) continue;
+            for (const entry of entries) entry.events.push(event);
+          }
+        }
+      }
+    }
+    for (const [, stack] of activeNotes) {
+      for (const entry of stack) finalizeEntry(entry, totalTime, Infinity);
+    }
+  }
+  cacheVoiceIds() {
+    const { channels: channels2, timeline, voiceCounter, cacheMode } = this;
+    const settings = this.constructor.channelSettings;
+    for (let ch = 0; ch < channels2.length; ch++) {
+      const channel2 = channels2[ch];
+      channel2.resetSettings(settings);
+      channel2.state = new ControllerState();
+      channel2.isDrum = false;
+      channel2.detune = 0;
+      channel2.programNumber = 0;
+    }
+    if (channels2[9]) channels2[9].isDrum = true;
+    const isSegmentMode = cacheMode === "segment";
+    const isChunkMode = cacheMode === "chunk";
+    const needsSegmentData = isSegmentMode || isChunkMode;
+    const segmentVoiceParams = needsSegmentData ? new Array(timeline.length).fill(null) : [];
+    const segmentVoices = needsSegmentData ? new Array(timeline.length).fill(null) : [];
+    const noteAudioBufferIds = new Array(
+      timeline.length
+    );
+    const preloadEntries = [];
+    const seenPreloadIds = /* @__PURE__ */ new Set();
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      switch (event.type) {
+        case "noteOn": {
+          const channel2 = channels2[event.channel];
+          const audioBufferId = this.getVoiceId(
+            channel2,
+            event.noteNumber,
+            event.velocity
+          );
+          voiceCounter.set(
+            audioBufferId,
+            (voiceCounter.get(audioBufferId) ?? 0) + 1
+          );
+          const isExcludedDrum = channel2.isDrum && this.drumExclusiveClasses[event.noteNumber] !== 0;
+          if (audioBufferId !== void 0) {
+            noteAudioBufferIds[i] = audioBufferId;
+            const voice = this.resolveVoice(
+              channel2,
+              event.noteNumber,
+              event.velocity
+            );
+            if (voice) {
+              const controllerState = this.getControllerState(
+                channel2,
+                event.noteNumber,
+                event.velocity,
+                0
+              );
+              const voiceParams = voice.getAllParams(controllerState);
+              if (needsSegmentData && !isExcludedDrum) {
+                segmentVoiceParams[i] = voiceParams;
+                segmentVoices[i] = voice;
+              }
+              if (!seenPreloadIds.has(audioBufferId)) {
+                seenPreloadIds.add(audioBufferId);
+                preloadEntries.push({ audioBufferId, voiceParams });
+              }
+            }
+          }
+          break;
+        }
+        case "programChange":
+          channels2[event.channel].setProgramChange(event.programNumber);
+      }
+    }
+    this.noteAudioBufferIds = noteAudioBufferIds;
+    this.preloadEntries = preloadEntries;
+    for (const [audioBufferId, count] of voiceCounter) {
+      if (count === 1) voiceCounter.delete(audioBufferId);
+    }
+    this.GM1SystemOn(this.audioContext.currentTime);
+    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" || cacheMode === "segment" || cacheMode === "chunk") {
+      this.buildNoteOnDurations();
+    }
+    if (needsSegmentData) {
+      this.segmentVoiceParams = segmentVoiceParams;
+      this.segmentVoices = segmentVoices;
+      this.finalizeSegmentClassification();
+    }
+  }
+  scheduleTimelineEvents(scheduleTime, queueIndex) {
+    const timeOffset = this.resumeTime - this.startTime;
+    const isSegmentMode = this.cacheMode === "segment";
+    const isChunkMode = this.cacheMode === "chunk";
+    const effectiveLookAhead = isSegmentMode || isChunkMode ? this.lookAhead + this.maxSegmentNoteDuration : this.lookAhead;
+    const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
+    const schedulingOffset = this.startDelay - timeOffset;
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    while (queueIndex < timeline.length) {
+      const event = timeline[queueIndex];
+      const t2 = event.startTime * inverseTempo;
+      if (lookAheadCheckTime < t2) break;
+      const startTime = t2 + schedulingOffset;
+      this.processTimelineEvent(event, startTime, {
+        onNoteOn: (channel2, event2, startTime2) => {
+          const note = this.createNoteInstance(
+            event2.noteNumber,
+            event2.velocity,
+            startTime2
+          );
+          note.timelineIndex = queueIndex;
+          note.audioBufferId = this.noteAudioBufferIds[queueIndex];
+          const isSegmentNote = isSegmentMode && this.segmentBakedSet.has(queueIndex);
+          const isChunkNote = isChunkMode && this.segmentBakedSet.has(queueIndex);
+          if (isSegmentNote || isChunkNote) {
+            note.isSegmentGhost = true;
+            note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
+          }
+          channel2.noteOn(
+            event2.noteNumber,
+            event2.velocity,
+            startTime2,
+            note
+          );
+          if (isSegmentNote) {
+            this.appendToSegmentQueue(
+              channel2.channelNumber,
+              t2,
+              queueIndex,
+              event2.noteNumber,
+              event2.velocity
+            );
+          }
+          if (isChunkNote) {
+            this.appendToChunkQueue(
+              channel2,
+              t2,
+              queueIndex,
+              event2.noteNumber,
+              event2.velocity
+            );
+          }
+        },
+        onNoteOff: (channel2, event2, startTime2) => {
+          channel2.noteOff(event2.noteNumber, event2.velocity, startTime2, false);
+        }
+      });
+      queueIndex++;
+    }
+    return queueIndex;
+  }
+  clearPlaybackCaches() {
+    this.voiceCache.clear();
+    this.realtimeVoiceCache.clear();
+    this.adsrVoiceCache.clear();
+    this.fullVoiceCache.clear();
+  }
+  async playAudioBuffer() {
+    const audioContext = this.audioContext;
+    const paused = this.isPaused;
+    this.isPlaying = true;
+    this.isPaused = false;
+    this.startTime = audioContext.currentTime;
+    if (paused) {
+      this.dispatchEvent(new Event("resumed"));
+    } else {
+      this.dispatchEvent(new Event("started"));
+    }
+    let exitReason;
+    outer: while (true) {
+      const buffer2 = this.renderedAudioBuffer;
+      const bufferSource = new AudioBufferSourceNode(audioContext, { buffer: buffer2 });
+      bufferSource.playbackRate.value = this.tempo;
+      bufferSource.connect(this.masterVolume);
+      const offset = Math.min(Math.max(this.resumeTime, 0), buffer2.duration);
+      bufferSource.start(audioContext.currentTime, offset);
+      this.audioModeBufferSource = bufferSource;
+      let naturalEnded = false;
+      bufferSource.onended = () => {
+        naturalEnded = true;
+      };
+      while (true) {
+        const now = audioContext.currentTime;
+        await this.scheduleTask(() => {
+        }, now + this.noteCheckInterval);
+        if (naturalEnded || this.currentTime() >= this.totalTime) {
+          bufferSource.disconnect();
+          this.audioModeBufferSource = null;
+          if (this.loop) {
+            this.resumeTime = 0;
+            this.startTime = audioContext.currentTime;
+            this.dispatchEvent(new Event("looped"));
+            continue outer;
+          }
+          await this.suspendAudioContext();
+          exitReason = "ended";
+          break outer;
+        }
+        if (this.isPausing) {
+          this.cancelScheduledTasks();
+          this.resumeTime = this.currentTime();
+          bufferSource.stop();
+          bufferSource.disconnect();
+          this.audioModeBufferSource = null;
+          this.isPausing = false;
+          exitReason = "paused";
+          break outer;
+        } else if (this.isStopping) {
+          this.cancelScheduledTasks();
+          bufferSource.stop();
+          bufferSource.disconnect();
+          this.audioModeBufferSource = null;
+          await this.suspendAudioContext();
+          this.isStopping = false;
+          exitReason = "stopped";
+          break outer;
+        } else if (this.isSeeking) {
+          this.cancelScheduledTasks();
+          bufferSource.stop();
+          bufferSource.disconnect();
+          this.audioModeBufferSource = null;
+          this.startTime = audioContext.currentTime;
+          this.isSeeking = false;
+          this.dispatchEvent(new Event("seeked"));
+          continue outer;
+        }
+      }
+    }
+    this.isPlaying = false;
+    if (exitReason === "paused") {
+      this.isPaused = true;
+      this.dispatchEvent(new Event("paused"));
+    } else if (exitReason !== void 0) {
+      this.isPaused = false;
+      this.dispatchEvent(new Event(exitReason));
+    }
+  }
+  async playNotes() {
+    const audioContext = this.audioContext;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    if (this.cacheMode === "audio" && this.renderedAudioBuffer) {
+      return await this.playAudioBuffer();
+    }
+    const paused = this.isPaused;
+    this.isPlaying = true;
+    this.isPaused = false;
+    this.startTime = audioContext.currentTime;
+    if (paused) {
+      this.dispatchEvent(new Event("resumed"));
+    } else {
+      this.dispatchEvent(new Event("started"));
+    }
+    let queueIndex = this.getQueueIndex(this.resumeTime);
+    if (this.cacheMode === "segment") this.initSegmentPipeline();
+    if (this.cacheMode === "chunk") this.initChunkPipeline();
+    let exitReason;
+    this.notePromises = [];
+    while (true) {
+      const now = audioContext.currentTime;
+      if (this.totalTime < this.currentTime() && this.timeline.length <= queueIndex) {
+        const pendingPromises = this.notePromises.slice();
+        this.notePromises = [];
+        await Promise.allSettled(pendingPromises);
+        if (this.loop) {
+          this.resetAllStates();
+          this.startTime = audioContext.currentTime;
+          this.resumeTime = 0;
+          queueIndex = 0;
+          if (this.cacheMode === "segment") {
+            this.segmentGeneration++;
+            this.initSegmentPipeline();
+          }
+          if (this.cacheMode === "chunk") {
+            this.chunkGeneration++;
+            this.initChunkPipeline();
+          }
+          this.dispatchEvent(new Event("looped"));
+          continue;
+        } else {
+          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+          await this.stopNotes(now);
+          await this.suspendAudioContext();
+          exitReason = "ended";
+          break;
+        }
+      }
+      if (this.isPausing) {
+        this.cancelScheduledTasks();
+        if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
+        await this.stopNotes(now);
+        this.isPausing = false;
+        exitReason = "paused";
+        break;
+      } else if (this.isStopping) {
+        this.cancelScheduledTasks();
+        if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
+        await this.stopNotes(now);
+        await this.suspendAudioContext();
+        this.isStopping = false;
+        exitReason = "stopped";
+        break;
+      } else if (this.isSeeking) {
+        this.cancelScheduledTasks();
+        await this.stopNotes(now);
+        if (this.cacheMode === "segment") this.stopSegmentSources();
+        if (this.cacheMode === "chunk") this.stopChunkSources();
+        this.startTime = audioContext.currentTime;
+        const nextQueueIndex = this.getQueueIndex(this.resumeTime);
+        this.updateStates(queueIndex, nextQueueIndex);
+        queueIndex = nextQueueIndex;
+        if (this.cacheMode === "segment") this.initSegmentPipeline();
+        if (this.cacheMode === "chunk") this.initChunkPipeline();
+        this.isSeeking = false;
+        this.dispatchEvent(new Event("seeked"));
+        continue;
+      }
+      queueIndex = this.scheduleTimelineEvents(now, queueIndex);
+      if (this.cacheMode === "segment") {
+        const timeOffset = this.resumeTime - this.startTime;
+        this.updateSegmentPipeline(
+          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration
+        );
+      }
+      if (this.cacheMode === "chunk") {
+        const timeOffset = this.resumeTime - this.startTime;
+        this.updateChunkPipeline(
+          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration
+        );
+      }
+      const waitTime = now + this.noteCheckInterval;
+      await this.scheduleTask(() => {
+      }, waitTime);
+    }
+    if (exitReason !== "paused") {
+      this.resetAllStates();
+    }
+    this.isPlaying = false;
+    if (exitReason === "paused") {
+      this.isPaused = true;
+      this.dispatchEvent(new Event("paused"));
+    } else {
+      this.isPaused = false;
+      this.dispatchEvent(new Event(exitReason));
+    }
+  }
+  async start({ preload = true } = {}) {
+    if (this.isPlaying) return;
+    if (this.isPaused) {
+      await this.resume();
+      return;
+    }
+    this.resumeTime = 0;
+    if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    if (preload) await this.preloadSamples();
+    this.playPromise = this.playNotes();
+    await this.playPromise;
+  }
+  async stop() {
+    if (this.isPlaying) {
+      this.isStopping = true;
+      this.cancelScheduledTasks();
+      await this.playPromise;
+      return;
+    }
+    if (this.isPaused) {
+      const now = this.audioContext.currentTime;
+      await this.stopNotes(now);
+      if (this.cacheMode === "segment") this.stopSegmentSources();
+      if (this.cacheMode === "chunk") this.stopChunkSources();
+      if (this.audioModeBufferSource) {
+        try {
+          this.audioModeBufferSource.stop();
+        } catch {
+        }
+        this.audioModeBufferSource.disconnect();
+        this.audioModeBufferSource = null;
+      }
+      this.resetAllStates();
+      this.resumeTime = 0;
+      this.isPaused = false;
+      this.dispatchEvent(new Event("stopped"));
+    }
+  }
+  tempoChange(tempo) {
+    const cacheMode = this.cacheMode;
+    const timeScale = this.tempo / tempo;
+    this.resumeTime = this.resumeTime * timeScale;
+    this.tempo = tempo;
+    this.totalTime = this.calcTotalTime();
+    this.seekTo(this.currentTime() * timeScale);
+    if (cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" || cacheMode === "segment" || cacheMode === "chunk") {
+      this.buildNoteOnDurations();
+      this.fullVoiceCache.clear();
+      this.adsrVoiceCache.clear();
+    }
+    if (cacheMode === "segment" || cacheMode === "chunk") {
+      this.finalizeSegmentClassification();
+    }
+    if (cacheMode === "audio") {
+      if (this.audioModeBufferSource) {
+        this.audioModeBufferSource.playbackRate.setValueAtTime(
+          this.tempo,
+          this.audioContext.currentTime
+        );
+      }
+    }
+    this.dispatchEvent(new Event("tempoChanged"));
+  }
+  currentTime() {
+    if (!this.isPlaying) return this.resumeTime;
+    const now = this.audioContext.currentTime;
+    if (this.cacheMode === "audio") {
+      return this.resumeTime + (now - this.startTime) * this.tempo;
+    }
+    return now + this.resumeTime - this.startTime;
+  }
   initSegmentPipeline() {
     this.segmentChannelStates = Array.from(
       { length: this.numChannels },
@@ -8118,10 +8110,6 @@ var Player = class extends PlayerRuntime {
     source.start(absoluteStart);
     pending.source = source;
   }
-  // A still-open segment whose nominal window ends at or before
-  // lookAheadCheckTime can be safely closed: onNoteOn has already run for
-  // every channel up to that point, so no baked note that could still
-  // belong to it has been left unprocessed.
   updateSegmentPipeline(lookAheadCheckTime) {
     const channels2 = this.channels;
     const states = this.segmentChannelStates;
@@ -8139,12 +8127,6 @@ var Player = class extends PlayerRuntime {
       }
     }
   }
-  // "chunk" mode: same window-based grouping as "segment", but all active
-  // channels are merged into a SINGLE OfflineAudioContext per time window
-  // instead of one context per channel. TChannel volume/pan/expression are
-  // baked into the combined stereo buffer (snapshotted at chunk-open time),
-  // so the resulting AudioBufferSourceNode connects straight to masterVolume
-  // with no per-channel gainL/gainR mixing needed at playback time.
   initChunkPipeline() {
     this.chunkState = { openChunk: null, pending: [] };
   }
@@ -8270,16 +8252,6 @@ var Player = class extends PlayerRuntime {
       }
     }
   }
-  // Renders all notes from all channels within one chunk window into a
-  // single stereo AudioBuffer. Unlike renderSegmentBuffer (which renders
-  // one channel at a time and leaves volume/pan for real-time gainL/R),
-  // this method:
-  //   1. Creates one OfflineAudioContext for the whole chunk (stereo, 2 ch).
-  //   2. For each note, creates a per-channel offlinePlayer seeded from
-  //      the per-note channel snapshot (volume/pan/expression baked in).
-  //   3. Wires each note's volumeNode → channel gainL/gainR → merger →
-  //      offlineContext.destination so the stereo pan is baked correctly.
-  //   4. Returns the resulting stereo buffer ready to feed masterVolume.
   async renderChunkBuffer(chunk) {
     const notes = chunk.notes;
     if (notes.length === 0) return null;
@@ -8306,107 +8278,102 @@ var Player = class extends PlayerRuntime {
     offlineContext.resume = () => Promise.resolve();
     offlinePlayer.soundFonts = this.soundFonts;
     offlinePlayer.soundFontTable = this.soundFontTable;
-    offlinePlayer.rawAudioBufferCache = /* @__PURE__ */ new Map();
-    try {
-      offlinePlayer.masterVolume.disconnect();
-    } catch {
-    }
-    offlinePlayer.masterVolume.connect(offlineContext.destination);
-    for (const ch of allChannelNumbers) {
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
+    const orderedNotes = notes.map((n, originalIndex) => ({ n, originalIndex })).sort(
+      (a, b) => a.n.offset - b.n.offset || a.originalIndex - b.originalIndex
+    );
+    const seedOffsetByChannel = /* @__PURE__ */ new Map();
+    for (const { n } of orderedNotes) {
+      const ch = n.channelNumber;
+      if (seedOffsetByChannel.has(ch)) continue;
+      seedOffsetByChannel.set(ch, n.offset);
       const dstChannel = offlinePlayer.channels[ch];
-      dstChannel.modulationDepthRange = this.channels[ch]?.modulationDepthRange ?? dstChannel.modulationDepthRange;
+      dstChannel.state.array.set(n.channelStateArray);
+      dstChannel.isDrum = n.isDrum;
+      dstChannel.programNumber = n.programNumber;
+      dstChannel.modulationDepthRange = this.channels[ch].modulationDepthRange;
+      dstChannel.detune = n.channelDetune;
+      offlinePlayer.updateChannelVolume(dstChannel, 0);
     }
     const prefetchTasks = [];
-    const seenSampleKeys = /* @__PURE__ */ new Set();
+    const seenAudioBufferIds = /* @__PURE__ */ new Set();
     for (const n of notes) {
-      const sample2 = n.voiceParams.sample;
-      const key = sample2.type === "compressed" ? `c:${n.audioBufferId ?? ""}:${n.voiceParams.start}` : `p:${n.audioBufferId ?? ""}:${n.voiceParams.start}:${n.voiceParams.end}`;
-      if (seenSampleKeys.has(key)) continue;
-      seenSampleKeys.add(key);
-      prefetchTasks.push(offlinePlayer.createAudioBuffer(n.voiceParams));
+      const id = n.audioBufferId !== void 0 ? n.audioBufferId : offlinePlayer.getVoiceId(
+        offlinePlayer.channels[n.channelNumber],
+        n.noteNumber,
+        n.velocity
+      );
+      if (id === void 0 || seenAudioBufferIds.has(id)) continue;
+      seenAudioBufferIds.add(id);
+      prefetchTasks.push(
+        offlinePlayer.getRawAudioBuffer(id, n.voiceParams)
+      );
     }
     if (prefetchTasks.length > 0) await Promise.all(prefetchTasks);
-    const actions = [];
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
-      actions.push({ kind: "on", t: n.offset, i, n });
-      actions.push({
-        kind: "off",
-        t: n.offset + n.noteDuration,
-        i,
-        n
-      });
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } = n.noteEvent ?? {};
-      for (const event of noteEvents) {
-        if (event.type === "programChange") continue;
-        const rel = event.startTime / this.tempo - noteStartTime;
-        if (rel < 0 || rel > n.noteDuration) continue;
-        actions.push({
-          kind: "event",
-          t: n.offset + rel,
-          i,
-          n,
-          event
-        });
+    const inverseTempo = 1 / this.tempo;
+    const chunkStart = chunk.chunkStart;
+    const channelSet = new Set(allChannelNumbers);
+    const windowEvents = [];
+    for (let i = 0; i < this.timeline.length; i++) {
+      const event = this.timeline[i];
+      if (event.type === "noteOn" || event.type === "noteOff" || event.type === "programChange") {
+        continue;
       }
+      if (event.channel !== void 0 && !channelSet.has(event.channel)) {
+        continue;
+      }
+      const absT = event.startTime * inverseTempo;
+      const relT = absT - chunkStart;
+      if (relT < 0 || relT > totalDuration2) continue;
+      if (event.channel !== void 0) {
+        const seedOff = seedOffsetByChannel.get(event.channel);
+        if (seedOff !== void 0 && relT <= seedOff) continue;
+      }
+      windowEvents.push({ t: relT, event });
     }
-    const kindRank = (k) => k === "off" ? 0 : k === "event" ? 1 : 2;
-    actions.sort(
-      (a, b) => a.t - b.t || kindRank(a.kind) - kindRank(b.kind) || a.i - b.i
-    );
-    const appliedEvents = /* @__PURE__ */ new Set();
+    windowEvents.sort((a, b) => a.t - b.t);
     const offlineNotes = new Array(notes.length);
-    const channelHasActiveNotes = (channel2) => {
-      for (let i = 0; i < 128; i++) {
-        const stack = channel2.activeNotes[i];
-        if (!stack) continue;
-        for (let j = 0; j < stack.length; j++) {
-          if (!stack[j].ending) return true;
-        }
-      }
-      return false;
-    };
-    for (const action of actions) {
-      const { n } = action;
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
-      if (action.kind === "on") {
-        if (!channelHasActiveNotes(dstChannel)) {
-          dstChannel.state.array.set(n.channelStateArray);
-          dstChannel.isDrum = n.isDrum;
-          dstChannel.programNumber = n.programNumber;
-          dstChannel.detune = n.channelDetune;
-          offlinePlayer.updateChannelVolume(dstChannel, action.t);
-        }
-        const preNote = offlinePlayer.createNoteInstance(
-          n.noteNumber,
-          n.velocity,
-          n.offset
-        );
-        preNote.voiceParams = n.voiceParams;
-        preNote.voice = n.voice ?? null;
-        preNote.audioBufferId = void 0;
-        offlineNotes[action.i] = await offlinePlayer.noteOnChannel(
-          dstChannel,
-          n.noteNumber,
-          n.velocity,
-          n.offset,
-          preNote
-        );
-      } else if (action.kind === "off") {
-        offlinePlayer.noteOffChannel(
-          dstChannel,
-          n.noteNumber,
-          0,
-          action.t,
-          true
-        );
-      } else {
-        if (appliedEvents.has(action.event)) continue;
-        appliedEvents.add(action.event);
-        offlinePlayer.processTimelineEvent(action.event, action.t, {
+    let eventIdx = 0;
+    for (const { n, originalIndex } of orderedNotes) {
+      while (eventIdx < windowEvents.length && windowEvents[eventIdx].t <= n.offset) {
+        const { t: t2, event } = windowEvents[eventIdx++];
+        offlinePlayer.processTimelineEvent(event, t2, {
           channels: offlinePlayer.channels
         });
       }
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const preNote = offlinePlayer.createNoteInstance(
+        n.noteNumber,
+        n.velocity,
+        n.offset
+      );
+      preNote.voiceParams = n.voiceParams;
+      preNote.voice = n.voice ?? null;
+      preNote.audioBufferId = n.audioBufferId;
+      offlineNotes[originalIndex] = await offlinePlayer.noteOnChannel(
+        dstChannel,
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+        preNote
+      );
+    }
+    while (eventIdx < windowEvents.length) {
+      const { t: t2, event } = windowEvents[eventIdx++];
+      offlinePlayer.processTimelineEvent(event, t2, {
+        channels: offlinePlayer.channels
+      });
+    }
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        n.noteNumber,
+        0,
+        n.offset + n.noteDuration,
+        true
+      );
     }
     await Promise.resolve();
     return await offlineContext.startRendering();
@@ -8438,18 +8405,15 @@ var Player = class extends PlayerRuntime {
           const noteDuration = noteEvent?.duration ?? this.noteOnDurations[i] ?? 0;
           if (noteDuration <= 0) return;
           const { noteNumber, velocity } = event2;
-          const resolved = this.resolveVoiceResult(
+          const voice = this.resolveVoice(
             renderChannel,
             noteNumber,
             velocity
           );
-          if (!resolved) return;
-          const voice = resolved.voice;
+          if (!voice) return;
           const voiceParams = voice.getAllParams(
             this.getControllerState(renderChannel, noteNumber, velocity, 0)
           );
-          const { instrument, sampleID } = voice.generators;
-          const audioBufferId = resolved.soundFontIndex * 2 ** 31 + instrument * 2 ** 24 + (sampleID << 8);
           notes.push({
             channelNumber: renderChannel.channelNumber,
             offset,
@@ -8458,7 +8422,7 @@ var Player = class extends PlayerRuntime {
             voiceParams,
             noteDuration,
             noteEvent,
-            audioBufferId,
+            audioBufferId: this.noteAudioBufferIds[i],
             voice,
             channelDetune: renderChannel.detune,
             channelStateArray: renderChannel.state.array.slice(),
@@ -8473,7 +8437,7 @@ var Player = class extends PlayerRuntime {
       this.dispatchEvent(new Event("rendered"));
       return void 0;
     }
-    const WINDOW_SEC = 4;
+    const windowSec = this.audioWindowDuration;
     let maxEnd = 0;
     for (const n of notes) {
       const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
@@ -8489,10 +8453,10 @@ var Player = class extends PlayerRuntime {
     });
     const mixedL = mixed.getChannelData(0);
     const mixedR = mixed.getChannelData(1);
-    const windowCount = Math.max(1, Math.ceil(maxEnd / WINDOW_SEC));
+    const windowCount = Math.max(1, Math.ceil(maxEnd / windowSec));
     for (let w = 0; w < windowCount; w++) {
-      const winStart = w * WINDOW_SEC;
-      const winEnd = winStart + WINDOW_SEC;
+      const winStart = w * windowSec;
+      const winEnd = winStart + windowSec;
       const windowNotes = notes.filter(
         (n) => n.offset >= winStart && n.offset < winEnd
       );
@@ -8517,11 +8481,20 @@ var Player = class extends PlayerRuntime {
         mixedR[destOffset + i] += srcR[i];
       }
     }
+    const PEAK_TARGET = 0.95;
+    let peak = 0;
     for (let i = 0; i < totalFrames; i++) {
-      const l = mixedL[i];
-      const r = mixedR[i];
-      if (l > 1 || l < -1) mixedL[i] = Math.tanh(l);
-      if (r > 1 || r < -1) mixedR[i] = Math.tanh(r);
+      const al = mixedL[i] < 0 ? -mixedL[i] : mixedL[i];
+      const ar = mixedR[i] < 0 ? -mixedR[i] : mixedR[i];
+      if (al > peak) peak = al;
+      if (ar > peak) peak = ar;
+    }
+    if (peak > PEAK_TARGET) {
+      const scale = PEAK_TARGET / peak;
+      for (let i = 0; i < totalFrames; i++) {
+        mixedL[i] *= scale;
+        mixedR[i] *= scale;
+      }
     }
     this.renderedAudioBuffer = mixed;
     this.isRendering = false;
@@ -9103,6 +9076,245 @@ var Player = class extends PlayerRuntime {
         this.fullVoiceCache.delete(note.fullCacheVoiceId);
       }
     }
+  }
+  async setNoteAudioNode(channel2, note, realtime) {
+    const audioContext = this.audioContext;
+    const now = audioContext.currentTime;
+    const { noteNumber, velocity, startTime } = note;
+    const state = channel2.state;
+    const controllerState = this.getControllerState(
+      channel2,
+      noteNumber,
+      velocity,
+      note.pressure
+    );
+    const voiceParams = note.voiceParams ?? note.voice?.getAllParams(controllerState) ?? null;
+    note.voiceParams = voiceParams;
+    if (!voiceParams) return;
+    if (note.isSegmentGhost) {
+      return;
+    }
+    const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
+    if (note.ending || !audioBuffer) return;
+    const isRendered = audioBuffer instanceof RenderedBuffer;
+    note.renderedBuffer = isRendered ? audioBuffer : null;
+    note.bufferSource = this.createBufferSource(
+      channel2,
+      note.noteNumber,
+      voiceParams,
+      audioBuffer
+    );
+    note.volumeNode = new GainNode(audioContext);
+    const cacheMode = this.cacheMode;
+    const isFullCached = isRendered && audioBuffer.isFull === true;
+    if (cacheMode === "none") {
+      note.volumeEnvelopeNode = new GainNode(audioContext);
+      const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 || voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
+      note.filterEnvelopeNode = filterIsAudible ? new BiquadFilterNode(audioContext, {
+        type: "lowpass",
+        Q: voiceParams.initialFilterQ / 10
+      }) : null;
+      this.setVolumeEnvelope(channel2, note, now);
+      if (note.filterEnvelopeNode) this.setFilterEnvelope(channel2, note, now);
+      this.setPitchEnvelope(note, now);
+      this.setDetune(channel2, note, now);
+      const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 || voiceParams.modLfoToFilterFc !== 0 || voiceParams.modLfoToVolume !== 0;
+      if (modLfoIsAudible && 0 < state.modulationDepthMSB) {
+        this.startModulation(channel2, note, now);
+      }
+      if (note.filterEnvelopeNode) {
+        note.bufferSource.connect(note.filterEnvelopeNode);
+        note.filterEnvelopeNode.connect(note.volumeEnvelopeNode);
+      } else {
+        note.bufferSource.connect(note.volumeEnvelopeNode);
+      }
+      note.volumeEnvelopeNode.connect(note.volumeNode);
+    } else if (isFullCached) {
+      note.volumeEnvelopeNode = null;
+      note.filterEnvelopeNode = null;
+      note.bufferSource.connect(note.volumeNode);
+    } else {
+      note.volumeEnvelopeNode = null;
+      note.filterEnvelopeNode = null;
+      this.setDetune(channel2, note, now);
+      if (0 < state.modulationDepthMSB) {
+        this.startModulation(channel2, note, now);
+      }
+      note.bufferSource.connect(note.volumeNode);
+    }
+    if (!realtime) {
+      this.warnIfStartTimeMissed(
+        `note (channel ${channel2.channelNumber}, note ${note.noteNumber})`,
+        startTime
+      );
+    }
+    if (!isRendered && voiceParams.sample.type === "compressed") {
+      note.bufferSource.start(
+        startTime,
+        voiceParams.start / audioBuffer.sampleRate
+      );
+    } else {
+      note.bufferSource.start(startTime);
+    }
+  }
+  releaseNote(_channel, note, endTime) {
+    if (note.isSegmentGhost) return;
+    const now = this.audioContext.currentTime;
+    if (note.renderedBuffer?.isFull) {
+      const rb = note.renderedBuffer;
+      const naturalEndTime = note.startTime + rb.buffer.duration;
+      const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
+      const isEarlyCut = endTime < noteOffTime;
+      if (isEarlyCut) {
+        const volDuration2 = note.voiceParams?.volRelease ?? 0;
+        const volRelease2 = endTime + volDuration2;
+        try {
+          note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * envelopeCurve);
+        } catch {
+        }
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.disconnectNote(note);
+            this.releaseFullCache(note);
+            resolve();
+          };
+          const src = note.bufferSource;
+          if (!src) {
+            finish();
+            return;
+          }
+          src.onended = finish;
+          try {
+            src.stop(volRelease2);
+          } catch {
+            finish();
+          }
+        });
+      }
+      if (naturalEndTime <= now) {
+        this.disconnectNote(note);
+        this.releaseFullCache(note);
+        return;
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          this.disconnectNote(note);
+          this.releaseFullCache(note);
+          resolve();
+        };
+        const src = note.bufferSource;
+        if (!src) {
+          finish();
+          return;
+        }
+        src.onended = finish;
+        try {
+          src.stop(naturalEndTime);
+        } catch {
+          finish();
+        }
+      });
+    }
+    const volDuration = note.voiceParams?.volRelease ?? 0;
+    const volRelease = endTime + volDuration;
+    if (note.volumeEnvelopeNode) {
+      try {
+        note.filterEnvelopeNode?.frequency.cancelScheduledValues(endTime).exponentialRampToValueAtTime(
+          note.adjustedBaseFreq,
+          endTime + (note.voiceParams?.modRelease ?? 0)
+        );
+        note.volumeEnvelopeNode.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch {
+      }
+    } else {
+      const isAdsr = note.renderedBuffer?.releaseDuration != null && !note.renderedBuffer.isFull;
+      if (isAdsr) {
+        const rb = note.renderedBuffer;
+        const naturalEndTime = note.startTime + rb.buffer.duration;
+        const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
+        const isEarlyCut = endTime < noteOffTime;
+        if (isEarlyCut) {
+          try {
+            note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+          } catch {
+          }
+          return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              this.disconnectNote(note);
+              resolve();
+            };
+            const src = note.bufferSource;
+            if (!src) {
+              finish();
+              return;
+            }
+            src.onended = finish;
+            try {
+              src.stop(volRelease);
+            } catch {
+              finish();
+            }
+          });
+        }
+        if (naturalEndTime <= now) {
+          this.disconnectNote(note);
+          return;
+        }
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.disconnectNote(note);
+            resolve();
+          };
+          const src = note.bufferSource;
+          if (!src) {
+            finish();
+            return;
+          }
+          src.onended = finish;
+          try {
+            src.stop(naturalEndTime);
+          } catch {
+            finish();
+          }
+        });
+      }
+      try {
+        note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+      } catch {
+      }
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.disconnectNote(note);
+        resolve();
+      };
+      const src = note.bufferSource;
+      if (!src) {
+        finish();
+        return;
+      }
+      src.onended = finish;
+      try {
+        src.stop(volRelease);
+      } catch {
+        finish();
+      }
+    });
   }
 };
 
