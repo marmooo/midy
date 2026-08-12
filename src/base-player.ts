@@ -751,6 +751,11 @@ export class BasePlayer<
   ignoreDrumNoteOff: boolean = true;
   noteAudioBufferIds: (number | undefined)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
+  // Max time to wait for natural note-release tails at song end before
+  // force-stopping remaining notes. Also bounds
+  // waitNotePromisesInterruptible so seek/pause/stop can break out of a
+  // large pending-release backlog near the end of dense MIDI files.
+  releaseGraceSec: number = 2;
 
   audioContext: AudioContext | OfflineAudioContext;
   masterVolume: GainNode;
@@ -1235,6 +1240,132 @@ export class BasePlayer<
     return Promise.resolve();
   }
 
+  // Wait for note-release promises, but abort early if seek/pause/stop is
+  // requested, or when {@link releaseGraceSec} elapses. Returns "completed"
+  // if all settled (or grace expired with no abort), "aborted" if a control
+  // flag was raised. Callers that get "aborted" should fall through to the
+  // isSeeking/isPausing/isStopping handlers (which force-stop remaining notes
+  // via stopNotes).
+  // Without this, dense MIDI files can leave hundreds of release tails in
+  // notePromises near song end; a blocking Promise.allSettled then makes
+  // seek/pause unresponsive until every tail finishes.
+  protected async waitNotePromisesInterruptible(
+    promises: Promise<void>[],
+  ): Promise<"completed" | "aborted"> {
+    if (promises.length === 0) return "completed";
+
+    const shouldAbort = () =>
+      this.isSeeking || this.isPausing || this.isStopping;
+
+    if (shouldAbort()) return "aborted";
+
+    let remaining = promises.length;
+    let finished = false;
+    const ac = this.audioContext;
+    const graceSec = this.releaseGraceSec;
+    const useAudioClock = ac instanceof AudioContext &&
+      ac.state === "running" &&
+      !!this.scheduler;
+    const deadline = useAudioClock
+      ? ac.currentTime + graceSec
+      : Date.now() + graceSec * 1000;
+
+    await new Promise<void>((resolve) => {
+      const tryFinish = () => {
+        if (finished) return;
+        if (remaining <= 0 || shouldAbort()) {
+          finished = true;
+          resolve();
+        }
+      };
+
+      for (const p of promises) {
+        Promise.resolve(p).then(
+          () => {
+            remaining--;
+            tryFinish();
+          },
+          () => {
+            remaining--;
+            tryFinish();
+          },
+        );
+      }
+
+      // Poll for abort / grace timeout. Prefer audio-clock ticks while
+      // running so background-tab setTimeout throttling does not leave us
+      // stuck past the intended grace window.
+      const poll = async () => {
+        while (!finished) {
+          if (shouldAbort()) {
+            tryFinish();
+            return;
+          }
+          if (useAudioClock) {
+            if (ac.currentTime >= deadline) {
+              // Grace expired: treat as completed so the ended path can
+              // force-stop remaining tails via stopNotes.
+              if (!finished) {
+                finished = true;
+                resolve();
+              }
+              return;
+            }
+          } else if (Date.now() >= deadline) {
+            if (!finished) {
+              finished = true;
+              resolve();
+            }
+            return;
+          }
+          await this.waitTick();
+        }
+      };
+      void poll();
+    });
+
+    return shouldAbort() ? "aborted" : "completed";
+  }
+
+  // Resolve when bufferSource ends (or after a timeout past stopAt).
+  // Guarantees the returned Promise always settles so notePromises cannot
+  // hang indefinitely if onended never fires.
+  protected waitSourceEnded(
+    note: TNote,
+    stopAt: number,
+    afterDisconnect?: () => void,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try {
+          this.disconnectNote(note);
+          afterDisconnect?.();
+        } catch {
+          // disconnect / modLfo.stop may throw if already torn down
+        }
+        resolve();
+      };
+      const src = note.bufferSource;
+      if (!src) {
+        finish();
+        return;
+      }
+      src.onended = finish;
+      try {
+        src.stop(stopAt);
+      } catch {
+        finish();
+        return;
+      }
+      const now = this.audioContext.currentTime;
+      const waitMs = Math.max(50, (stopAt - now) * 1000 + 100);
+      setTimeout(finish, waitMs);
+    });
+  }
+
   async playNotes(): Promise<void> {
     const audioContext = this.audioContext;
     if (audioContext.state === "suspended") {
@@ -1260,19 +1391,26 @@ export class BasePlayer<
       ) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        await Promise.allSettled(pendingPromises);
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises,
+        );
+        // If seek/pause/stop interrupted the release wait, fall through to
+        // the flag handlers below (which call stopNotes). Otherwise finish
+        // the song (or loop).
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
+          }
         }
       }
       if (this.isPausing) {
@@ -2064,26 +2202,9 @@ export class BasePlayer<
       } catch { /* already closed */ }
     }
 
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        this.disconnectNote(note);
-        resolve();
-      };
-      const src = note.bufferSource;
-      if (!src) {
-        finish();
-        return;
-      }
-      src.onended = finish;
-      try {
-        src.stop(volRelease);
-      } catch {
-        finish();
-      }
-    });
+    // waitSourceEnded always settles (onended or timeout), so notePromises
+    // cannot hang if the browser skips onended under load.
+    return this.waitSourceEnded(note, volRelease);
   }
 
   noteOffChannel(
@@ -2641,7 +2762,7 @@ export class BasePlayer<
     });
   }
 
-  /** Resolve voice IDs / preload entries for the current timeline. */
+  // Resolve voice IDs / preload entries for the current timeline.
   prepareVoices(): void {
     const { channels, timeline, voiceCounter } = this;
     const settings = (this.constructor as typeof BasePlayer).channelSettings;

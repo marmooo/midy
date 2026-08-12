@@ -739,30 +739,38 @@ export class Player<
       ) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        await Promise.allSettled(pendingPromises);
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          if (this.cacheMode === "segment") {
-            this.segmentGeneration++;
-            this.initSegmentPipeline();
+        // Interruptible + grace-bounded wait (see BasePlayer.waitNotePromisesInterruptible).
+        // Dense songs can leave a large release backlog here; a blocking
+        // allSettled would make seek/pause unresponsive until every tail ends.
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises,
+        );
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            if (this.cacheMode === "segment") {
+              this.segmentGeneration++;
+              this.initSegmentPipeline();
+            }
+            if (this.cacheMode === "chunk") {
+              this.chunkGeneration++;
+              this.initChunkPipeline();
+            }
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
           }
-          if (this.cacheMode === "chunk") {
-            this.chunkGeneration++;
-            this.initChunkPipeline();
-          }
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
         }
+        // aborted → fall through to isPausing / isStopping / isSeeking
       }
       if (this.isPausing) {
         this.cancelScheduledTasks();
@@ -2474,26 +2482,8 @@ export class Player<
             .cancelScheduledValues(endTime)
             .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
         } catch { /* already closed */ }
-        return new Promise<void>((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            this.releaseFullCache(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(volRelease);
-          } catch {
-            finish();
-          }
+        return this.waitSourceEnded(note, volRelease, () => {
+          this.releaseFullCache(note);
         });
       }
       if (naturalEndTime <= now) {
@@ -2501,26 +2491,8 @@ export class Player<
         this.releaseFullCache(note);
         return;
       }
-      return new Promise<void>((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          resolve();
-        };
-        const src = note.bufferSource;
-        if (!src) {
-          finish();
-          return;
-        }
-        src.onended = finish;
-        try {
-          src.stop(naturalEndTime);
-        } catch {
-          finish();
-        }
+      return this.waitSourceEnded(note, naturalEndTime, () => {
+        this.releaseFullCache(note);
       });
     }
 
@@ -2555,51 +2527,13 @@ export class Player<
               .cancelScheduledValues(endTime)
               .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           } catch { /* already closed */ }
-          return new Promise<void>((resolve) => {
-            let settled = false;
-            const finish = () => {
-              if (settled) return;
-              settled = true;
-              this.disconnectNote(note);
-              resolve();
-            };
-            const src = note.bufferSource;
-            if (!src) {
-              finish();
-              return;
-            }
-            src.onended = finish;
-            try {
-              src.stop(volRelease);
-            } catch {
-              finish();
-            }
-          });
+          return this.waitSourceEnded(note, volRelease);
         }
         if (naturalEndTime <= now) {
           this.disconnectNote(note);
           return;
         }
-        return new Promise<void>((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(naturalEndTime);
-          } catch {
-            finish();
-          }
-        });
+        return this.waitSourceEnded(note, naturalEndTime);
       }
       try {
         note.volumeNode?.gain
@@ -2608,26 +2542,8 @@ export class Player<
       } catch { /* already closed */ }
     }
 
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        this.disconnectNote(note);
-        resolve();
-      };
-      const src = note.bufferSource;
-      if (!src) {
-        finish();
-        return;
-      }
-      src.onended = finish;
-      try {
-        src.stop(volRelease);
-      } catch {
-        finish();
-      }
-    });
+    // waitSourceEnded always settles (onended or timeout).
+    return this.waitSourceEnded(note, volRelease);
   }
 }
 
