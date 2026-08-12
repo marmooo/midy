@@ -1535,48 +1535,38 @@ export class MidyGM2 extends Player<Note, Channel> {
       ) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-
-        if (pendingPromises.length > 0) {
-          // Wait up to max(volRelease) for note-release promises to settle.
-          // soundingNotes is a worst-case estimate of remaining release time;
-          // drainTimeoutMs caps the wait so a never-settling promise cannot hang.
-          let maxRemain = 0;
-          for (const note of this.soundingNotes) {
-            const volRelease = note.voiceParams?.volRelease ?? 0;
-            maxRemain = Math.max(maxRemain, volRelease);
+        // Interruptible + grace-bounded wait (see BasePlayer.waitNotePromisesInterruptible).
+        // Dense songs can leave a large release backlog here; a blocking
+        // allSettled would make seek/pause unresponsive until every tail ends.
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises,
+        );
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            if (this.cacheMode === "segment") {
+              this.segmentGeneration++;
+              this.initSegmentPipeline();
+            }
+            if (this.cacheMode === "chunk") {
+              this.chunkGeneration++;
+              this.initChunkPipeline();
+            }
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
           }
-          const waitSec = Math.min(maxRemain, this.drainTimeoutMs / 1000);
-
-          let settled = false;
-          Promise.allSettled(pendingPromises).then(() => {
-            settled = true;
-          });
-          await this.waitUntil(() => settled, waitSec);
         }
-
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          if (this.cacheMode === "segment") {
-            this.segmentGeneration++;
-            this.initSegmentPipeline();
-          }
-          if (this.cacheMode === "chunk") {
-            this.chunkGeneration++;
-            this.initChunkPipeline();
-          }
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
-        }
+        // aborted → fall through to isPausing / isStopping / isSeeking
       }
       if (this.isPausing) {
         this.cancelScheduledTasks();
