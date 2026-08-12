@@ -2315,7 +2315,29 @@ export class MidyGM2 extends Player<Note, Channel> {
         this.startModulation(channel, note, now);
       }
       if (channel.mono && channel.currentBufferSource) {
-        channel.currentBufferSource.stop(startTime);
+        const prevNote = channel.lastNote;
+        const staleSource = channel.currentBufferSource;
+        staleSource.stop(startTime);
+        if (prevNote && prevNote !== note) {
+          prevNote.ending = true;
+          try {
+            prevNote.modLfo?.stop(startTime);
+          } catch {
+            // not started / already stopped
+          }
+          try {
+            prevNote.vibLfo?.stop(startTime);
+          } catch {
+            // not started / already stopped
+          }
+          staleSource.onended = () => {
+            try {
+              this.disconnectNote(prevNote);
+            } catch {
+              // already torn down
+            }
+          };
+        }
         channel.currentBufferSource = note.bufferSource;
       }
       if (note.filterEnvelopeNode) {
