@@ -1462,7 +1462,12 @@ export class Player<
       );
     }
     await Promise.resolve();
-    return await offlineContext.startRendering();
+    const buffer = await offlineContext.startRendering();
+    // Same peak-normalize as audio mode: overlapping notes in a dense
+    // chunk can sum above 1.0 and hard-clip, producing crackle/distortion.
+    // Linear scale preserves timbre; quiet chunks keep original level.
+    this.peakNormalizeBuffer(buffer);
+    return buffer;
   }
 
   async render(): Promise<AudioBuffer | undefined> {
@@ -1597,26 +1602,38 @@ export class Player<
     // Peak normalize instead of tanh soft-clip: linear gain preserves
     // timbre when overlapping tails sum above 1.0. Only scale down when
     // the peak exceeds the target; quiet songs keep their original level.
-    const PEAK_TARGET = 0.95;
-    let peak = 0;
-    for (let i = 0; i < totalFrames; i++) {
-      const al = mixedL[i] < 0 ? -mixedL[i] : mixedL[i];
-      const ar = mixedR[i] < 0 ? -mixedR[i] : mixedR[i];
-      if (al > peak) peak = al;
-      if (ar > peak) peak = ar;
-    }
-    if (peak > PEAK_TARGET) {
-      const scale = PEAK_TARGET / peak;
-      for (let i = 0; i < totalFrames; i++) {
-        mixedL[i] *= scale;
-        mixedR[i] *= scale;
-      }
-    }
+    this.peakNormalizeBuffer(mixed);
 
     this.renderedAudioBuffer = mixed;
     this.isRendering = false;
     this.dispatchEvent(new Event("rendered"));
     return this.renderedAudioBuffer;
+  }
+
+  // Peak-normalize an AudioBuffer in place so the absolute peak is at most
+  // PEAK_TARGET (0.95). Used by audio / chunk / segment offline renders to
+  // prevent hard clipping (and the resulting crackle) when overlapping
+  // notes sum above 1.0. Linear gain only scales down when needed, so quiet
+  // material is left unchanged and timbre is preserved.
+  peakNormalizeBuffer(buffer: AudioBuffer, peakTarget = 0.95): void {
+    const channels = buffer.numberOfChannels;
+    const length = buffer.length;
+    let peak = 0;
+    for (let ch = 0; ch < channels; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        const a = data[i] < 0 ? -data[i] : data[i];
+        if (a > peak) peak = a;
+      }
+    }
+    if (peak <= peakTarget || peak === 0) return;
+    const scale = peakTarget / peak;
+    for (let ch = 0; ch < channels; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        data[i] *= scale;
+      }
+    }
   }
 
   async preloadSamples(): Promise<void> {
@@ -2075,7 +2092,12 @@ export class Player<
     // above actually run (and call releaseNote synchronously) before
     // rendering starts.
     await Promise.resolve();
-    return await offlineContext.startRendering();
+    const buffer = await offlineContext.startRendering();
+    // Same peak-normalize as audio/chunk modes: dense polyphony in a
+    // segment can sum above 1.0 and hard-clip. Linear scale preserves
+    // timbre; quiet segments keep original level.
+    this.peakNormalizeBuffer(buffer);
+    return buffer;
   }
 
   async createFullRenderedBuffer(
