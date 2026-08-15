@@ -1275,7 +1275,10 @@ export class Player<
     }
   }
 
-  async renderChunkBuffer(chunk: OpenChunk): Promise<AudioBuffer | null> {
+  async renderChunkBuffer(
+    chunk: OpenChunk,
+    normalize = true,
+  ): Promise<AudioBuffer | null> {
     const notes = chunk.notes;
     if (notes.length === 0) return null;
 
@@ -1466,7 +1469,19 @@ export class Player<
     // Same peak-normalize as audio mode: overlapping notes in a dense
     // chunk can sum above 1.0 and hard-clip, producing crackle/distortion.
     // Linear scale preserves timbre; quiet chunks keep original level.
-    this.peakNormalizeBuffer(buffer);
+    //
+    // Only do this when the chunk is played back standalone (realtime
+    // "chunk" cacheMode, closeChunk()). When render() calls this per
+    // audioWindowDuration window to build one long song buffer, each
+    // window must NOT be normalized individually: a near-silent window
+    // (one soft note) would get boosted to the same 0.95 peak as a
+    // window full of loud overlapping notes, so quiet and loud passages
+    // would end up at the same volume once mixed — the whole song's
+    // dynamics get flattened and playback volume sounds like it's
+    // randomly jumping around. render() sums all windows first and
+    // normalizes the complete buffer once at the end instead, which
+    // preserves the relative loudness between windows.
+    if (normalize) this.peakNormalizeBuffer(buffer);
     return buffer;
   }
 
@@ -1584,7 +1599,7 @@ export class Player<
       }));
 
       const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
-      const buf = await this.renderChunkBuffer(chunk);
+      const buf = await this.renderChunkBuffer(chunk, false);
       if (!buf) continue;
 
       // Mix into the final buffer at the correct absolute frame offset.
