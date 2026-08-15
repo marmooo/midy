@@ -44,7 +44,7 @@ This library provides several files depending on the implementation level.
     controller optimized for glissando
 - Games
   - [Tip Tap Notes](https://marmooo.github.io/tip-tap-notes/) - Falling-note
-    rhythm game based on hold notes.
+    rhythm game based on hold notes
 
 ## Support Status
 
