@@ -20,26 +20,31 @@ This library provides several files depending on the implementation level.
 
 ## Demo
 
-- [@marmooo/piano-visualizer](https://marmooo.github.io/piano-visualizer) -
-  Beautiful piano visualizer
-- [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
-- [Free MIDI](https://marmooo.github.io/free-midi/) - Free MIDI search for
-  everyone. Free to listen, copy, play, etc.
-- [midi2audio](https://marmooo.github.io/midi2audio/) - Convert MIDI to audio
-  (WAV, MP3, AAC, FLAC, Opus)
-- [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
-- [Timidy](https://marmooo.github.io/timidy/) - Timidity++ style MIDI player
-- [Doremi Piano](https://marmooo.github.io/doremi-piano/) - Piano-style MPE MIDI
-  controller
-- [4x4pad](https://marmooo.github.io/4x4pad/) - 4x4 grid MPE MIDI controller
-- [Celltone](https://marmooo.github.io/celltone/) - Grid MPE MIDI controller
-  with Janko-Piano layout
-- [Isotone](https://marmooo.github.io/isotone/) - Grid MPE MIDI controller
-  optimized for chords
-- [Hexatone](https://marmooo.github.io/hexatone/) - Hexagonal MPE MIDI
-  controller with Wicki-Hayden layout
-- [Glisstone](https://marmooo.github.io/glisstone/) - Hexagonal MPE MIDI
-  controller optimized for glissando
+- General
+  - [@marmooo/piano-visualizer](https://marmooo.github.io/piano-visualizer) -
+    Beautiful piano visualizer
+  - [@marmooo/midi-player](https://marmooo.github.io/midi-player/) - GUI library
+  - [Free MIDI](https://marmooo.github.io/free-midi/) - Free MIDI search for
+    everyone. Free to listen, copy, play, etc.
+  - [midi2audio](https://marmooo.github.io/midi2audio/) - Convert MIDI to audio
+    (WAV, MP3, AAC, FLAC, Opus)
+  - [Humidy](https://marmooo.github.io/humidy/) - GM2 MIDI mixer app
+  - [Timidy](https://marmooo.github.io/timidy/) - Timidity++ style MIDI player
+- Instruments
+  - [Doremi Piano](https://marmooo.github.io/doremi-piano/) - Piano-style MPE
+    MIDI controller
+  - [4x4pad](https://marmooo.github.io/4x4pad/) - 4x4 grid MPE MIDI controller
+  - [Celltone](https://marmooo.github.io/celltone/) - Grid MPE MIDI controller
+    with Janko-Piano layout
+  - [Isotone](https://marmooo.github.io/isotone/) - Grid MPE MIDI controller
+    optimized for chords
+  - [Hexatone](https://marmooo.github.io/hexatone/) - Hexagonal MPE MIDI
+    controller with Wicki-Hayden layout
+  - [Glisstone](https://marmooo.github.io/glisstone/) - Hexagonal MPE MIDI
+    controller optimized for glissando
+- Games
+  - [Tip Tap Notes](https://marmooo.github.io/tip-tap-notes/) - Falling-note
+    rhythm game based on hold notes.
 
 ## Support Status
 
