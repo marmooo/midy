@@ -5804,6 +5804,11 @@ var BasePlayer = class _BasePlayer extends EventTarget {
   ignoreDrumNoteOff = true;
   noteAudioBufferIds = [];
   preloadEntries = [];
+  // Max time to wait for natural note-release tails at song end before
+  // force-stopping remaining notes. Also bounds
+  // waitNotePromisesInterruptible so seek/pause/stop can break out of a
+  // large pending-release backlog near the end of dense MIDI files.
+  releaseGraceSec = 2;
   audioContext;
   masterVolume;
   masterVolumeLocked = false;
@@ -6185,6 +6190,106 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     }
     return Promise.resolve();
   }
+  // Wait for note-release promises, but abort early if seek/pause/stop is
+  // requested, or when {@link releaseGraceSec} elapses. Returns "completed"
+  // if all settled (or grace expired with no abort), "aborted" if a control
+  // flag was raised. Callers that get "aborted" should fall through to the
+  // isSeeking/isPausing/isStopping handlers (which force-stop remaining notes
+  // via stopNotes).
+  // Without this, dense MIDI files can leave hundreds of release tails in
+  // notePromises near song end; a blocking Promise.allSettled then makes
+  // seek/pause unresponsive until every tail finishes.
+  async waitNotePromisesInterruptible(promises) {
+    if (promises.length === 0) return "completed";
+    const shouldAbort = () => this.isSeeking || this.isPausing || this.isStopping;
+    if (shouldAbort()) return "aborted";
+    let remaining = promises.length;
+    let finished = false;
+    const ac = this.audioContext;
+    const graceSec = this.releaseGraceSec;
+    const useAudioClock = ac instanceof AudioContext && ac.state === "running" && !!this.scheduler;
+    const deadline = useAudioClock ? ac.currentTime + graceSec : Date.now() + graceSec * 1e3;
+    await new Promise((resolve) => {
+      const tryFinish = () => {
+        if (finished) return;
+        if (remaining <= 0 || shouldAbort()) {
+          finished = true;
+          resolve();
+        }
+      };
+      for (const p of promises) {
+        Promise.resolve(p).then(
+          () => {
+            remaining--;
+            tryFinish();
+          },
+          () => {
+            remaining--;
+            tryFinish();
+          }
+        );
+      }
+      const poll = async () => {
+        while (!finished) {
+          if (shouldAbort()) {
+            tryFinish();
+            return;
+          }
+          if (useAudioClock) {
+            if (ac.currentTime >= deadline) {
+              if (!finished) {
+                finished = true;
+                resolve();
+              }
+              return;
+            }
+          } else if (Date.now() >= deadline) {
+            if (!finished) {
+              finished = true;
+              resolve();
+            }
+            return;
+          }
+          await this.waitTick();
+        }
+      };
+      void poll();
+    });
+    return shouldAbort() ? "aborted" : "completed";
+  }
+  // Resolve when bufferSource ends (or after a timeout past stopAt).
+  // Guarantees the returned Promise always settles so notePromises cannot
+  // hang indefinitely if onended never fires.
+  waitSourceEnded(note, stopAt, afterDisconnect) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try {
+          this.disconnectNote(note);
+          afterDisconnect?.();
+        } catch {
+        }
+        resolve();
+      };
+      const src = note.bufferSource;
+      if (!src) {
+        finish();
+        return;
+      }
+      src.onended = finish;
+      try {
+        src.stop(stopAt);
+      } catch {
+        finish();
+        return;
+      }
+      const now = this.audioContext.currentTime;
+      const waitMs = Math.max(50, (stopAt - now) * 1e3 + 100);
+      setTimeout(finish, waitMs);
+    });
+  }
   async playNotes() {
     const audioContext = this.audioContext;
     if (audioContext.state === "suspended") {
@@ -6207,19 +6312,23 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       if (this.totalTime < this.currentTime() && this.timeline.length <= queueIndex) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        await Promise.allSettled(pendingPromises);
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises
+        );
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
+          }
         }
       }
       if (this.isPausing) {
@@ -6848,26 +6957,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       } catch {
       }
     }
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        this.disconnectNote(note);
-        resolve();
-      };
-      const src = note.bufferSource;
-      if (!src) {
-        finish();
-        return;
-      }
-      src.onended = finish;
-      try {
-        src.stop(volRelease);
-      } catch {
-        finish();
-      }
-    });
+    return this.waitSourceEnded(note, volRelease);
   }
   noteOffChannel(channel2, noteNumber, _velocity, endTime, force) {
     if (!force) {
@@ -7279,7 +7369,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       bufferSource.start(scheduleTime);
     });
   }
-  /** Resolve voice IDs / preload entries for the current timeline. */
+  // Resolve voice IDs / preload entries for the current timeline.
   prepareVoices() {
     const { channels: channels2, timeline, voiceCounter } = this;
     const settings = this.constructor.channelSettings;
@@ -7804,29 +7894,33 @@ var Player = class extends BasePlayer {
       if (this.totalTime < this.currentTime() && this.timeline.length <= queueIndex) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        await Promise.allSettled(pendingPromises);
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          if (this.cacheMode === "segment") {
-            this.segmentGeneration++;
-            this.initSegmentPipeline();
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises
+        );
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            if (this.cacheMode === "segment") {
+              this.segmentGeneration++;
+              this.initSegmentPipeline();
+            }
+            if (this.cacheMode === "chunk") {
+              this.chunkGeneration++;
+              this.initChunkPipeline();
+            }
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
           }
-          if (this.cacheMode === "chunk") {
-            this.chunkGeneration++;
-            this.initChunkPipeline();
-          }
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
         }
       }
       if (this.isPausing) {
@@ -8252,7 +8346,7 @@ var Player = class extends BasePlayer {
       }
     }
   }
-  async renderChunkBuffer(chunk) {
+  async renderChunkBuffer(chunk, normalize = true) {
     const notes = chunk.notes;
     if (notes.length === 0) return null;
     let totalDuration2 = 0;
@@ -8376,7 +8470,9 @@ var Player = class extends BasePlayer {
       );
     }
     await Promise.resolve();
-    return await offlineContext.startRendering();
+    const buffer2 = await offlineContext.startRendering();
+    if (normalize) this.peakNormalizeBuffer(buffer2);
+    return buffer2;
   }
   async render() {
     if (this.isRendering) return;
@@ -8469,7 +8565,7 @@ var Player = class extends BasePlayer {
         channelStateArray: n.channelStateArray.slice()
       }));
       const chunk = { chunkStart: winStart, notes: localNotes };
-      const buf = await this.renderChunkBuffer(chunk);
+      const buf = await this.renderChunkBuffer(chunk, false);
       if (!buf) continue;
       const destOffset = Math.floor(winStart * sampleRate2);
       const copyFrames = Math.min(buf.length, totalFrames - destOffset);
@@ -8481,25 +8577,36 @@ var Player = class extends BasePlayer {
         mixedR[destOffset + i] += srcR[i];
       }
     }
-    const PEAK_TARGET = 0.95;
-    let peak = 0;
-    for (let i = 0; i < totalFrames; i++) {
-      const al = mixedL[i] < 0 ? -mixedL[i] : mixedL[i];
-      const ar = mixedR[i] < 0 ? -mixedR[i] : mixedR[i];
-      if (al > peak) peak = al;
-      if (ar > peak) peak = ar;
-    }
-    if (peak > PEAK_TARGET) {
-      const scale = PEAK_TARGET / peak;
-      for (let i = 0; i < totalFrames; i++) {
-        mixedL[i] *= scale;
-        mixedR[i] *= scale;
-      }
-    }
+    this.peakNormalizeBuffer(mixed);
     this.renderedAudioBuffer = mixed;
     this.isRendering = false;
     this.dispatchEvent(new Event("rendered"));
     return this.renderedAudioBuffer;
+  }
+  // Peak-normalize an AudioBuffer in place so the absolute peak is at most
+  // PEAK_TARGET (0.95). Used by audio / chunk / segment offline renders to
+  // prevent hard clipping (and the resulting crackle) when overlapping
+  // notes sum above 1.0. Linear gain only scales down when needed, so quiet
+  // material is left unchanged and timbre is preserved.
+  peakNormalizeBuffer(buffer2, peakTarget = 0.95) {
+    const channels2 = buffer2.numberOfChannels;
+    const length2 = buffer2.length;
+    let peak = 0;
+    for (let ch = 0; ch < channels2; ch++) {
+      const data3 = buffer2.getChannelData(ch);
+      for (let i = 0; i < length2; i++) {
+        const a = data3[i] < 0 ? -data3[i] : data3[i];
+        if (a > peak) peak = a;
+      }
+    }
+    if (peak <= peakTarget || peak === 0) return;
+    const scale = peakTarget / peak;
+    for (let ch = 0; ch < channels2; ch++) {
+      const data3 = buffer2.getChannelData(ch);
+      for (let i = 0; i < length2; i++) {
+        data3[i] *= scale;
+      }
+    }
   }
   async preloadSamples() {
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
@@ -8836,7 +8943,9 @@ var Player = class extends BasePlayer {
       );
     }
     await Promise.resolve();
-    return await offlineContext.startRendering();
+    const buffer2 = await offlineContext.startRendering();
+    this.peakNormalizeBuffer(buffer2);
+    return buffer2;
   }
   async createFullRenderedBuffer(channel2, note, voiceParams, noteDuration, noteEvent = void 0) {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } = noteEvent ?? {};
@@ -9172,26 +9281,8 @@ var Player = class extends BasePlayer {
           note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration2 * envelopeCurve);
         } catch {
         }
-        return new Promise((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            this.releaseFullCache(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(volRelease2);
-          } catch {
-            finish();
-          }
+        return this.waitSourceEnded(note, volRelease2, () => {
+          this.releaseFullCache(note);
         });
       }
       if (naturalEndTime <= now) {
@@ -9199,26 +9290,8 @@ var Player = class extends BasePlayer {
         this.releaseFullCache(note);
         return;
       }
-      return new Promise((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          this.disconnectNote(note);
-          this.releaseFullCache(note);
-          resolve();
-        };
-        const src = note.bufferSource;
-        if (!src) {
-          finish();
-          return;
-        }
-        src.onended = finish;
-        try {
-          src.stop(naturalEndTime);
-        } catch {
-          finish();
-        }
+      return this.waitSourceEnded(note, naturalEndTime, () => {
+        this.releaseFullCache(note);
       });
     }
     const volDuration = note.voiceParams?.volRelease ?? 0;
@@ -9244,77 +9317,20 @@ var Player = class extends BasePlayer {
             note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           } catch {
           }
-          return new Promise((resolve) => {
-            let settled = false;
-            const finish = () => {
-              if (settled) return;
-              settled = true;
-              this.disconnectNote(note);
-              resolve();
-            };
-            const src = note.bufferSource;
-            if (!src) {
-              finish();
-              return;
-            }
-            src.onended = finish;
-            try {
-              src.stop(volRelease);
-            } catch {
-              finish();
-            }
-          });
+          return this.waitSourceEnded(note, volRelease);
         }
         if (naturalEndTime <= now) {
           this.disconnectNote(note);
           return;
         }
-        return new Promise((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            this.disconnectNote(note);
-            resolve();
-          };
-          const src = note.bufferSource;
-          if (!src) {
-            finish();
-            return;
-          }
-          src.onended = finish;
-          try {
-            src.stop(naturalEndTime);
-          } catch {
-            finish();
-          }
-        });
+        return this.waitSourceEnded(note, naturalEndTime);
       }
       try {
         note.volumeNode?.gain.cancelScheduledValues(endTime).setTargetAtTime(0, endTime, volDuration * envelopeCurve);
       } catch {
       }
     }
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        this.disconnectNote(note);
-        resolve();
-      };
-      const src = note.bufferSource;
-      if (!src) {
-        finish();
-        return;
-      }
-      src.onended = finish;
-      try {
-        src.stop(volRelease);
-      } catch {
-        finish();
-      }
-    });
+    return this.waitSourceEnded(note, volRelease);
   }
 };
 
@@ -10898,41 +10914,33 @@ var MidyGM2 = class _MidyGM2 extends Player {
       if (this.totalTime < this.currentTime() && this.timeline.length <= queueIndex) {
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
-        if (pendingPromises.length > 0) {
-          let maxRemain = 0;
-          for (const note of this.soundingNotes) {
-            const volRelease = note.voiceParams?.volRelease ?? 0;
-            maxRemain = Math.max(maxRemain, volRelease);
+        const result = await this.waitNotePromisesInterruptible(
+          pendingPromises
+        );
+        if (result === "completed") {
+          if (this.loop) {
+            this.resetAllStates();
+            this.startTime = audioContext.currentTime;
+            this.resumeTime = 0;
+            queueIndex = 0;
+            if (this.cacheMode === "segment") {
+              this.segmentGeneration++;
+              this.initSegmentPipeline();
+            }
+            if (this.cacheMode === "chunk") {
+              this.chunkGeneration++;
+              this.initChunkPipeline();
+            }
+            this.dispatchEvent(new Event("looped"));
+            continue;
+          } else {
+            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            await this.stopNotes(now);
+            await this.suspendAudioContext();
+            exitReason = "ended";
+            break;
           }
-          const waitSec = Math.min(maxRemain, this.drainTimeoutMs / 1e3);
-          let settled = false;
-          Promise.allSettled(pendingPromises).then(() => {
-            settled = true;
-          });
-          await this.waitUntil(() => settled, waitSec);
-        }
-        if (this.loop) {
-          this.resetAllStates();
-          this.startTime = audioContext.currentTime;
-          this.resumeTime = 0;
-          queueIndex = 0;
-          if (this.cacheMode === "segment") {
-            this.segmentGeneration++;
-            this.initSegmentPipeline();
-          }
-          if (this.cacheMode === "chunk") {
-            this.chunkGeneration++;
-            this.initChunkPipeline();
-          }
-          this.dispatchEvent(new Event("looped"));
-          continue;
-        } else {
-          if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-          if (this.cacheMode === "chunk") await this.drainChunkPipeline();
-          await this.stopNotes(now);
-          await this.suspendAudioContext();
-          exitReason = "ended";
-          break;
         }
       }
       if (this.isPausing) {
@@ -11544,7 +11552,26 @@ var MidyGM2 = class _MidyGM2 extends Player {
         this.startModulation(channel2, note, now);
       }
       if (channel2.mono && channel2.currentBufferSource) {
-        channel2.currentBufferSource.stop(startTime);
+        const prevNote2 = channel2.lastNote;
+        const staleSource = channel2.currentBufferSource;
+        staleSource.stop(startTime);
+        if (prevNote2 && prevNote2 !== note) {
+          prevNote2.ending = true;
+          try {
+            prevNote2.modLfo?.stop(startTime);
+          } catch {
+          }
+          try {
+            prevNote2.vibLfo?.stop(startTime);
+          } catch {
+          }
+          staleSource.onended = () => {
+            try {
+              this.disconnectNote(prevNote2);
+            } catch {
+            }
+          };
+        }
         channel2.currentBufferSource = note.bufferSource;
       }
       if (note.filterEnvelopeNode) {
