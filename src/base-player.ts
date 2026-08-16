@@ -780,7 +780,10 @@ export class BasePlayer<
 
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
-    options?: { activeChannelNumbers?: Iterable<number> },
+    options?: {
+      activeChannelNumbers?: Iterable<number>;
+      offlineRenderOnly?: boolean;
+    },
   ) {
     super();
     this.audioContext = audioContext;
@@ -810,7 +813,10 @@ export class BasePlayer<
     const activeChannelNumbers = options?.activeChannelNumbers
       ? new Set(options.activeChannelNumbers)
       : undefined;
-    this.channels = this.createChannels(activeChannelNumbers);
+    this.channels = this.createChannels(
+      activeChannelNumbers,
+      options?.offlineRenderOnly === true,
+    );
   }
 
   // Not called automatically by this constructor: subclasses that add their
@@ -967,7 +973,10 @@ export class BasePlayer<
     };
   }
 
-  createChannels(activeChannelNumbers?: Set<number>): TChannel[] {
+  createChannels(
+    activeChannelNumbers?: Set<number>,
+    offlineRenderOnly = false,
+  ): TChannel[] {
     const settings = (this.constructor as typeof BasePlayer).channelSettings;
     const audioContext = this.audioContext;
     if (audioContext instanceof OfflineAudioContext) {
@@ -976,6 +985,9 @@ export class BasePlayer<
         (_, ch) => {
           const isActive = !activeChannelNumbers ||
             activeChannelNumbers.has(ch);
+          if (offlineRenderOnly && !isActive) {
+            return undefined as unknown as TChannel;
+          }
           const audioNodes = isActive
             ? this.createChannelAudioNodes(audioContext)
             : undefined;
