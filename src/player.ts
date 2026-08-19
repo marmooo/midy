@@ -1358,6 +1358,11 @@ export class Player<
   // (pitch bend / CC are already excluded by isSimpleNote). Onset detune /
   // volume come from the per-note channelDetune / channelStateArray
   // snapshot taken at append (or offline walk) time — same as segment.
+  //
+  // Simple-note optimization: cache hits are placed as BufferSources; cache
+  // misses are scheduled directly into this offline context (no per-note
+  // OfflineAudioContext / startRendering). Complex notes still use one OAC
+  // each so in-note pitch-bend / CC cannot cross-talk on a shared channel.
   async renderChunkBuffer(
     chunk: OpenChunk,
     forAudioOffline = false,
@@ -1388,18 +1393,50 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple: cached stereo buffers (onset detune/vol/pan baked) ---
+    // --- simple: hit → BufferSource; miss → direct into this OAC ---
+    const simpleMisses: ChunkNoteEntry[] = [];
     if (simpleNotes.length > 0) {
-      const simpleBuffers = await Promise.all(
-        simpleNotes.map((n) => this.getSimpleNoteBuffer(n, true)),
-      );
-      for (let i = 0; i < simpleNotes.length; i++) {
-        const n = simpleNotes[i];
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: simpleBuffers[i],
-        });
-        src.connect(offlineContext.destination);
-        src.start(n.offset);
+      for (const n of simpleNotes) {
+        const cached = await this.lookupSimpleNoteBuffer(n, true);
+        if (cached) {
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: cached,
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+        } else {
+          simpleMisses.push(n);
+        }
+      }
+      if (simpleMisses.length > 0) {
+        const channelNumbers = [
+          ...new Set(simpleMisses.map((n) => n.channelNumber)),
+        ];
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          channelNumbers,
+          true,
+        );
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          simpleMisses.map((n) => ({
+            channelNumber: n.channelNumber,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice,
+            offset: n.offset,
+          })),
+          true,
+        );
       }
     }
 
@@ -1903,15 +1940,37 @@ export class Player<
     this.segmentBakedSet = bakedSet;
   }
 
-  // Treat notes with no in-interval automation as simple.
-  // noteEvent.events is filled by buildNoteOnDurations with every
-  // controller / pitchBend / sysEx / programChange that occurs while the
-  // note is active — so pitch bend IS part of the simple/complex test,
-  // not only CC. Notes that start after a pitch bend but have no further
-  // automation remain simple; their onset detune is taken from the
-  // per-note channelDetune snapshot instead.
-  // (Conservative approximation — events in the release gap after noteOff
-  // are not captured.)
+  // Treat notes without *complex* in-interval automation as simple.
+  // Volume / expression / pan (CC7/10/11) and programChange are benign:
+  // they keep the note on the simple path, and mid-note volume-family
+  // changes are replayed onto the shared offline channel when
+  // bakeChannelMix is true (see replayBenignVolumeAutomation).
+  // Pitch bend, modulation, sustain, sysEx, etc. force complex (separate
+  // OAC) so shared-channel event replay cannot cross-talk.
+  // Notes that start after a pitch bend but have no further complex
+  // automation remain simple; onset detune comes from channelDetune.
+  // (Events in the release gap after noteOff are not captured.)
+  isBenignNoteEvent(event: TimelineEvent): boolean {
+    switch (event.type) {
+      case "programChange":
+        return true;
+      case "controller": {
+        const t = event.controllerType;
+        // 7 volume, 10 pan, 11 expression
+        return t === 7 || t === 10 || t === 11;
+      }
+      default:
+        return false;
+    }
+  }
+
+  hasComplexNoteAutomation(events: TimelineEvent[]): boolean {
+    for (let i = 0; i < events.length; i++) {
+      if (!this.isBenignNoteEvent(events[i])) return true;
+    }
+    return false;
+  }
+
   finalizeSimpleNoteClassification(): void {
     const simple = new Set<number>();
     // Prefer the segment-baked subset when available (segment/chunk); fall
@@ -1925,7 +1984,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasComplexNoteAutomation(noteEvent.events)) continue;
         simple.add(i);
       }
     } else {
@@ -1934,7 +1993,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasComplexNoteAutomation(noteEvent.events)) continue;
         simple.add(i);
       }
     }
@@ -1952,7 +2011,7 @@ export class Player<
     const noteEvent = n.noteEvent;
     if (!noteEvent || noteEvent.duration <= 0) return false;
     if (noteEvent.durationTicks === Infinity) return false;
-    return noteEvent.events.length === 0;
+    return !this.hasComplexNoteAutomation(noteEvent.events);
   }
 
   // bakeChannelMix=true  → stereo, channel vol/pan/expression included
@@ -1982,6 +2041,8 @@ export class Player<
     const durTicks = n.noteEvent?.durationTicks ??
       Math.round(n.noteDuration * 1000);
     const detuneQ = Math.round(n.channelDetune * 100) / 100;
+    // Mid-note volume/expression/pan curve (empty when none).
+    const volAuto = this.benignVolumeAutomationKey(n.noteEvent);
     return [
       bakeChannelMix ? "mix" : "dry",
       n.audioBufferId ?? -1,
@@ -1996,12 +2057,196 @@ export class Player<
       n.isDrum ? 1 : 0,
       Math.round(n.voiceParams.volRelease * 1e6),
       Math.round(n.voiceParams.playbackRate * 1e6),
+      volAuto,
     ].join("|");
+  }
+
+  // Resolve a cached simple-note buffer without starting a new bake.
+  // Returns null on miss (caller should schedule into the shared mix OAC).
+  // In-flight Promise from note-mode / other paths is awaited.
+  async lookupSimpleNoteBuffer(
+    n: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    },
+    bakeChannelMix: boolean,
+  ): Promise<AudioBuffer | null> {
+    if (!this.simpleNoteCache) return null;
+    const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+    const cached = this.simpleNoteBufferCache.get(key);
+    if (cached instanceof AudioBuffer) return cached;
+    if (cached instanceof Promise) {
+      try {
+        return await cached;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // Replay volume-family CCs (7/10/11) that occur while a note is active
+  // onto an offline player. Events are absolute channel-level sets, so the
+  // same TimelineEvent referenced from multiple overlapping notes is
+  // applied once (identity dedupe). offlineBase is the offline-context
+  // time of the note's onset (0 for single-note getSimpleNoteBuffer).
+  // Only meaningful when bakeChannelMix is true (chunk/audio); segment
+  // keeps vol/pan live via gainL/gainR at playback time.
+  replayBenignVolumeAutomation(
+    offlinePlayer: Player<TNote, TChannel>,
+    notes: {
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      offset: number;
+    }[],
+  ): void {
+    const applied = new Set<TimelineEvent>();
+    const timed: { t: number; event: TimelineEvent }[] = [];
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const noteEvent = n.noteEvent;
+      if (!noteEvent || noteEvent.events.length === 0) continue;
+      const noteStartTime = noteEvent.startTime;
+      for (let j = 0; j < noteEvent.events.length; j++) {
+        const event = noteEvent.events[j];
+        if (applied.has(event)) continue;
+        // Only volume / expression / pan — never pitch bend or mod.
+        if (event.type !== "controller") continue;
+        const ct = event.controllerType;
+        if (ct !== 7 && ct !== 10 && ct !== 11) continue;
+        const rel = (event.startTime as number) / this.tempo - noteStartTime;
+        if (rel < 0 || rel > n.noteDuration) continue;
+        applied.add(event);
+        timed.push({ t: n.offset + rel, event });
+      }
+    }
+    timed.sort((a, b) => a.t - b.t);
+    for (let i = 0; i < timed.length; i++) {
+      const { t, event } = timed[i];
+      offlinePlayer.processTimelineEvent(event, t, {
+        channels: offlinePlayer.channels,
+      });
+    }
+  }
+
+  // Fingerprint mid-note volume/expression/pan automation so two simple
+  // notes with the same onset state but different volume curves do not
+  // share a cached buffer.
+  benignVolumeAutomationKey(noteEvent?: NoteOnEventEntry): string {
+    if (!noteEvent || noteEvent.events.length === 0) return "";
+    const noteStartTime = noteEvent.startTime;
+    const parts: string[] = [];
+    for (let i = 0; i < noteEvent.events.length; i++) {
+      const event = noteEvent.events[i];
+      if (event.type !== "controller") continue;
+      const ct = event.controllerType;
+      if (ct !== 7 && ct !== 10 && ct !== 11) continue;
+      const rel = (event.startTime as number) / this.tempo - noteStartTime;
+      if (rel < 0 || rel > noteEvent.duration) continue;
+      parts.push(`${ct}@${Math.round(rel * 1e4)}=${event.value ?? 0}`);
+    }
+    return parts.join(",");
+  }
+
+  // Schedule simple notes into an existing OfflineAudioContext via a
+  // lightweight offline Player — used on cache miss so segment/chunk/audio
+  // mix pays one startRendering instead of one per note + one mix.
+  // Volume / expression / pan mid-note CCs are replayed when bakeChannelMix
+  // is true (absolute channel sets; identity-deduped). Pitch bend / mod
+  // never reach this path (isSimpleNote rejects them). Does not populate
+  // simpleNoteBufferCache (cache remains for note mode / hits filled by
+  // getSimpleNoteBuffer elsewhere).
+  async scheduleSimpleNotesDirect(
+    offlineContext: OfflineAudioContext,
+    offlinePlayer: Player<TNote, TChannel>,
+    notes: {
+      channelNumber: number;
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+      voice?: Voice;
+      offset: number;
+    }[],
+    bakeChannelMix: boolean,
+  ): Promise<void> {
+    const sorted = notes.slice().sort((a, b) => a.offset - b.offset);
+    // 1. noteOn every simple note (onset snapshot seeds channel state).
+    for (const n of sorted) {
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      if (!dstChannel) continue;
+      dstChannel.state.array.set(n.channelStateArray);
+      dstChannel.isDrum = n.isDrum;
+      dstChannel.programNumber = n.programNumber;
+      dstChannel.modulationDepthRange =
+        this.channels[n.channelNumber]?.modulationDepthRange ?? 50;
+      dstChannel.detune = n.channelDetune;
+      if (bakeChannelMix) {
+        offlinePlayer.updateChannelVolume(dstChannel, n.offset);
+      }
+      if (n.audioBufferId !== undefined) {
+        await offlinePlayer.getRawAudioBuffer(n.audioBufferId, n.voiceParams);
+      }
+      const preNote = offlinePlayer.createNoteInstance(
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+      );
+      preNote.voiceParams = n.voiceParams;
+      preNote.voice = n.voice ?? null;
+      preNote.audioBufferId = n.audioBufferId;
+      await offlinePlayer.noteOnChannel(
+        dstChannel,
+        n.noteNumber,
+        n.velocity,
+        n.offset,
+        preNote,
+      );
+      // Dry (segment): rewire past channel bus so vol/pan stay live.
+      if (!bakeChannelMix && preNote.volumeNode) {
+        preNote.volumeNode.disconnect();
+        preNote.volumeNode.connect(offlineContext.destination);
+      }
+    }
+    // 2. Replay mid-note volume/expression/pan into the shared graph.
+    //    Segment (dry) skips this — live gainL/gainR apply channel mix
+    //    at playback time instead of baking it into the buffer.
+    if (bakeChannelMix) {
+      this.replayBenignVolumeAutomation(offlinePlayer, sorted);
+    }
+    // 3. noteOff (release scheduled on the offline timeline).
+    for (const n of sorted) {
+      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      if (!dstChannel) continue;
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        n.noteNumber,
+        0,
+        n.offset + n.noteDuration,
+        true,
+      );
+    }
   }
 
   // Bake a simple note and cache it.
   // bakeChannelMix=true: stereo with channel vol/pan (chunk/audio).
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
+  // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
+  // schedule on miss so the mix OAC does not wait on a second startRendering.
   async getSimpleNoteBuffer(
     n: {
       channelNumber: number;
@@ -2077,6 +2322,15 @@ export class Player<
         preNote.volumeNode.disconnect();
         preNote.volumeNode.connect(offlineContext.destination);
       }
+      // Bake mid-note volume/expression/pan when channel mix is included
+      // (chunk/audio / note mode). Same helper as the shared-OAC path.
+      if (bakeChannelMix) {
+        this.replayBenignVolumeAutomation(offlinePlayer, [{
+          noteDuration: n.noteDuration,
+          noteEvent: n.noteEvent,
+          offset: 0,
+        }]);
+      }
       offlinePlayer.noteOffChannel(
         dstChannel,
         n.noteNumber,
@@ -2112,6 +2366,9 @@ export class Player<
   // and connect straight to the offline destination, so the combined
   // segment buffer stays mixable through the real channel.gainL/gainR in
   // real time.
+  //
+  // Simple-note optimization: cache hits → BufferSource; cache misses are
+  // scheduled directly into this offline context (no per-note startRendering).
   async renderSegmentBuffer(
     channel: TChannel,
     segment: OpenSegment,
@@ -2144,13 +2401,48 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple: place cached dry mono buffers at their offsets ---
+    // --- simple: hit → BufferSource; miss → direct into this OAC ---
     // Use per-note onset snapshots so mid-segment pitch bend / CC does not
     // leave later simple notes at the segment-open detune/volume state.
+    const simpleMisses: SegmentNoteEntry[] = [];
     if (simpleNotes.length > 0) {
-      const simpleBuffers = await Promise.all(
-        simpleNotes.map((n) =>
-          this.getSimpleNoteBuffer({
+      for (const n of simpleNotes) {
+        const bakeInput = {
+          channelNumber: ch,
+          audioBufferId: n.audioBufferId,
+          noteNumber: n.noteNumber,
+          velocity: n.velocity,
+          noteDuration: n.noteDuration,
+          noteEvent: n.noteEvent,
+          channelDetune: n.channelDetune,
+          channelStateArray: n.channelStateArray,
+          programNumber: n.programNumber,
+          isDrum: channel.isDrum,
+          voiceParams: n.voiceParams,
+          voice: n.voice,
+        };
+        const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
+        if (cached) {
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: cached,
+          });
+          // dry mono — channel vol/pan stay live via gainL/gainR
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+        } else {
+          simpleMisses.push(n);
+        }
+      }
+      if (simpleMisses.length > 0) {
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          [ch],
+          true,
+        );
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          simpleMisses.map((n) => ({
             channelNumber: ch,
             audioBufferId: n.audioBufferId,
             noteNumber: n.noteNumber,
@@ -2163,17 +2455,10 @@ export class Player<
             isDrum: channel.isDrum,
             voiceParams: n.voiceParams,
             voice: n.voice,
-          }, false)
-        ),
-      );
-      for (let i = 0; i < simpleNotes.length; i++) {
-        const n = simpleNotes[i];
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: simpleBuffers[i],
-        });
-        // dry mono — channel vol/pan stay live via gainL/gainR
-        src.connect(offlineContext.destination);
-        src.start(n.offset);
+            offset: n.offset,
+          })),
+          false,
+        );
       }
     }
 
