@@ -253,6 +253,10 @@ export class Player<
   simpleNoteSet: Set<number> = new Set();
   simpleNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
+  // True for offline mix bakers (segment/chunk/audio simple path).
+  // setNoteAudioNode uses a leaner node graph (shared envelope gain,
+  // no smoothing ramps, skip silent LFO/filter/pitch-env).
+  offlineRenderOnly: boolean = false;
   noteOnDurations: number[] = [];
   noteOnEvents: (NoteOnEventEntry | undefined)[] = [];
   renderedAudioBuffer: AudioBuffer | null = null;
@@ -281,6 +285,7 @@ export class Player<
   ) {
     super(audioContext, options);
     this.cacheMode = DEFAULT_CACHE_MODE;
+    this.offlineRenderOnly = options?.offlineRenderOnly ?? false;
   }
 
   createOfflineRenderPlayer(
@@ -302,6 +307,7 @@ export class Player<
       },
     );
     offlinePlayer.cacheMode = "none";
+    offlinePlayer.offlineRenderOnly = lightweight;
     offlineContext.suspend = () => Promise.resolve();
     offlineContext.resume = () => Promise.resolve();
     offlinePlayer.soundFonts = this.soundFonts;
@@ -1350,8 +1356,6 @@ export class Player<
     }
   }
 
-  // forAudioOffline=true  → audio mode window (no per-window clamp;
-  //                         final mix is peak-normalized once)
   // forAudioOffline=false → realtime "chunk" mode (soft-clamp only; never
   //                         peak-normalize per window)
   // Both paths use simpleNote when the note has no in-interval automation
@@ -1940,37 +1944,15 @@ export class Player<
     this.segmentBakedSet = bakedSet;
   }
 
-  // Treat notes without *complex* in-interval automation as simple.
-  // Volume / expression / pan (CC7/10/11) and programChange are benign:
-  // they keep the note on the simple path, and mid-note volume-family
-  // changes are replayed onto the shared offline channel when
-  // bakeChannelMix is true (see replayBenignVolumeAutomation).
-  // Pitch bend, modulation, sustain, sysEx, etc. force complex (separate
-  // OAC) so shared-channel event replay cannot cross-talk.
-  // Notes that start after a pitch bend but have no further complex
-  // automation remain simple; onset detune comes from channelDetune.
-  // (Events in the release gap after noteOff are not captured.)
-  isBenignNoteEvent(event: TimelineEvent): boolean {
-    switch (event.type) {
-      case "programChange":
-        return true;
-      case "controller": {
-        const t = event.controllerType;
-        // 7 volume, 10 pan, 11 expression
-        return t === 7 || t === 10 || t === 11;
-      }
-      default:
-        return false;
-    }
-  }
-
-  hasComplexNoteAutomation(events: TimelineEvent[]): boolean {
-    for (let i = 0; i < events.length; i++) {
-      if (!this.isBenignNoteEvent(events[i])) return true;
-    }
-    return false;
-  }
-
+  // Treat notes with no in-interval automation as simple.
+  // noteEvent.events is filled by buildNoteOnDurations with every
+  // controller / pitchBend / sysEx / programChange that occurs while the
+  // note is active — so pitch bend IS part of the simple/complex test,
+  // not only CC. Notes that start after a pitch bend but have no further
+  // automation remain simple; their onset detune is taken from the
+  // per-note channelDetune snapshot instead.
+  // (Conservative approximation — events in the release gap after noteOff
+  // are not captured.)
   finalizeSimpleNoteClassification(): void {
     const simple = new Set<number>();
     // Prefer the segment-baked subset when available (segment/chunk); fall
@@ -1984,7 +1966,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (this.hasComplexNoteAutomation(noteEvent.events)) continue;
+        if (noteEvent.events.length > 0) continue;
         simple.add(i);
       }
     } else {
@@ -1993,7 +1975,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (this.hasComplexNoteAutomation(noteEvent.events)) continue;
+        if (noteEvent.events.length > 0) continue;
         simple.add(i);
       }
     }
@@ -2011,7 +1993,7 @@ export class Player<
     const noteEvent = n.noteEvent;
     if (!noteEvent || noteEvent.duration <= 0) return false;
     if (noteEvent.durationTicks === Infinity) return false;
-    return !this.hasComplexNoteAutomation(noteEvent.events);
+    return noteEvent.events.length === 0;
   }
 
   // bakeChannelMix=true  → stereo, channel vol/pan/expression included
@@ -2041,8 +2023,6 @@ export class Player<
     const durTicks = n.noteEvent?.durationTicks ??
       Math.round(n.noteDuration * 1000);
     const detuneQ = Math.round(n.channelDetune * 100) / 100;
-    // Mid-note volume/expression/pan curve (empty when none).
-    const volAuto = this.benignVolumeAutomationKey(n.noteEvent);
     return [
       bakeChannelMix ? "mix" : "dry",
       n.audioBufferId ?? -1,
@@ -2057,7 +2037,6 @@ export class Player<
       n.isDrum ? 1 : 0,
       Math.round(n.voiceParams.volRelease * 1e6),
       Math.round(n.voiceParams.playbackRate * 1e6),
-      volAuto,
     ].join("|");
   }
 
@@ -2093,77 +2072,12 @@ export class Player<
     return null;
   }
 
-  // Replay volume-family CCs (7/10/11) that occur while a note is active
-  // onto an offline player. Events are absolute channel-level sets, so the
-  // same TimelineEvent referenced from multiple overlapping notes is
-  // applied once (identity dedupe). offlineBase is the offline-context
-  // time of the note's onset (0 for single-note getSimpleNoteBuffer).
-  // Only meaningful when bakeChannelMix is true (chunk/audio); segment
-  // keeps vol/pan live via gainL/gainR at playback time.
-  replayBenignVolumeAutomation(
-    offlinePlayer: Player<TNote, TChannel>,
-    notes: {
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      offset: number;
-    }[],
-  ): void {
-    const applied = new Set<TimelineEvent>();
-    const timed: { t: number; event: TimelineEvent }[] = [];
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
-      const noteEvent = n.noteEvent;
-      if (!noteEvent || noteEvent.events.length === 0) continue;
-      const noteStartTime = noteEvent.startTime;
-      for (let j = 0; j < noteEvent.events.length; j++) {
-        const event = noteEvent.events[j];
-        if (applied.has(event)) continue;
-        // Only volume / expression / pan — never pitch bend or mod.
-        if (event.type !== "controller") continue;
-        const ct = event.controllerType;
-        if (ct !== 7 && ct !== 10 && ct !== 11) continue;
-        const rel = (event.startTime as number) / this.tempo - noteStartTime;
-        if (rel < 0 || rel > n.noteDuration) continue;
-        applied.add(event);
-        timed.push({ t: n.offset + rel, event });
-      }
-    }
-    timed.sort((a, b) => a.t - b.t);
-    for (let i = 0; i < timed.length; i++) {
-      const { t, event } = timed[i];
-      offlinePlayer.processTimelineEvent(event, t, {
-        channels: offlinePlayer.channels,
-      });
-    }
-  }
-
-  // Fingerprint mid-note volume/expression/pan automation so two simple
-  // notes with the same onset state but different volume curves do not
-  // share a cached buffer.
-  benignVolumeAutomationKey(noteEvent?: NoteOnEventEntry): string {
-    if (!noteEvent || noteEvent.events.length === 0) return "";
-    const noteStartTime = noteEvent.startTime;
-    const parts: string[] = [];
-    for (let i = 0; i < noteEvent.events.length; i++) {
-      const event = noteEvent.events[i];
-      if (event.type !== "controller") continue;
-      const ct = event.controllerType;
-      if (ct !== 7 && ct !== 10 && ct !== 11) continue;
-      const rel = (event.startTime as number) / this.tempo - noteStartTime;
-      if (rel < 0 || rel > noteEvent.duration) continue;
-      parts.push(`${ct}@${Math.round(rel * 1e4)}=${event.value ?? 0}`);
-    }
-    return parts.join(",");
-  }
-
-  // Schedule simple notes into an existing OfflineAudioContext via a
-  // lightweight offline Player — used on cache miss so segment/chunk/audio
-  // mix pays one startRendering instead of one per note + one mix.
-  // Volume / expression / pan mid-note CCs are replayed when bakeChannelMix
-  // is true (absolute channel sets; identity-deduped). Pitch bend / mod
-  // never reach this path (isSimpleNote rejects them). Does not populate
-  // simpleNoteBufferCache (cache remains for note mode / hits filled by
-  // getSimpleNoteBuffer elsewhere).
+  // Schedule simple notes (no in-interval automation) into an existing
+  // OfflineAudioContext via a lightweight offline Player — used on cache
+  // miss so segment/chunk/audio mix pays one startRendering instead of
+  // one per note + one mix. Does not populate simpleNoteBufferCache
+  // (approach: critical path first; cache remains for note mode / hits
+  // filled by getSimpleNoteBuffer elsewhere).
   async scheduleSimpleNotesDirect(
     offlineContext: OfflineAudioContext,
     offlinePlayer: Player<TNote, TChannel>,
@@ -2185,7 +2099,6 @@ export class Player<
     bakeChannelMix: boolean,
   ): Promise<void> {
     const sorted = notes.slice().sort((a, b) => a.offset - b.offset);
-    // 1. noteOn every simple note (onset snapshot seeds channel state).
     for (const n of sorted) {
       const dstChannel = offlinePlayer.channels[n.channelNumber];
       if (!dstChannel) continue;
@@ -2221,17 +2134,6 @@ export class Player<
         preNote.volumeNode.disconnect();
         preNote.volumeNode.connect(offlineContext.destination);
       }
-    }
-    // 2. Replay mid-note volume/expression/pan into the shared graph.
-    //    Segment (dry) skips this — live gainL/gainR apply channel mix
-    //    at playback time instead of baking it into the buffer.
-    if (bakeChannelMix) {
-      this.replayBenignVolumeAutomation(offlinePlayer, sorted);
-    }
-    // 3. noteOff (release scheduled on the offline timeline).
-    for (const n of sorted) {
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
-      if (!dstChannel) continue;
       offlinePlayer.noteOffChannel(
         dstChannel,
         n.noteNumber,
@@ -2321,15 +2223,6 @@ export class Player<
       if (!bakeChannelMix && preNote.volumeNode) {
         preNote.volumeNode.disconnect();
         preNote.volumeNode.connect(offlineContext.destination);
-      }
-      // Bake mid-note volume/expression/pan when channel mix is included
-      // (chunk/audio / note mode). Same helper as the shared-OAC path.
-      if (bakeChannelMix) {
-        this.replayBenignVolumeAutomation(offlinePlayer, [{
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          offset: 0,
-        }]);
       }
       offlinePlayer.noteOffChannel(
         dstChannel,
@@ -2885,8 +2778,20 @@ export class Player<
     const cacheMode = this.cacheMode;
     const isFullCached = isRendered &&
       (audioBuffer as RenderedBuffer).isFull === true;
+    // Offline mix bakers (segment/chunk/audio simple path): leaner graph.
+    // Detect via flag (preferred) or OfflineAudioContext (renderEntry etc.).
+    const isOfflineBake = this.offlineRenderOnly ||
+      this.audioContext instanceof OfflineAudioContext;
     if (cacheMode === "none") {
-      note.volumeEnvelopeNode = new GainNode(audioContext);
+      // Offline: drive envelope on volumeNode itself (one fewer GainNode per
+      // note). Realtime keeps a separate envelope gain so channel bus /
+      // modulation can still tap volumeNode independently.
+      if (isOfflineBake) {
+        note.volumeEnvelopeNode = note.volumeNode;
+      } else {
+        note.volumeEnvelopeNode = new GainNode(audioContext);
+      }
+      // Skip Biquad when filter is fully open and mod envelope does not move it.
       const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
         voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
       note.filterEnvelopeNode = filterIsAudible
@@ -2897,8 +2802,17 @@ export class Player<
         : null;
       this.setVolumeEnvelope(channel, note, now);
       if (note.filterEnvelopeNode) this.setFilterEnvelope(channel, note, now);
-      this.setPitchEnvelope(note, now);
+      // Pitch env only when modEnv actually sweeps rate; otherwise a single
+      // playbackRate value is enough (avoids cancel/ramp scheduling).
+      if (voiceParams.modEnvToPitch !== 0) {
+        this.setPitchEnvelope(note, now);
+      } else {
+        note.bufferSource.playbackRate.value = voiceParams.playbackRate;
+      }
+      // Keep setDetune (smoothed setTarget) for offline too — static
+      // .value assignment can sound slightly different at the attack.
       this.setDetune(channel, note, now);
+      // LFO nodes only when the voice routes LFO somewhere and mod wheel > 0.
       const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 ||
         voiceParams.modLfoToFilterFc !== 0 ||
         voiceParams.modLfoToVolume !== 0;
@@ -2911,7 +2825,9 @@ export class Player<
       } else {
         note.bufferSource.connect(note.volumeEnvelopeNode);
       }
-      note.volumeEnvelopeNode.connect(note.volumeNode);
+      if (!isOfflineBake) {
+        note.volumeEnvelopeNode.connect(note.volumeNode);
+      }
     } else if (isFullCached) { // "note" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
@@ -2925,7 +2841,8 @@ export class Player<
       }
       note.bufferSource.connect(note.volumeNode);
     }
-    if (!realtime) {
+    // Offline bake has no realtime deadline; skip the miss warning noise.
+    if (!realtime && !isOfflineBake) {
       this.warnIfStartTimeMissed(
         `note (channel ${channel.channelNumber}, note ${note.noteNumber})`,
         startTime,
