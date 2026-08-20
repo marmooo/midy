@@ -1397,51 +1397,27 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple: hit → BufferSource; miss → direct into this OAC ---
-    const simpleMisses: ChunkNoteEntry[] = [];
+    // --- simple notes: cache path or shared-OAC path (pre-checked) ---
     if (simpleNotes.length > 0) {
-      for (const n of simpleNotes) {
-        const cached = await this.lookupSimpleNoteBuffer(n, true);
-        if (cached) {
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: cached,
-          });
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-        } else {
-          simpleMisses.push(n);
-        }
-      }
-      if (simpleMisses.length > 0) {
-        const channelNumbers = [
-          ...new Set(simpleMisses.map((n) => n.channelNumber)),
-        ];
-        const offlinePlayer = this.createOfflineRenderPlayer(
-          offlineContext,
-          channelNumbers,
-          true,
-        );
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          simpleMisses.map((n) => ({
-            channelNumber: n.channelNumber,
-            audioBufferId: n.audioBufferId,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: n.isDrum,
-            voiceParams: n.voiceParams,
-            voice: n.voice,
-            offset: n.offset,
-          })),
-          true,
-        );
-      }
+      await this.placeSimpleNotesInOfflineMix(
+        offlineContext,
+        simpleNotes.map((n) => ({
+          channelNumber: n.channelNumber,
+          audioBufferId: n.audioBufferId,
+          noteNumber: n.noteNumber,
+          velocity: n.velocity,
+          noteDuration: n.noteDuration,
+          noteEvent: n.noteEvent,
+          channelDetune: n.channelDetune,
+          channelStateArray: n.channelStateArray,
+          programNumber: n.programNumber,
+          isDrum: n.isDrum,
+          voiceParams: n.voiceParams,
+          voice: n.voice,
+          offset: n.offset,
+        })),
+        true,
+      );
     }
 
     // --- complex: per-note full bake (in-note pitch bend / CC) ---
@@ -2040,9 +2016,192 @@ export class Player<
     ].join("|");
   }
 
+  // Pre-check: is per-key separate baking likely cheaper than one shared OAC?
+  // Returns false when misses are mostly unique (would add many startRendering
+  // calls with little reuse) — caller should use scheduleSimpleNotesDirect.
+  preferPerKeySimpleBake(
+    notes: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    }[],
+    bakeChannelMix: boolean,
+  ): boolean {
+    if (!this.simpleNoteCache || notes.length === 0) return false;
+    let hitLike = 0;
+    const missKeys = new Set<string>();
+    for (let i = 0; i < notes.length; i++) {
+      const key = this.makeSimpleNoteKey(notes[i], bakeChannelMix);
+      if (this.simpleNoteBufferCache.has(key)) hitLike++;
+      else missKeys.add(key);
+    }
+    const misses = notes.length - hitLike;
+    if (misses === 0) return true; // all hits → BufferSource only
+    // No reuse among misses → shared OAC is strictly better for this batch.
+    if (missKeys.size >= misses) return false;
+    // Require average ≥2 notes per unique miss key (amortizes separate OACs).
+    if (missKeys.size * 2 <= misses) return true;
+    // Small unique-miss set with enough volume still wins.
+    if (missKeys.size <= 4 && misses >= 8) return true;
+    return false;
+  }
+
+  // Place simple notes into an existing offline mix context.
+  // Pre-checks reuse: high duplication → per-key bake + BufferSource;
+  // mostly unique → one shared scheduleSimpleNotesDirect (no regression).
+  async placeSimpleNotesInOfflineMix(
+    offlineContext: OfflineAudioContext,
+    notes: {
+      channelNumber: number;
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+      voice?: Voice;
+      offset: number;
+    }[],
+    bakeChannelMix: boolean,
+  ): Promise<void> {
+    if (notes.length === 0) return;
+
+    if (this.preferPerKeySimpleBake(notes, bakeChannelMix)) {
+      const resolved = await this.resolveSimpleNoteBuffers(
+        notes,
+        bakeChannelMix,
+      );
+      for (let i = 0; i < notes.length; i++) {
+        const buf = resolved[i];
+        if (!buf) continue;
+        const src = new AudioBufferSourceNode(offlineContext, {
+          buffer: buf,
+        });
+        src.connect(offlineContext.destination);
+        src.start(notes[i].offset);
+      }
+      return;
+    }
+
+    // Shared-OAC path: hits still use BufferSource; misses share one graph.
+    const misses: typeof notes = [];
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const cached = await this.lookupSimpleNoteBuffer(n, bakeChannelMix);
+      if (cached) {
+        const src = new AudioBufferSourceNode(offlineContext, {
+          buffer: cached,
+        });
+        src.connect(offlineContext.destination);
+        src.start(n.offset);
+      } else {
+        misses.push(n);
+      }
+    }
+    if (misses.length === 0) return;
+
+    const channelNumbers = [
+      ...new Set(misses.map((n) => n.channelNumber)),
+    ];
+    const offlinePlayer = this.createOfflineRenderPlayer(
+      offlineContext,
+      channelNumbers,
+      true,
+    );
+    await this.scheduleSimpleNotesDirect(
+      offlineContext,
+      offlinePlayer,
+      misses,
+      bakeChannelMix,
+    );
+  }
+
+  // Resolve simple-note buffers for a batch: cache hit → reuse; miss →
+  // getSimpleNoteBuffer once per unique key (parallel), then every note
+  // becomes a BufferSource in the mix OAC. Populates simpleNoteBufferCache
+  // so later windows / identical onsets hit without rebuilding the graph.
+  // Caller should only use this when preferPerKeySimpleBake is true.
+  async resolveSimpleNoteBuffers(
+    notes: {
+      channelNumber?: number;
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+      voice?: Voice;
+    }[],
+    bakeChannelMix: boolean,
+  ): Promise<(AudioBuffer | null)[]> {
+    const results: (AudioBuffer | null)[] = new Array(notes.length);
+    const missByKey = new Map<string, number>();
+    const bakeTasks: Promise<void>[] = [];
+
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const cached = await this.lookupSimpleNoteBuffer(n, bakeChannelMix);
+      if (cached) {
+        results[i] = cached;
+        continue;
+      }
+      const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+      const bakeInput = {
+        channelNumber: n.channelNumber ?? 0,
+        audioBufferId: n.audioBufferId,
+        noteNumber: n.noteNumber,
+        velocity: n.velocity,
+        noteDuration: n.noteDuration,
+        noteEvent: n.noteEvent,
+        channelDetune: n.channelDetune,
+        channelStateArray: n.channelStateArray,
+        programNumber: n.programNumber,
+        isDrum: n.isDrum,
+        voiceParams: n.voiceParams,
+        voice: n.voice,
+      };
+      if (missByKey.has(key)) {
+        bakeTasks.push(
+          (async () => {
+            results[i] = await this.getSimpleNoteBuffer(
+              bakeInput,
+              bakeChannelMix,
+            );
+          })(),
+        );
+        continue;
+      }
+      missByKey.set(key, i);
+      bakeTasks.push(
+        (async () => {
+          results[i] = await this.getSimpleNoteBuffer(
+            bakeInput,
+            bakeChannelMix,
+          );
+        })(),
+      );
+    }
+    if (bakeTasks.length > 0) await Promise.all(bakeTasks);
+    return results;
+  }
+
   // Resolve a cached simple-note buffer without starting a new bake.
-  // Returns null on miss (caller should schedule into the shared mix OAC).
-  // In-flight Promise from note-mode / other paths is awaited.
+  // Returns null on miss. In-flight Promise from other paths is awaited.
   async lookupSimpleNoteBuffer(
     n: {
       audioBufferId?: number;
@@ -2144,11 +2303,12 @@ export class Player<
     }
   }
 
-  // Bake a simple note and cache it.
+  // Bake a simple note and cache it under makeSimpleNoteKey.
   // bakeChannelMix=true: stereo with channel vol/pan (chunk/audio).
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
-  // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
-  // schedule on miss so the mix OAC does not wait on a second startRendering.
+  // Used by "note" mode and by resolveSimpleNoteBuffers (segment/chunk/audio
+  // miss path): one bake per unique key, then BufferSource placement in the
+  // mix OAC so identical onsets reuse the buffer.
   async getSimpleNoteBuffer(
     n: {
       channelNumber: number;
@@ -2294,13 +2454,11 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple: hit → BufferSource; miss → direct into this OAC ---
-    // Use per-note onset snapshots so mid-segment pitch bend / CC does not
-    // leave later simple notes at the segment-open detune/volume state.
-    const simpleMisses: SegmentNoteEntry[] = [];
+    // --- simple notes: cache path or shared-OAC path (pre-checked) ---
     if (simpleNotes.length > 0) {
-      for (const n of simpleNotes) {
-        const bakeInput = {
+      await this.placeSimpleNotesInOfflineMix(
+        offlineContext,
+        simpleNotes.map((n) => ({
           channelNumber: ch,
           audioBufferId: n.audioBufferId,
           noteNumber: n.noteNumber,
@@ -2313,46 +2471,10 @@ export class Player<
           isDrum: channel.isDrum,
           voiceParams: n.voiceParams,
           voice: n.voice,
-        };
-        const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
-        if (cached) {
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: cached,
-          });
-          // dry mono — channel vol/pan stay live via gainL/gainR
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-        } else {
-          simpleMisses.push(n);
-        }
-      }
-      if (simpleMisses.length > 0) {
-        const offlinePlayer = this.createOfflineRenderPlayer(
-          offlineContext,
-          [ch],
-          true,
-        );
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          simpleMisses.map((n) => ({
-            channelNumber: ch,
-            audioBufferId: n.audioBufferId,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: channel.isDrum,
-            voiceParams: n.voiceParams,
-            voice: n.voice,
-            offset: n.offset,
-          })),
-          false,
-        );
-      }
+          offset: n.offset,
+        })),
+        false,
+      );
     }
 
     // --- complex: per-note full bake (same fidelity as "note" mode) ---
