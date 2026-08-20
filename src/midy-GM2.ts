@@ -1058,6 +1058,7 @@ export class MidyGM2 extends Player<Note, Channel> {
         duration,
         durationTicks,
         startTime: entry.startTime,
+        startTicks: entry.startTicks,
         events: entry.events,
       };
     };
@@ -1293,6 +1294,17 @@ export class MidyGM2 extends Player<Note, Channel> {
       this.segmentVoiceParams = segmentVoiceParams;
       this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
+      // Simple/complex-note classification is shared by note / segment / chunk / audio
+      // (same as Player.cacheVoiceIds). Without these, MidyGM2 never fills
+      // simpleNoteSet / simpleNoteCounts / complexNoteCounts, so segment/chunk/
+      // note/audio paths skip the shared-OAC and cache optimizations.
+      this.finalizeSimpleNoteClassification();
+      this.buildSimpleNoteCounts();
+      this.buildComplexNoteCounts();
+    } else if (cacheMode === "audio" || cacheMode === "note") {
+      this.finalizeSimpleNoteClassification();
+      this.buildSimpleNoteCounts();
+      this.buildComplexNoteCounts();
     }
   }
 
