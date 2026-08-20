@@ -432,21 +432,32 @@ export class Player<
         }
         case "controller": {
           const ch = event.channel ?? 0;
-          for (const [key, entries] of activeNotes) {
-            if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
+          {
+            const pairs = Array.from(activeNotes);
+            for (let pi = 0; pi < pairs.length; pi++) {
+              const key = pairs[pi][0];
+              if (key % numChannels !== ch) continue;
+              const entries = pairs[pi][1];
+              for (let ei = 0; ei < entries.length; ei++) {
+                entries[ei].events.push(event);
+              }
+            }
           }
           switch (event.controllerType) {
             case 64: { // Sustain Pedal
               const on = event.value! >= 64;
               sustainPedal[ch] = on ? 1 : 0;
               if (!on) {
-                for (const [key, offItems] of pendingOff) {
+                const pairs = Array.from(pendingOff);
+                for (let pi = 0; pi < pairs.length; pi++) {
+                  const key = pairs[pi][0];
                   if (key % numChannels !== ch) continue;
+                  const offItems = pairs[pi][1];
                   const activeStack = activeNotes.get(key);
-                  for (const { t: offTime, ticks: offTicks } of offItems) {
+                  for (let oi = 0; oi < offItems.length; oi++) {
+                    const item = offItems[oi];
                     if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift()!, offTime, offTicks);
+                      finalizeEntry(activeStack.shift()!, item.t, item.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -460,12 +471,19 @@ export class Player<
               break;
             case 120: // All Sound Off
             case 123: { // All Notes Off
-              for (const [key, stack] of activeNotes) {
+              const pairs = Array.from(activeNotes);
+              for (let pi = 0; pi < pairs.length; pi++) {
+                const key = pairs[pi][0];
                 if (key % numChannels !== ch) continue;
-                for (const entry of stack) finalizeEntry(entry, t, event.ticks);
+                const stack = pairs[pi][1];
+                for (let ei = 0; ei < stack.length; ei++) {
+                  finalizeEntry(stack[ei], t, event.ticks);
+                }
                 activeNotes.delete(key);
               }
-              for (const key of pendingOff.keys()) {
+              const pendingPairs = Array.from(pendingOff);
+              for (let pi = 0; pi < pendingPairs.length; pi++) {
+                const key = pendingPairs[pi][0];
                 if (key % numChannels === ch) pendingOff.delete(key);
               }
               break;
@@ -480,14 +498,22 @@ export class Player<
             if (data[3] === 1) {
               sustainPedal.fill(0);
               pendingOff.clear();
-              for (const [, stack] of activeNotes) {
-                for (const entry of stack) finalizeEntry(entry, t, event.ticks);
+              const pairs = Array.from(activeNotes);
+              for (let pi = 0; pi < pairs.length; pi++) {
+                const stack = pairs[pi][1];
+                for (let ei = 0; ei < stack.length; ei++) {
+                  finalizeEntry(stack[ei], t, event.ticks);
+                }
               }
               activeNotes.clear();
             }
           } else {
-            for (const [, entries] of activeNotes) {
-              for (const entry of entries) entry.events.push(event);
+            const pairs = Array.from(activeNotes);
+            for (let pi = 0; pi < pairs.length; pi++) {
+              const entries = pairs[pi][1];
+              for (let ei = 0; ei < entries.length; ei++) {
+                entries[ei].events.push(event);
+              }
             }
           }
           break;
@@ -499,16 +525,27 @@ export class Player<
           // non-simple (same as CC). programChange is also recorded for
           // completeness; offline bakers may ignore it.
           const ch = event.channel ?? 0;
-          for (const [key, entries] of activeNotes) {
+          const pairs = Array.from(activeNotes);
+          for (let pi = 0; pi < pairs.length; pi++) {
+            const key = pairs[pi][0];
             if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
+            const entries = pairs[pi][1];
+            for (let ei = 0; ei < entries.length; ei++) {
+              entries[ei].events.push(event);
+            }
           }
           break;
         }
       }
     }
-    for (const [, stack] of activeNotes) {
-      for (const entry of stack) finalizeEntry(entry, totalTime, Infinity);
+    {
+      const pairs = Array.from(activeNotes);
+      for (let pi = 0; pi < pairs.length; pi++) {
+        const stack = pairs[pi][1];
+        for (let ei = 0; ei < stack.length; ei++) {
+          finalizeEntry(stack[ei], totalTime, Infinity);
+        }
+      }
     }
   }
 
@@ -610,8 +647,11 @@ export class Player<
     }
     this.noteAudioBufferIds = noteAudioBufferIds;
     this.preloadEntries = preloadEntries;
-    for (const [audioBufferId, count] of voiceCounter) {
-      if (count === 1) voiceCounter.delete(audioBufferId);
+    {
+      const pairs = Array.from(voiceCounter);
+      for (let i = 0; i < pairs.length; i++) {
+        if (pairs[i][1] === 1) voiceCounter.delete(pairs[i][0]);
+      }
     }
     this.GM1SystemOn(this.audioContext.currentTime);
     if (
@@ -642,8 +682,9 @@ export class Player<
     queueIndex: number,
   ): number {
     const timeOffset = this.resumeTime - this.startTime;
-    const isSegmentMode = this.cacheMode === "segment";
-    const isChunkMode = this.cacheMode === "chunk";
+    const cacheMode = this.cacheMode;
+    const isSegmentMode = cacheMode === "segment";
+    const isChunkMode = cacheMode === "chunk";
     // Segment/chunk mode needs notes discovered far enough ahead that
     // closeSegment/closeChunk + render have time to finish before each
     // segment/chunk's scheduled start time. The worst case render length scales
@@ -658,6 +699,9 @@ export class Player<
     const schedulingOffset = this.startDelay - timeOffset;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+    const segmentBakedSet = this.segmentBakedSet;
+    const noteOnDurations = this.noteOnDurations;
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
       const t = event.startTime * inverseTempo;
@@ -671,14 +715,14 @@ export class Player<
             startTime,
           );
           note.timelineIndex = queueIndex;
-          note.audioBufferId = this.noteAudioBufferIds[queueIndex];
+          note.audioBufferId = noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
-            this.segmentBakedSet.has(queueIndex);
+            segmentBakedSet.has(queueIndex);
           const isChunkNote = isChunkMode &&
-            this.segmentBakedSet.has(queueIndex);
+            segmentBakedSet.has(queueIndex);
           if (isSegmentNote || isChunkNote) {
             note.isSegmentGhost = true;
-            note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
+            note.segmentNoteDuration = noteOnDurations[queueIndex] ?? 0;
           }
           channel.noteOn(
             event.noteNumber!,
@@ -994,7 +1038,9 @@ export class Player<
     ) {
       this.finalizeSimpleNoteClassification();
       this.simpleNoteBufferCache.clear();
+      this.complexNoteBufferCache.clear();
       this.buildSimpleNoteCounts();
+      this.buildComplexNoteCounts();
     }
     if (cacheMode === "audio") {
       if (this.audioModeBufferSource) {
@@ -1076,17 +1122,21 @@ export class Player<
     // browser — can delay the fresh segments that should render next,
     // pushing them past lookAhead too.
     this.segmentGeneration++;
-    for (const state of this.segmentChannelStates) {
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
       if (!state) continue;
-      for (const pending of state.pending) {
-        if (pending.source) {
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        if (p.source) {
           try {
-            pending.source.stop();
+            p.source.stop();
           } catch {
             // already stopped/ended
           }
           // disconnect is handled by the source's onended handler
-          pending.source = null;
+          p.source = null;
         }
       }
       state.pending = [];
@@ -1222,10 +1272,16 @@ export class Player<
       ) {
         this.closeSegment(state, channels[ch]);
       }
-      state.pending = state.pending.filter((pending) => !pending.done);
-      for (const pending of state.pending) {
-        if (!pending.source && pending.bufferReady) {
-          this.startPendingSegment(channels[ch], pending);
+      const pending = state.pending;
+      let write = 0;
+      for (let i = 0; i < pending.length; i++) {
+        if (!pending[i].done) pending[write++] = pending[i];
+      }
+      pending.length = write;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        if (!p.source && p.bufferReady) {
+          this.startPendingSegment(channels[ch], p);
         }
       }
     }
@@ -1240,11 +1296,18 @@ export class Player<
     if (state.openChunk) {
       this.closeChunk(state);
     }
-    const allBufferPromises = state.pending.map((p) => p.bufferPromise);
+    const pending = state.pending;
+    const allBufferPromises: Promise<AudioBuffer | null>[] = new Array(
+      pending.length,
+    );
+    for (let i = 0; i < pending.length; i++) {
+      allBufferPromises[i] = pending[i].bufferPromise;
+    }
     await Promise.allSettled(allBufferPromises);
-    for (const pending of state.pending) {
-      if (!pending.source && pending.bufferReady) {
-        this.startPendingChunk(pending);
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      if (!p.source && p.bufferReady) {
+        this.startPendingChunk(p);
       }
     }
     await this.waitForPendingSources("drainChunkPipeline", () => state.pending);
@@ -1256,15 +1319,17 @@ export class Player<
     // seek/stop/loop).
     this.chunkGeneration++;
     const state = this.chunkState;
-    for (const pending of state.pending) {
-      if (pending.source) {
+    const pending = state.pending;
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      if (p.source) {
         try {
-          pending.source.stop();
+          p.source.stop();
         } catch {
           // already stopped/ended
         }
         // disconnect is handled by the source's onended handler
-        pending.source = null;
+        p.source = null;
       }
     }
     state.pending = [];
@@ -1378,10 +1443,16 @@ export class Player<
     ) {
       this.closeChunk(state);
     }
-    state.pending = state.pending.filter((p) => !p.done);
-    for (const pending of state.pending) {
-      if (!pending.source && pending.bufferReady) {
-        this.startPendingChunk(pending);
+    const pending = state.pending;
+    let write = 0;
+    for (let i = 0; i < pending.length; i++) {
+      if (!pending[i].done) pending[write++] = pending[i];
+    }
+    pending.length = write;
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      if (!p.source && p.bufferReady) {
+        this.startPendingChunk(p);
       }
     }
   }
@@ -1406,7 +1477,9 @@ export class Player<
 
     // Compute total duration across all notes in all channels.
     let totalDuration = 0;
-    for (const n of notes) {
+    const notesLen = notes.length;
+    for (let i = 0; i < notesLen; i++) {
+      const n = notes[i];
       const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > totalDuration) totalDuration = end;
@@ -1415,7 +1488,8 @@ export class Player<
 
     const simpleNotes: ChunkNoteEntry[] = [];
     const complexNotes: ChunkNoteEntry[] = [];
-    for (const n of notes) {
+    for (let i = 0; i < notesLen; i++) {
+      const n = notes[i];
       if (this.isSimpleNote(n)) simpleNotes.push(n);
       else complexNotes.push(n);
     }
@@ -1431,8 +1505,10 @@ export class Player<
     //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
     //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
     const simpleMisses: ChunkNoteEntry[] = [];
+    const simpleCounts = this.simpleNoteCounts;
     if (simpleNotes.length > 0) {
-      for (const n of simpleNotes) {
+      for (let si = 0; si < simpleNotes.length; si++) {
+        const n = simpleNotes[si];
         const cached = await this.lookupSimpleNoteBuffer(n, true);
         if (cached) {
           const src = new AudioBufferSourceNode(offlineContext, {
@@ -1443,7 +1519,7 @@ export class Player<
           continue;
         }
         const key = this.makeSimpleNoteKey(n, true);
-        const count = this.simpleNoteCounts.get(key) ?? 0;
+        const count = simpleCounts.get(key) ?? 0;
         if (count > 1) {
           // First (or concurrent) occurrence of a multi-use key: bake once
           // into simpleNoteBufferCache so later hits in this or other
@@ -1633,7 +1709,8 @@ export class Player<
     // enough to limit the number of startRendering() calls.
     const windowSec = this.audioWindowDuration;
     let maxEnd = 0;
-    for (const n of notes) {
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
       const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > maxEnd) maxEnd = end;
@@ -1657,19 +1734,20 @@ export class Player<
       // in this window; each note is fully rendered (including its release)
       // relative to onset, so release tails are not cut and there is no
       // double-mixing across windows.
-      const windowNotes = notes.filter((n) =>
-        n.offset >= winStart && n.offset < winEnd
-      );
-      if (windowNotes.length === 0) continue;
-
-      // Shift offsets so the offline context starts near 0 (small context).
-      const localNotes: ChunkNoteEntry[] = windowNotes.map((n) => ({
-        ...n,
-        offset: n.offset - winStart,
+      const localNotes: ChunkNoteEntry[] = [];
+      for (let ni = 0; ni < notes.length; ni++) {
+        const n = notes[ni];
+        if (n.offset < winStart || n.offset >= winEnd) continue;
+        // Shift offsets so the offline context starts near 0 (small context).
         // channelStateArray is a typed array — copy so mutations in one
         // window can't affect another.
-        channelStateArray: n.channelStateArray.slice(),
-      }));
+        localNotes.push({
+          ...n,
+          offset: n.offset - winStart,
+          channelStateArray: n.channelStateArray.slice(),
+        });
+      }
+      if (localNotes.length === 0) continue;
 
       const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
       // forAudioOffline=true: allow simpleNote cache; no per-window clamp
@@ -2045,7 +2123,9 @@ export class Player<
       ? this.segmentBakedSet
       : null;
     if (candidates) {
-      for (const i of candidates) {
+      const candidateArr = Array.from(candidates);
+      for (let ci = 0; ci < candidateArr.length; ci++) {
+        const i = candidateArr[ci];
         const noteEvent = this.noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
@@ -2562,14 +2642,16 @@ export class Player<
     bakeChannelMix: boolean,
   ): Promise<void> {
     const sorted = notes.slice().sort((a, b) => a.offset - b.offset);
-    for (const n of sorted) {
+    const liveChannels = this.channels;
+    for (let i = 0; i < sorted.length; i++) {
+      const n = sorted[i];
       const dstChannel = offlinePlayer.channels[n.channelNumber];
       if (!dstChannel) continue;
       dstChannel.state.array.set(n.channelStateArray);
       dstChannel.isDrum = n.isDrum;
       dstChannel.programNumber = n.programNumber;
       dstChannel.modulationDepthRange =
-        this.channels[n.channelNumber]?.modulationDepthRange ?? 50;
+        liveChannels[n.channelNumber]?.modulationDepthRange ?? 50;
       dstChannel.detune = n.channelDetune;
       if (bakeChannelMix) {
         offlinePlayer.updateChannelVolume(dstChannel, n.offset);
@@ -2763,8 +2845,11 @@ export class Player<
     // Use per-note onset snapshots so mid-segment pitch bend / CC does not
     // leave later simple notes at the segment-open detune/volume state.
     const simpleMisses: SegmentNoteEntry[] = [];
+    const simpleCounts = this.simpleNoteCounts;
+    const isDrum = channel.isDrum;
     if (simpleNotes.length > 0) {
-      for (const n of simpleNotes) {
+      for (let si = 0; si < simpleNotes.length; si++) {
+        const n = simpleNotes[si];
         const bakeInput = {
           channelNumber: ch,
           audioBufferId: n.audioBufferId,
@@ -2775,7 +2860,7 @@ export class Player<
           channelDetune: n.channelDetune,
           channelStateArray: n.channelStateArray,
           programNumber: n.programNumber,
-          isDrum: channel.isDrum,
+          isDrum,
           voiceParams: n.voiceParams,
           voice: n.voice,
         };
@@ -2790,7 +2875,7 @@ export class Player<
           continue;
         }
         const key = this.makeSimpleNoteKey(bakeInput, false);
-        const count = this.simpleNoteCounts.get(key) ?? 0;
+        const count = simpleCounts.get(key) ?? 0;
         if (count > 1) {
           const buffer = await this.getSimpleNoteBuffer(bakeInput, false);
           const src = new AudioBufferSourceNode(offlineContext, {
