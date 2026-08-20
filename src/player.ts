@@ -1079,13 +1079,21 @@ export class Player<
         this.closeSegment(state, channels[ch]);
       }
     }
-    const allBufferPromises: Promise<AudioBuffer | null>[] = [];
+    let promiseCount = 0;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (state) promiseCount += state.pending.length;
+    }
+    const allBufferPromises = new Array<Promise<AudioBuffer | null>>(
+      promiseCount,
+    );
+    let pi = 0;
     for (let ch = 0; ch < states.length; ch++) {
       const state = states[ch];
       if (!state) continue;
       const pending = state.pending;
       for (let i = 0; i < pending.length; i++) {
-        allBufferPromises.push(pending[i].bufferPromise);
+        allBufferPromises[pi++] = pending[i].bufferPromise;
       }
     }
     await Promise.allSettled(allBufferPromises);
@@ -1100,12 +1108,18 @@ export class Player<
       }
     }
     await this.waitForPendingSources("drainSegmentPipeline", () => {
-      const result: PendingSegment[] = [];
+      let total = 0;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (state) total += state.pending.length;
+      }
+      const result = new Array<PendingSegment>(total);
+      let ri = 0;
       for (let ch = 0; ch < states.length; ch++) {
         const state = states[ch];
         if (!state) continue;
         const pending = state.pending;
-        for (let i = 0; i < pending.length; i++) result.push(pending[i]);
+        for (let i = 0; i < pending.length; i++) result[ri++] = pending[i];
       }
       return result;
     });
@@ -1486,13 +1500,18 @@ export class Player<
     }
     if (totalDuration <= 0) return null;
 
-    const simpleNotes: ChunkNoteEntry[] = [];
-    const complexNotes: ChunkNoteEntry[] = [];
+    // Over-allocate then trim — avoids a second isSimpleNote pass.
+    const simpleNotes = new Array<ChunkNoteEntry>(notesLen);
+    const complexNotes = new Array<ChunkNoteEntry>(notesLen);
+    let simpleCount = 0;
+    let complexCount = 0;
     for (let i = 0; i < notesLen; i++) {
       const n = notes[i];
-      if (this.isSimpleNote(n)) simpleNotes.push(n);
-      else complexNotes.push(n);
+      if (this.isSimpleNote(n)) simpleNotes[simpleCount++] = n;
+      else complexNotes[complexCount++] = n;
     }
+    simpleNotes.length = simpleCount;
+    complexNotes.length = complexCount;
 
     const sampleRate = this.audioContext.sampleRate;
     const offlineContext = new OfflineAudioContext(
@@ -1504,11 +1523,12 @@ export class Player<
     // --- simple: hit → BufferSource; miss →
     //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
     //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
-    const simpleMisses: ChunkNoteEntry[] = [];
+    const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
+    let missCount = 0;
     const simpleCounts = this.simpleNoteCounts;
-    if (simpleNotes.length > 0) {
-      for (let si = 0; si < simpleNotes.length; si++) {
-        const n = simpleNotes[si];
+    if (simpleCount > 0) {
+      for (let i = 0; i < simpleCount; i++) {
+        const n = simpleNotes[i];
         const cached = await this.lookupSimpleNoteBuffer(n, true);
         if (cached) {
           const src = new AudioBufferSourceNode(offlineContext, {
@@ -1547,22 +1567,44 @@ export class Player<
           src.connect(offlineContext.destination);
           src.start(n.offset);
         } else {
-          simpleMisses.push(n);
+          simpleMisses[missCount++] = n;
         }
       }
-      if (simpleMisses.length > 0) {
-        const channelNumbers = [
-          ...new Set(simpleMisses.map((n) => n.channelNumber)),
-        ];
+      if (missCount > 0) {
+        const seenCh = new Uint8Array(16);
+        const channelNumbers = new Array<number>(16);
+        let chCount = 0;
+        for (let i = 0; i < missCount; i++) {
+          const chn = simpleMisses[i].channelNumber;
+          if (!seenCh[chn]) {
+            seenCh[chn] = 1;
+            channelNumbers[chCount++] = chn;
+          }
+        }
+        channelNumbers.length = chCount;
         const offlinePlayer = this.createOfflineRenderPlayer(
           offlineContext,
           channelNumbers,
           true,
         );
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          simpleMisses.map((n) => ({
+        const directNotes = new Array<{
+          channelNumber: number;
+          audioBufferId?: number;
+          noteNumber: number;
+          velocity: number;
+          noteDuration: number;
+          noteEvent?: NoteOnEventEntry;
+          channelDetune: number;
+          channelStateArray: Float32Array;
+          programNumber: number;
+          isDrum: boolean;
+          voiceParams: VoiceParams;
+          voice?: Voice;
+          offset: number;
+        }>(missCount);
+        for (let i = 0; i < missCount; i++) {
+          const n = simpleMisses[i];
+          directNotes[i] = {
             channelNumber: n.channelNumber,
             audioBufferId: n.audioBufferId,
             noteNumber: n.noteNumber,
@@ -1576,7 +1618,12 @@ export class Player<
             voiceParams: n.voiceParams,
             voice: n.voice,
             offset: n.offset,
-          })),
+          };
+        }
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          directNotes,
           true,
         );
       }
@@ -1585,31 +1632,35 @@ export class Player<
     // --- complex: per-note full bake (in-note pitch bend / CC) ---
     // Identical automation patterns (count > 1) share one OAC via
     // complexNoteBufferCache; unique patterns still bake once each.
-    if (complexNotes.length > 0) {
-      const complexBuffers = await Promise.all(
-        complexNotes.map(async (n) => {
-          const entry = {
-            channelNumber: n.channelNumber,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            voiceParams: n.voiceParams,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: n.isDrum,
-            audioBufferId: n.audioBufferId,
-            voice: n.voice,
-          };
+    const complexLen = complexNotes.length;
+    if (complexLen > 0) {
+      const complexPromises = new Array<Promise<AudioBuffer>>(complexLen);
+      for (let i = 0; i < complexLen; i++) {
+        const n = complexNotes[i];
+        const entry = {
+          channelNumber: n.channelNumber,
+          noteNumber: n.noteNumber,
+          velocity: n.velocity,
+          voiceParams: n.voiceParams,
+          noteDuration: n.noteDuration,
+          noteEvent: n.noteEvent,
+          channelDetune: n.channelDetune,
+          channelStateArray: n.channelStateArray,
+          programNumber: n.programNumber,
+          isDrum: n.isDrum,
+          audioBufferId: n.audioBufferId,
+          voice: n.voice,
+        };
+        complexPromises[i] = (async () => {
           const cached = await this.lookupComplexNoteBuffer(entry, true);
           if (cached) {
             return cached;
           }
           return await this.getComplexNoteBuffer(entry, true);
-        }),
-      );
-      for (let i = 0; i < complexNotes.length; i++) {
+        })();
+      }
+      const complexBuffers = await Promise.all(complexPromises);
+      for (let i = 0; i < complexLen; i++) {
         const n = complexNotes[i];
         const src = new AudioBufferSourceNode(offlineContext, {
           buffer: complexBuffers[i],
@@ -1734,20 +1785,22 @@ export class Player<
       // in this window; each note is fully rendered (including its release)
       // relative to onset, so release tails are not cut and there is no
       // double-mixing across windows.
-      const localNotes: ChunkNoteEntry[] = [];
+      const localNotes = new Array<ChunkNoteEntry>(notes.length);
+      let localCount = 0;
       for (let ni = 0; ni < notes.length; ni++) {
         const n = notes[ni];
         if (n.offset < winStart || n.offset >= winEnd) continue;
         // Shift offsets so the offline context starts near 0 (small context).
         // channelStateArray is a typed array — copy so mutations in one
         // window can't affect another.
-        localNotes.push({
+        localNotes[localCount++] = {
           ...n,
           offset: n.offset - winStart,
           channelStateArray: n.channelStateArray.slice(),
-        });
+        };
       }
-      if (localNotes.length === 0) continue;
+      if (localCount === 0) continue;
+      localNotes.length = localCount;
 
       const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
       // forAudioOffline=true: allow simpleNote cache; no per-window clamp
@@ -1824,14 +1877,19 @@ export class Player<
   async preloadSamples(): Promise<void> {
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     const entries = this.preloadEntries;
-    const tasks: Promise<AudioBuffer>[] = [];
+    const cache = this.rawAudioBufferCache;
+    const tasks = new Array<Promise<AudioBuffer>>(entries.length);
+    let taskCount = 0;
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
-      tasks.push(
-        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams),
+      if (cache.has(entry.audioBufferId)) continue;
+      tasks[taskCount++] = this.getRawAudioBuffer(
+        entry.audioBufferId,
+        entry.voiceParams,
       );
     }
+    if (taskCount === 0) return;
+    tasks.length = taskCount;
     await Promise.all(tasks);
   }
 
@@ -2823,13 +2881,18 @@ export class Player<
     if (totalDuration <= 0) return null;
 
     // simple = no automation → cacheable dry mono / complex = full noteOn
-    const simpleNotes: SegmentNoteEntry[] = [];
-    const complexNotes: SegmentNoteEntry[] = [];
-    for (let i = 0; i < notes.length; i++) {
+    const notesLen = notes.length;
+    const simpleNotes = new Array<SegmentNoteEntry>(notesLen);
+    const complexNotes = new Array<SegmentNoteEntry>(notesLen);
+    let simpleCount = 0;
+    let complexCount = 0;
+    for (let i = 0; i < notesLen; i++) {
       const n = notes[i];
-      if (this.isSimpleNote(n)) simpleNotes.push(n);
-      else complexNotes.push(n);
+      if (this.isSimpleNote(n)) simpleNotes[simpleCount++] = n;
+      else complexNotes[complexCount++] = n;
     }
+    simpleNotes.length = simpleCount;
+    complexNotes.length = complexCount;
 
     const ch = channel.channelNumber;
     const sampleRate = this.audioContext.sampleRate;
@@ -2844,12 +2907,13 @@ export class Player<
     //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
     // Use per-note onset snapshots so mid-segment pitch bend / CC does not
     // leave later simple notes at the segment-open detune/volume state.
-    const simpleMisses: SegmentNoteEntry[] = [];
+    const simpleMisses = new Array<SegmentNoteEntry>(simpleCount);
+    let missCount = 0;
     const simpleCounts = this.simpleNoteCounts;
     const isDrum = channel.isDrum;
-    if (simpleNotes.length > 0) {
-      for (let si = 0; si < simpleNotes.length; si++) {
-        const n = simpleNotes[si];
+    if (simpleCount > 0) {
+      for (let i = 0; i < simpleCount; i++) {
+        const n = simpleNotes[i];
         const bakeInput = {
           channelNumber: ch,
           audioBufferId: n.audioBufferId,
@@ -2884,19 +2948,33 @@ export class Player<
           src.connect(offlineContext.destination);
           src.start(n.offset);
         } else {
-          simpleMisses.push(n);
+          simpleMisses[missCount++] = n;
         }
       }
-      if (simpleMisses.length > 0) {
+      if (missCount > 0) {
         const offlinePlayer = this.createOfflineRenderPlayer(
           offlineContext,
           [ch],
           true,
         );
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          simpleMisses.map((n) => ({
+        const directNotes = new Array<{
+          channelNumber: number;
+          audioBufferId?: number;
+          noteNumber: number;
+          velocity: number;
+          noteDuration: number;
+          noteEvent?: NoteOnEventEntry;
+          channelDetune: number;
+          channelStateArray: Float32Array;
+          programNumber: number;
+          isDrum: boolean;
+          voiceParams: VoiceParams;
+          voice?: Voice;
+          offset: number;
+        }>(missCount);
+        for (let i = 0; i < missCount; i++) {
+          const n = simpleMisses[i];
+          directNotes[i] = {
             channelNumber: ch,
             audioBufferId: n.audioBufferId,
             noteNumber: n.noteNumber,
@@ -2906,11 +2984,16 @@ export class Player<
             channelDetune: n.channelDetune,
             channelStateArray: n.channelStateArray,
             programNumber: n.programNumber,
-            isDrum: channel.isDrum,
+            isDrum,
             voiceParams: n.voiceParams,
             voice: n.voice,
             offset: n.offset,
-          })),
+          };
+        }
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          directNotes,
           false,
         );
       }
@@ -2921,31 +3004,34 @@ export class Player<
     // replay bugs. Dry mono buffers keep channel vol/pan live via gainL/R.
     // Identical automation patterns (count > 1) share one OAC via
     // complexNoteBufferCache; unique patterns still bake once each.
-    if (complexNotes.length > 0) {
-      const complexBuffers = await Promise.all(
-        complexNotes.map(async (n) => {
-          const entry = {
-            channelNumber: ch,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            voiceParams: n.voiceParams,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: channel.isDrum,
-            audioBufferId: n.audioBufferId,
-            voice: n.voice,
-          };
+    if (complexCount > 0) {
+      const complexPromises = new Array<Promise<AudioBuffer>>(complexCount);
+      for (let i = 0; i < complexCount; i++) {
+        const n = complexNotes[i];
+        const entry = {
+          channelNumber: ch,
+          noteNumber: n.noteNumber,
+          velocity: n.velocity,
+          voiceParams: n.voiceParams,
+          noteDuration: n.noteDuration,
+          noteEvent: n.noteEvent,
+          channelDetune: n.channelDetune,
+          channelStateArray: n.channelStateArray,
+          programNumber: n.programNumber,
+          isDrum,
+          audioBufferId: n.audioBufferId,
+          voice: n.voice,
+        };
+        complexPromises[i] = (async () => {
           const cached = await this.lookupComplexNoteBuffer(entry, false);
           if (cached) {
             return cached;
           }
           return await this.getComplexNoteBuffer(entry, false);
-        }),
-      );
-      for (let i = 0; i < complexNotes.length; i++) {
+        })();
+      }
+      const complexBuffers = await Promise.all(complexPromises);
+      for (let i = 0; i < complexCount; i++) {
         const n = complexNotes[i];
         const src = new AudioBufferSourceNode(offlineContext, {
           buffer: complexBuffers[i],
