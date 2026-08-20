@@ -125,6 +125,8 @@ export interface NoteOnEventEntry {
   duration: number;
   durationTicks: number;
   startTime: number;
+  /** Note-on absolute ticks (for relative automation keying). */
+  startTicks: number;
   events: TimelineEvent[];
 }
 export interface NoteOnEntry {
@@ -253,6 +255,22 @@ export class Player<
   simpleNoteSet: Set<number> = new Set();
   simpleNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
+  // Pre-playback occurrence counts for simple-note cache keys (same key as
+  // makeSimpleNoteKey). Keys that appear more than once are worth a separate
+  // OfflineAudioContext bake + cache fill on first miss; unique keys stay on
+  // the shared mix OAC path (scheduleSimpleNotesDirect) to avoid an extra
+  // startRendering that would never be reused.
+  simpleNoteCounts: Map<string, number> = new Map();
+  // Complex-note cache (shared by note / segment / chunk / audio modes).
+  // Notes with identical in-interval automation (pitch bend / CC / sysEx
+  // relative timeline) + voice / duration / onset channel state share one
+  // OfflineAudioContext bake. Only keys that appear more than once are
+  // cached (see complexNoteCounts / buildComplexNoteCounts) so one-shot
+  // patterns never pay an extra Map + Promise indirection.
+  complexNoteCache: boolean = true;
+  complexNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
+    new Map();
+  complexNoteCounts: Map<string, number> = new Map();
   // True for offline mix bakers (segment/chunk/audio simple path).
   // setNoteAudioNode uses a leaner node graph (shared envelope gain,
   // no smoothing ramps, skip silent LFO/filter/pitch-env).
@@ -328,6 +346,9 @@ export class Player<
     this.segmentBakedSet.clear();
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
+    this.simpleNoteCounts.clear();
+    this.complexNoteBufferCache.clear();
+    this.complexNoteCounts.clear();
     this.segmentVoiceParams = [];
     this.segmentVoices = [];
     this.noteOnDurations = [];
@@ -372,6 +393,7 @@ export class Player<
         duration,
         durationTicks,
         startTime: entry.startTime,
+        startTicks: entry.startTicks,
         events: entry.events,
       };
     };
@@ -602,12 +624,16 @@ export class Player<
       this.segmentVoiceParams = segmentVoiceParams;
       this.segmentVoices = segmentVoices;
       this.finalizeSegmentClassification();
-      // Simple-note classification is shared by note / segment / chunk / audio.
+      // Simple/complex-note classification is shared by note / segment / chunk / audio.
       this.finalizeSimpleNoteClassification();
+      this.buildSimpleNoteCounts();
+      this.buildComplexNoteCounts();
     } else if (cacheMode === "audio" || cacheMode === "note") {
       // audio mode uses renderChunkBuffer's simple-note path;
       // note mode reuses simpleNoteBufferCache for identical onsets.
       this.finalizeSimpleNoteClassification();
+      this.buildSimpleNoteCounts();
+      this.buildComplexNoteCounts();
     }
   }
 
@@ -693,6 +719,9 @@ export class Player<
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
     this.simpleNoteBufferCache.clear();
+    this.simpleNoteCounts.clear();
+    this.complexNoteBufferCache.clear();
+    this.complexNoteCounts.clear();
   }
 
   async playAudioBuffer(): Promise<void> {
@@ -965,6 +994,7 @@ export class Player<
     ) {
       this.finalizeSimpleNoteClassification();
       this.simpleNoteBufferCache.clear();
+      this.buildSimpleNoteCounts();
     }
     if (cacheMode === "audio") {
       if (this.audioModeBufferSource) {
@@ -1397,33 +1427,111 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple notes: cache path or shared-OAC path (pre-checked) ---
+    // --- simple: hit → BufferSource; miss →
+    //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
+    //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
+    const simpleMisses: ChunkNoteEntry[] = [];
     if (simpleNotes.length > 0) {
-      await this.placeSimpleNotesInOfflineMix(
-        offlineContext,
-        simpleNotes.map((n) => ({
-          channelNumber: n.channelNumber,
-          audioBufferId: n.audioBufferId,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum: n.isDrum,
-          voiceParams: n.voiceParams,
-          voice: n.voice,
-          offset: n.offset,
-        })),
-        true,
-      );
+      for (const n of simpleNotes) {
+        const cached = await this.lookupSimpleNoteBuffer(n, true);
+        if (cached) {
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: cached,
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+          continue;
+        }
+        const key = this.makeSimpleNoteKey(n, true);
+        const count = this.simpleNoteCounts.get(key) ?? 0;
+        if (count > 1) {
+          // First (or concurrent) occurrence of a multi-use key: bake once
+          // into simpleNoteBufferCache so later hits in this or other
+          // windows/segments skip graph setup entirely.
+          const buffer = await this.getSimpleNoteBuffer(
+            {
+              channelNumber: n.channelNumber,
+              audioBufferId: n.audioBufferId,
+              noteNumber: n.noteNumber,
+              velocity: n.velocity,
+              noteDuration: n.noteDuration,
+              noteEvent: n.noteEvent,
+              channelDetune: n.channelDetune,
+              channelStateArray: n.channelStateArray,
+              programNumber: n.programNumber,
+              isDrum: n.isDrum,
+              voiceParams: n.voiceParams,
+              voice: n.voice,
+            },
+            true,
+          );
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer,
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+        } else {
+          simpleMisses.push(n);
+        }
+      }
+      if (simpleMisses.length > 0) {
+        const channelNumbers = [
+          ...new Set(simpleMisses.map((n) => n.channelNumber)),
+        ];
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          channelNumbers,
+          true,
+        );
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          simpleMisses.map((n) => ({
+            channelNumber: n.channelNumber,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice,
+            offset: n.offset,
+          })),
+          true,
+        );
+      }
     }
 
     // --- complex: per-note full bake (in-note pitch bend / CC) ---
+    // Identical automation patterns (count > 1) share one OAC via
+    // complexNoteBufferCache; unique patterns still bake once each.
     if (complexNotes.length > 0) {
       const complexBuffers = await Promise.all(
-        complexNotes.map((n) => this.renderEntryAudioBuffer(n, true)),
+        complexNotes.map(async (n) => {
+          const entry = {
+            channelNumber: n.channelNumber,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice,
+          };
+          const cached = await this.lookupComplexNoteBuffer(entry, true);
+          if (cached) {
+            return cached;
+          }
+          return await this.getComplexNoteBuffer(entry, true);
+        }),
       );
       for (let i = 0; i < complexNotes.length; i++) {
         const n = complexNotes[i];
@@ -1958,6 +2066,97 @@ export class Player<
     this.simpleNoteSet = simple;
   }
 
+  // Walk the timeline once (same event application as audio-mode render())
+  // and count how often each simple-note cache key will appear. Used by
+  // segment/chunk/audio miss paths: count > 1 → bake via getSimpleNoteBuffer
+  // (fills simpleNoteBufferCache for later hits); count === 1 → stay on the
+  // shared mix OAC (scheduleSimpleNotesDirect) so a one-shot note never pays
+  // an extra startRendering.
+  // bakeChannelMix matches the mode: segment = dry mono, note/chunk/audio =
+  // stereo mix. Key format is identical to makeSimpleNoteKey.
+  buildSimpleNoteCounts(): void {
+    this.simpleNoteCounts.clear();
+    if (!this.simpleNoteCache) return;
+    const cacheMode = this.cacheMode;
+    if (
+      cacheMode !== "note" && cacheMode !== "segment" &&
+      cacheMode !== "chunk" && cacheMode !== "audio"
+    ) {
+      return;
+    }
+    if (this.simpleNoteSet.size === 0) return;
+
+    const bakeChannelMix = cacheMode !== "segment";
+    const settings = (this.constructor as typeof Player).channelSettings;
+    const channels = Array.from({ length: this.numChannels }, (_, ch) => {
+      const channel = this.createChannelInstance(ch, settings);
+      channel.player = this;
+      return channel;
+    });
+    if (channels[9]) channels[9].isDrum = true;
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const needsSegmentVoice = cacheMode === "segment" || cacheMode === "chunk";
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo;
+      this.processTimelineEvent(event, offset, {
+        channels,
+        onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
+          if (!this.simpleNoteSet.has(i)) return;
+          const noteOnEvent = this.noteOnEvents[i];
+          if (!noteOnEvent || noteOnEvent.duration <= 0) return;
+
+          let voiceParams: VoiceParams | null = null;
+          let voice: Voice | null | undefined = null;
+          if (needsSegmentVoice) {
+            voiceParams = this.segmentVoiceParams[i];
+            voice = this.segmentVoices[i];
+          }
+          if (!voiceParams) {
+            voice = this.resolveVoice(
+              renderChannel,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+            if (!voice) return;
+            voiceParams = voice.getAllParams(
+              this.getControllerState(
+                renderChannel,
+                noteEvent.noteNumber!,
+                noteEvent.velocity!,
+                0,
+              ),
+            );
+          }
+          if (!voiceParams) return;
+
+          const key = this.makeSimpleNoteKey(
+            {
+              audioBufferId: this.noteAudioBufferIds[i],
+              noteNumber: noteEvent.noteNumber!,
+              velocity: noteEvent.velocity!,
+              noteDuration: noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array,
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams,
+            },
+            bakeChannelMix,
+          );
+          this.simpleNoteCounts.set(
+            key,
+            (this.simpleNoteCounts.get(key) ?? 0) + 1,
+          );
+        },
+      });
+    }
+  }
+
   isSimpleNote(n: {
     timelineIndex?: number;
     noteEvent?: NoteOnEventEntry;
@@ -2016,11 +2215,72 @@ export class Player<
     ].join("|");
   }
 
-  // Pre-check: is per-key separate baking likely cheaper than one shared OAC?
-  // Returns false when misses are mostly unique (would add many startRendering
-  // calls with little reuse) — caller should use scheduleSimpleNotesDirect.
-  preferPerKeySimpleBake(
-    notes: {
+  // Serialize in-note automation as a tempo-independent relative-tick string.
+  // programChange is omitted (renderEntryAudioBuffer skips it). Field names
+  // match TimelineEvent usage in this module / BasePlayer.
+  // Controllers that change the offline-baked waveform when replayed inside
+  // renderEntryAudioBuffer. Sustain (64), all-notes-off, etc. affect note
+  // lifetime which is already captured by durationTicks — including them in
+  // the key would split otherwise-identical bakes.
+  static readonly COMPLEX_KEY_CONTROLLER_TYPES: ReadonlySet<number> = new Set([
+    1, // modulation
+    7, // volume
+    10, // pan
+    11, // expression
+    6, // data entry MSB (RPN / pitch-bend range)
+    38, // data entry LSB
+    100, // RPN LSB
+    101, // RPN MSB
+  ]);
+
+  serializeNoteAutomationEvents(
+    noteEvent: NoteOnEventEntry | undefined,
+  ): string {
+    if (!noteEvent || noteEvent.events.length === 0) return "";
+    const startTicks = noteEvent.startTicks ?? 0;
+    const parts: string[] = [];
+    const relevantCc = Player.COMPLEX_KEY_CONTROLLER_TYPES;
+    for (let i = 0; i < noteEvent.events.length; i++) {
+      const event = noteEvent.events[i];
+      if (event.type === "programChange") continue;
+      // Prefer startTime (absolute ticks on TimelineEvent) when ticks is
+      // missing; both are set by extractMidiData in BasePlayer.
+      const absTick = event.ticks ?? event.startTime ?? 0;
+      const rel = absTick - startTicks;
+      switch (event.type) {
+        case "controller": {
+          const ct = event.controllerType ?? -1;
+          if (!relevantCc.has(ct)) continue;
+          parts.push(`cc:${rel}:${ct}:${event.value}`);
+          break;
+        }
+        case "pitchBend": {
+          // TimelineEvent.value is the 14-bit pitch wheel (0..16383).
+          const v = event.value ?? 0;
+          parts.push(`pb:${rel}:${v}`);
+          break;
+        }
+        case "sysEx": {
+          const data = event.data;
+          parts.push(
+            `sx:${rel}:${
+              data ? Array.from(data as ArrayLike<number>).join(",") : ""
+            }`,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    return parts.join(";");
+  }
+
+  // bakeChannelMix matches makeSimpleNoteKey. Automation fingerprint is
+  // relative ticks so the same pitch-bend / CC pattern at different absolute
+  // times (or after tempo change with rebuilt durations) still collides.
+  makeComplexNoteKey(
+    n: {
       audioBufferId?: number;
       noteNumber: number;
       velocity: number;
@@ -2031,34 +2291,172 @@ export class Player<
       programNumber: number;
       isDrum: boolean;
       voiceParams: VoiceParams;
-    }[],
+    },
     bakeChannelMix: boolean,
-  ): boolean {
-    if (!this.simpleNoteCache || notes.length === 0) return false;
-    let hitLike = 0;
-    const missKeys = new Set<string>();
-    for (let i = 0; i < notes.length; i++) {
-      const key = this.makeSimpleNoteKey(notes[i], bakeChannelMix);
-      if (this.simpleNoteBufferCache.has(key)) hitLike++;
-      else missKeys.add(key);
-    }
-    const misses = notes.length - hitLike;
-    if (misses === 0) return true; // all hits → BufferSource only
-    // No reuse among misses → shared OAC is strictly better for this batch.
-    if (missKeys.size >= misses) return false;
-    // Require average ≥2 notes per unique miss key (amortizes separate OACs).
-    if (missKeys.size * 2 <= misses) return true;
-    // Small unique-miss set with enough volume still wins.
-    if (missKeys.size <= 4 && misses >= 8) return true;
-    return false;
+  ): string {
+    const st = n.channelStateArray;
+    const vol = bakeChannelMix ? (st[128 + 7] ?? 0) : 0;
+    const pan = bakeChannelMix ? (st[128 + 10] ?? 0) : 0;
+    const expr = bakeChannelMix ? (st[128 + 11] ?? 0) : 0;
+    const durTicks = n.noteEvent?.durationTicks ??
+      Math.round(n.noteDuration * 1000);
+    // Coarser than simple-note key: cumulative pitch-bend FP drift between a
+    // clean count-walk and live playback can otherwise split identical bakes.
+    const detuneQ = Math.round(n.channelDetune);
+    const automation = this.serializeNoteAutomationEvents(n.noteEvent);
+    return [
+      "cx",
+      bakeChannelMix ? "mix" : "dry",
+      n.audioBufferId ?? -1,
+      n.noteNumber,
+      n.velocity,
+      durTicks,
+      detuneQ,
+      Math.round(vol * 1e4),
+      Math.round(pan * 1e4),
+      Math.round(expr * 1e4),
+      n.programNumber,
+      n.isDrum ? 1 : 0,
+      Math.round(n.voiceParams.volRelease * 1e6),
+      Math.round(n.voiceParams.playbackRate * 1e6),
+      automation,
+    ].join("|");
   }
 
-  // Place simple notes into an existing offline mix context.
-  // Pre-checks reuse: high duplication → per-key bake + BufferSource;
-  // mostly unique → one shared scheduleSimpleNotesDirect (no regression).
-  async placeSimpleNotesInOfflineMix(
-    offlineContext: OfflineAudioContext,
-    notes: {
+  // Pre-count complex-note cache keys (same key as makeComplexNoteKey).
+  // Only keys with count > 1 are filled into complexNoteBufferCache on first
+  // miss; unique patterns stay on the one-shot renderEntryAudioBuffer path.
+  buildComplexNoteCounts(): void {
+    this.complexNoteCounts.clear();
+    if (!this.complexNoteCache) return;
+    const cacheMode = this.cacheMode;
+    if (
+      cacheMode !== "note" && cacheMode !== "segment" &&
+      cacheMode !== "chunk" && cacheMode !== "audio"
+    ) {
+      return;
+    }
+
+    const bakeChannelMix = cacheMode !== "segment";
+    const settings = (this.constructor as typeof Player).channelSettings;
+    const channels = Array.from({ length: this.numChannels }, (_, ch) => {
+      const channel = this.createChannelInstance(ch, settings);
+      channel.player = this;
+      return channel;
+    });
+    if (channels[9]) channels[9].isDrum = true;
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const needsSegmentVoice = cacheMode === "segment" || cacheMode === "chunk";
+    // Complex candidates: baked notes that are not simple, or all non-simple
+    // noteOns when no segment set exists (note / audio mode).
+    const candidates = this.segmentBakedSet.size > 0
+      ? this.segmentBakedSet
+      : null;
+
+    const considerIndex = (i: number): boolean => {
+      if (this.simpleNoteSet.has(i)) return false;
+      const noteOnEvent = this.noteOnEvents[i];
+      if (!noteOnEvent || noteOnEvent.duration <= 0) return false;
+      if (noteOnEvent.durationTicks === Infinity) return false;
+      // Must have automation — otherwise it would be simple.
+      if (noteOnEvent.events.length === 0) return false;
+      return true;
+    };
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo;
+      this.processTimelineEvent(event, offset, {
+        channels,
+        onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
+          if (candidates && !candidates.has(i)) return;
+          if (!considerIndex(i)) return;
+          const noteOnEvent = this.noteOnEvents[i]!;
+
+          let voiceParams: VoiceParams | null = null;
+          if (needsSegmentVoice) {
+            voiceParams = this.segmentVoiceParams[i];
+          }
+          if (!voiceParams) {
+            const voice = this.resolveVoice(
+              renderChannel,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+            if (!voice) return;
+            voiceParams = voice.getAllParams(
+              this.getControllerState(
+                renderChannel,
+                noteEvent.noteNumber!,
+                noteEvent.velocity!,
+                0,
+              ),
+            );
+          }
+          if (!voiceParams) return;
+
+          const key = this.makeComplexNoteKey(
+            {
+              audioBufferId: this.noteAudioBufferIds[i],
+              noteNumber: noteEvent.noteNumber!,
+              velocity: noteEvent.velocity!,
+              noteDuration: noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array,
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams,
+            },
+            bakeChannelMix,
+          );
+          this.complexNoteCounts.set(
+            key,
+            (this.complexNoteCounts.get(key) ?? 0) + 1,
+          );
+        },
+      });
+    }
+  }
+
+  async lookupComplexNoteBuffer(
+    n: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    },
+    bakeChannelMix: boolean,
+  ): Promise<AudioBuffer | null> {
+    if (!this.complexNoteCache) return null;
+    const key = this.makeComplexNoteKey(n, bakeChannelMix);
+    // Only multi-use keys participate in the cache.
+    if ((this.complexNoteCounts.get(key) ?? 0) <= 1) return null;
+    const cached = this.complexNoteBufferCache.get(key);
+    if (cached instanceof AudioBuffer) return cached;
+    if (cached instanceof Promise) {
+      try {
+        return await cached;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // Bake a complex note (with in-interval automation) and cache it when the
+  // key appears more than once. Single-use keys call renderEntryAudioBuffer
+  // without touching complexNoteBufferCache.
+  async getComplexNoteBuffer(
+    entry: {
       channelNumber: number;
       audioBufferId?: number;
       noteNumber: number;
@@ -2071,137 +2469,43 @@ export class Player<
       isDrum: boolean;
       voiceParams: VoiceParams;
       voice?: Voice;
-      offset: number;
-    }[],
+    },
     bakeChannelMix: boolean,
-  ): Promise<void> {
-    if (notes.length === 0) return;
-
-    if (this.preferPerKeySimpleBake(notes, bakeChannelMix)) {
-      const resolved = await this.resolveSimpleNoteBuffers(
-        notes,
-        bakeChannelMix,
-      );
-      for (let i = 0; i < notes.length; i++) {
-        const buf = resolved[i];
-        if (!buf) continue;
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: buf,
-        });
-        src.connect(offlineContext.destination);
-        src.start(notes[i].offset);
-      }
-      return;
+  ): Promise<AudioBuffer> {
+    const key = this.makeComplexNoteKey(entry, bakeChannelMix);
+    const count = this.complexNoteCounts.get(key) ?? 0;
+    if (count <= 1) {
+      const sepStart = performance.now();
+      const buffer = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+      sepStart;
+      return buffer;
+    }
+    const cached = this.complexNoteBufferCache.get(key);
+    if (cached instanceof AudioBuffer) {
+      return cached;
+    }
+    if (cached instanceof Promise) {
+      const buffer = await cached;
+      return buffer;
     }
 
-    // Shared-OAC path: hits still use BufferSource; misses share one graph.
-    const misses: typeof notes = [];
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
-      const cached = await this.lookupSimpleNoteBuffer(n, bakeChannelMix);
-      if (cached) {
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: cached,
-        });
-        src.connect(offlineContext.destination);
-        src.start(n.offset);
-      } else {
-        misses.push(n);
+    const renderPromise = (async () => {
+      try {
+        const buffer = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+        this.complexNoteBufferCache.set(key, buffer);
+        return buffer;
+      } catch (err) {
+        this.complexNoteBufferCache.delete(key);
+        throw err;
       }
-    }
-    if (misses.length === 0) return;
-
-    const channelNumbers = [
-      ...new Set(misses.map((n) => n.channelNumber)),
-    ];
-    const offlinePlayer = this.createOfflineRenderPlayer(
-      offlineContext,
-      channelNumbers,
-      true,
-    );
-    await this.scheduleSimpleNotesDirect(
-      offlineContext,
-      offlinePlayer,
-      misses,
-      bakeChannelMix,
-    );
-  }
-
-  // Resolve simple-note buffers for a batch: cache hit → reuse; miss →
-  // getSimpleNoteBuffer once per unique key (parallel), then every note
-  // becomes a BufferSource in the mix OAC. Populates simpleNoteBufferCache
-  // so later windows / identical onsets hit without rebuilding the graph.
-  // Caller should only use this when preferPerKeySimpleBake is true.
-  async resolveSimpleNoteBuffers(
-    notes: {
-      channelNumber?: number;
-      audioBufferId?: number;
-      noteNumber: number;
-      velocity: number;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      voiceParams: VoiceParams;
-      voice?: Voice;
-    }[],
-    bakeChannelMix: boolean,
-  ): Promise<(AudioBuffer | null)[]> {
-    const results: (AudioBuffer | null)[] = new Array(notes.length);
-    const missByKey = new Map<string, number>();
-    const bakeTasks: Promise<void>[] = [];
-
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
-      const cached = await this.lookupSimpleNoteBuffer(n, bakeChannelMix);
-      if (cached) {
-        results[i] = cached;
-        continue;
-      }
-      const key = this.makeSimpleNoteKey(n, bakeChannelMix);
-      const bakeInput = {
-        channelNumber: n.channelNumber ?? 0,
-        audioBufferId: n.audioBufferId,
-        noteNumber: n.noteNumber,
-        velocity: n.velocity,
-        noteDuration: n.noteDuration,
-        noteEvent: n.noteEvent,
-        channelDetune: n.channelDetune,
-        channelStateArray: n.channelStateArray,
-        programNumber: n.programNumber,
-        isDrum: n.isDrum,
-        voiceParams: n.voiceParams,
-        voice: n.voice,
-      };
-      if (missByKey.has(key)) {
-        bakeTasks.push(
-          (async () => {
-            results[i] = await this.getSimpleNoteBuffer(
-              bakeInput,
-              bakeChannelMix,
-            );
-          })(),
-        );
-        continue;
-      }
-      missByKey.set(key, i);
-      bakeTasks.push(
-        (async () => {
-          results[i] = await this.getSimpleNoteBuffer(
-            bakeInput,
-            bakeChannelMix,
-          );
-        })(),
-      );
-    }
-    if (bakeTasks.length > 0) await Promise.all(bakeTasks);
-    return results;
+    })();
+    this.complexNoteBufferCache.set(key, renderPromise);
+    return await renderPromise;
   }
 
   // Resolve a cached simple-note buffer without starting a new bake.
-  // Returns null on miss. In-flight Promise from other paths is awaited.
+  // Returns null on miss (caller should schedule into the shared mix OAC).
+  // In-flight Promise from note-mode / other paths is awaited.
   async lookupSimpleNoteBuffer(
     n: {
       audioBufferId?: number;
@@ -2303,12 +2607,11 @@ export class Player<
     }
   }
 
-  // Bake a simple note and cache it under makeSimpleNoteKey.
+  // Bake a simple note and cache it.
   // bakeChannelMix=true: stereo with channel vol/pan (chunk/audio).
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
-  // Used by "note" mode and by resolveSimpleNoteBuffers (segment/chunk/audio
-  // miss path): one bake per unique key, then BufferSource placement in the
-  // mix OAC so identical onsets reuse the buffer.
+  // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
+  // schedule on miss so the mix OAC does not wait on a second startRendering.
   async getSimpleNoteBuffer(
     n: {
       channelNumber: number;
@@ -2454,11 +2757,15 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple notes: cache path or shared-OAC path (pre-checked) ---
+    // --- simple: hit → BufferSource; miss →
+    //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
+    //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
+    // Use per-note onset snapshots so mid-segment pitch bend / CC does not
+    // leave later simple notes at the segment-open detune/volume state.
+    const simpleMisses: SegmentNoteEntry[] = [];
     if (simpleNotes.length > 0) {
-      await this.placeSimpleNotesInOfflineMix(
-        offlineContext,
-        simpleNotes.map((n) => ({
+      for (const n of simpleNotes) {
+        const bakeInput = {
           channelNumber: ch,
           audioBufferId: n.audioBufferId,
           noteNumber: n.noteNumber,
@@ -2471,19 +2778,68 @@ export class Player<
           isDrum: channel.isDrum,
           voiceParams: n.voiceParams,
           voice: n.voice,
-          offset: n.offset,
-        })),
-        false,
-      );
+        };
+        const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
+        if (cached) {
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: cached,
+          });
+          // dry mono — channel vol/pan stay live via gainL/gainR
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+          continue;
+        }
+        const key = this.makeSimpleNoteKey(bakeInput, false);
+        const count = this.simpleNoteCounts.get(key) ?? 0;
+        if (count > 1) {
+          const buffer = await this.getSimpleNoteBuffer(bakeInput, false);
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer,
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+        } else {
+          simpleMisses.push(n);
+        }
+      }
+      if (simpleMisses.length > 0) {
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          [ch],
+          true,
+        );
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          simpleMisses.map((n) => ({
+            channelNumber: ch,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: channel.isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice,
+            offset: n.offset,
+          })),
+          false,
+        );
+      }
     }
 
     // --- complex: per-note full bake (same fidelity as "note" mode) ---
     // One offline context per automated note avoids shared-channel pitch-bend
     // replay bugs. Dry mono buffers keep channel vol/pan live via gainL/R.
+    // Identical automation patterns (count > 1) share one OAC via
+    // complexNoteBufferCache; unique patterns still bake once each.
     if (complexNotes.length > 0) {
       const complexBuffers = await Promise.all(
-        complexNotes.map((n) =>
-          this.renderEntryAudioBuffer({
+        complexNotes.map(async (n) => {
+          const entry = {
             channelNumber: ch,
             noteNumber: n.noteNumber,
             velocity: n.velocity,
@@ -2496,8 +2852,13 @@ export class Player<
             isDrum: channel.isDrum,
             audioBufferId: n.audioBufferId,
             voice: n.voice,
-          }, false)
-        ),
+          };
+          const cached = await this.lookupComplexNoteBuffer(entry, false);
+          if (cached) {
+            return cached;
+          }
+          return await this.getComplexNoteBuffer(entry, false);
+        }),
       );
       for (let i = 0; i < complexNotes.length; i++) {
         const n = complexNotes[i];
@@ -2846,13 +3207,40 @@ export class Player<
       });
     }
 
-    return await this.createFullRenderedBuffer(
-      channel,
-      { noteNumber: note.noteNumber, velocity: note.velocity },
-      voiceParams,
+    // Complex: reuse identical automation patterns when count > 1.
+    const complexEntry = {
+      channelNumber: channel.channelNumber,
+      audioBufferId,
+      noteNumber: note.noteNumber,
+      velocity: note.velocity,
       noteDuration,
       noteEvent,
+      channelDetune: channel.detune,
+      channelStateArray: channel.state.array.slice(),
+      programNumber: channel.programNumber,
+      isDrum: channel.isDrum,
+      voiceParams,
+      voice: note.voice ?? undefined,
+    };
+    const cachedComplex = await this.lookupComplexNoteBuffer(
+      complexEntry,
+      true,
     );
+    if (cachedComplex) {
+      return new RenderedBuffer(cachedComplex, {
+        isLoop: false,
+        isFull: true,
+        noteDuration,
+        releaseDuration: releaseEndDuration,
+      });
+    }
+    const complexBuffer = await this.getComplexNoteBuffer(complexEntry, true);
+    return new RenderedBuffer(complexBuffer, {
+      isLoop: false,
+      isFull: true,
+      noteDuration,
+      releaseDuration: releaseEndDuration,
+    });
   }
 
   override async setNoteAudioNode(
