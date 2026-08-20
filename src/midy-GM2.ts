@@ -1188,124 +1188,30 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
   }
 
-  override cacheVoiceIds(): void {
-    const { channels, timeline, voiceCounter, cacheMode } = this;
-    const isSegmentMode = cacheMode === "segment";
-    const isChunkMode = cacheMode === "chunk";
-    const needsSegmentData = isSegmentMode || isChunkMode;
-    const segmentVoiceParams: (VoiceParams | null)[] = needsSegmentData
-      ? new Array(timeline.length).fill(null)
-      : [];
-    const segmentVoices: (Voice | null)[] = needsSegmentData
-      ? new Array(timeline.length).fill(null)
-      : [];
-    const noteAudioBufferIds: (number | undefined)[] = new Array(
-      timeline.length,
-    );
-    const preloadEntries: {
-      audioBufferId: number;
-      voiceParams: VoiceParams;
-    }[] = [];
-    const seenPreloadIds = new Set<number>();
-    for (let i = 0; i < timeline.length; i++) {
-      const event = timeline[i];
-      switch (event.type) {
-        case "noteOn": {
-          const channel = channels[event.channel!];
-          const audioBufferId = this.getVoiceId(
-            channel,
-            event.noteNumber!,
-            event.velocity!,
-          );
-          voiceCounter.set(
-            audioBufferId!,
-            (voiceCounter.get(audioBufferId!) ?? 0) + 1,
-          );
-          // finalizeSegmentClassification() runs after this loop, at which point
-          // channel.programNumber reflects the last programChange in the song, not
-          // the one in effect at each individual note. So voiceParams must be
-          // resolved and snapshotted here, while programNumber is still correct.
-          //
-          // Drum exclusive class notes are also excluded from segmentVoiceParams:
-          // the kit lookup needs the current programNumber, and segmenting them
-          // would bring no benefit anyway since exclusive class guarantees at most
-          // one note of the same class sounds at a time.
-          const kitTable = drumExclusiveClassesByKit[channel.programNumber];
-          const isExcludedDrum = channel.isDrum &&
-            kitTable !== undefined &&
-            kitTable[event.noteNumber!] !== 0;
-          // Exclusive class drum notes are excluded from segmentVoiceParams
-          // (and therefore from segment/chunk notes) because segmenting them would
-          // bring no benefit — exclusive class guarantees at most one note of
-          // the same class sounds at a time, so they're scheduled via the
-          // normal noteOnChannel path instead. However they still need their
-          // raw sample decoded and cached so that noteOnChannel path doesn't
-          // pay a decode penalty on first encounter. Preload them unconditionally.
-          if (audioBufferId !== undefined) {
-            noteAudioBufferIds[i] = audioBufferId;
-            const voice = this.resolveVoice(
-              channel,
-              event.noteNumber!,
-              event.velocity!,
-            );
-            if (voice) {
-              const controllerState = this.getControllerState(
-                channel,
-                event.noteNumber!,
-                event.velocity!,
-              );
-              const voiceParams = voice.getAllParams(controllerState);
-              if (needsSegmentData && !isExcludedDrum) {
-                segmentVoiceParams[i] = voiceParams;
-                segmentVoices[i] = voice;
-              }
-              if (!seenPreloadIds.has(audioBufferId)) {
-                seenPreloadIds.add(audioBufferId);
-                preloadEntries.push({ audioBufferId, voiceParams });
-              }
-            }
-          }
-          break;
-        }
-        case "controller":
-          if (event.controllerType === 0) {
-            channels[event.channel!].setBankMSB(event.value!);
-          } else if (event.controllerType === 32) {
-            channels[event.channel!].setBankLSB(event.value!);
-          }
-          break;
-        case "programChange":
-          channels[event.channel!].setProgramChange(event.programNumber!);
-      }
+  // cacheVoiceIds is inherited from Player. GM2 only overrides the three
+  // hooks below (segment-excluded drums, bank-select walk, System On).
+
+  override isSegmentExcludedDrum(
+    channel: Channel,
+    noteNumber: number,
+  ): boolean {
+    if (!channel.isDrum) return false;
+    const kitTable = drumExclusiveClassesByKit[channel.programNumber];
+    return kitTable !== undefined && kitTable[noteNumber] !== 0;
+  }
+
+  override onCacheTimelineEvent(event: TimelineEvent): void {
+    if (event.type !== "controller") return;
+    const channel = this.channels[event.channel!];
+    if (event.controllerType === 0) {
+      channel.setBankMSB(event.value!);
+    } else if (event.controllerType === 32) {
+      channel.setBankLSB(event.value!);
     }
-    this.noteAudioBufferIds = noteAudioBufferIds;
-    this.preloadEntries = preloadEntries;
-    for (const [audioBufferId, count] of voiceCounter) {
-      if (count === 1) voiceCounter.delete(audioBufferId);
-    }
-    this.GM2SystemOn(this.audioContext.currentTime);
-    if (
-      cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
-      cacheMode === "segment" || cacheMode === "chunk"
-    ) {
-      this.buildNoteOnDurations();
-    }
-    if (needsSegmentData) {
-      this.segmentVoiceParams = segmentVoiceParams;
-      this.segmentVoices = segmentVoices;
-      this.finalizeSegmentClassification();
-      // Simple/complex-note classification is shared by note / segment / chunk / audio
-      // (same as Player.cacheVoiceIds). Without these, MidyGM2 never fills
-      // simpleNoteSet / simpleNoteCounts / complexNoteCounts, so segment/chunk/
-      // note/audio paths skip the shared-OAC and cache optimizations.
-      this.finalizeSimpleNoteClassification();
-      this.buildSimpleNoteCounts();
-      this.buildComplexNoteCounts();
-    } else if (cacheMode === "audio" || cacheMode === "note") {
-      this.finalizeSimpleNoteClassification();
-      this.buildSimpleNoteCounts();
-      this.buildComplexNoteCounts();
-    }
+  }
+
+  override applySystemDefaultsAfterCache(scheduleTime: number): void {
+    this.GM2SystemOn(scheduleTime);
   }
 
   override getVoiceId(

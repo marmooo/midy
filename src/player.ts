@@ -601,19 +601,19 @@ export class Player<
           // the one in effect at each individual note. So voiceParams must be
           // resolved and snapshotted here, while programNumber is still correct.
           //
-          // Drum exclusive class notes are also excluded from segmentVoiceParams:
-          // the kit lookup needs the current programNumber, and segmenting them
-          // would bring no benefit anyway since exclusive class guarantees at most
-          // one note of the same class sounds at a time.
-          const isExcludedDrum = channel.isDrum &&
-            this.drumExclusiveClasses[event.noteNumber!] !== 0;
-          // Exclusive class drum notes are excluded from segmentVoiceParams
-          // (and therefore from segment/chunk notes) because segmenting them would
-          // bring no benefit — exclusive class guarantees at most one note of
-          // the same class sounds at a time, so they're scheduled via the
-          // normal noteOnChannel path instead. However they still need their
-          // raw sample decoded and cached so that noteOnChannel path doesn't
-          // pay a decode penalty on first encounter. Preload them unconditionally.
+          // Exclusive-class drum notes are excluded from segmentVoiceParams
+          // (and therefore from segment/chunk notes) because segmenting them
+          // would bring no benefit — exclusive class guarantees at most one
+          // note of the same class sounds at a time, so they're scheduled via
+          // the normal noteOnChannel path instead. However they still need
+          // their raw sample decoded and cached so that noteOnChannel path
+          // doesn't pay a decode penalty on first encounter. Preload them
+          // unconditionally. Subclasses (e.g. GM2 kit tables) override
+          // isSegmentExcludedDrum.
+          const isExcludedDrum = this.isSegmentExcludedDrum(
+            channel,
+            event.noteNumber!,
+          );
           if (audioBufferId !== undefined) {
             noteAudioBufferIds[i] = audioBufferId;
             const voice = this.resolveVoice(
@@ -643,6 +643,10 @@ export class Player<
         }
         case "programChange":
           channels[event.channel!].setProgramChange(event.programNumber!);
+          break;
+        default:
+          // Bank select and other mode-specific walk side effects (GM2, etc.).
+          this.onCacheTimelineEvent(event);
       }
     }
     this.noteAudioBufferIds = noteAudioBufferIds;
@@ -653,7 +657,7 @@ export class Player<
         if (pairs[i][1] === 1) voiceCounter.delete(pairs[i][0]);
       }
     }
-    this.GM1SystemOn(this.audioContext.currentTime);
+    this.applySystemDefaultsAfterCache(this.audioContext.currentTime);
     if (
       cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
       cacheMode === "segment" || cacheMode === "chunk"
@@ -675,6 +679,34 @@ export class Player<
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
     }
+  }
+
+  /**
+   * Whether a drum note should be excluded from segment/chunk baking.
+   * Exclusive-class drums are scheduled via the normal noteOn path so they
+   * can still choke each other; segmenting them adds no polyphony win.
+   * GM1 uses a fixed table; GM2 overrides with per-kit tables.
+   */
+  protected isSegmentExcludedDrum(
+    channel: TChannel,
+    noteNumber: number,
+  ): boolean {
+    return channel.isDrum && this.drumExclusiveClasses[noteNumber] !== 0;
+  }
+
+  /**
+   * Side effects while walking the timeline inside cacheVoiceIds (bank
+   * select, etc.). Base does nothing; GM2 applies CC#0 / CC#32 so program
+   * changes resolve against the correct bank during the walk.
+   */
+  protected onCacheTimelineEvent(_event: TimelineEvent): void {}
+
+  /**
+   * Restore mode defaults after cacheVoiceIds has resolved voice ids.
+   * Base = GM1 System On; GM2 overrides with GM2 System On.
+   */
+  protected applySystemDefaultsAfterCache(scheduleTime: number): void {
+    this.GM1SystemOn(scheduleTime);
   }
 
   override scheduleTimelineEvents(
@@ -985,6 +1017,7 @@ export class Player<
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
+    // Fresh playthrough: reset so console stats reflect this run only.
     this.playPromise = this.playNotes();
     await this.playPromise;
   }
@@ -2613,9 +2646,7 @@ export class Player<
     const key = this.makeComplexNoteKey(entry, bakeChannelMix);
     const count = this.complexNoteCounts.get(key) ?? 0;
     if (count <= 1) {
-      const sepStart = performance.now();
       const buffer = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
-      sepStart;
       return buffer;
     }
     const cached = this.complexNoteBufferCache.get(key);
