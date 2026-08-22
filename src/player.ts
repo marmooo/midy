@@ -2371,10 +2371,14 @@ export class Player<
     return noteEvent.events.length === 0;
   }
 
-  // bakeChannelMix=true  → stereo, channel vol/pan/expression included
-  //                       (chunk / audio offline mix)
-  // bakeChannelMix=false → mono, dry note only (segment offline; live
-  //                       channel.gainL/gainR still apply vol/pan)
+  // bakeChannelMix flag (keys, getSimple/ComplexNoteBuffer, renderEntryAudioBuffer):
+  //   true  → "mix": stereo offline graph keeps the channel bus (vol/pan/
+  //           expression) and mix-level sends (e.g. Midy delay). note/chunk/audio.
+  //           Those mix-level values belong in the cache key.
+  //   false → "dry": mono note body only; volumeNode is rewired past the
+  //           channel bus (dropping delay/reverb sends hung off it) so segment
+  //           mode can apply gainL/gainR (and leave delay) live. Mix-level
+  //           state must not split the dry cache key.
   //
   // Shared body is buildNoteCacheKeyParts; subclasses extend the key via
   // appendNoteKeyStateParts / isComplexKeyController instead of copying
@@ -2423,9 +2427,10 @@ export class Player<
 
   /**
    * Append channel-state fields that affect the offline bake to a note
-   * cache key. Base: volumeMSB / panMSB / expressionMSB when mix-baking
-   * (zeros when dry so field positions stay stable). Subclasses push extra
-   * slots (LSB, filter, delay, …) without rewriting makeSimple/ComplexNoteKey.
+   * cache key. Base: volumeMSB / panMSB / expressionMSB when bakeChannelMix
+   * (zeros when dry so field positions stay stable — dry leaves the channel
+   * bus live). Subclasses push note-body slots always and mix-level slots
+   * (LSB, delay send, …) only when bakeChannelMix is true.
    */
   protected appendNoteKeyStateParts(
     parts: (string | number)[],
@@ -2433,6 +2438,7 @@ export class Player<
     bakeChannelMix: boolean,
   ): void {
     // ControllerState indices: volumeMSB=135, panMSB=138, expressionMSB=139
+    // Mix-level only: ignored for dry (segment) keys on purpose.
     const vol = bakeChannelMix ? (channelStateArray[128 + 7] ?? 0) : 0;
     const pan = bakeChannelMix ? (channelStateArray[128 + 10] ?? 0) : 0;
     const expr = bakeChannelMix ? (channelStateArray[128 + 11] ?? 0) : 0;
@@ -2773,9 +2779,15 @@ export class Player<
   }
 
   /**
-   * noteOn into an offline player: preload sample, attach voiceParams, and
-   * for dry (segment) bakes rewire volumeNode past the channel bus so
-   * gainL/gainR stay live on the realtime path.
+   * noteOn into an offline player: preload sample, attach voiceParams.
+   *
+   * bakeChannelMix=false (dry): after noteOn, disconnect volumeNode from the
+   * channel bus (and any mix-level sends hung off it — delay, etc.) and
+   * connect it straight to the offline destination. That keeps the baked
+   * buffer free of channel vol/pan and effect sends so segment mode can
+   * apply them live.
+   * bakeChannelMix=true (mix): leave the graph as noteOn built it so vol/pan
+   * and sends are inside the buffer.
    */
   protected async scheduleOfflineNoteOn(
     offlinePlayer: Player<TNote, TChannel>,
@@ -2814,6 +2826,7 @@ export class Player<
       preNote,
     ) as TNote | undefined;
     const volumeNode = offlineNote?.volumeNode ?? preNote.volumeNode;
+    // Dry: drop channel bus + mix-level sends (delay connects off volumeNode).
     if (!bakeChannelMix && volumeNode) {
       volumeNode.disconnect();
       volumeNode.connect(offlineContext.destination);
@@ -3092,9 +3105,10 @@ export class Player<
   }
 
   // Bake one note (with its in-note automation) into an AudioBuffer.
-  // bakeChannelMix=true  → stereo, channel vol/pan/expression included
-  //                       (chunk / audio / note mode)
-  // bakeChannelMix=false → mono dry (segment; live gainL/gainR apply vol/pan)
+  // bakeChannelMix=true  → stereo mix bake (channel vol/pan/expression and
+  //                       mix-level sends such as Midy delay stay in-graph)
+  // bakeChannelMix=false → mono dry bake (volumeNode rewired to destination;
+  //                       segment keeps gainL/gainR and delay live)
   // Complex notes in segment/chunk/audio all go through this path so pitch
   // bend is applied exactly like "note" mode's createFullRenderedBuffer —
   // one offline graph per note, no shared-channel event replay.

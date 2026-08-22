@@ -1202,11 +1202,12 @@ export class Midy extends MidyGM2 {
   }
 
   // CCs that change Midy's offline bake beyond Player.COMPLEX_KEY_CONTROLLER_TYPES.
-  // LSB, sound controllers, portamento control, delay send.
+  // Sound / portamento always affect the note body. Volume/pan/expression LSB
+  // and delay send only matter when bakeChannelMix is true (see appendNoteKeyStateParts).
   static readonly EXTRA_COMPLEX_KEY_CONTROLLERS: ReadonlySet<number> = new Set([
     33, // modulation depth LSB
     37, // portamento time LSB
-    39, // volume LSB
+    39, // volume LSB (mix bake only; still listed for automation fingerprint)
     42, // pan LSB
     43, // expression LSB
     71, // filter resonance
@@ -1218,7 +1219,7 @@ export class Midy extends MidyGM2 {
     77, // vibrato depth
     78, // vibrato delay
     84, // portamento control (note number)
-    94, // delay send level
+    94, // delay send level (mix bake only; automation fingerprint when mix)
   ]);
 
   override isComplexKeyController(controllerType: number): boolean {
@@ -1228,8 +1229,18 @@ export class Midy extends MidyGM2 {
 
   /**
    * Midy-only channel-state slots for simple/complex note cache keys.
-   * Avoids copying makeSimpleNoteKey / makeComplexNoteKey; base still
-   * writes volumeMSB/panMSB/expressionMSB.
+   *
+   * bakeChannelMix semantics (same flag as Player / renderEntryAudioBuffer):
+   * - true  (note / chunk / audio): channel bus + effect sends are inside the
+   *   offline buffer → volume/pan/expression LSB and delaySendLevel must be
+   *   part of the key (delayEffect is fed from volumeNode and reaches the
+   *   offline destination via masterVolume).
+   * - false (segment dry): only the note body is baked; volumeNode is rewired
+   *   straight to destination and channel vol/pan/delay stay live → those
+   *   mix-level values must NOT split the dry cache.
+   *
+   * Always-on slots (filter / env / vib / portamento) shape the sample itself
+   * in both modes.
    */
   override appendNoteKeyStateParts(
     parts: (string | number)[],
@@ -1238,27 +1249,28 @@ export class Midy extends MidyGM2 {
   ): void {
     super.appendNoteKeyStateParts(parts, channelStateArray, bakeChannelMix);
     const st = channelStateArray;
-    // Always: shape the offline sample (filter / env / vib / portamento / delay)
-    // whether the channel bus is mix-baked or left live (segment dry).
+    // Note-body params: baked in both mix and dry offline graphs.
     parts.push(
-      Math.round((st[128 + 33] ?? 0) * 1e4),
-      Math.round((st[128 + 37] ?? 0) * 1e4),
-      Math.round((st[128 + 71] ?? 0) * 1e4),
-      Math.round((st[128 + 72] ?? 0) * 1e4),
-      Math.round((st[128 + 73] ?? 0) * 1e4),
-      Math.round((st[128 + 74] ?? 0) * 1e4),
-      Math.round((st[128 + 75] ?? 0) * 1e4),
-      Math.round((st[128 + 76] ?? 0) * 1e4),
-      Math.round((st[128 + 77] ?? 0) * 1e4),
-      Math.round((st[128 + 78] ?? 0) * 1e4),
-      Math.round((st[128 + 84] ?? 0) * 1e4),
-      Math.round((st[128 + 94] ?? 0) * 1e4),
+      Math.round((st[128 + 33] ?? 0) * 1e4), // modulationDepthLSB
+      Math.round((st[128 + 37] ?? 0) * 1e4), // portamentoTimeLSB
+      Math.round((st[128 + 71] ?? 0) * 1e4), // filterResonance
+      Math.round((st[128 + 72] ?? 0) * 1e4), // releaseTime
+      Math.round((st[128 + 73] ?? 0) * 1e4), // attackTime
+      Math.round((st[128 + 74] ?? 0) * 1e4), // brightness
+      Math.round((st[128 + 75] ?? 0) * 1e4), // decayTime
+      Math.round((st[128 + 76] ?? 0) * 1e4), // vibratoRate
+      Math.round((st[128 + 77] ?? 0) * 1e4), // vibratoDepth
+      Math.round((st[128 + 78] ?? 0) * 1e4), // vibratoDelay
+      Math.round((st[128 + 84] ?? 0) * 1e4), // portamentoNoteNumber
     );
+    // Mix-level params: only when the offline graph keeps the channel bus
+    // and delay send (bakeChannelMix). Segment dry leaves these live.
     if (bakeChannelMix) {
       parts.push(
-        Math.round((st[128 + 39] ?? 0) * 1e4),
-        Math.round((st[128 + 42] ?? 0) * 1e4),
-        Math.round((st[128 + 43] ?? 0) * 1e4),
+        Math.round((st[128 + 39] ?? 0) * 1e4), // volumeLSB
+        Math.round((st[128 + 42] ?? 0) * 1e4), // panLSB
+        Math.round((st[128 + 43] ?? 0) * 1e4), // expressionLSB
+        Math.round((st[128 + 94] ?? 0) * 1e4), // delaySendLevel
       );
     }
   }
@@ -1294,6 +1306,9 @@ export class Midy extends MidyGM2 {
     super.setNoteRouting(channel, note, startTime);
     const ch = channel as unknown as Channel;
     const n = note as unknown as Note;
+    // Delay is a mix-level send (volumeNode → delayEffect → masterVolume),
+    // same family as channel vol/pan. Segment dry offline bakes rewire
+    // volumeNode to destination and drop this send; realtime / mix bakes keep it.
     if (0 < ch.state.delaySendLevel) {
       this.setDelaySend(ch, n, startTime);
     }
