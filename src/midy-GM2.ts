@@ -2436,6 +2436,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
   }
 
+  // releaseFullCache() was removed; full/adsr release follows Player.releaseNote
+  // (waitSourceEnded disconnects the note — no separate cache callback).
   override releaseNote(
     _channel: Channel,
     note: Note,
@@ -2443,37 +2445,6 @@ export class MidyGM2 extends Player<Note, Channel> {
   ): Promise<void> | void {
     if (note.isSegmentGhost) return;
     const now = this.audioContext.currentTime;
-
-    const makePromise = (
-      stopTime: number,
-      onFinish?: () => void,
-    ): Promise<void> => {
-      return new Promise<void>((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          this.disconnectNote(note);
-          onFinish?.();
-          resolve();
-        };
-        const src = note.bufferSource;
-        if (!src) {
-          finish();
-          return;
-        }
-        src.onended = finish;
-        try {
-          src.stop(stopTime);
-        } catch {
-          finish();
-          return;
-        }
-        const waitMs = Math.max(50, (stopTime - now) * 1000 + 100);
-        setTimeout(finish, waitMs);
-      });
-    };
-
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;
@@ -2487,20 +2458,20 @@ export class MidyGM2 extends Player<Note, Channel> {
             .cancelScheduledValues(endTime)
             .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
         } catch { /* already closed */ }
-        return makePromise(volRelease, () => this.releaseFullCache(note));
+        return this.waitSourceEnded(note, volRelease);
       }
       if (naturalEndTime <= now) {
         this.disconnectNote(note);
-        this.releaseFullCache(note);
         return;
       }
-      return makePromise(naturalEndTime, () => this.releaseFullCache(note));
+      return this.waitSourceEnded(note, naturalEndTime);
     }
 
     const volDuration = note.voiceParams?.volRelease ?? 0;
     const volRelease = endTime + volDuration;
 
     if (note.volumeEnvelopeNode) {
+      // "none" mode
       try {
         note.filterEnvelopeNode?.frequency
           .cancelScheduledValues(endTime)
@@ -2513,6 +2484,7 @@ export class MidyGM2 extends Player<Note, Channel> {
           .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
       } catch { /* already closed */ }
     } else {
+      // "ads" / "adsr" mode
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
       if (isAdsr) {
@@ -2526,13 +2498,13 @@ export class MidyGM2 extends Player<Note, Channel> {
               .cancelScheduledValues(endTime)
               .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           } catch { /* already closed */ }
-          return makePromise(volRelease);
+          return this.waitSourceEnded(note, volRelease);
         }
         if (naturalEndTime <= now) {
           this.disconnectNote(note);
           return;
         }
-        return makePromise(naturalEndTime);
+        return this.waitSourceEnded(note, naturalEndTime);
       }
       try {
         note.volumeNode?.gain
@@ -2541,7 +2513,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       } catch { /* already closed */ }
     }
 
-    return makePromise(volRelease);
+    return this.waitSourceEnded(note, volRelease);
   }
 
   override noteOffChannel(
