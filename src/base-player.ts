@@ -1233,6 +1233,17 @@ export class BasePlayer<
     this.GM1SystemOn(this.audioContext.currentTime, this.channels);
   }
 
+  /**
+   * Factory for a fresh ControllerState when resetting channels in
+   * prepareVoices / cacheVoiceIds. Subclasses with a richer ControllerState
+   * (GM2 softPedal/portamento, Midy LSB/delay) must override this; otherwise
+   * installing the base class leaves getters undefined and yields silent
+   * (NaN gain) output.
+   */
+  protected createControllerState(): ControllerState {
+    return new ControllerState();
+  }
+
   updateStates(queueIndex: number, nextQueueIndex: number): void {
     const { timeline, resumeTime } = this;
     const inverseTempo = 1 / this.tempo;
@@ -2781,7 +2792,8 @@ export class BasePlayer<
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
       channel.resetSettings(settings);
-      channel.state = new ControllerState();
+      // Subclass factory — see Player.createControllerState.
+      channel.state = this.createControllerState();
       channel.isDrum = false;
       channel.detune = 0;
       channel.programNumber = 0;

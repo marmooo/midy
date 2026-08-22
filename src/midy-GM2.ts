@@ -7,6 +7,7 @@
 import {
   cbToRatio,
   Channel as BaseChannel,
+  ControllerState as BaseControllerState,
   envelopeCurve,
   filterEnvelopeKeySet,
   FULLY_OPEN_FILTER_CENTS,
@@ -1212,6 +1213,12 @@ export class MidyGM2 extends Player<Note, Channel> {
 
   override applySystemDefaultsAfterCache(scheduleTime: number): void {
     this.GM2SystemOn(scheduleTime);
+  }
+
+  /** Keep channel.state as GM2 ControllerState (softPedal, portamento, …). */
+  override createControllerState(): BaseControllerState {
+    // Parallel hierarchy (does not extend base ControllerState).
+    return new ControllerState() as unknown as BaseControllerState;
   }
 
   override getVoiceId(

@@ -1191,6 +1191,16 @@ export class Midy extends MidyGM2 {
     super.GM2SystemOn(scheduleTime, channels as unknown as GM2Channel[]);
   }
 
+  /** Keep channel.state as Midy ControllerState (LSB / delay / poly pressure). */
+  override createControllerState(): ReturnType<
+    MidyGM2["createControllerState"]
+  > {
+    // Parallel hierarchy vs Player's base ControllerState; cast is intentional.
+    return new ControllerState() as ReturnType<
+      MidyGM2["createControllerState"]
+    >;
+  }
+
   override createMessageHandlers(): MessageHandler[] {
     const handlers = super.createMessageHandlers();
     handlers[0x80] = (data, t) =>

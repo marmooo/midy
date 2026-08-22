@@ -559,7 +559,9 @@ export class Player<
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
       channel.resetSettings(settings);
-      channel.state = new ControllerState();
+      // Subclasses (MidyGM2 / Midy) must supply their own ControllerState
+      // so LSB / softPedal / delaySend etc. getters keep working.
+      channel.state = this.createControllerState();
       channel.isDrum = false;
       channel.detune = 0;
       channel.programNumber = 0;
@@ -707,6 +709,18 @@ export class Player<
    */
   protected applySystemDefaultsAfterCache(scheduleTime: number): void {
     this.GM1SystemOn(scheduleTime);
+  }
+
+  /**
+   * Factory for a fresh ControllerState used when resetting channels inside
+   * cacheVoiceIds / prepareVoices. Base returns the shared GM-Lite state;
+   * MidyGM2 / Midy override so channel.state keeps the right prototype
+   * (softPedal, portamento, LSB controllers, delaySendLevel, ...).
+   * Using `new ControllerState()` from this module would install the base
+   * class and silence notes once subclass code reads missing getters.
+   */
+  protected createControllerState(): ControllerState {
+    return new ControllerState();
   }
 
   override scheduleTimelineEvents(
