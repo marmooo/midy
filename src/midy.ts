@@ -44,11 +44,6 @@ const extraControllerDefaults: Record<
   delaySendLevel: { type: 128 + 94, defaultValue: 0 },
 };
 
-const extraControllerStateArray = new Float32Array(256);
-for (const { type, defaultValue } of Object.values(extraControllerDefaults)) {
-  extraControllerStateArray[type] = defaultValue;
-}
-
 export class ControllerState extends GM2ControllerState {
   constructor() {
     super();
@@ -173,6 +168,31 @@ export class ControllerState extends GM2ControllerState {
   set delaySendLevel(value: number) {
     this.array[128 + 94] = value;
   }
+
+  // ---------------------------------------------------------------------------
+  // Virtual 14-bit readouts (MSB + LSB/128). Stored slots stay 0–1 normalized
+  // 7-bit pieces; callers that need the combined controller value use these.
+  // ---------------------------------------------------------------------------
+  /** Combined modulation depth in [0, ~1]. */
+  get modulationDepth(): number {
+    return this.modulationDepthMSB + this.modulationDepthLSB / 128;
+  }
+  /** Combined portamento time in [0, ~1]. */
+  get portamentoTime(): number {
+    return this.portamentoTimeMSB + this.portamentoTimeLSB / 128;
+  }
+  /** Combined volume in [0, ~1]. */
+  get volume(): number {
+    return this.volumeMSB + this.volumeLSB / 128;
+  }
+  /** Combined pan in [0, ~1]. */
+  get pan(): number {
+    return this.panMSB + this.panLSB / 128;
+  }
+  /** Combined expression in [0, ~1]. */
+  get expression(): number {
+    return this.expressionMSB + this.expressionLSB / 128;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,18 +285,17 @@ export class Channel extends GM2Channel {
     player.applyVoiceParams(this, 10, t);
   }
 
+  /**
+   * 14-bit MSB write: stores coarse value and clears LSB (single-CC send
+   * treats the controller as 7-bit). LSB writes leave MSB alone.
+   */
   override setModulationDepth(value: number, scheduleTime?: number): void {
     if (this.isDrum) return;
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const intPart = Math.trunc(value);
-    this.state.modulationDepthMSB = intPart / 127;
-    this.state.modulationDepthLSB = (value - intPart) / 127;
+    this.state.modulationDepthMSB = value / 127;
+    this.state.modulationDepthLSB = 0;
     player.updateModulation(this, t);
-  }
-
-  setModulationDepthMSB(value: number, scheduleTime?: number): void {
-    this.setModulationDepth(value, scheduleTime);
   }
 
   setModulationDepthLSB(value: number, scheduleTime?: number): void {
@@ -290,15 +309,10 @@ export class Channel extends GM2Channel {
   override setPortamentoTime(value: number, scheduleTime?: number): void {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const intPart = Math.trunc(value);
-    this.state.portamentoTimeMSB = intPart / 127;
-    this.state.portamentoTimeLSB = (value - intPart) / 127;
+    this.state.portamentoTimeMSB = value / 127;
+    this.state.portamentoTimeLSB = 0;
     if (this.isDrum) return;
     player.updatePortamento(this, t);
-  }
-
-  setPortamentoTimeMSB(value: number, scheduleTime?: number): void {
-    this.setPortamentoTime(value, scheduleTime);
   }
 
   setPortamentoTimeLSB(value: number, scheduleTime?: number): void {
@@ -312,14 +326,9 @@ export class Channel extends GM2Channel {
   override setVolume(value: number, scheduleTime?: number): void {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const intPart = Math.trunc(value);
-    this.state.volumeMSB = intPart / 127;
-    this.state.volumeLSB = (value - intPart) / 127;
+    this.state.volumeMSB = value / 127;
+    this.state.volumeLSB = 0;
     player.applyVolume(this, t);
-  }
-
-  setVolumeMSB(value: number, scheduleTime?: number): void {
-    this.setVolume(value, scheduleTime);
   }
 
   setVolumeLSB(value: number, scheduleTime?: number): void {
@@ -332,9 +341,8 @@ export class Channel extends GM2Channel {
   override setPan(value: number, scheduleTime?: number): void {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const intPart = Math.trunc(value);
-    this.state.panMSB = intPart / 127;
-    this.state.panLSB = (value - intPart) / 127;
+    this.state.panMSB = value / 127;
+    this.state.panLSB = 0;
     if (this.isDrum) {
       for (let i = 0; i < 128; i++) {
         player.updateKeyBasedVolume(this, i, t);
@@ -342,10 +350,6 @@ export class Channel extends GM2Channel {
     } else {
       player.updateChannelVolume(this, t);
     }
-  }
-
-  setPanMSB(value: number, scheduleTime?: number): void {
-    this.setPan(value, scheduleTime);
   }
 
   setPanLSB(value: number, scheduleTime?: number): void {
@@ -364,14 +368,9 @@ export class Channel extends GM2Channel {
   override setExpression(value: number, scheduleTime?: number): void {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const intPart = Math.trunc(value);
-    this.state.expressionMSB = intPart / 127;
-    this.state.expressionLSB = (value - intPart) / 127;
+    this.state.expressionMSB = value / 127;
+    this.state.expressionLSB = 0;
     player.updateChannelVolume(this, t);
-  }
-
-  setExpressionMSB(value: number, scheduleTime?: number): void {
-    this.setExpression(value, scheduleTime);
   }
 
   setExpressionLSB(value: number, scheduleTime?: number): void {
@@ -510,7 +509,7 @@ export class Channel extends GM2Channel {
 }
 
 // ---------------------------------------------------------------------------
-// Extended CC handlers
+// Extended CC handlers (delta over MidyGM2 — applied in Midy constructor)
 // ---------------------------------------------------------------------------
 type ControlChangeHandler = (ch: Channel, v: number, t: number) => void;
 type KeyBasedHandler = (
@@ -525,74 +524,46 @@ type ChannelOptionalMethods = {
   setRPGMakerLoop?: (t: number) => void;
 };
 
-const controlChangeHandlers: ControlChangeHandler[] = new Array(128);
-controlChangeHandlers[0] = (ch, v, _t) => ch.setBankMSB(v);
-controlChangeHandlers[1] = (ch, v, t) => ch.setModulationDepth(v, t);
-controlChangeHandlers[5] = (ch, v, t) => ch.setPortamentoTime(v, t);
-controlChangeHandlers[6] = (ch, v, t) => ch.dataEntryMSB(v, t);
-controlChangeHandlers[7] = (ch, v, t) => ch.setVolume(v, t);
-controlChangeHandlers[10] = (ch, v, t) => ch.setPan(v, t);
-controlChangeHandlers[11] = (ch, v, t) => ch.setExpression(v, t);
-controlChangeHandlers[32] = (ch, v, _t) => ch.setBankLSB(v);
-controlChangeHandlers[33] = (ch, v, t) => ch.setModulationDepthLSB(v, t);
-controlChangeHandlers[37] = (ch, v, t) => ch.setPortamentoTimeLSB(v, t);
-controlChangeHandlers[38] = (ch, v, t) => ch.dataEntryLSB(v, t);
-controlChangeHandlers[39] = (ch, v, t) => ch.setVolumeLSB(v, t);
-controlChangeHandlers[42] = (ch, v, t) => ch.setPanLSB(v, t);
-controlChangeHandlers[43] = (ch, v, t) => ch.setExpressionLSB(v, t);
-controlChangeHandlers[64] = (ch, v, t) => ch.setSustainPedal(v, t);
-controlChangeHandlers[65] = (ch, v, t) => ch.setPortamento(v, t);
-controlChangeHandlers[66] = (ch, v, t) => ch.setSostenutoPedal(v, t);
-controlChangeHandlers[67] = (ch, v, t) => ch.setSoftPedal(v, t);
-controlChangeHandlers[71] = (ch, v, t) => ch.setFilterResonance(v, t);
-controlChangeHandlers[72] = (ch, v, _t) => ch.setReleaseTime(v);
-controlChangeHandlers[73] = (ch, v, t) => ch.setAttackTime(v, t);
-controlChangeHandlers[74] = (ch, v, t) => ch.setBrightness(v, t);
-controlChangeHandlers[75] = (ch, v, t) => ch.setDecayTime(v, t);
-controlChangeHandlers[76] = (ch, v, t) => ch.setVibratoRate(v, t);
-controlChangeHandlers[77] = (ch, v, t) => ch.setVibratoDepth(v, t);
-controlChangeHandlers[78] = (ch, v, t) => ch.setVibratoDelay(v, t);
-controlChangeHandlers[84] = (ch, v, _t) => ch.setPortamentoNoteNumber(v);
-controlChangeHandlers[91] = (ch, v, t) => ch.setReverbSendLevel(v, t);
-controlChangeHandlers[93] = (ch, v, t) => ch.setChorusSendLevel(v, t);
-controlChangeHandlers[94] = (ch, v, t) => ch.setDelaySendLevel(v, t);
-controlChangeHandlers[96] = (ch, _v, t) => ch.dataIncrement(t);
-controlChangeHandlers[97] = (ch, _v, t) => ch.dataDecrement(t);
-controlChangeHandlers[100] = (ch, v, _t) => ch.setRPNLSB(v);
-controlChangeHandlers[101] = (ch, v, _t) => ch.setRPNMSB(v);
-controlChangeHandlers[111] = (ch, _v, t) =>
-  (ch as Channel & ChannelOptionalMethods).setRPGMakerLoop?.(t);
-controlChangeHandlers[120] = (ch, _v, t) => ch.allSoundOff(t);
-controlChangeHandlers[121] = (ch, _v, t) => ch.resetAllControllers(t);
-controlChangeHandlers[123] = (ch, _v, t) => ch.allNotesOff(t);
-controlChangeHandlers[124] = (ch, _v, t) => ch.omniOff(t);
-controlChangeHandlers[125] = (ch, _v, t) => ch.omniOn(t);
-controlChangeHandlers[126] = (ch, _v, t) => ch.monoOn(t);
-controlChangeHandlers[127] = (ch, _v, t) => ch.polyOn(t);
+/** Midy-only / Midy-overridden CC handlers. Merged onto the GM2 table at construct. */
+const midyControlChangeHandlers: Partial<
+  Record<number, ControlChangeHandler>
+> = {
+  // 14-bit MSB: Channel overrides clear LSB; GM2 table already routes 1/5/7/10/11
+  // to setModulationDepth / setPortamentoTime / setVolume / setPan / setExpression.
+  33: (ch, v, t) => ch.setModulationDepthLSB(v, t),
+  37: (ch, v, t) => ch.setPortamentoTimeLSB(v, t),
+  39: (ch, v, t) => ch.setVolumeLSB(v, t),
+  42: (ch, v, t) => ch.setPanLSB(v, t),
+  43: (ch, v, t) => ch.setExpressionLSB(v, t),
+  // Sound Controllers / Portamento Control / Delay Send
+  71: (ch, v, t) => ch.setFilterResonance(v, t),
+  72: (ch, v, _t) => ch.setReleaseTime(v),
+  73: (ch, v, t) => ch.setAttackTime(v, t),
+  74: (ch, v, t) => ch.setBrightness(v, t),
+  75: (ch, v, t) => ch.setDecayTime(v, t),
+  76: (ch, v, t) => ch.setVibratoRate(v, t),
+  77: (ch, v, t) => ch.setVibratoDepth(v, t),
+  78: (ch, v, t) => ch.setVibratoDelay(v, t),
+  84: (ch, v, _t) => ch.setPortamentoNoteNumber(v),
+  94: (ch, v, t) => ch.setDelaySendLevel(v, t),
+  // Data Inc/Dec + RPG Maker loop marker
+  96: (ch, _v, t) => ch.dataIncrement(t),
+  97: (ch, _v, t) => ch.dataDecrement(t),
+  111: (ch, _v, t) =>
+    (ch as Channel & ChannelOptionalMethods).setRPGMakerLoop?.(t),
+};
 
-const keyBasedControllerHandlers: KeyBasedHandler[] = new Array(128);
-keyBasedControllerHandlers[7] = (channel, keyNumber, t) =>
-  channel.player.updateKeyBasedVolume(channel, keyNumber, t);
-keyBasedControllerHandlers[10] = (channel, keyNumber, t) =>
-  channel.player.updateKeyBasedVolume(channel, keyNumber, t);
-keyBasedControllerHandlers[91] = (channel, keyNumber, t) =>
-  channel.processScheduledNotes((note) => {
-    if (note.noteNumber === keyNumber) {
-      channel.player.setReverbSend(channel, note as Note, t);
-    }
-  });
-keyBasedControllerHandlers[93] = (channel, keyNumber, t) =>
-  channel.processScheduledNotes((note) => {
-    if (note.noteNumber === keyNumber) {
-      channel.player.setChorusSend(channel, note as Note, t);
-    }
-  });
-keyBasedControllerHandlers[94] = (channel, keyNumber, t) =>
-  channel.processScheduledNotes((note) => {
-    if (note.noteNumber === keyNumber) {
-      channel.player.setDelaySend(channel, note as Note, t);
-    }
-  });
+/** Midy-only key-based handler (delay send). Rest inherit from GM2. */
+const midyKeyBasedControllerHandlers: Partial<
+  Record<number, KeyBasedHandler>
+> = {
+  94: (channel, keyNumber, t) =>
+    channel.processScheduledNotes((note) => {
+      if (note.noteNumber === keyNumber) {
+        channel.player.setDelaySend(channel, note as Note, t);
+      }
+    }),
+};
 
 const effectParameters = [
   2400 / 64,
@@ -651,10 +622,21 @@ export class Midy extends MidyGM2 {
     options?: { activeChannelNumbers?: Iterable<number> },
   ) {
     super(audioContext, options);
+    // Merge Midy deltas onto the GM2 handler tables (avoid full redefinition).
+    const ccHandlers = this.controlChangeHandlers.slice();
+    for (const [cc, handler] of Object.entries(midyControlChangeHandlers)) {
+      ccHandlers[Number(cc)] = handler as (typeof ccHandlers)[number];
+    }
     this.controlChangeHandlers =
-      controlChangeHandlers as typeof this.controlChangeHandlers;
+      ccHandlers as typeof this.controlChangeHandlers;
+    const kbHandlers = this.keyBasedControllerHandlers.slice();
+    for (
+      const [cc, handler] of Object.entries(midyKeyBasedControllerHandlers)
+    ) {
+      kbHandlers[Number(cc)] = handler as (typeof kbHandlers)[number];
+    }
     this.keyBasedControllerHandlers =
-      keyBasedControllerHandlers as typeof this.keyBasedControllerHandlers;
+      kbHandlers as typeof this.keyBasedControllerHandlers;
     this.delayEffect = this.createDelayEffect();
     this.delayEffect.output.connect(this.masterVolume);
   }
@@ -1384,8 +1366,7 @@ export class Midy extends MidyGM2 {
   override updateModulation(channel: GM2Channel, scheduleTime: number): void {
     const ch = channel as unknown as Channel;
     const state = ch.state as ControllerState;
-    const depth = (state.modulationDepthMSB + state.modulationDepthLSB / 128) *
-      ch.modulationDepthRange;
+    const depth = state.modulationDepth * ch.modulationDepthRange;
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.processScheduledNotes((note) => {
       const n = note as unknown as Note;
@@ -1405,12 +1386,58 @@ export class Midy extends MidyGM2 {
   override getPortamentoTime(channel: GM2Channel, note: GM2Note): number {
     const state = (channel as unknown as Channel).state as ControllerState;
     const n = note as unknown as Note;
-    const portamentoTime = state.portamentoTimeMSB +
-      state.portamentoTimeLSB / 128;
+    const portamentoTime = state.portamentoTime;
     const deltaSemitone = Math.abs(
       n.noteNumber - n.portamentoNoteNumber,
     );
     const value = Math.ceil(portamentoTime * 128);
     return deltaSemitone / this.getPitchIncrementSpeed(value) / 10;
+  }
+
+  /** Volume / expression / pan use virtual 14-bit readouts. */
+  override updateChannelVolume(
+    channel: GM2Channel,
+    scheduleTime: number,
+  ): void {
+    const ch = channel as unknown as Channel;
+    if (!ch.gainL) return;
+    const state = ch.state as ControllerState;
+    const effect = this.getChannelAmplitudeControl(ch);
+    const gain = state.volume * state.expression * (1 + effect);
+    const { gainLeft, gainRight } = this.panToGain(state.pan);
+    const timeConstant = this.perceptualSmoothingTime / 5;
+    ch.gainL.gain
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
+    ch.gainR.gain
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
+  }
+
+  override updateKeyBasedVolume(
+    channel: GM2Channel,
+    keyNumber: number,
+    scheduleTime: number,
+  ): void {
+    const ch = channel as unknown as Channel;
+    const gainL = ch.keyBasedGainLs[keyNumber];
+    if (!gainL) return;
+    const gainR = ch.keyBasedGainRs[keyNumber]!;
+    const state = ch.state as ControllerState;
+    const defaultGain = state.volume * state.expression;
+    const defaultPan = state.pan;
+    const keyBasedVolume = this.getKeyBasedValue(ch, keyNumber, 7);
+    const gain = (0 <= keyBasedVolume)
+      ? defaultGain * keyBasedVolume / 64
+      : defaultGain;
+    const keyBasedPan = this.getKeyBasedValue(ch, keyNumber, 10);
+    const pan = (0 <= keyBasedPan) ? keyBasedPan / 127 : defaultPan;
+    const { gainLeft, gainRight } = this.panToGain(pan);
+    gainL.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(gain * gainLeft, scheduleTime);
+    gainR.gain
+      .cancelScheduledValues(scheduleTime)
+      .setValueAtTime(gain * gainRight, scheduleTime);
   }
 }
