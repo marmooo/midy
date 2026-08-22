@@ -1201,6 +1201,68 @@ export class Midy extends MidyGM2 {
     >;
   }
 
+  // CCs that change Midy's offline bake beyond Player.COMPLEX_KEY_CONTROLLER_TYPES.
+  // LSB, sound controllers, portamento control, delay send.
+  static readonly EXTRA_COMPLEX_KEY_CONTROLLERS: ReadonlySet<number> = new Set([
+    33, // modulation depth LSB
+    37, // portamento time LSB
+    39, // volume LSB
+    42, // pan LSB
+    43, // expression LSB
+    71, // filter resonance
+    72, // release time
+    73, // attack time
+    74, // brightness
+    75, // decay time
+    76, // vibrato rate
+    77, // vibrato depth
+    78, // vibrato delay
+    84, // portamento control (note number)
+    94, // delay send level
+  ]);
+
+  override isComplexKeyController(controllerType: number): boolean {
+    return super.isComplexKeyController(controllerType) ||
+      Midy.EXTRA_COMPLEX_KEY_CONTROLLERS.has(controllerType);
+  }
+
+  /**
+   * Midy-only channel-state slots for simple/complex note cache keys.
+   * Avoids copying makeSimpleNoteKey / makeComplexNoteKey; base still
+   * writes volumeMSB/panMSB/expressionMSB.
+   */
+  override appendNoteKeyStateParts(
+    parts: (string | number)[],
+    channelStateArray: Float32Array,
+    bakeChannelMix: boolean,
+  ): void {
+    super.appendNoteKeyStateParts(parts, channelStateArray, bakeChannelMix);
+    const st = channelStateArray;
+    // Always: shape the offline sample (filter / env / vib / portamento / delay)
+    // whether the channel bus is mix-baked or left live (segment dry).
+    parts.push(
+      Math.round((st[128 + 33] ?? 0) * 1e4),
+      Math.round((st[128 + 37] ?? 0) * 1e4),
+      Math.round((st[128 + 71] ?? 0) * 1e4),
+      Math.round((st[128 + 72] ?? 0) * 1e4),
+      Math.round((st[128 + 73] ?? 0) * 1e4),
+      Math.round((st[128 + 74] ?? 0) * 1e4),
+      Math.round((st[128 + 75] ?? 0) * 1e4),
+      Math.round((st[128 + 76] ?? 0) * 1e4),
+      Math.round((st[128 + 77] ?? 0) * 1e4),
+      Math.round((st[128 + 78] ?? 0) * 1e4),
+      Math.round((st[128 + 84] ?? 0) * 1e4),
+      Math.round((st[128 + 94] ?? 0) * 1e4),
+    );
+    if (bakeChannelMix) {
+      parts.push(
+        Math.round((st[128 + 39] ?? 0) * 1e4),
+        Math.round((st[128 + 42] ?? 0) * 1e4),
+        Math.round((st[128 + 43] ?? 0) * 1e4),
+      );
+    }
+  }
+
   override createMessageHandlers(): MessageHandler[] {
     const handlers = super.createMessageHandlers();
     handlers[0x80] = (data, t) =>

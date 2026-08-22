@@ -2375,6 +2375,10 @@ export class Player<
   //                       (chunk / audio offline mix)
   // bakeChannelMix=false → mono, dry note only (segment offline; live
   //                       channel.gainL/gainR still apply vol/pan)
+  //
+  // Shared body is buildNoteCacheKeyParts; subclasses extend the key via
+  // appendNoteKeyStateParts / isComplexKeyController instead of copying
+  // these two methods.
   makeSimpleNoteKey(
     n: {
       audioBufferId?: number;
@@ -2390,38 +2394,14 @@ export class Player<
     },
     bakeChannelMix: boolean,
   ): string {
-    const st = n.channelStateArray;
-    // ControllerState indices: volumeMSB=135, panMSB=138, expressionMSB=139
-    const vol = bakeChannelMix ? (st[128 + 7] ?? 0) : 0;
-    const pan = bakeChannelMix ? (st[128 + 10] ?? 0) : 0;
-    const expr = bakeChannelMix ? (st[128 + 11] ?? 0) : 0;
-    const durTicks = n.noteEvent?.durationTicks ??
-      Math.round(n.noteDuration * 1000);
-    const detuneQ = Math.round(n.channelDetune * 100) / 100;
-    return [
-      bakeChannelMix ? "mix" : "dry",
-      n.audioBufferId ?? -1,
-      n.noteNumber,
-      n.velocity,
-      durTicks,
-      detuneQ,
-      Math.round(vol * 1e4),
-      Math.round(pan * 1e4),
-      Math.round(expr * 1e4),
-      n.programNumber,
-      n.isDrum ? 1 : 0,
-      Math.round(n.voiceParams.volRelease * 1e6),
-      Math.round(n.voiceParams.playbackRate * 1e6),
-    ].join("|");
+    return this.buildNoteCacheKeyParts(n, bakeChannelMix, false).join("|");
   }
 
-  // Serialize in-note automation as a tempo-independent relative-tick string.
-  // programChange is omitted (renderEntryAudioBuffer skips it). Field names
-  // match TimelineEvent usage in this module / BasePlayer.
   // Controllers that change the offline-baked waveform when replayed inside
   // renderEntryAudioBuffer. Sustain (64), all-notes-off, etc. affect note
   // lifetime which is already captured by durationTicks — including them in
   // the key would split otherwise-identical bakes.
+  // Subclasses extend via isComplexKeyController (do not replace this set).
   static readonly COMPLEX_KEY_CONTROLLER_TYPES: ReadonlySet<number> = new Set([
     1, // modulation
     7, // volume
@@ -2433,13 +2413,96 @@ export class Player<
     101, // RPN MSB
   ]);
 
+  /**
+   * Whether a CC type is part of the complex-note automation fingerprint.
+   * Base uses COMPLEX_KEY_CONTROLLER_TYPES; Midy adds LSB / sound CCs / delay.
+   */
+  protected isComplexKeyController(controllerType: number): boolean {
+    return Player.COMPLEX_KEY_CONTROLLER_TYPES.has(controllerType);
+  }
+
+  /**
+   * Append channel-state fields that affect the offline bake to a note
+   * cache key. Base: volumeMSB / panMSB / expressionMSB when mix-baking
+   * (zeros when dry so field positions stay stable). Subclasses push extra
+   * slots (LSB, filter, delay, …) without rewriting makeSimple/ComplexNoteKey.
+   */
+  protected appendNoteKeyStateParts(
+    parts: (string | number)[],
+    channelStateArray: Float32Array,
+    bakeChannelMix: boolean,
+  ): void {
+    // ControllerState indices: volumeMSB=135, panMSB=138, expressionMSB=139
+    const vol = bakeChannelMix ? (channelStateArray[128 + 7] ?? 0) : 0;
+    const pan = bakeChannelMix ? (channelStateArray[128 + 10] ?? 0) : 0;
+    const expr = bakeChannelMix ? (channelStateArray[128 + 11] ?? 0) : 0;
+    parts.push(
+      Math.round(vol * 1e4),
+      Math.round(pan * 1e4),
+      Math.round(expr * 1e4),
+    );
+  }
+
+  /**
+   * Shared key body for simple + complex note caches.
+   * complex=false → fine detune quantize, no automation suffix.
+   * complex=true  → coarse detune + "cx" prefix + automation fingerprint.
+   */
+  protected buildNoteCacheKeyParts(
+    n: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      channelDetune: number;
+      channelStateArray: Float32Array;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    },
+    bakeChannelMix: boolean,
+    complex: boolean,
+  ): (string | number)[] {
+    const durTicks = n.noteEvent?.durationTicks ??
+      Math.round(n.noteDuration * 1000);
+    // Complex uses coarser detune: cumulative pitch-bend FP drift between a
+    // clean count-walk and live playback can otherwise split identical bakes.
+    const detuneQ = complex
+      ? Math.round(n.channelDetune)
+      : Math.round(n.channelDetune * 100) / 100;
+    const parts: (string | number)[] = [];
+    if (complex) parts.push("cx");
+    parts.push(
+      bakeChannelMix ? "mix" : "dry",
+      n.audioBufferId ?? -1,
+      n.noteNumber,
+      n.velocity,
+      durTicks,
+      detuneQ,
+    );
+    this.appendNoteKeyStateParts(parts, n.channelStateArray, bakeChannelMix);
+    parts.push(
+      n.programNumber,
+      n.isDrum ? 1 : 0,
+      Math.round(n.voiceParams.volRelease * 1e6),
+      Math.round(n.voiceParams.playbackRate * 1e6),
+    );
+    if (complex) {
+      parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
+    }
+    return parts;
+  }
+
+  // Serialize in-note automation as a tempo-independent relative-tick string.
+  // programChange is omitted (renderEntryAudioBuffer skips it). Field names
+  // match TimelineEvent usage in this module / BasePlayer.
   serializeNoteAutomationEvents(
     noteEvent: NoteOnEventEntry | undefined,
   ): string {
     if (!noteEvent || noteEvent.events.length === 0) return "";
     const startTicks = noteEvent.startTicks ?? 0;
     const parts: string[] = [];
-    const relevantCc = Player.COMPLEX_KEY_CONTROLLER_TYPES;
     for (let i = 0; i < noteEvent.events.length; i++) {
       const event = noteEvent.events[i];
       if (event.type === "programChange") continue;
@@ -2450,7 +2513,7 @@ export class Player<
       switch (event.type) {
         case "controller": {
           const ct = event.controllerType ?? -1;
-          if (!relevantCc.has(ct)) continue;
+          if (!this.isComplexKeyController(ct)) continue;
           parts.push(`cc:${rel}:${ct}:${event.value}`);
           break;
         }
@@ -2494,33 +2557,7 @@ export class Player<
     },
     bakeChannelMix: boolean,
   ): string {
-    const st = n.channelStateArray;
-    const vol = bakeChannelMix ? (st[128 + 7] ?? 0) : 0;
-    const pan = bakeChannelMix ? (st[128 + 10] ?? 0) : 0;
-    const expr = bakeChannelMix ? (st[128 + 11] ?? 0) : 0;
-    const durTicks = n.noteEvent?.durationTicks ??
-      Math.round(n.noteDuration * 1000);
-    // Coarser than simple-note key: cumulative pitch-bend FP drift between a
-    // clean count-walk and live playback can otherwise split identical bakes.
-    const detuneQ = Math.round(n.channelDetune);
-    const automation = this.serializeNoteAutomationEvents(n.noteEvent);
-    return [
-      "cx",
-      bakeChannelMix ? "mix" : "dry",
-      n.audioBufferId ?? -1,
-      n.noteNumber,
-      n.velocity,
-      durTicks,
-      detuneQ,
-      Math.round(vol * 1e4),
-      Math.round(pan * 1e4),
-      Math.round(expr * 1e4),
-      n.programNumber,
-      n.isDrum ? 1 : 0,
-      Math.round(n.voiceParams.volRelease * 1e6),
-      Math.round(n.voiceParams.playbackRate * 1e6),
-      automation,
-    ].join("|");
+    return this.buildNoteCacheKeyParts(n, bakeChannelMix, true).join("|");
   }
 
   // Pre-count complex-note cache keys (same key as makeComplexNoteKey).
