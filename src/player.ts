@@ -216,6 +216,21 @@ export interface ChunkNoteEntry {
   // Timeline index (for simple-note classification / cache lookup).
   timelineIndex?: number;
 }
+/** Shared input for single-note offline bakes (simple + complex). */
+export interface BakeNoteEntry {
+  channelNumber: number;
+  noteNumber: number;
+  velocity: number;
+  voiceParams: VoiceParams;
+  noteDuration: number;
+  noteEvent?: NoteOnEventEntry;
+  channelDetune: number;
+  channelStateArray: Float32Array;
+  programNumber: number;
+  isDrum: boolean;
+  audioBufferId?: number;
+  voice?: Voice;
+}
 export interface OpenChunk {
   chunkStart: number;
   notes: ChunkNoteEntry[];
@@ -2641,36 +2656,17 @@ export class Player<
   // key appears more than once. Single-use keys call renderEntryAudioBuffer
   // without touching complexNoteBufferCache.
   async getComplexNoteBuffer(
-    entry: {
-      channelNumber: number;
-      audioBufferId?: number;
-      noteNumber: number;
-      velocity: number;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      voiceParams: VoiceParams;
-      voice?: Voice;
-    },
+    entry: BakeNoteEntry,
     bakeChannelMix: boolean,
   ): Promise<AudioBuffer> {
     const key = this.makeComplexNoteKey(entry, bakeChannelMix);
     const count = this.complexNoteCounts.get(key) ?? 0;
     if (count <= 1) {
-      const buffer = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
-      return buffer;
+      return await this.renderEntryAudioBuffer(entry, bakeChannelMix);
     }
     const cached = this.complexNoteBufferCache.get(key);
-    if (cached instanceof AudioBuffer) {
-      return cached;
-    }
-    if (cached instanceof Promise) {
-      const buffer = await cached;
-      return buffer;
-    }
+    if (cached instanceof AudioBuffer) return cached;
+    if (cached instanceof Promise) return await cached;
 
     const renderPromise = (async () => {
       try {
@@ -2690,18 +2686,7 @@ export class Player<
   // Returns null on miss (caller should schedule into the shared mix OAC).
   // In-flight Promise from note-mode / other paths is awaited.
   async lookupSimpleNoteBuffer(
-    n: {
-      audioBufferId?: number;
-      noteNumber: number;
-      velocity: number;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      voiceParams: VoiceParams;
-    },
+    n: BakeNoteEntry,
     bakeChannelMix: boolean,
   ): Promise<AudioBuffer | null> {
     if (!this.simpleNoteCache) return null;
@@ -2718,6 +2703,87 @@ export class Player<
     return null;
   }
 
+  /**
+   * Seed an offline channel from a BakeNoteEntry snapshot (state array,
+   * program, detune, drum flag, modulation depth). Optionally applies
+   * channel volume/pan for mix-baked paths.
+   */
+  protected prepareOfflineChannel(
+    offlinePlayer: Player<TNote, TChannel>,
+    entry: Pick<
+      BakeNoteEntry,
+      | "channelNumber"
+      | "channelStateArray"
+      | "isDrum"
+      | "programNumber"
+      | "channelDetune"
+    >,
+    bakeChannelMix: boolean,
+    volumeTime = 0,
+  ): TChannel | undefined {
+    const dstChannel = offlinePlayer.channels[entry.channelNumber];
+    if (!dstChannel) return;
+    dstChannel.state.array.set(entry.channelStateArray);
+    dstChannel.isDrum = entry.isDrum;
+    dstChannel.programNumber = entry.programNumber;
+    dstChannel.modulationDepthRange =
+      this.channels[entry.channelNumber]?.modulationDepthRange ?? 50;
+    dstChannel.detune = entry.channelDetune;
+    if (bakeChannelMix) {
+      offlinePlayer.updateChannelVolume(dstChannel, volumeTime);
+    }
+    return dstChannel;
+  }
+
+  /**
+   * noteOn into an offline player: preload sample, attach voiceParams, and
+   * for dry (segment) bakes rewire volumeNode past the channel bus so
+   * gainL/gainR stay live on the realtime path.
+   */
+  protected async scheduleOfflineNoteOn(
+    offlinePlayer: Player<TNote, TChannel>,
+    offlineContext: OfflineAudioContext,
+    dstChannel: TChannel,
+    entry: Pick<
+      BakeNoteEntry,
+      | "noteNumber"
+      | "velocity"
+      | "voiceParams"
+      | "audioBufferId"
+      | "voice"
+    >,
+    startTime: number,
+    bakeChannelMix: boolean,
+  ): Promise<TNote | undefined> {
+    if (entry.audioBufferId !== undefined) {
+      await offlinePlayer.getRawAudioBuffer(
+        entry.audioBufferId,
+        entry.voiceParams,
+      );
+    }
+    const preNote = offlinePlayer.createNoteInstance(
+      entry.noteNumber,
+      entry.velocity,
+      startTime,
+    );
+    preNote.voiceParams = entry.voiceParams;
+    preNote.voice = entry.voice ?? null;
+    preNote.audioBufferId = entry.audioBufferId;
+    const offlineNote = await offlinePlayer.noteOnChannel(
+      dstChannel,
+      entry.noteNumber,
+      entry.velocity,
+      startTime,
+      preNote,
+    ) as TNote | undefined;
+    const volumeNode = offlineNote?.volumeNode ?? preNote.volumeNode;
+    if (!bakeChannelMix && volumeNode) {
+      volumeNode.disconnect();
+      volumeNode.connect(offlineContext.destination);
+    }
+    return offlineNote;
+  }
+
   // Schedule simple notes (no in-interval automation) into an existing
   // OfflineAudioContext via a lightweight offline Player — used on cache
   // miss so segment/chunk/audio mix pays one startRendering instead of
@@ -2727,61 +2793,27 @@ export class Player<
   async scheduleSimpleNotesDirect(
     offlineContext: OfflineAudioContext,
     offlinePlayer: Player<TNote, TChannel>,
-    notes: {
-      channelNumber: number;
-      audioBufferId?: number;
-      noteNumber: number;
-      velocity: number;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      voiceParams: VoiceParams;
-      voice?: Voice;
-      offset: number;
-    }[],
+    notes: (BakeNoteEntry & { offset: number })[],
     bakeChannelMix: boolean,
   ): Promise<void> {
     const sorted = notes.slice().sort((a, b) => a.offset - b.offset);
-    const liveChannels = this.channels;
     for (let i = 0; i < sorted.length; i++) {
       const n = sorted[i];
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
+      const dstChannel = this.prepareOfflineChannel(
+        offlinePlayer,
+        n,
+        bakeChannelMix,
+        n.offset,
+      );
       if (!dstChannel) continue;
-      dstChannel.state.array.set(n.channelStateArray);
-      dstChannel.isDrum = n.isDrum;
-      dstChannel.programNumber = n.programNumber;
-      dstChannel.modulationDepthRange =
-        liveChannels[n.channelNumber]?.modulationDepthRange ?? 50;
-      dstChannel.detune = n.channelDetune;
-      if (bakeChannelMix) {
-        offlinePlayer.updateChannelVolume(dstChannel, n.offset);
-      }
-      if (n.audioBufferId !== undefined) {
-        await offlinePlayer.getRawAudioBuffer(n.audioBufferId, n.voiceParams);
-      }
-      const preNote = offlinePlayer.createNoteInstance(
-        n.noteNumber,
-        n.velocity,
-        n.offset,
-      );
-      preNote.voiceParams = n.voiceParams;
-      preNote.voice = n.voice ?? null;
-      preNote.audioBufferId = n.audioBufferId;
-      await offlinePlayer.noteOnChannel(
+      await this.scheduleOfflineNoteOn(
+        offlinePlayer,
+        offlineContext,
         dstChannel,
-        n.noteNumber,
-        n.velocity,
+        n,
         n.offset,
-        preNote,
+        bakeChannelMix,
       );
-      // Dry (segment): rewire past channel bus so vol/pan stay live.
-      if (!bakeChannelMix && preNote.volumeNode) {
-        preNote.volumeNode.disconnect();
-        preNote.volumeNode.connect(offlineContext.destination);
-      }
       offlinePlayer.noteOffChannel(
         dstChannel,
         n.noteNumber,
@@ -2797,21 +2829,10 @@ export class Player<
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
   // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
   // schedule on miss so the mix OAC does not wait on a second startRendering.
+  // Implementation is renderEntryAudioBuffer + cache (simple notes have no
+  // in-interval automation, so the event replay loop is a no-op).
   async getSimpleNoteBuffer(
-    n: {
-      channelNumber: number;
-      audioBufferId?: number;
-      noteNumber: number;
-      velocity: number;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      voiceParams: VoiceParams;
-      voice?: Voice;
-    },
+    n: BakeNoteEntry,
     bakeChannelMix = true,
   ): Promise<AudioBuffer> {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
@@ -2820,67 +2841,7 @@ export class Player<
     if (cached instanceof Promise) return await cached;
 
     const renderPromise = (async () => {
-      const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
-      const totalDuration = Math.max(
-        0.001,
-        n.noteDuration + releaseEnd,
-      );
-      const sampleRate = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        bakeChannelMix ? 2 : 1,
-        Math.ceil(totalDuration * sampleRate),
-        sampleRate,
-      );
-      const offlinePlayer = this.createOfflineRenderPlayer(
-        offlineContext,
-        [n.channelNumber],
-        true,
-      );
-      const dstChannel = offlinePlayer.channels[n.channelNumber];
-      dstChannel.state.array.set(n.channelStateArray);
-      dstChannel.isDrum = n.isDrum;
-      dstChannel.programNumber = n.programNumber;
-      dstChannel.modulationDepthRange =
-        this.channels[n.channelNumber]?.modulationDepthRange ?? 50;
-      dstChannel.detune = n.channelDetune;
-      if (bakeChannelMix) {
-        offlinePlayer.updateChannelVolume(dstChannel, 0);
-      }
-
-      if (n.audioBufferId !== undefined) {
-        await offlinePlayer.getRawAudioBuffer(n.audioBufferId, n.voiceParams);
-      }
-
-      const preNote = offlinePlayer.createNoteInstance(
-        n.noteNumber,
-        n.velocity,
-        0,
-      );
-      preNote.voiceParams = n.voiceParams;
-      preNote.voice = n.voice ?? null;
-      preNote.audioBufferId = n.audioBufferId;
-      await offlinePlayer.noteOnChannel(
-        dstChannel,
-        n.noteNumber,
-        n.velocity,
-        0,
-        preNote,
-      );
-      // For dry (segment) bakes, rewire volumeNode past the channel bus so
-      // the cached buffer does not embed gainL/gainR (those stay live).
-      if (!bakeChannelMix && preNote.volumeNode) {
-        preNote.volumeNode.disconnect();
-        preNote.volumeNode.connect(offlineContext.destination);
-      }
-      offlinePlayer.noteOffChannel(
-        dstChannel,
-        n.noteNumber,
-        0,
-        n.noteDuration,
-        true,
-      );
-      await Promise.resolve();
-      const buffer = await offlineContext.startRendering();
+      const buffer = await this.renderEntryAudioBuffer(n, bakeChannelMix);
       this.simpleNoteBufferCache.set(key, buffer);
       return buffer;
     })();
@@ -3100,26 +3061,14 @@ export class Player<
   // Complex notes in segment/chunk/audio all go through this path so pitch
   // bend is applied exactly like "note" mode's createFullRenderedBuffer —
   // one offline graph per note, no shared-channel event replay.
+  // Simple-note caches (getSimpleNoteBuffer) also land here: with no
+  // in-interval automation the event loop is a no-op.
   async renderEntryAudioBuffer(
-    entry: {
-      channelNumber: number;
-      noteNumber: number;
-      velocity: number;
-      voiceParams: VoiceParams;
-      noteDuration: number;
-      noteEvent?: NoteOnEventEntry;
-      channelDetune: number;
-      channelStateArray: Float32Array;
-      programNumber: number;
-      isDrum: boolean;
-      audioBufferId?: number;
-      voice?: Voice;
-    },
+    entry: BakeNoteEntry,
     bakeChannelMix: boolean,
   ): Promise<AudioBuffer> {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } =
       entry.noteEvent ?? {};
-    const ch = entry.channelNumber;
     const releaseEndDuration = entry.voiceParams.volRelease * envelopeCurve * 5;
     const totalDuration = Math.max(
       0.001,
@@ -3131,54 +3080,28 @@ export class Player<
       Math.ceil(totalDuration * sampleRate),
       sampleRate,
     );
-    const offlinePlayer = new (this.constructor as new (
-      audioContext: AudioContext | OfflineAudioContext,
-      options?: { activeChannelNumbers?: Iterable<number> },
-    ) => Player<TNote, TChannel>)(
-      offlineContext as unknown as AudioContext,
-      { activeChannelNumbers: [ch] },
+    const offlinePlayer = this.createOfflineRenderPlayer(
+      offlineContext,
+      [entry.channelNumber],
+      true,
     );
-    offlinePlayer.cacheMode = "none";
-    offlineContext.suspend = () => Promise.resolve();
-    offlineContext.resume = () => Promise.resolve();
-    offlinePlayer.soundFonts = this.soundFonts;
-    offlinePlayer.soundFontTable = this.soundFontTable;
-    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
-    const dstChannel = offlinePlayer.channels[ch];
-    dstChannel.state.array.set(entry.channelStateArray);
-    dstChannel.isDrum = entry.isDrum;
-    dstChannel.programNumber = entry.programNumber;
-    dstChannel.modulationDepthRange = this.channels[ch]?.modulationDepthRange ??
-      50;
-    dstChannel.detune = entry.channelDetune;
-    if (bakeChannelMix) {
-      offlinePlayer.updateChannelVolume(dstChannel, 0);
-    }
-    if (entry.audioBufferId !== undefined) {
-      await offlinePlayer.getRawAudioBuffer(
-        entry.audioBufferId,
-        entry.voiceParams,
-      );
-    }
-    const preNote = offlinePlayer.createNoteInstance(
-      entry.noteNumber,
-      entry.velocity,
+    const dstChannel = this.prepareOfflineChannel(
+      offlinePlayer,
+      entry,
+      bakeChannelMix,
       0,
     );
-    preNote.voiceParams = entry.voiceParams;
-    preNote.voice = entry.voice ?? null;
-    preNote.audioBufferId = entry.audioBufferId;
-    const offlineNote = await offlinePlayer.noteOnChannel(
+    if (!dstChannel) {
+      return offlineContext.startRendering();
+    }
+    await this.scheduleOfflineNoteOn(
+      offlinePlayer,
+      offlineContext,
       dstChannel,
-      entry.noteNumber,
-      entry.velocity,
+      entry,
       0,
-      preNote,
-    ) as TNote | undefined;
-    if (!bakeChannelMix && offlineNote?.volumeNode) {
-      offlineNote.volumeNode.disconnect();
-      offlineNote.volumeNode.connect(offlineContext.destination);
-    }
+      bakeChannelMix,
+    );
     for (let i = 0; i < noteEvents.length; i++) {
       const event = noteEvents[i];
       if (event.type === "programChange") continue;
