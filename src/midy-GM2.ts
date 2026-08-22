@@ -2272,14 +2272,10 @@ export class MidyGM2 extends Player<Note, Channel> {
         note.bufferSource.connect(note.volumeEnvelopeNode);
       }
       note.volumeEnvelopeNode.connect(note.volumeNode);
-      this.setChorusSend(channel, note, now);
-      this.setReverbSend(channel, note, now);
     } else if (isFullCached) { // "note" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-      this.setChorusSend(channel, note, now);
-      this.setReverbSend(channel, note, now);
     } else { // "ads" / "asdr" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
@@ -2288,9 +2284,9 @@ export class MidyGM2 extends Player<Note, Channel> {
         this.startModulation(channel, note, now);
       }
       note.bufferSource.connect(note.volumeNode);
-      this.setChorusSend(channel, note, now);
-      this.setReverbSend(channel, note, now);
     }
+    // Effect sends (reverb/chorus) attach in setNoteRouting — same path as
+    // bus routing, after volumeNode exists.
     if (!realtime) {
       this.warnIfStartTimeMissed(
         `note (channel ${channel.channelNumber}, note ${note.noteNumber})`,
@@ -2363,6 +2359,9 @@ export class MidyGM2 extends Player<Note, Channel> {
         volumeNode.connect(channel.gainR);
       }
     }
+    // Mix-level effect sends share volumeNode with the channel bus.
+    this.setChorusSend(channel, note, startTime);
+    this.setReverbSend(channel, note, startTime);
     this.handleExclusiveClass(note, channel, startTime);
     this.handleDrumExclusiveClass(note, channel, startTime);
     this.soundingNotes.add(note);
@@ -2430,9 +2429,11 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
     if (note.reverbSend) {
       note.reverbSend.disconnect();
+      note.reverbSend = null;
     }
     if (note.chorusSend) {
       note.chorusSend.disconnect();
+      note.chorusSend = null;
     }
   }
 
@@ -2684,58 +2685,95 @@ export class MidyGM2 extends Player<Note, Channel> {
       .setTargetAtTime(depth, scheduleTime, timeConstant);
   }
 
-  setReverbSend(channel: Channel, note: Note, scheduleTime: number): void {
-    let value = (note.voiceParams?.reverbEffectsSend ?? 0) *
-      channel.state.reverbSendLevel;
-    if (channel.isDrum) {
-      const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 91);
-      if (0 <= keyBasedValue) value = keyBasedValue / 127;
+  /**
+   * Channel CC level, optionally scaled by per-key instrument control on drums.
+   * Non-drum / unset key → raw CC state (0–1). Drum with key table → CC * key/64.
+   */
+  getRelativeKeyBasedValue(
+    channel: Channel,
+    keyNumber: number,
+    controllerType: number,
+  ): number {
+    const ccState = channel.state.array[128 + controllerType];
+    if (!channel.isDrum) return ccState;
+    const keyBasedValue = this.getKeyBasedValue(
+      channel,
+      keyNumber,
+      controllerType,
+    );
+    if (keyBasedValue < 0) return ccState;
+    return ccState * keyBasedValue / 64;
+  }
+
+  /**
+   * Shared mix-level effect send (volumeNode → sendGain → effect input).
+   * Creates the GainNode lazily; smooths level changes; disconnects from
+   * volumeNode when level drops to 0 so silent sends do not stay in the graph.
+   */
+  protected updateNoteSendGain(
+    note: Note,
+    send: GainNode | null,
+    level: number,
+    effectInput: AudioNode,
+    scheduleTime: number,
+  ): GainNode | null {
+    if (!send) {
+      if (level <= 0) return null;
+      const g = new GainNode(this.audioContext, { gain: level });
+      note.volumeNode?.connect(g);
+      g.connect(effectInput);
+      return g;
     }
-    if (!note.reverbSend) {
-      if (0 < value) {
-        note.reverbSend = new GainNode(this.audioContext, { gain: value });
-        note.volumeNode?.connect(note.reverbSend);
-        note.reverbSend.connect(this.reverbEffect.input);
-      }
+    const timeConstant = this.perceptualSmoothingTime / 5;
+    send.gain
+      .cancelAndHoldAtTime(scheduleTime)
+      .setTargetAtTime(level, scheduleTime, timeConstant);
+    if (level > 0) {
+      try {
+        note.volumeNode?.connect(send);
+      } catch { /* already connected */ }
     } else {
-      note.reverbSend.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(value, scheduleTime);
-      if (0 < value) {
-        note.volumeNode?.connect(note.reverbSend);
-      } else {
-        try {
-          note.volumeNode?.disconnect(note.reverbSend);
-        } catch { /* empty */ }
-      }
+      try {
+        note.volumeNode?.disconnect(send);
+      } catch { /* empty */ }
     }
+    return send;
+  }
+
+  /** instrumentAmount (SF2) × channel/key send level (CC#91 / key-based). */
+  calcReverbSendLevel(channel: Channel, note: Note): number {
+    const instrument = note.voiceParams?.reverbEffectsSend ?? 0;
+    return instrument *
+      this.getRelativeKeyBasedValue(channel, note.noteNumber, 91);
+  }
+
+  /** instrumentAmount (SF2) × channel/key send level (CC#93 / key-based). */
+  calcChorusSendLevel(channel: Channel, note: Note): number {
+    const instrument = note.voiceParams?.chorusEffectsSend ?? 0;
+    return instrument *
+      this.getRelativeKeyBasedValue(channel, note.noteNumber, 93);
+  }
+
+  setReverbSend(channel: Channel, note: Note, scheduleTime: number): void {
+    const level = this.calcReverbSendLevel(channel, note);
+    note.reverbSend = this.updateNoteSendGain(
+      note,
+      note.reverbSend,
+      level,
+      this.reverbEffect.input,
+      scheduleTime,
+    );
   }
 
   setChorusSend(channel: Channel, note: Note, scheduleTime: number): void {
-    let value = (note.voiceParams?.chorusEffectsSend ?? 0) *
-      channel.state.chorusSendLevel;
-    if (channel.isDrum) {
-      const keyBasedValue = this.getKeyBasedValue(channel, note.noteNumber, 93);
-      if (0 <= keyBasedValue) value = keyBasedValue / 127;
-    }
-    if (!note.chorusSend) {
-      if (0 < value) {
-        note.chorusSend = new GainNode(this.audioContext, { gain: value });
-        note.volumeNode?.connect(note.chorusSend);
-        note.chorusSend.connect(this.chorusEffect.input);
-      }
-    } else {
-      note.chorusSend.gain
-        .cancelScheduledValues(scheduleTime)
-        .setValueAtTime(value, scheduleTime);
-      if (0 < value) {
-        note.volumeNode?.connect(note.chorusSend);
-      } else {
-        try {
-          note.volumeNode?.disconnect(note.chorusSend);
-        } catch { /* empty */ }
-      }
-    }
+    const level = this.calcChorusSendLevel(channel, note);
+    note.chorusSend = this.updateNoteSendGain(
+      note,
+      note.chorusSend,
+      level,
+      this.chorusEffect.input,
+      scheduleTime,
+    );
   }
 
   setDelayVibLFO(note: Note): void {

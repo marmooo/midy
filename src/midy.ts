@@ -853,22 +853,6 @@ export class Midy extends MidyGM2 {
     return { input, output, delayNode, feedbackGain, wetGain };
   }
 
-  getRelativeKeyBasedValue(
-    channel: Channel,
-    keyNumber: number,
-    controllerType: number,
-  ): number {
-    const ccState = channel.state.array[128 + controllerType];
-    if (!channel.isDrum) return ccState;
-    const keyBasedValue = this.getKeyBasedValue(
-      channel,
-      keyNumber,
-      controllerType,
-    );
-    if (keyBasedValue < 0) return ccState;
-    return ccState * keyBasedValue / 64;
-  }
-
   calcCombinedEffectValue(
     channel: Channel,
     note: Note,
@@ -984,23 +968,20 @@ export class Midy extends MidyGM2 {
       pitchControl;
   }
 
+  /** CC#94 (× key-based on drums). No SF2 instrument amount for delay. */
+  calcDelaySendLevel(channel: Channel, note: Note): number {
+    return this.getRelativeKeyBasedValue(channel, note.noteNumber, 94);
+  }
+
   setDelaySend(channel: Channel, note: Note, scheduleTime: number): void {
-    const sendLevel = this.getRelativeKeyBasedValue(
-      channel,
-      note.noteNumber,
-      94,
+    const level = this.calcDelaySendLevel(channel, note);
+    note.delaySend = this.updateNoteSendGain(
+      note,
+      note.delaySend,
+      level,
+      this.delayEffect.input,
+      scheduleTime,
     );
-    if (!note.delaySend) {
-      if (sendLevel <= 0) return;
-      note.delaySend = new GainNode(this.audioContext, { gain: sendLevel });
-      note.volumeNode?.connect(note.delaySend);
-      note.delaySend.connect(this.delayEffect.input);
-    } else {
-      const timeConstant = this.perceptualSmoothingTime / 5;
-      note.delaySend.gain
-        .cancelAndHoldAtTime(scheduleTime)
-        .setTargetAtTime(sendLevel, scheduleTime, timeConstant);
-    }
   }
 
   applyToMPEChannels(channelNumber: number, fn: (ch: number) => void): void {
@@ -1288,12 +1269,10 @@ export class Midy extends MidyGM2 {
     super.setNoteRouting(channel, note, startTime);
     const ch = channel as unknown as Channel;
     const n = note as unknown as Note;
-    // Delay is a mix-level send (volumeNode → delayEffect → masterVolume),
-    // same family as channel vol/pan. Segment dry offline bakes rewire
-    // volumeNode to destination and drop this send; realtime / mix bakes keep it.
-    if (0 < ch.state.delaySendLevel) {
-      this.setDelaySend(ch, n, startTime);
-    }
+    // Delay shares the unified effect-send path (volumeNode → send → effect).
+    // Segment dry offline bakes rewire volumeNode to destination and drop
+    // mix-level sends; realtime / mix bakes keep them.
+    this.setDelaySend(ch, n, startTime);
   }
 
   setFilterQ(channel: Channel, note: Note, scheduleTime: number): void {
