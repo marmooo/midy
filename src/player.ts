@@ -2970,6 +2970,38 @@ export class Player<
   //                       mix-level sends such as Midy delay stay in-graph)
   // bakeChannelMix=false → mono dry bake (volumeNode rewired to destination;
   //                       segment keeps gainL/gainR and delay live)
+  // Relative seconds of a timeline event within a note, for offline replay.
+  // Primary: tick span scaled by duration/durationTicks (tempo-stable).
+  // Fallback: startTime/tempo − noteStartTime (historical formula).
+  relativeTimeInNote(
+    event: TimelineEvent,
+    noteEvent: NoteOnEventEntry | undefined,
+    noteStartTime: number,
+  ): number {
+    if (noteEvent) {
+      const startTicks = noteEvent.startTicks;
+      const eventTicks = event.ticks;
+      const durationTicks = noteEvent.durationTicks;
+      if (
+        startTicks != null &&
+        eventTicks != null &&
+        durationTicks != null &&
+        durationTicks > 0 &&
+        durationTicks !== Infinity &&
+        noteEvent.duration > 0
+      ) {
+        return (eventTicks - startTicks) *
+          (noteEvent.duration / durationTicks);
+      }
+    }
+    return (event.startTime as number) / this.tempo - noteStartTime;
+  }
+
+  // Bake one note (with its in-note automation) into an AudioBuffer.
+  // bakeChannelMix=true  → stereo mix bake (channel vol/pan/expression and
+  //                       mix-level sends such as Midy delay stay in-graph)
+  // bakeChannelMix=false → mono dry bake (volumeNode rewired to destination;
+  //                       segment keeps gainL/gainR and delay live)
   // Complex notes in segment/chunk/audio all go through this path so pitch
   // bend is applied exactly like "note" mode's createFullRenderedBuffer —
   // one offline graph per note, no shared-channel event replay.
@@ -3014,11 +3046,23 @@ export class Player<
       0,
       bakeChannelMix,
     );
+    // Replay in-note automation relative to note-on.
+    // Prefer ticks→seconds via this note's duration/durationTicks so the
+    // curve stays aligned with the baked note length even when startTime
+    // units and tempo interact poorly. Fallback keeps the historical
+    // startTime/tempo formula.
+    //
+    // Allow events through the release tail (not only up to noteDuration):
+    // realtime playback still applies pitch bend after note-off while the
+    // voice is releasing; skipping those made bends sound early/shifted.
+    const tMax = entry.noteDuration + releaseEndDuration;
+    const noteOnEvent = entry.noteEvent;
     for (let i = 0; i < noteEvents.length; i++) {
       const event = noteEvents[i];
       if (event.type === "programChange") continue;
-      const t = (event.startTime as number) / this.tempo - noteStartTime;
-      if (t < 0 || t > entry.noteDuration) continue;
+      let t = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
+      if (t < -1e-4 || t > tMax) continue;
+      if (t < 0) t = 0;
       offlinePlayer.processTimelineEvent(event, t, {
         channels: offlinePlayer.channels,
       });
