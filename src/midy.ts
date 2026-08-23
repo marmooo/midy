@@ -173,23 +173,23 @@ export class ControllerState extends GM2ControllerState {
   // Virtual 14-bit readouts (MSB + LSB/128). Stored slots stay 0–1 normalized
   // 7-bit pieces; callers that need the combined controller value use these.
   // ---------------------------------------------------------------------------
-  /** Combined modulation depth in [0, ~1]. */
+  // Combined modulation depth in [0, ~1].
   get modulationDepth(): number {
     return this.modulationDepthMSB + this.modulationDepthLSB / 128;
   }
-  /** Combined portamento time in [0, ~1]. */
+  // Combined portamento time in [0, ~1].
   get portamentoTime(): number {
     return this.portamentoTimeMSB + this.portamentoTimeLSB / 128;
   }
-  /** Combined volume in [0, ~1]. */
+  // Combined volume in [0, ~1].
   get volume(): number {
     return this.volumeMSB + this.volumeLSB / 128;
   }
-  /** Combined pan in [0, ~1]. */
+  // Combined pan in [0, ~1].
   get pan(): number {
     return this.panMSB + this.panLSB / 128;
   }
-  /** Combined expression in [0, ~1]. */
+  // Combined expression in [0, ~1].
   get expression(): number {
     return this.expressionMSB + this.expressionLSB / 128;
   }
@@ -285,10 +285,8 @@ export class Channel extends GM2Channel {
     player.applyVoiceParams(this, 10, t);
   }
 
-  /**
-   * 14-bit MSB write: stores coarse value and clears LSB (single-CC send
-   * treats the controller as 7-bit). LSB writes leave MSB alone.
-   */
+  // 14-bit MSB write: stores coarse value and clears LSB (single-CC send
+  // treats the controller as 7-bit). LSB writes leave MSB alone.
   override setModulationDepth(value: number, scheduleTime?: number): void {
     if (this.isDrum) return;
     const player = this.player;
@@ -524,7 +522,7 @@ type ChannelOptionalMethods = {
   setRPGMakerLoop?: (t: number) => void;
 };
 
-/** Midy-only / Midy-overridden CC handlers. Merged onto the GM2 table at construct. */
+// Midy-only / Midy-overridden CC handlers. Merged onto the GM2 table at construct.
 const midyControlChangeHandlers: Partial<
   Record<number, ControlChangeHandler>
 > = {
@@ -553,7 +551,7 @@ const midyControlChangeHandlers: Partial<
     (ch as Channel & ChannelOptionalMethods).setRPGMakerLoop?.(t),
 };
 
-/** Midy-only key-based handler (delay send). Rest inherit from GM2. */
+// Midy-only key-based handler (delay send). Rest inherit from GM2.
 const midyKeyBasedControllerHandlers: Partial<
   Record<number, KeyBasedHandler>
 > = {
@@ -761,7 +759,7 @@ export class Midy extends MidyGM2 {
     );
   }
 
-  /** Player-level program change; propagates from MPE manager. */
+  // Player-level program change; propagates from MPE manager.
   setProgramChange(channelNumber: number, programNumber: number): void {
     this.forMPEZone(
       channelNumber,
@@ -916,7 +914,7 @@ export class Midy extends MidyGM2 {
       pitchControl;
   }
 
-  /** CC#94 (× key-based on drums). No SF2 instrument amount for delay. */
+  // CC#94 (× key-based on drums). No SF2 instrument amount for delay.
   calcDelaySendLevel(channel: Channel, note: Note): number {
     return this.getRelativeKeyBasedValue(channel, note.noteNumber, 94);
   }
@@ -948,11 +946,9 @@ export class Midy extends MidyGM2 {
     }
   }
 
-  /**
-   * Run `fn` on the target channel; if it is an MPE zone manager, also on
-   * every member in the zone (manager last so zone-wide state settles after
-   * members when order matters).
-   */
+  // Run `fn` on the target channel; if it is an MPE zone manager, also on
+  // every member in the zone (manager last so zone-wide state settles after
+  // members when order matters).
   forMPEZone(channelNumber: number, fn: (channel: Channel) => void): void {
     const channel = this.channels[channelNumber] as Channel | undefined;
     if (!channel) return;
@@ -1119,7 +1115,7 @@ export class Midy extends MidyGM2 {
     super.GM2SystemOn(scheduleTime, channels as unknown as GM2Channel[]);
   }
 
-  /** Keep channel.state as Midy ControllerState (LSB / delay / poly pressure). */
+  // Keep channel.state as Midy ControllerState (LSB / delay / poly pressure).
   override createControllerState(): ReturnType<
     MidyGM2["createControllerState"]
   > {
@@ -1155,21 +1151,17 @@ export class Midy extends MidyGM2 {
       Midy.EXTRA_COMPLEX_KEY_CONTROLLERS.has(controllerType);
   }
 
-  /**
-   * Midy-only channel-state slots for simple/complex note cache keys.
-   *
-   * bakeChannelMix semantics (same flag as Player / renderEntryAudioBuffer):
-   * - true  (note / chunk / audio): channel bus + effect sends are inside the
-   *   offline buffer → volume/pan/expression LSB and delaySendLevel must be
-   *   part of the key (delayEffect is fed from volumeNode and reaches the
-   *   offline destination via masterVolume).
-   * - false (segment dry): only the note body is baked; volumeNode is rewired
-   *   straight to destination and channel vol/pan/delay stay live → those
-   *   mix-level values must NOT split the dry cache.
-   *
-   * Always-on slots (filter / env / vib / portamento) shape the sample itself
-   * in both modes.
-   */
+  // Midy-only channel-state slots for simple/complex note cache keys.
+  // bakeChannelMix semantics (same flag as Player / renderEntryAudioBuffer):
+  // - true  (note / chunk / audio): channel bus + effect sends are inside the
+  //   offline buffer → volume/pan/expression LSB and delaySendLevel must be
+  //   part of the key (delayEffect is fed from volumeNode and reaches the
+  //   offline destination via masterVolume).
+  // - false (segment dry): only the note body is baked; volumeNode is rewired
+  //   straight to destination and channel vol/pan/delay stay live → those
+  //   mix-level values must NOT split the dry cache.
+  // Always-on slots (filter / env / vib / portamento) shape the sample itself
+  // in both modes.
   override appendNoteKeyStateParts(
     parts: (string | number)[],
     channelStateArray: Float32Array,
@@ -1338,7 +1330,7 @@ export class Midy extends MidyGM2 {
     return deltaSemitone / this.getPitchIncrementSpeed(value) / 10;
   }
 
-  /** Volume / expression / pan use virtual 14-bit readouts. */
+  // Volume / expression / pan use virtual 14-bit readouts.
   override updateChannelVolume(
     channel: GM2Channel,
     scheduleTime: number,

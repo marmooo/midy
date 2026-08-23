@@ -1233,13 +1233,11 @@ export class BasePlayer<
     this.GM1SystemOn(this.audioContext.currentTime, this.channels);
   }
 
-  /**
-   * Factory for a fresh ControllerState when resetting channels in
-   * prepareVoices / cacheVoiceIds. Subclasses with a richer ControllerState
-   * (GM2 softPedal/portamento, Midy LSB/delay) must override this; otherwise
-   * installing the base class leaves getters undefined and yields silent
-   * (NaN gain) output.
-   */
+  // Factory for a fresh ControllerState when resetting channels in
+  // prepareVoices / cacheVoiceIds. Subclasses with a richer ControllerState
+  // (GM2 softPedal/portamento, Midy LSB/delay) must override this; otherwise
+  // installing the base class leaves getters undefined and yields silent
+  // (NaN gain) output.
   protected createControllerState(): ControllerState {
     return new ControllerState();
   }

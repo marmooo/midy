@@ -1215,7 +1215,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     this.GM2SystemOn(scheduleTime);
   }
 
-  /** Keep channel.state as GM2 ControllerState (softPedal, portamento, …). */
+  // Keep channel.state as GM2 ControllerState (softPedal, portamento, …).
   override createControllerState(): BaseControllerState {
     // Parallel hierarchy (does not extend base ControllerState).
     return new ControllerState() as unknown as BaseControllerState;
@@ -2685,10 +2685,8 @@ export class MidyGM2 extends Player<Note, Channel> {
       .setTargetAtTime(depth, scheduleTime, timeConstant);
   }
 
-  /**
-   * Channel CC level, optionally scaled by per-key instrument control on drums.
-   * Non-drum / unset key → raw CC state (0–1). Drum with key table → CC * key/64.
-   */
+  // Channel CC level, optionally scaled by per-key instrument control on drums.
+  // Non-drum / unset key → raw CC state (0–1). Drum with key table → CC * key/64.
   getRelativeKeyBasedValue(
     channel: Channel,
     keyNumber: number,
@@ -2705,11 +2703,9 @@ export class MidyGM2 extends Player<Note, Channel> {
     return ccState * keyBasedValue / 64;
   }
 
-  /**
-   * Shared mix-level effect send (volumeNode → sendGain → effect input).
-   * Creates the GainNode lazily; smooths level changes; disconnects from
-   * volumeNode when level drops to 0 so silent sends do not stay in the graph.
-   */
+  // Shared mix-level effect send (volumeNode → sendGain → effect input).
+  // Creates the GainNode lazily; smooths level changes; disconnects from
+  // volumeNode when level drops to 0 so silent sends do not stay in the graph.
   protected updateNoteSendGain(
     note: Note,
     send: GainNode | null,
@@ -2740,14 +2736,14 @@ export class MidyGM2 extends Player<Note, Channel> {
     return send;
   }
 
-  /** instrumentAmount (SF2) × channel/key send level (CC#91 / key-based). */
+  // instrumentAmount (SF2) × channel/key send level (CC#91 / key-based).
   calcReverbSendLevel(channel: Channel, note: Note): number {
     const instrument = note.voiceParams?.reverbEffectsSend ?? 0;
     return instrument *
       this.getRelativeKeyBasedValue(channel, note.noteNumber, 91);
   }
 
-  /** instrumentAmount (SF2) × channel/key send level (CC#93 / key-based). */
+  // instrumentAmount (SF2) × channel/key send level (CC#93 / key-based).
   calcChorusSendLevel(channel: Channel, note: Note): number {
     const instrument = note.voiceParams?.chorusEffectsSend ?? 0;
     return instrument *

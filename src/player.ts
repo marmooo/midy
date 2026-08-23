@@ -1,9 +1,7 @@
-/**
- * Full-featured MIDI player with cache-mode playback strategies.
- * Mode types and pure helpers live in {@link ./cache-strategy.ts};
- * this module owns scheduling, offline bake, and Web Audio graph logic.
- * Inherits real-time core from {@link BasePlayer}.
- */
+// Full-featured MIDI player with cache-mode playback strategies.
+// Mode types and pure helpers live in {@link ./cache-strategy.ts};
+// this module owns scheduling, offline bake, and Web Audio graph logic.
+// Inherits real-time core from {@link BasePlayer}.
 import { parseMidi } from "midi-file";
 import { type Voice, type VoiceParams } from "@marmooo/soundfont-parser";
 
@@ -517,12 +515,10 @@ export class Player<
     }
   }
 
-  /**
-   * Whether a drum note should be excluded from segment/chunk baking.
-   * Exclusive-class drums are scheduled via the normal noteOn path so they
-   * can still choke each other; segmenting them adds no polyphony win.
-   * GM1 uses a fixed table; GM2 overrides with per-kit tables.
-   */
+  // Whether a drum note should be excluded from segment/chunk baking.
+  // Exclusive-class drums are scheduled via the normal noteOn path so they
+  // can still choke each other; segmenting them adds no polyphony win.
+  // GM1 uses a fixed table; GM2 overrides with per-kit tables.
   protected isSegmentExcludedDrum(
     channel: TChannel,
     noteNumber: number,
@@ -530,29 +526,23 @@ export class Player<
     return channel.isDrum && this.drumExclusiveClasses[noteNumber] !== 0;
   }
 
-  /**
-   * Side effects while walking the timeline inside cacheVoiceIds (bank
-   * select, etc.). Base does nothing; GM2 applies CC#0 / CC#32 so program
-   * changes resolve against the correct bank during the walk.
-   */
+  // Side effects while walking the timeline inside cacheVoiceIds (bank
+  // select, etc.). Base does nothing; GM2 applies CC#0 / CC#32 so program
+  // changes resolve against the correct bank during the walk.
   protected onCacheTimelineEvent(_event: TimelineEvent): void {}
 
-  /**
-   * Restore mode defaults after cacheVoiceIds has resolved voice ids.
-   * Base = GM1 System On; GM2 overrides with GM2 System On.
-   */
+  // Restore mode defaults after cacheVoiceIds has resolved voice ids.
+  // Base = GM1 System On; GM2 overrides with GM2 System On.
   protected applySystemDefaultsAfterCache(scheduleTime: number): void {
     this.GM1SystemOn(scheduleTime);
   }
 
-  /**
-   * Factory for a fresh ControllerState used when resetting channels inside
-   * cacheVoiceIds / prepareVoices. Base returns the shared GM-Lite state;
-   * MidyGM2 / Midy override so channel.state keeps the right prototype
-   * (softPedal, portamento, LSB controllers, delaySendLevel, ...).
-   * Using `new ControllerState()` from this module would install the base
-   * class and silence notes once subclass code reads missing getters.
-   */
+  // Factory for a fresh ControllerState used when resetting channels inside
+  // cacheVoiceIds / prepareVoices. Base returns the shared GM-Lite state;
+  // MidyGM2 / Midy override so channel.state keeps the right prototype
+  // (softPedal, portamento, LSB controllers, delaySendLevel, ...).
+  // Using `new ControllerState()` from this module would install the base
+  // class and silence notes once subclass code reads missing getters.
   protected createControllerState(): ControllerState {
     return new ControllerState();
   }
@@ -928,25 +918,25 @@ export class Player<
     );
   }
 
-  /** No-op unless cacheMode is segment/chunk. */
+  // No-op unless cacheMode is segment/chunk.
   initTiledPipeline(): void {
     if (this.cacheMode === "segment") this.initSegmentPipeline();
     else if (this.cacheMode === "chunk") this.initChunkPipeline();
   }
 
-  /** Stop sources + invalidate in-flight offline renders (segment/chunk). */
+  // Stop sources + invalidate in-flight offline renders (segment/chunk).
   stopTiledSources(): void {
     if (this.cacheMode === "segment") this.stopSegmentSources();
     else if (this.cacheMode === "chunk") this.stopChunkSources();
   }
 
-  /** Close open tiles, await pending bakes, start any ready sources. */
+  // Close open tiles, await pending bakes, start any ready sources.
   async drainTiledPipeline(): Promise<void> {
     if (this.cacheMode === "segment") await this.drainSegmentPipeline();
     else if (this.cacheMode === "chunk") await this.drainChunkPipeline();
   }
 
-  /** Loop boundary: bump generation and open a fresh empty pipeline. */
+  // Loop boundary: bump generation and open a fresh empty pipeline.
   resetTiledPipeline(): void {
     if (this.cacheMode === "segment") {
       this.segmentGeneration++;
@@ -957,7 +947,7 @@ export class Player<
     }
   }
 
-  /** Advance open tiles / start ready sources for the current tiled mode. */
+  // Advance open tiles / start ready sources for the current tiled mode.
   updateTiledPipeline(lookAheadCheckTime: number): void {
     if (this.cacheMode === "segment") {
       this.updateSegmentPipeline(lookAheadCheckTime);
@@ -2252,21 +2242,17 @@ export class Player<
     101, // RPN MSB
   ]);
 
-  /**
-   * Whether a CC type is part of the complex-note automation fingerprint.
-   * Base uses COMPLEX_KEY_CONTROLLER_TYPES; Midy adds LSB / sound CCs / delay.
-   */
+  // Whether a CC type is part of the complex-note automation fingerprint.
+  // Base uses COMPLEX_KEY_CONTROLLER_TYPES; Midy adds LSB / sound CCs / delay.
   protected isComplexKeyController(controllerType: number): boolean {
     return Player.COMPLEX_KEY_CONTROLLER_TYPES.has(controllerType);
   }
 
-  /**
-   * Append channel-state fields that affect the offline bake to a note
-   * cache key. Base: volumeMSB / panMSB / expressionMSB when bakeChannelMix
-   * (zeros when dry so field positions stay stable — dry leaves the channel
-   * bus live). Subclasses push note-body slots always and mix-level slots
-   * (LSB, delay send, …) only when bakeChannelMix is true.
-   */
+  // Append channel-state fields that affect the offline bake to a note
+  // cache key. Base: volumeMSB / panMSB / expressionMSB when bakeChannelMix
+  // (zeros when dry so field positions stay stable — dry leaves the channel
+  // bus live). Subclasses push note-body slots always and mix-level slots
+  // (LSB, delay send, …) only when bakeChannelMix is true.
   protected appendNoteKeyStateParts(
     parts: (string | number)[],
     channelStateArray: Float32Array,
@@ -2284,11 +2270,9 @@ export class Player<
     );
   }
 
-  /**
-   * Shared key body for simple + complex note caches.
-   * complex=false → fine detune quantize, no automation suffix.
-   * complex=true  → coarse detune + "cx" prefix + automation fingerprint.
-   */
+  // Shared key body for simple + complex note caches.
+  // complex=false → fine detune quantize, no automation suffix.
+  // complex=true  → coarse detune + "cx" prefix + automation fingerprint.
   protected buildNoteCacheKeyParts(
     n: {
       audioBufferId?: number;
@@ -2581,11 +2565,9 @@ export class Player<
     return null;
   }
 
-  /**
-   * Seed an offline channel from a BakeNoteEntry snapshot (state array,
-   * program, detune, drum flag, modulation depth). Optionally applies
-   * channel volume/pan for mix-baked paths.
-   */
+  // Seed an offline channel from a BakeNoteEntry snapshot (state array,
+  // program, detune, drum flag, modulation depth). Optionally applies
+  // channel volume/pan for mix-baked paths.
   protected prepareOfflineChannel(
     offlinePlayer: Player<TNote, TChannel>,
     entry: Pick<
@@ -2613,17 +2595,14 @@ export class Player<
     return dstChannel;
   }
 
-  /**
-   * noteOn into an offline player: preload sample, attach voiceParams.
-   *
-   * bakeChannelMix=false (dry): after noteOn, disconnect volumeNode from the
-   * channel bus (and any mix-level sends hung off it — delay, etc.) and
-   * connect it straight to the offline destination. That keeps the baked
-   * buffer free of channel vol/pan and effect sends so segment mode can
-   * apply them live.
-   * bakeChannelMix=true (mix): leave the graph as noteOn built it so vol/pan
-   * and sends are inside the buffer.
-   */
+  // noteOn into an offline player: preload sample, attach voiceParams.
+  // bakeChannelMix=false (dry): after noteOn, disconnect volumeNode from the
+  // channel bus (and any mix-level sends hung off it — delay, etc.) and
+  // connect it straight to the offline destination. That keeps the baked
+  // buffer free of channel vol/pan and effect sends so segment mode can
+  // apply them live.
+  // bakeChannelMix=true (mix): leave the graph as noteOn built it so vol/pan
+  // and sends are inside the buffer.
   protected async scheduleOfflineNoteOn(
     offlinePlayer: Player<TNote, TChannel>,
     offlineContext: OfflineAudioContext,
