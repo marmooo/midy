@@ -1221,8 +1221,10 @@ export class BasePlayer<
     channels: TChannel[] = this.channels,
     scheduleTime?: number,
   ): void {
+    // Skip undefined slots left by offline lightweight createChannels.
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
+      if (!channel) continue;
       channel.activeNotes = new Array(128);
       channel.sustainNotes = [];
       channel.isDrum = false;
@@ -2581,8 +2583,12 @@ export class BasePlayer<
       this.exclusiveClassNotes.fill(null);
       this.drumExclusiveClassNotes.fill(null);
     }
+    // Offline lightweight bakers (createOfflineRenderPlayer with a subset of
+    // activeChannelNumbers) leave inactive slots as undefined — skip them.
     for (let ch = 0; ch < channels.length; ch++) {
-      channels[ch].allSoundOff(scheduleTime);
+      const channel = channels[ch];
+      if (!channel) continue;
+      channel.allSoundOff(scheduleTime);
     }
     this.resetChannels(channels, scheduleTime);
     if (isPrimary) {
