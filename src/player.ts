@@ -542,7 +542,7 @@ export class Player<
   // (softPedal, portamento, LSB controllers, delaySendLevel, ...).
   // Using `new ControllerState()` from this module would install the base
   // class and silence notes once subclass code reads missing getters.
-  protected createControllerState(): ControllerState {
+  protected override createControllerState(): ControllerState {
     return new ControllerState();
   }
 
