@@ -1619,7 +1619,7 @@ export class Player<
     const timeOffset = this.resumeTime - this.startTime;
     const schedulingOffset = this.startDelay - timeOffset;
     const nominalStart = pending.segmentStart + schedulingOffset;
-    const absoluteStart = Math.max(0, nominalStart);
+    const now = this.audioContext.currentTime;
     this.warnIfStartTimeMissed(
       `segment (channel ${channel.channelNumber})`,
       nominalStart,
@@ -1633,7 +1633,21 @@ export class Player<
       pending.done = true;
       source.disconnect();
     };
-    source.start(absoluteStart);
+    // If the offline bake finished late, start at `now` with a buffer
+    // offset so remaining notes stay time-aligned with the rest of the
+    // song. Starting at a past `when` (or at 0) would replay the whole
+    // segment late and drop / smear dense runs (e.g. glissandi).
+    if (nominalStart <= now) {
+      const offsetSec = now - nominalStart;
+      if (offsetSec >= pending.buffer.duration) {
+        pending.done = true;
+        source.disconnect();
+        return;
+      }
+      source.start(now, offsetSec);
+    } else {
+      source.start(nominalStart);
+    }
     pending.source = source;
   }
 
@@ -1797,7 +1811,7 @@ export class Player<
     const timeOffset = this.resumeTime - this.startTime;
     const schedulingOffset = this.startDelay - timeOffset;
     const nominalStart = pending.chunkStart + schedulingOffset;
-    const absoluteStart = Math.max(0, nominalStart);
+    const now = this.audioContext.currentTime;
     this.warnIfStartTimeMissed("chunk", nominalStart);
     const source = new AudioBufferSourceNode(this.audioContext, {
       buffer: pending.buffer,
@@ -1809,7 +1823,19 @@ export class Player<
       pending.done = true;
       source.disconnect();
     };
-    source.start(absoluteStart);
+    // Same late-start handling as startPendingSegment: offset into the
+    // buffer when the offline bake finishes after the scheduled time.
+    if (nominalStart <= now) {
+      const offsetSec = now - nominalStart;
+      if (offsetSec >= pending.buffer.duration) {
+        pending.done = true;
+        source.disconnect();
+        return;
+      }
+      source.start(now, offsetSec);
+    } else {
+      source.start(nominalStart);
+    }
     pending.source = source;
   }
 
@@ -2215,10 +2241,11 @@ export class Player<
   }
 
   // Peak-normalize an AudioBuffer in place so the absolute peak is at most
-  // PEAK_TARGET (0.95). Used by audio (final mix) and segment offline
-  // renders to avoid hard-clip grit when overlapping notes sum above 1.0.
+  // PEAK_TARGET (0.95). Used by audio (final mix) offline renders.
   // Linear gain only scales *down* when needed — quiet material is unchanged.
-  // Not used for realtime chunk windows (see softClampBuffer).
+  // Not used for realtime chunk windows (softClamp) or segment tiles
+  // (polyphony pre-gain + softClamp) — independent per-tile peakNormalize
+  // would silence dense glissandi / chords.
   peakNormalizeBuffer(buffer: AudioBuffer, peakTarget = 0.95): void {
     const channels = buffer.numberOfChannels;
     const length = buffer.length;
@@ -2797,16 +2824,33 @@ export class Player<
       sampleRate,
     );
 
-    // --- simple: hit → BufferSource; miss →
-    //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
-    //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
+    // Headroom for dense tiles (glissandi / big chords): scale the *mix*
+    // by 1/sqrt(maxConcurrent) so expected level stays stable without
+    // waveshaping. peakNormalize would crush the whole tile; tanh would
+    // distort the waveform; hard softClamp alone would grit on peaks.
+    // Count concurrent notes over the sustained interval only (not the
+    // long release tail) so a few long-decaying notes don't over-attenuate.
+    const maxConcurrent = this.estimateMaxConcurrentNotes(notes);
+    const mixGain = new GainNode(offlineContext, {
+      gain: maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1,
+    });
+    mixGain.connect(offlineContext.destination);
+
+    // --- simple: hit → BufferSource; miss → individual dry bake → BufferSource
     // Use per-note onset snapshots so mid-segment pitch bend / CC does not
     // leave later simple notes at the segment-open detune/volume state.
-    const simpleMisses = new Array<SegmentNoteEntry>(simpleCount);
-    let missCount = 0;
-    const simpleCounts = this.simpleNoteCounts;
+    //
+    // Important: do NOT route segment simple-misses through
+    // scheduleSimpleNotesDirect on a shared offline channel. That path
+    // shares activeNotes / exclusive-class / polyphony state across
+    // overlapping onsets on the same channel, so dense runs (glissandi)
+    // could steal or choke earlier notes and drop them from the bake.
+    // Baking each miss independently (same as the complex path) keeps
+    // every onset, at the cost of one Offline render per unique note.
+    // Multi-use keys still fill simpleNoteBufferCache via getSimpleNoteBuffer.
     const isDrum = channel.isDrum;
     if (simpleCount > 0) {
+      const simplePromises = new Array<Promise<AudioBuffer>>(simpleCount);
       for (let i = 0; i < simpleCount; i++) {
         const n = simpleNotes[i];
         const bakeInput = {
@@ -2823,74 +2867,24 @@ export class Player<
           voiceParams: n.voiceParams,
           voice: n.voice,
         };
-        const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
-        if (cached) {
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: cached,
-          });
-          // dry mono — channel vol/pan stay live via gainL/gainR
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-          continue;
-        }
-        const key = this.makeSimpleNoteKey(bakeInput, false);
-        const count = simpleCounts.get(key) ?? 0;
-        if (count > 1) {
-          const buffer = await this.getSimpleNoteBuffer(bakeInput, false);
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer,
-          });
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-        } else {
-          simpleMisses[missCount++] = n;
-        }
+        simplePromises[i] = (async () => {
+          const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
+          if (cached) return cached;
+          // getSimpleNoteBuffer always caches; even one-shot keys are safe
+          // here because segment tiles are short and the alternate
+          // scheduleSimpleNotesDirect path is unsafe for same-channel polyphony.
+          return await this.getSimpleNoteBuffer(bakeInput, false);
+        })();
       }
-      if (missCount > 0) {
-        const offlinePlayer = this.createOfflineRenderPlayer(
-          offlineContext,
-          [ch],
-          true,
-        );
-        const directNotes = new Array<{
-          channelNumber: number;
-          audioBufferId?: number;
-          noteNumber: number;
-          velocity: number;
-          noteDuration: number;
-          noteEvent?: NoteOnEventEntry;
-          channelDetune: number;
-          channelStateArray: Float32Array;
-          programNumber: number;
-          isDrum: boolean;
-          voiceParams: VoiceParams;
-          voice?: Voice;
-          offset: number;
-        }>(missCount);
-        for (let i = 0; i < missCount; i++) {
-          const n = simpleMisses[i];
-          directNotes[i] = {
-            channelNumber: ch,
-            audioBufferId: n.audioBufferId,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum,
-            voiceParams: n.voiceParams,
-            voice: n.voice,
-            offset: n.offset,
-          };
-        }
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          directNotes,
-          false,
-        );
+      const simpleBuffers = await Promise.all(simplePromises);
+      for (let i = 0; i < simpleCount; i++) {
+        const n = simpleNotes[i];
+        const src = new AudioBufferSourceNode(offlineContext, {
+          buffer: simpleBuffers[i],
+        });
+        // dry mono — channel vol/pan stay live via gainL/gainR
+        src.connect(mixGain);
+        src.start(n.offset);
       }
     }
 
@@ -2931,16 +2925,44 @@ export class Player<
         const src = new AudioBufferSourceNode(offlineContext, {
           buffer: complexBuffers[i],
         });
-        src.connect(offlineContext.destination);
+        src.connect(mixGain);
         src.start(n.offset);
       }
     }
 
     const buffer = await offlineContext.startRendering();
-    // Prevent hard-clip grit from dense polyphony; only scales down when
-    // peak exceeds the target (same helper as chunk/audio).
-    this.peakNormalizeBuffer(buffer);
+    // Safety only: polyphony pre-gain should keep most peaks ≤1. Hard-clamp
+    // residual overshoots without waveshaping the rest of the waveform.
+    this.softClampBuffer(buffer);
     return buffer;
+  }
+
+  // Max number of notes whose sustain intervals overlap in a segment.
+  // Release tails are ignored so a few long decays do not inflate the count
+  // and over-attenuate the mix gain.
+  estimateMaxConcurrentNotes(
+    notes: { offset: number; noteDuration: number }[],
+  ): number {
+    const n = notes.length;
+    if (n <= 1) return n;
+    // Events: +1 at onset, -1 at note-off. Sort by time; onsets before
+    // releases at the same time so a note-off/note-on pair still counts.
+    const events = new Array<{ t: number; d: number }>(n * 2);
+    for (let i = 0; i < n; i++) {
+      const note = notes[i];
+      const start = note.offset;
+      const end = note.offset + Math.max(0, note.noteDuration);
+      events[i * 2] = { t: start, d: 1 };
+      events[i * 2 + 1] = { t: end, d: -1 };
+    }
+    events.sort((a, b) => a.t - b.t || b.d - a.d);
+    let active = 0;
+    let max = 0;
+    for (let i = 0; i < events.length; i++) {
+      active += events[i].d;
+      if (active > max) max = active;
+    }
+    return max > 0 ? max : 1;
   }
 
   // Bake one note (with its in-note automation) into an AudioBuffer.
