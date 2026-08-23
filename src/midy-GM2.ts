@@ -1331,11 +1331,11 @@ export class MidyGM2 extends Player<Note, Channel> {
     // closeSegment/closeChunk + render have time to finish before each
     // segment/chunk's scheduled start time. The worst case render length scales
     // with how long a single note in the segment can ring
-    // (maxSegmentNoteDuration), on top of the segment's own discovery
+    // (maxTiledNoteDuration), on top of the segment's own discovery
     // window (lookAhead), so segment/chunk mode adds the two rather than reusing
     // the plain lookAhead other cache modes use for note-on scheduling.
     const effectiveLookAhead = (isSegmentMode || isChunkMode)
-      ? this.lookAhead + this.maxSegmentNoteDuration
+      ? this.lookAhead + this.maxTiledNoteDuration
       : this.lookAhead;
     const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
     const schedulingOffset = this.startDelay - timeOffset;
@@ -1356,12 +1356,12 @@ export class MidyGM2 extends Player<Note, Channel> {
           note.timelineIndex = queueIndex;
           note.audioBufferId = this.noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
-            this.segmentBakedSet.has(queueIndex);
+            this.tiledBakedSet.has(queueIndex);
           const isChunkNote = isChunkMode &&
-            this.segmentBakedSet.has(queueIndex);
+            this.tiledBakedSet.has(queueIndex);
           if (isSegmentNote || isChunkNote) {
-            note.isSegmentGhost = true;
-            note.segmentNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
+            note.isTiledGhost = true;
+            note.tiledNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
           }
           channel.noteOn(
             event.noteNumber!,
@@ -1530,13 +1530,13 @@ export class MidyGM2 extends Player<Note, Channel> {
       if (this.cacheMode === "segment") {
         const timeOffset = this.resumeTime - this.startTime;
         this.updateSegmentPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
+          now + timeOffset + this.lookAhead + this.maxTiledNoteDuration,
         );
       }
       if (this.cacheMode === "chunk") {
         const timeOffset = this.resumeTime - this.startTime;
         this.updateChunkPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
+          now + timeOffset + this.lookAhead + this.maxTiledNoteDuration,
         );
       }
       const waitTime = now + this.noteCheckInterval;
@@ -1658,7 +1658,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
-        if (note.isSegmentGhost) continue;
+        if (note.isTiledGhost) continue;
         note.ending = true;
         if (note.bufferSource || note.volumeNode) {
           promises.push(this.soundOffNote(note, scheduleTime));
@@ -1915,7 +1915,7 @@ export class MidyGM2 extends Player<Note, Channel> {
 
   override updateChannelDetune(channel: Channel, scheduleTime: number): void {
     channel.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
+      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
       if (this.isPortamento(channel, note)) {
         this.setPortamentoDetune(channel, note, scheduleTime);
       } else {
@@ -2181,7 +2181,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
-    if (note.isSegmentGhost) {
+    if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound
       // comes from the combined segment buffer, baked and scheduled
       // separately by the segment pipeline (appendToSegmentQueue /
@@ -2444,7 +2444,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     note: Note,
     endTime: number,
   ): Promise<void> | void {
-    if (note.isSegmentGhost) return;
+    if (note.isTiledGhost) return;
     const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
@@ -2807,7 +2807,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     scheduleTime: number,
   ): void {
     channel.processScheduledNotes((note: Note) => {
-      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
+      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,

@@ -117,13 +117,14 @@ export class Player<
   // audio mode
   audioModeBufferSource: AudioBufferSourceNode | null = null;
   audioWindowDuration: number = 4;
+  // tiled modes (segment / chunk): shared window + classification
+  tileDuration: number = 1;
+  maxTiledNoteDuration: number = 8;
+  tiledBakedSet: Set<number> = new Set();
+  tiledVoiceParams: (VoiceParams | null)[] = [];
+  tiledVoices: (Voice | null)[] = [];
   // segment mode
-  segmentDuration: number = 1;
-  maxSegmentNoteDuration: number = 8;
-  segmentBakedSet: Set<number> = new Set();
   segmentChannelStates: (SegmentChannelState | null)[] = [];
-  segmentVoiceParams: (VoiceParams | null)[] = [];
-  segmentVoices: (Voice | null)[] = [];
   segmentGeneration: number = 0;
   // chunk mode
   chunkState: ChunkState = { openChunk: null, pending: [] };
@@ -178,14 +179,14 @@ export class Player<
     this.renderedAudioBuffer = null;
     this.noteAudioBufferIds = [];
     this.preloadEntries = [];
-    this.segmentBakedSet.clear();
+    this.tiledBakedSet.clear();
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
     this.simpleNoteCounts.clear();
     this.complexNoteBufferCache.clear();
     this.complexNoteCounts.clear();
-    this.segmentVoiceParams = [];
-    this.segmentVoices = [];
+    this.tiledVoiceParams = [];
+    this.tiledVoices = [];
     this.noteOnDurations = [];
     this.noteOnEvents = [];
     this.resumeTime = 0;
@@ -402,13 +403,11 @@ export class Player<
       channel.programNumber = 0;
     }
     if (channels[9]) channels[9].isDrum = true;
-    const isSegmentMode = isSegmentCacheMode(cacheMode);
-    const isChunkMode = isChunkCacheMode(cacheMode);
-    const needsSegmentData = isTiledCacheMode(cacheMode);
-    const segmentVoiceParams: (VoiceParams | null)[] = needsSegmentData
+    const needsTiledData = isTiledCacheMode(cacheMode);
+    const tiledVoiceParams: (VoiceParams | null)[] = needsTiledData
       ? new Array(timeline.length).fill(null)
       : [];
-    const segmentVoices: (Voice | null)[] = needsSegmentData
+    const tiledVoices: (Voice | null)[] = needsTiledData
       ? new Array(timeline.length).fill(null)
       : [];
     const noteAudioBufferIds: (number | undefined)[] = new Array(
@@ -438,7 +437,7 @@ export class Player<
           // the one in effect at each individual note. So voiceParams must be
           // resolved and snapshotted here, while programNumber is still correct.
           //
-          // Exclusive-class drum notes are excluded from segmentVoiceParams
+          // Exclusive-class drum notes are excluded from tiledVoiceParams
           // (and therefore from segment/chunk notes) because segmenting them
           // would bring no benefit — exclusive class guarantees at most one
           // note of the same class sounds at a time, so they're scheduled via
@@ -466,9 +465,9 @@ export class Player<
                 0,
               );
               const voiceParams = voice.getAllParams(controllerState);
-              if (needsSegmentData && !isExcludedDrum) {
-                segmentVoiceParams[i] = voiceParams;
-                segmentVoices[i] = voice;
+              if (needsTiledData && !isExcludedDrum) {
+                tiledVoiceParams[i] = voiceParams;
+                tiledVoices[i] = voice;
               }
               if (!seenPreloadIds.has(audioBufferId)) {
                 seenPreloadIds.add(audioBufferId);
@@ -498,9 +497,9 @@ export class Player<
     if (needsNoteOnDurations(cacheMode)) {
       this.buildNoteOnDurations();
     }
-    if (needsSegmentData) {
-      this.segmentVoiceParams = segmentVoiceParams;
-      this.segmentVoices = segmentVoices;
+    if (needsTiledData) {
+      this.tiledVoiceParams = tiledVoiceParams;
+      this.tiledVoices = tiledVoices;
       this.finalizeSegmentClassification();
       // Simple/complex-note classification is shared by note / segment / chunk / audio.
       this.finalizeSimpleNoteClassification();
@@ -559,18 +558,18 @@ export class Player<
     // closeSegment/closeChunk + render have time to finish before each
     // segment/chunk's scheduled start time. The worst case render length scales
     // with how long a single note in the segment can ring
-    // (maxSegmentNoteDuration), on top of the segment's own discovery
+    // (maxTiledNoteDuration), on top of the segment's own discovery
     // window (lookAhead), so segment/chunk mode adds the two rather than reusing
     // the plain lookAhead other cache modes use for note-on scheduling.
     const effectiveLookAhead = isTiledCacheMode(cacheMode)
-      ? this.lookAhead + this.maxSegmentNoteDuration
+      ? this.lookAhead + this.maxTiledNoteDuration
       : this.lookAhead;
     const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
     const schedulingOffset = this.startDelay - timeOffset;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     const noteAudioBufferIds = this.noteAudioBufferIds;
-    const segmentBakedSet = this.segmentBakedSet;
+    const tiledBakedSet = this.tiledBakedSet;
     const noteOnDurations = this.noteOnDurations;
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
@@ -587,12 +586,12 @@ export class Player<
           note.timelineIndex = queueIndex;
           note.audioBufferId = noteAudioBufferIds[queueIndex];
           const isSegmentNote = isSegmentMode &&
-            segmentBakedSet.has(queueIndex);
+            tiledBakedSet.has(queueIndex);
           const isChunkNote = isChunkMode &&
-            segmentBakedSet.has(queueIndex);
+            tiledBakedSet.has(queueIndex);
           if (isSegmentNote || isChunkNote) {
-            note.isSegmentGhost = true;
-            note.segmentNoteDuration = noteOnDurations[queueIndex] ?? 0;
+            note.isTiledGhost = true;
+            note.tiledNoteDuration = noteOnDurations[queueIndex] ?? 0;
           }
           channel.noteOn(
             event.noteNumber!,
@@ -806,7 +805,7 @@ export class Player<
       if (isTiledCacheMode(this.cacheMode)) {
         const timeOffset = this.resumeTime - this.startTime;
         this.updateTiledPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
+          now + timeOffset + this.lookAhead + this.maxTiledNoteDuration,
         );
       }
       const waitTime = now + this.noteCheckInterval;
@@ -1054,12 +1053,12 @@ export class Player<
   ): void {
     const state = this.segmentChannelStates[channelNumber];
     if (!state) return;
-    const voiceParams = this.segmentVoiceParams[timelineIndex];
+    const voiceParams = this.tiledVoiceParams[timelineIndex];
     if (!voiceParams) return;
     const channel = this.channels[channelNumber];
     if (
       state.openSegment &&
-      this.segmentDuration <= t - state.openSegment.segmentStart
+      this.tileDuration <= t - state.openSegment.segmentStart
     ) {
       this.closeSegment(state, channel);
     }
@@ -1080,7 +1079,7 @@ export class Player<
       noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.segmentVoices[timelineIndex] ?? undefined,
+      voice: this.tiledVoices[timelineIndex] ?? undefined,
       // Per-note onset snapshot — simple-note bakes need the detune/state
       // at this note's start, not the segment-open values (pitch bend may
       // have moved them in the meantime).
@@ -1168,7 +1167,7 @@ export class Player<
       if (!state) continue;
       if (
         state.openSegment &&
-        state.openSegment.segmentStart + this.segmentDuration <=
+        state.openSegment.segmentStart + this.tileDuration <=
           lookAheadCheckTime
       ) {
         this.closeSegment(state, channels[ch]);
@@ -1245,12 +1244,12 @@ export class Player<
     velocity: number,
   ): void {
     const state = this.chunkState;
-    const voiceParams = this.segmentVoiceParams[timelineIndex];
+    const voiceParams = this.tiledVoiceParams[timelineIndex];
     if (!voiceParams) return;
 
     if (
       state.openChunk &&
-      this.segmentDuration <= t - state.openChunk.chunkStart
+      this.tileDuration <= t - state.openChunk.chunkStart
     ) {
       this.closeChunk(state);
     }
@@ -1266,7 +1265,7 @@ export class Player<
       noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.segmentVoices[timelineIndex] ?? undefined,
+      voice: this.tiledVoices[timelineIndex] ?? undefined,
       // Snapshot per-channel state now — channel volume/pan/expression
       // are baked into the buffer so they must be captured at note-append
       // time before subsequent events on the same channel change them.
@@ -1340,7 +1339,7 @@ export class Player<
     const state = this.chunkState;
     if (
       state.openChunk &&
-      state.openChunk.chunkStart + this.segmentDuration <= lookAheadCheckTime
+      state.openChunk.chunkStart + this.tileDuration <= lookAheadCheckTime
     ) {
       this.closeChunk(state);
     }
@@ -2037,18 +2036,18 @@ export class Player<
   // after buildNoteOnDurations() without redoing the full classification.
 
   finalizeSegmentClassification(): void {
-    const { noteOnDurations, segmentVoiceParams } = this;
+    const { noteOnDurations, tiledVoiceParams } = this;
     const bakedSet = new Set<number>();
-    for (let i = 0; i < segmentVoiceParams.length; i++) {
-      const voiceParams = segmentVoiceParams[i];
+    for (let i = 0; i < tiledVoiceParams.length; i++) {
+      const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
       const releaseTail = voiceParams.volRelease * envelopeCurve * 5;
-      if (this.maxSegmentNoteDuration < duration + releaseTail) continue;
+      if (this.maxTiledNoteDuration < duration + releaseTail) continue;
       bakedSet.add(i);
     }
-    this.segmentBakedSet = bakedSet;
+    this.tiledBakedSet = bakedSet;
   }
 
   // Treat notes with no in-interval automation as simple.
@@ -2064,9 +2063,7 @@ export class Player<
     const simple = new Set<number>();
     // Prefer the segment-baked subset when available (segment/chunk); fall
     // back to every noteOn with a known duration (note / audio mode).
-    const candidates = this.segmentBakedSet.size > 0
-      ? this.segmentBakedSet
-      : null;
+    const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
     if (candidates) {
       const candidateArr = Array.from(candidates);
       for (let ci = 0; ci < candidateArr.length; ci++) {
@@ -2137,8 +2134,8 @@ export class Player<
           let voiceParams: VoiceParams | null = null;
           let voice: Voice | null | undefined = null;
           if (needsSegmentVoice) {
-            voiceParams = this.segmentVoiceParams[i];
-            voice = this.segmentVoices[i];
+            voiceParams = this.tiledVoiceParams[i];
+            voice = this.tiledVoices[i];
           }
           if (!voiceParams) {
             voice = this.resolveVoice(
@@ -2413,9 +2410,7 @@ export class Player<
     const needsSegmentVoice = isTiledCacheMode(cacheMode);
     // Complex candidates: baked notes that are not simple, or all non-simple
     // noteOns when no segment set exists (note / audio mode).
-    const candidates = this.segmentBakedSet.size > 0
-      ? this.segmentBakedSet
-      : null;
+    const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
 
     const considerIndex = (i: number): boolean => {
       if (this.simpleNoteSet.has(i)) return false;
@@ -2439,7 +2434,7 @@ export class Player<
 
           let voiceParams: VoiceParams | null = null;
           if (needsSegmentVoice) {
-            voiceParams = this.segmentVoiceParams[i];
+            voiceParams = this.tiledVoiceParams[i];
           }
           if (!voiceParams) {
             const voice = this.resolveVoice(
@@ -2720,7 +2715,7 @@ export class Player<
   }
 
   // Bakes an entire segment (all notes queued for one channel within
-  // segmentDuration seconds) into a single AudioBuffer using exactly one
+  // tileDuration seconds) into a single AudioBuffer using exactly one
   // OfflineAudioContext / startRendering() call, instead of one offline
   // context per note followed by a manual JS mixdown. Each note still gets
   // its own full envelope/pitch-bend/LFO/CC#1 bake (same fidelity as
@@ -3266,7 +3261,7 @@ export class Player<
       note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
-    if (note.isSegmentGhost) {
+    if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound
       // comes from the combined segment buffer, baked and scheduled
       // separately by the segment pipeline (appendToSegmentQueue /
@@ -3377,7 +3372,7 @@ export class Player<
     note: TNote,
     endTime: number,
   ): Promise<void> | void {
-    if (note.isSegmentGhost) return;
+    if (note.isTiledGhost) return;
     const now = this.audioContext.currentTime;
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;

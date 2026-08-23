@@ -1306,7 +1306,7 @@ export class Midy extends MidyGM2 {
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.processScheduledNotes((note) => {
       const n = note as unknown as Note;
-      if (n.renderedBuffer?.isFull || n.isSegmentGhost) {
+      if (n.renderedBuffer?.isFull || n.isTiledGhost) {
         return;
       }
       if (n.modLfoToPitch) {

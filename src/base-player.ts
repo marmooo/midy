@@ -54,10 +54,10 @@ export class Note {
   modLfoToPitch: GainNode | null = null;
   modLfoToFilterFc: GainNode | null = null;
   modLfoToVolume: GainNode | null = null;
-  // Set by Player subclass when a note is absorbed into an offline segment/chunk
+  // Set by Player when a note is absorbed into an offline segment/chunk tile
   // buffer (no per-note AudioBufferSourceNode). BasePlayer treats these as no-ops.
-  isSegmentGhost: boolean = false;
-  segmentNoteDuration: number = 0;
+  isTiledGhost: boolean = false;
+  tiledNoteDuration: number = 0;
   audioBufferId?: number;
   // Polyphonic key pressure (MIDI poly aftertouch), 0-127. Only meaningful
   // for subclasses (e.g. Midy's) whose Channel actually tracks/updates it
@@ -1571,7 +1571,7 @@ export class BasePlayer<
       if (!stack) continue;
       for (let j = 0; j < stack.length; j++) {
         const note = stack[j];
-        if (note.isSegmentGhost) continue;
+        if (note.isTiledGhost) continue;
         // Set the 'ending' flag beforehand to prevent start() from being called after buffer prep completes.
         // Waiting for 'note.ready' could cause a hang during decoding or offline rendering,
         // so we only call soundOff() for nodes that already exist.
@@ -1851,7 +1851,7 @@ export class BasePlayer<
 
   updateChannelDetune(channel: TChannel, scheduleTime: number): void {
     channel.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
+      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
       this.setDetune(channel, note, scheduleTime);
     });
   }
@@ -2009,7 +2009,7 @@ export class BasePlayer<
       note.voice?.getAllParams(controllerState) ?? null;
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
-    if (note.isSegmentGhost) return;
+    if (note.isTiledGhost) return;
 
     const audioBufferId = note.audioBufferId !== undefined
       ? note.audioBufferId
@@ -2127,7 +2127,7 @@ export class BasePlayer<
   }
 
   setNoteRouting(channel: TChannel, note: TNote, startTime: number): void {
-    if (note.isSegmentGhost) return;
+    if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
     if (note.renderedBuffer?.isFull) {
@@ -2199,7 +2199,7 @@ export class BasePlayer<
     note: TNote,
     endTime: number,
   ): Promise<void> | void {
-    if (note.isSegmentGhost) return;
+    if (note.isTiledGhost) return;
     const volDuration = note.voiceParams?.volRelease ?? 0;
     const volRelease = endTime + volDuration;
 
@@ -2296,7 +2296,7 @@ export class BasePlayer<
 
   soundOffNote(note: TNote, scheduleTime: number): Promise<void> {
     note.ending = true;
-    if (!note.voice || note.isSegmentGhost) {
+    if (!note.voice || note.isTiledGhost) {
       this.soundingNotes.delete(note);
       return Promise.resolve();
     }
@@ -2464,7 +2464,7 @@ export class BasePlayer<
     scheduleTime: number,
   ): void {
     channel.processScheduledNotes((note: TNote) => {
-      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
+      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
       const controllerState = this.getControllerState(
         channel,
         note.noteNumber,
@@ -2508,7 +2508,7 @@ export class BasePlayer<
       channel.modulationDepthRange;
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.processScheduledNotes((note: TNote) => {
-      if (note.renderedBuffer?.isFull || note.isSegmentGhost) return;
+      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
       if (note.modLfoToPitch) {
         note.modLfoToPitch?.gain
           .cancelAndHoldAtTime(scheduleTime)
