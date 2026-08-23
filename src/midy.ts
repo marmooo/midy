@@ -50,9 +50,9 @@ export class ControllerState extends GM2ControllerState {
     // Only write the Midy-specific slots. Do NOT array.set() a mostly-zero
     // buffer — that would wipe GM2 defaults (volumeMSB=100/127, expression=1,
     // pan center, pitch wheel center, etc.) and kill/colour the output.
-    for (
-      const { type, defaultValue } of Object.values(extraControllerDefaults)
-    ) {
+    const defs = Object.values(extraControllerDefaults);
+    for (let i = 0; i < defs.length; i++) {
+      const { type, defaultValue } = defs[i];
       this.array[type] = defaultValue;
     }
   }
@@ -622,15 +622,17 @@ export class Midy extends MidyGM2 {
     super(audioContext, options);
     // Merge Midy deltas onto the GM2 handler tables (avoid full redefinition).
     const ccHandlers = this.controlChangeHandlers.slice();
-    for (const [cc, handler] of Object.entries(midyControlChangeHandlers)) {
+    const midyCcEntries = Object.entries(midyControlChangeHandlers);
+    for (let i = 0; i < midyCcEntries.length; i++) {
+      const [cc, handler] = midyCcEntries[i];
       ccHandlers[Number(cc)] = handler as (typeof ccHandlers)[number];
     }
     this.controlChangeHandlers =
       ccHandlers as typeof this.controlChangeHandlers;
     const kbHandlers = this.keyBasedControllerHandlers.slice();
-    for (
-      const [cc, handler] of Object.entries(midyKeyBasedControllerHandlers)
-    ) {
+    const midyKbEntries = Object.entries(midyKeyBasedControllerHandlers);
+    for (let i = 0; i < midyKbEntries.length; i++) {
+      const [cc, handler] = midyKbEntries[i];
       kbHandlers[Number(cc)] = handler as (typeof kbHandlers)[number];
     }
     this.keyBasedControllerHandlers =
@@ -697,7 +699,8 @@ export class Midy extends MidyGM2 {
     const stack = channel.activeNotes[noteNumber];
     let target: Note | undefined;
     if (stack) {
-      for (const n of stack) {
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
         if (!n.ending) {
           target = n as Note;
           break;
@@ -993,15 +996,19 @@ export class Midy extends MidyGM2 {
   }
 
   rebuildMPEFreeChannels(): void {
-    this.lowerFreeChannels = [];
-    for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
-      this.lowerFreeChannels.push(ch);
+    const lowerMembers = this.lowerMPEMembers;
+    const lower = new Array<number>(lowerMembers);
+    for (let i = 0; i < lowerMembers; i++) {
+      lower[i] = i + 1;
     }
-    this.upperFreeChannels = [];
-    const upperStart = 15 - this.upperMPEMembers;
-    for (let ch = upperStart; ch <= 14; ch++) {
-      this.upperFreeChannels.push(ch);
+    this.lowerFreeChannels = lower;
+    const upperMembers = this.upperMPEMembers;
+    const upperStart = 15 - upperMembers;
+    const upper = new Array<number>(upperMembers);
+    for (let i = 0; i < upperMembers; i++) {
+      upper[i] = upperStart + i;
     }
+    this.upperFreeChannels = upper;
   }
 
   allocMPEChannel(zone: 0 | 1): number | null {

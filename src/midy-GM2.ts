@@ -106,8 +106,12 @@ const defaultControllerState = {
 };
 
 const defaultControllerStateArray = new Float32Array(256);
-for (const { type, defaultValue } of Object.values(defaultControllerState)) {
-  defaultControllerStateArray[type] = defaultValue;
+{
+  const defs = Object.values(defaultControllerState);
+  for (let i = 0; i < defs.length; i++) {
+    const { type, defaultValue } = defs[i];
+    defaultControllerStateArray[type] = defaultValue;
+  }
 }
 
 export class ControllerState {
@@ -883,11 +887,12 @@ export class Channel extends BaseChannel<Note> {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
-    const entries = Object.entries(defaultControllerState) as [
-      keyof typeof defaultControllerState,
-      { type: number; defaultValue: number },
-    ][];
-    for (const [key, { type, defaultValue }] of entries) {
+    const keys = Object.keys(
+      defaultControllerState,
+    ) as (keyof typeof defaultControllerState)[];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
       if (128 <= type) {
         this.setControlChange(
           type - 128,
@@ -908,16 +913,14 @@ export class Channel extends BaseChannel<Note> {
   override allNotesOff(scheduleTime?: number): Promise<void[]> {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const promises: (Promise<void> | void)[] = [];
+    const promises: Promise<void>[] = [];
     this.processActiveNotes(t, (note) => {
       // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
       const promise = this.noteOff(note.noteNumber, 0, t, true);
       if (promise !== undefined) promises.push(promise);
     });
     this.sustainNotes = [];
-    return Promise.all(
-      promises.filter((p) => p !== undefined) as Promise<void>[],
-    );
+    return Promise.all(promises);
   }
 
   omniOff(scheduleTime?: number): void {
@@ -1040,9 +1043,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     const inverseTempo = 1 / this.tempo;
     const sustainPedal = new Uint8Array(numChannels);
     const sostenutoPedal = new Uint8Array(numChannels);
-    const sostenutoKeys = new Array(numChannels).fill(null).map(() =>
-      new Set()
-    );
+    const sostenutoKeys = new Array<Set<number>>(numChannels);
+    for (let i = 0; i < numChannels; i++) sostenutoKeys[i] = new Set();
     const activeNotes = new Map<number, NoteOnEntry[]>();
     const pendingOff = new Map<number, PendingOffItem[]>();
     const finalizeEntry = (
@@ -1099,21 +1101,32 @@ export class MidyGM2 extends Player<Note, Channel> {
         }
         case "controller": {
           const ch = event.channel ?? 0;
-          for (const [key, entries] of activeNotes) {
-            if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
+          {
+            const pairs = Array.from(activeNotes);
+            for (let pi = 0; pi < pairs.length; pi++) {
+              const key = pairs[pi][0];
+              if (key % numChannels !== ch) continue;
+              const entries = pairs[pi][1];
+              for (let ei = 0; ei < entries.length; ei++) {
+                entries[ei].events.push(event);
+              }
+            }
           }
           switch (event.controllerType) {
             case 64: { // Sustain Pedal
               const on = event.value! >= 64;
               sustainPedal[ch] = on ? 1 : 0;
               if (!on) {
-                for (const [key, offItems] of pendingOff) {
+                const pairs = Array.from(pendingOff);
+                for (let pi = 0; pi < pairs.length; pi++) {
+                  const key = pairs[pi][0];
                   if (key % numChannels !== ch) continue;
+                  const offItems = pairs[pi][1];
                   const activeStack = activeNotes.get(key);
-                  for (const { t: offTime, ticks: offTicks } of offItems) {
+                  for (let oi = 0; oi < offItems.length; oi++) {
+                    const item = offItems[oi];
                     if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift()!, offTime, offTicks);
+                      finalizeEntry(activeStack.shift()!, item.t, item.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -1125,7 +1138,9 @@ export class MidyGM2 extends Player<Note, Channel> {
             case 66: { // Sostenuto Pedal
               const on = event.value! >= 64;
               if (on && !sostenutoPedal[ch]) {
-                for (const [key] of activeNotes) {
+                const pairs = Array.from(activeNotes);
+                for (let pi = 0; pi < pairs.length; pi++) {
+                  const key = pairs[pi][0];
                   if (key % numChannels === ch) sostenutoKeys[ch].add(key);
                 }
               } else if (!on) {
@@ -1141,12 +1156,19 @@ export class MidyGM2 extends Player<Note, Channel> {
               break;
             case 120: // All Sound Off
             case 123: { // All Notes Off
-              for (const [key, stack] of activeNotes) {
+              const pairs = Array.from(activeNotes);
+              for (let pi = 0; pi < pairs.length; pi++) {
+                const key = pairs[pi][0];
                 if (key % numChannels !== ch) continue;
-                for (const entry of stack) finalizeEntry(entry, t, event.ticks);
+                const stack = pairs[pi][1];
+                for (let ei = 0; ei < stack.length; ei++) {
+                  finalizeEntry(stack[ei], t, event.ticks);
+                }
                 activeNotes.delete(key);
               }
-              for (const key of pendingOff.keys()) {
+              const pendingPairs = Array.from(pendingOff);
+              for (let pi = 0; pi < pendingPairs.length; pi++) {
+                const key = pendingPairs[pi][0];
                 if (key % numChannels === ch) pendingOff.delete(key);
               }
               break;
@@ -1161,14 +1183,22 @@ export class MidyGM2 extends Player<Note, Channel> {
             if (data[3] === 1 || data[3] === 3) {
               sustainPedal.fill(0);
               pendingOff.clear();
-              for (const [, stack] of activeNotes) {
-                for (const entry of stack) finalizeEntry(entry, t, event.ticks);
+              const pairs = Array.from(activeNotes);
+              for (let pi = 0; pi < pairs.length; pi++) {
+                const stack = pairs[pi][1];
+                for (let ei = 0; ei < stack.length; ei++) {
+                  finalizeEntry(stack[ei], t, event.ticks);
+                }
               }
               activeNotes.clear();
             }
           } else {
-            for (const [, entries] of activeNotes) {
-              for (const entry of entries) entry.events.push(event);
+            const pairs = Array.from(activeNotes);
+            for (let pi = 0; pi < pairs.length; pi++) {
+              const entries = pairs[pi][1];
+              for (let ei = 0; ei < entries.length; ei++) {
+                entries[ei].events.push(event);
+              }
             }
           }
           break;
@@ -1177,15 +1207,26 @@ export class MidyGM2 extends Player<Note, Channel> {
         case "programChange":
         case "channelAftertouch": {
           const ch = event.channel;
-          for (const [key, entries] of activeNotes) {
+          const pairs = Array.from(activeNotes);
+          for (let pi = 0; pi < pairs.length; pi++) {
+            const key = pairs[pi][0];
             if (key % numChannels !== ch) continue;
-            for (const entry of entries) entry.events.push(event);
+            const entries = pairs[pi][1];
+            for (let ei = 0; ei < entries.length; ei++) {
+              entries[ei].events.push(event);
+            }
           }
         }
       }
     }
-    for (const [, stack] of activeNotes) {
-      for (const entry of stack) finalizeEntry(entry, totalTime, Infinity);
+    {
+      const pairs = Array.from(activeNotes);
+      for (let pi = 0; pi < pairs.length; pi++) {
+        const stack = pairs[pi][1];
+        for (let ei = 0; ei < stack.length; ei++) {
+          finalizeEntry(stack[ei], totalTime, Infinity);
+        }
+      }
     }
   }
 
@@ -1236,37 +1277,33 @@ export class MidyGM2 extends Player<Note, Channel> {
   override createChannels(activeChannelNumbers?: Set<number>): Channel[] {
     const settings = (this.constructor as typeof MidyGM2).channelSettings;
     const audioContext = this.audioContext;
+    const numChannels = this.numChannels;
+    const channels = new Array<Channel>(numChannels);
     if (audioContext instanceof OfflineAudioContext) {
-      return Array.from(
-        { length: this.numChannels },
-        (_, ch) => {
-          const isActive = !activeChannelNumbers ||
-            activeChannelNumbers.has(ch);
-          const audioNodes = isActive
-            ? this.createChannelAudioNodes(audioContext)
-            : undefined;
-          const channel = this.createChannelInstance(ch, settings, audioNodes);
-          channel.player = this;
-          return channel;
-        },
-      );
+      for (let ch = 0; ch < numChannels; ch++) {
+        const isActive = !activeChannelNumbers ||
+          activeChannelNumbers.has(ch);
+        const audioNodes = isActive
+          ? this.createChannelAudioNodes(audioContext)
+          : undefined;
+        const channel = this.createChannelInstance(ch, settings, audioNodes);
+        channel.player = this;
+        channels[ch] = channel;
+      }
     } else {
       let unusedAudioNodes: ChannelAudioNodes | null = null;
-      return Array.from(
-        { length: this.numChannels },
-        (_, ch) => {
-          const audioNodes =
-            !activeChannelNumbers || activeChannelNumbers.has(ch)
-              ? this.createChannelAudioNodes(audioContext)
-              : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
-                audioContext,
-              ));
-          const channel = this.createChannelInstance(ch, settings, audioNodes);
-          channel.player = this;
-          return channel;
-        },
-      );
+      for (let ch = 0; ch < numChannels; ch++) {
+        const audioNodes = !activeChannelNumbers || activeChannelNumbers.has(ch)
+          ? this.createChannelAudioNodes(audioContext)
+          : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
+            audioContext,
+          ));
+        const channel = this.createChannelInstance(ch, settings, audioNodes);
+        channel.player = this;
+        channels[ch] = channel;
+      }
     }
+    return channels;
   }
 
   override isLoopDrum(channel: Channel, noteNumber: number): boolean {
@@ -1710,11 +1747,15 @@ export class MidyGM2 extends Player<Note, Channel> {
       }
       case "Schroeder": {
         const combFeedbacks = this.generateDistributedArray(feedback, 4);
-        const combDelays = combFeedbacks.map((fb) => this.calcDelay(rt60, fb));
+        const combDelays = new Array<number>(combFeedbacks.length);
+        for (let i = 0; i < combFeedbacks.length; i++) {
+          combDelays[i] = this.calcDelay(rt60, combFeedbacks[i]);
+        }
         const allpassFeedbacks = this.generateDistributedArray(feedback, 4);
-        const allpassDelays = allpassFeedbacks.map((fb) =>
-          this.calcDelay(rt60, fb)
-        );
+        const allpassDelays = new Array<number>(allpassFeedbacks.length);
+        for (let i = 0; i < allpassFeedbacks.length; i++) {
+          allpassDelays[i] = this.calcDelay(rt60, allpassFeedbacks[i]);
+        }
         return createSchroederReverb(
           audioContext,
           combFeedbacks,
@@ -2821,14 +2862,18 @@ export class MidyGM2 extends Player<Note, Channel> {
       let applyVolumeEnvelope = false;
       let applyFilterEnvelope = false;
       let applyPitchEnvelope = false;
-      for (const [key, value] of Object.entries(voiceParams)) {
+      const entries = Object.entries(voiceParams);
+      const handlers = this.voiceParamsHandlers;
+      for (let ei = 0; ei < entries.length; ei++) {
+        const key = entries[ei][0];
+        const value = entries[ei][1];
         const prevValue = note.voiceParams?.[key as keyof VoiceParams];
         if (value === prevValue) continue;
         (note.voiceParams as Record<keyof VoiceParams, unknown>)[
           key as keyof VoiceParams
         ] = value;
-        if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](channel, note, scheduleTime);
+        if (key in handlers) {
+          handlers[key](channel, note, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;

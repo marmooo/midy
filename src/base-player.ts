@@ -382,11 +382,12 @@ export class Channel<TNote extends Note = Note> {
     const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
-    const entries = Object.entries(defaultControllerState) as [
-      keyof typeof defaultControllerState,
-      { type: number; defaultValue: number },
-    ][];
-    for (const [key, { type, defaultValue }] of entries) {
+    const keys = Object.keys(
+      defaultControllerState,
+    ) as (keyof typeof defaultControllerState)[];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const { type, defaultValue } = defaultControllerState[key];
       if (128 <= type) {
         this.setControlChange(
           type - 128,
@@ -405,16 +406,14 @@ export class Channel<TNote extends Note = Note> {
   allNotesOff(scheduleTime?: number): Promise<void[]> {
     const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
-    const promises: (Promise<void> | void)[] = [];
+    const promises: Promise<void>[] = [];
     this.processActiveNotes(t, (note) => {
       // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
       const promise = this.noteOff(note.noteNumber, 0, t, true);
       if (promise !== undefined) promises.push(promise);
     });
     this.sustainNotes = [];
-    return Promise.all(
-      promises.filter((p) => p !== undefined) as Promise<void>[],
-    );
+    return Promise.all(promises);
   }
 }
 
@@ -460,8 +459,12 @@ const defaultControllerState = {
 };
 
 const defaultControllerStateArray = new Float32Array(256);
-for (const { type, defaultValue } of Object.values(defaultControllerState)) {
-  defaultControllerStateArray[type] = defaultValue;
+{
+  const defs = Object.values(defaultControllerState);
+  for (let i = 0; i < defs.length; i++) {
+    const { type, defaultValue } = defs[i];
+    defaultControllerStateArray[type] = defaultValue;
+  }
 }
 
 export class ControllerState {
@@ -725,7 +728,11 @@ export class BasePlayer<
   startTime: number = 0;
   resumeTime: number = 0;
   soundFonts: SoundFont[] = [];
-  soundFontTable: number[][] = Array.from({ length: 128 }, () => []);
+  soundFontTable: number[][] = (() => {
+    const t = new Array<number[]>(128);
+    for (let i = 0; i < 128; i++) t[i] = [];
+    return t;
+  })();
   voiceCounter: Map<number, number> = new Map();
   rawAudioBufferCache: Map<number, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
@@ -979,40 +986,37 @@ export class BasePlayer<
   ): TChannel[] {
     const settings = (this.constructor as typeof BasePlayer).channelSettings;
     const audioContext = this.audioContext;
+    const numChannels = this.numChannels;
+    const channels = new Array<TChannel>(numChannels);
     if (audioContext instanceof OfflineAudioContext) {
-      return Array.from(
-        { length: this.numChannels },
-        (_, ch) => {
-          const isActive = !activeChannelNumbers ||
-            activeChannelNumbers.has(ch);
-          if (offlineRenderOnly && !isActive) {
-            return undefined as unknown as TChannel;
-          }
-          const audioNodes = isActive
-            ? this.createChannelAudioNodes(audioContext)
-            : undefined;
-          const channel = this.createChannelInstance(ch, settings, audioNodes);
-          channel.player = this;
-          return channel;
-        },
-      );
+      for (let ch = 0; ch < numChannels; ch++) {
+        const isActive = !activeChannelNumbers ||
+          activeChannelNumbers.has(ch);
+        if (offlineRenderOnly && !isActive) {
+          channels[ch] = undefined as unknown as TChannel;
+          continue;
+        }
+        const audioNodes = isActive
+          ? this.createChannelAudioNodes(audioContext)
+          : undefined;
+        const channel = this.createChannelInstance(ch, settings, audioNodes);
+        channel.player = this;
+        channels[ch] = channel;
+      }
     } else {
       let unusedAudioNodes: ChannelAudioNodes | null = null;
-      return Array.from(
-        { length: this.numChannels },
-        (_, ch) => {
-          const audioNodes =
-            !activeChannelNumbers || activeChannelNumbers.has(ch)
-              ? this.createChannelAudioNodes(audioContext)
-              : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
-                audioContext,
-              ));
-          const channel = this.createChannelInstance(ch, settings, audioNodes);
-          channel.player = this;
-          return channel;
-        },
-      );
+      for (let ch = 0; ch < numChannels; ch++) {
+        const audioNodes = !activeChannelNumbers || activeChannelNumbers.has(ch)
+          ? this.createChannelAudioNodes(audioContext)
+          : (unusedAudioNodes ??= this.createUnusedChannelAudioNodes(
+            audioContext,
+          ));
+        const channel = this.createChannelInstance(ch, settings, audioNodes);
+        channel.player = this;
+        channels[ch] = channel;
+      }
     }
+    return channels;
   }
 
   decodeOggVorbis(sample: AudioData): Promise<AudioBuffer> {
@@ -1300,8 +1304,8 @@ export class BasePlayer<
         }
       };
 
-      for (const p of promises) {
-        Promise.resolve(p).then(
+      for (let i = 0; i < promises.length; i++) {
+        Promise.resolve(promises[i]).then(
           () => {
             remaining--;
             tryFinish();
@@ -2479,14 +2483,18 @@ export class BasePlayer<
       let applyVolumeEnvelope = false;
       let applyFilterEnvelope = false;
       let applyPitchEnvelope = false;
-      for (const [key, value] of Object.entries(voiceParams)) {
+      const entries = Object.entries(voiceParams);
+      const handlers = this.voiceParamsHandlers;
+      for (let ei = 0; ei < entries.length; ei++) {
+        const key = entries[ei][0];
+        const value = entries[ei][1];
         const prevValue = note.voiceParams?.[key as keyof VoiceParams];
         if (value === prevValue) continue;
         (note.voiceParams as Record<keyof VoiceParams, unknown>)[
           key as keyof VoiceParams
         ] = value;
-        if (key in this.voiceParamsHandlers) {
-          this.voiceParamsHandlers[key](channel, note, scheduleTime);
+        if (key in handlers) {
+          handlers[key](channel, note, scheduleTime);
         } else {
           if (volumeEnvelopeKeySet.has(key)) applyVolumeEnvelope = true;
           if (filterEnvelopeKeySet.has(key)) applyFilterEnvelope = true;
@@ -2677,9 +2685,10 @@ export class BasePlayer<
     // scheduleTask; stopping those sources means the fade was aborted, so
     // the lock is no longer meaningful.
     this.masterVolumeLocked = false;
-    for (const bufferSource of this.pendingSchedulerSources) {
+    const sources = Array.from(this.pendingSchedulerSources);
+    for (let i = 0; i < sources.length; i++) {
       try {
-        bufferSource.stop();
+        sources[i].stop();
       } catch {
         // already stopped/ended
       }
@@ -2705,7 +2714,8 @@ export class BasePlayer<
         console.warn(
           `${label}: timed out waiting for sources to end; forcing stop`,
         );
-        for (const p of pending) {
+        for (let i = 0; i < pending.length; i++) {
+          const p = pending[i];
           if (p.source) {
             try {
               p.source.stop();
@@ -2848,22 +2858,30 @@ export class BasePlayer<
     }
     this.noteAudioBufferIds = noteAudioBufferIds;
     this.preloadEntries = preloadEntries;
-    for (const [audioBufferId, count] of voiceCounter) {
-      if (count === 1) voiceCounter.delete(audioBufferId);
+    {
+      const pairs = Array.from(voiceCounter);
+      for (let i = 0; i < pairs.length; i++) {
+        if (pairs[i][1] === 1) voiceCounter.delete(pairs[i][0]);
+      }
     }
     this.GM1SystemOn(this.audioContext.currentTime);
   }
 
   async preloadSamplesBase(): Promise<void> {
     const entries = this.preloadEntries;
-    const tasks: Promise<AudioBuffer>[] = [];
+    const cache = this.rawAudioBufferCache;
+    const tasks = new Array<Promise<AudioBuffer>>(entries.length);
+    let taskCount = 0;
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      if (this.rawAudioBufferCache.has(entry.audioBufferId)) continue;
-      tasks.push(
-        this.getRawAudioBuffer(entry.audioBufferId, entry.voiceParams),
+      if (cache.has(entry.audioBufferId)) continue;
+      tasks[taskCount++] = this.getRawAudioBuffer(
+        entry.audioBufferId,
+        entry.voiceParams,
       );
     }
+    if (taskCount === 0) return;
+    tasks.length = taskCount;
     await Promise.all(tasks);
   }
 }

@@ -563,7 +563,7 @@ export class Player<
   // after buildNoteOnDurations() without redoing the full classification.
 
   finalizeSegmentClassification(): void {
-    const { noteOnDurations, tiledVoiceParams } = this;
+    const { noteOnDurations, tiledVoiceParams, maxTiledNoteDuration } = this;
     const bakedSet = new Set<number>();
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
@@ -571,7 +571,7 @@ export class Player<
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
       const releaseTail = voiceParams.volRelease * envelopeCurve * 5;
-      if (this.maxTiledNoteDuration < duration + releaseTail) continue;
+      if (maxTiledNoteDuration < duration + releaseTail) continue;
       bakedSet.add(i);
     }
     this.tiledBakedSet = bakedSet;
@@ -590,12 +590,13 @@ export class Player<
     const simple = new Set<number>();
     // Prefer the segment-baked subset when available (segment/chunk); fall
     // back to every noteOn with a known duration (note / audio mode).
+    const noteOnEvents = this.noteOnEvents;
     const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
     if (candidates) {
       const candidateArr = Array.from(candidates);
       for (let ci = 0; ci < candidateArr.length; ci++) {
         const i = candidateArr[ci];
-        const noteEvent = this.noteOnEvents[i];
+        const noteEvent = noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
@@ -603,8 +604,8 @@ export class Player<
         simple.add(i);
       }
     } else {
-      for (let i = 0; i < this.noteOnEvents.length; i++) {
-        const noteEvent = this.noteOnEvents[i];
+      for (let i = 0; i < noteOnEvents.length; i++) {
+        const noteEvent = noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
@@ -637,16 +638,24 @@ export class Player<
 
     const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
-    const channels = Array.from({ length: this.numChannels }, (_, ch) => {
+    const numChannels = this.numChannels;
+    const channels = new Array<TChannel>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
       const channel = this.createChannelInstance(ch, settings);
       channel.player = this;
-      return channel;
-    });
+      channels[ch] = channel;
+    }
     if (channels[9]) channels[9].isDrum = true;
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     const needsSegmentVoice = isTiledCacheMode(cacheMode);
+    const simpleNoteSet = this.simpleNoteSet;
+    const noteOnEvents = this.noteOnEvents;
+    const tiledVoiceParams = this.tiledVoiceParams;
+    const tiledVoices = this.tiledVoices;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+    const simpleNoteCounts = this.simpleNoteCounts;
 
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
@@ -654,15 +663,15 @@ export class Player<
       this.processTimelineEvent(event, offset, {
         channels,
         onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
-          if (!this.simpleNoteSet.has(i)) return;
-          const noteOnEvent = this.noteOnEvents[i];
+          if (!simpleNoteSet.has(i)) return;
+          const noteOnEvent = noteOnEvents[i];
           if (!noteOnEvent || noteOnEvent.duration <= 0) return;
 
           let voiceParams: VoiceParams | null = null;
           let voice: Voice | null | undefined = null;
           if (needsSegmentVoice) {
-            voiceParams = this.tiledVoiceParams[i];
-            voice = this.tiledVoices[i];
+            voiceParams = tiledVoiceParams[i];
+            voice = tiledVoices[i];
           }
           if (!voiceParams) {
             voice = this.resolveVoice(
@@ -684,7 +693,7 @@ export class Player<
 
           const key = this.makeSimpleNoteKey(
             {
-              audioBufferId: this.noteAudioBufferIds[i],
+              audioBufferId: noteAudioBufferIds[i],
               noteNumber: noteEvent.noteNumber!,
               velocity: noteEvent.velocity!,
               noteDuration: noteOnEvent.duration,
@@ -697,10 +706,7 @@ export class Player<
             },
             bakeChannelMix,
           );
-          this.simpleNoteCounts.set(
-            key,
-            (this.simpleNoteCounts.get(key) ?? 0) + 1,
-          );
+          simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
         },
       });
     }
@@ -873,12 +879,15 @@ export class Player<
           break;
         }
         case "sysEx": {
-          const data = event.data;
-          parts.push(
-            `sx:${rel}:${
-              data ? Array.from(data as ArrayLike<number>).join(",") : ""
-            }`,
-          );
+          const data = event.data as ArrayLike<number> | undefined;
+          let dataStr = "";
+          if (data) {
+            const len = data.length;
+            const segs = new Array<string>(len);
+            for (let di = 0; di < len; di++) segs[di] = String(data[di]);
+            dataStr = segs.join(",");
+          }
+          parts.push(`sx:${rel}:${dataStr}`);
           break;
         }
         default:
@@ -925,11 +934,13 @@ export class Player<
 
     const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
-    const channels = Array.from({ length: this.numChannels }, (_, ch) => {
+    const numChannels = this.numChannels;
+    const channels = new Array<TChannel>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
       const channel = this.createChannelInstance(ch, settings);
       channel.player = this;
-      return channel;
-    });
+      channels[ch] = channel;
+    }
     if (channels[9]) channels[9].isDrum = true;
 
     const timeline = this.timeline;
@@ -938,10 +949,15 @@ export class Player<
     // Complex candidates: baked notes that are not simple, or all non-simple
     // noteOns when no segment set exists (note / audio mode).
     const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
+    const simpleNoteSet = this.simpleNoteSet;
+    const noteOnEvents = this.noteOnEvents;
+    const tiledVoiceParams = this.tiledVoiceParams;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+    const complexNoteCounts = this.complexNoteCounts;
 
     const considerIndex = (i: number): boolean => {
-      if (this.simpleNoteSet.has(i)) return false;
-      const noteOnEvent = this.noteOnEvents[i];
+      if (simpleNoteSet.has(i)) return false;
+      const noteOnEvent = noteOnEvents[i];
       if (!noteOnEvent || noteOnEvent.duration <= 0) return false;
       if (noteOnEvent.durationTicks === Infinity) return false;
       // Must have automation — otherwise it would be simple.
@@ -957,11 +973,11 @@ export class Player<
         onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
           if (candidates && !candidates.has(i)) return;
           if (!considerIndex(i)) return;
-          const noteOnEvent = this.noteOnEvents[i]!;
+          const noteOnEvent = noteOnEvents[i]!;
 
           let voiceParams: VoiceParams | null = null;
           if (needsSegmentVoice) {
-            voiceParams = this.tiledVoiceParams[i];
+            voiceParams = tiledVoiceParams[i];
           }
           if (!voiceParams) {
             const voice = this.resolveVoice(
@@ -983,7 +999,7 @@ export class Player<
 
           const key = this.makeComplexNoteKey(
             {
-              audioBufferId: this.noteAudioBufferIds[i],
+              audioBufferId: noteAudioBufferIds[i],
               noteNumber: noteEvent.noteNumber!,
               velocity: noteEvent.velocity!,
               noteDuration: noteOnEvent.duration,
@@ -996,10 +1012,7 @@ export class Player<
             },
             bakeChannelMix,
           );
-          this.complexNoteCounts.set(
-            key,
-            (this.complexNoteCounts.get(key) ?? 0) + 1,
-          );
+          complexNoteCounts.set(key, (complexNoteCounts.get(key) ?? 0) + 1);
         },
       });
     }
@@ -1374,10 +1387,12 @@ export class Player<
   }
 
   initSegmentPipeline(): void {
-    this.segmentChannelStates = Array.from(
-      { length: this.numChannels },
-      () => ({ openSegment: null, pending: [] }),
-    );
+    const numChannels = this.numChannels;
+    const states = new Array<SegmentChannelState>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
+      states[ch] = { openSegment: null, pending: [] };
+    }
+    this.segmentChannelStates = states;
   }
 
   // No-op unless cacheMode is segment/chunk.
@@ -2043,11 +2058,13 @@ export class Player<
     // audible under heavy per-note graphs. Windowed renders keep the node
     // count bounded; windows are mixed into one final AudioBuffer.
     const settings = (this.constructor as typeof Player).channelSettings;
-    const renderChannels = Array.from({ length: this.numChannels }, (_, ch) => {
+    const numChannels = this.numChannels;
+    const renderChannels = new Array<TChannel>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
       const channel = this.createChannelInstance(ch, settings);
       channel.player = this;
-      return channel;
-    });
+      renderChannels[ch] = channel;
+    }
     renderChannels[9].isDrum = true;
 
     const timeline = this.timeline;
