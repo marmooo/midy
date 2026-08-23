@@ -225,7 +225,7 @@ deno task build
 ## Test
 
 ```
-deno test
+deno test tests
 deno test tests/GMLite-mock
 deno test tests/GM1-mock
 deno test tests/GM2-mock
