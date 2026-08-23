@@ -2276,7 +2276,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-    } else { // "ads" / "asdr" mode
+    } else { // "ads" / "adsr" mode
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       this.setDetune(channel, note, now);

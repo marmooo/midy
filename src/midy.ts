@@ -743,25 +743,8 @@ export class Midy extends MidyGM2 {
     value: number,
     scheduleTime?: number,
   ): void {
-    const channel = this.channels[channelNumber];
-    if (!channel) return;
     const t = scheduleTime ?? this.audioContext.currentTime;
-    if (channel.isMPEManager && this.mpeEnabled) {
-      // Apply to manager + all members in the same zone
-      channel.setPitchBend(value, t);
-      const isLower = channelNumber === 0;
-      if (isLower) {
-        for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
-          this.channels[ch]?.setPitchBend(value, t);
-        }
-      } else if (channelNumber === 15) {
-        for (let ch = 15 - this.upperMPEMembers; ch < 15; ch++) {
-          this.channels[ch]?.setPitchBend(value, t);
-        }
-      }
-    } else {
-      channel.setPitchBend(value, t);
-    }
+    this.forMPEZone(channelNumber, (ch) => ch.setPitchBend(value, t));
   }
 
   // Player-level control change; propagates from MPE manager to zone members.
@@ -771,38 +754,19 @@ export class Midy extends MidyGM2 {
     value: number,
     scheduleTime?: number,
   ): void {
-    const channel = this.channels[channelNumber];
-    if (!channel) return;
     const t = scheduleTime ?? this.audioContext.currentTime;
-    if (channel.isMPEManager && this.mpeEnabled) {
-      this.applyToMPEChannels(channelNumber, (ch) => {
-        this.channels[ch]?.setControlChange(controllerType, value, t);
-      });
-      channel.setControlChange(controllerType, value, t);
-    } else {
-      channel.setControlChange(controllerType, value, t);
-    }
+    this.forMPEZone(
+      channelNumber,
+      (ch) => ch.setControlChange(controllerType, value, t),
+    );
   }
 
   /** Player-level program change; propagates from MPE manager. */
   setProgramChange(channelNumber: number, programNumber: number): void {
-    const channel = this.channels[channelNumber];
-    if (!channel) return;
-    if (channel.isMPEManager && this.mpeEnabled) {
-      channel.setProgramChange(programNumber);
-      const isLower = channelNumber === 0;
-      if (isLower) {
-        for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
-          this.channels[ch]?.setProgramChange(programNumber);
-        }
-      } else if (channelNumber === 15) {
-        for (let ch = 15 - this.upperMPEMembers; ch < 15; ch++) {
-          this.channels[ch]?.setProgramChange(programNumber);
-        }
-      }
-    } else {
-      channel.setProgramChange(programNumber);
-    }
+    this.forMPEZone(
+      channelNumber,
+      (ch) => ch.setProgramChange(programNumber),
+    );
   }
 
   // Player-level channel pressure; propagates from MPE manager.
@@ -811,24 +775,8 @@ export class Midy extends MidyGM2 {
     value: number,
     scheduleTime?: number,
   ): void {
-    const channel = this.channels[channelNumber];
-    if (!channel) return;
     const t = scheduleTime ?? this.audioContext.currentTime;
-    if (channel.isMPEManager && this.mpeEnabled) {
-      channel.setChannelPressure(value, t);
-      const isLower = channelNumber === 0;
-      if (isLower) {
-        for (let ch = 1; ch <= this.lowerMPEMembers; ch++) {
-          this.channels[ch]?.setChannelPressure(value, t);
-        }
-      } else if (channelNumber === 15) {
-        for (let ch = 15 - this.upperMPEMembers; ch < 15; ch++) {
-          this.channels[ch]?.setChannelPressure(value, t);
-        }
-      }
-    } else {
-      channel.setChannelPressure(value, t);
-    }
+    this.forMPEZone(channelNumber, (ch) => ch.setChannelPressure(value, t));
   }
 
   createDelayEffect(): DelayEffect {
@@ -997,6 +945,23 @@ export class Midy extends MidyGM2 {
       for (let ch = start; ch <= end; ch++) fn(ch);
     } else {
       fn(channelNumber);
+    }
+  }
+
+  /**
+   * Run `fn` on the target channel; if it is an MPE zone manager, also on
+   * every member in the zone (manager last so zone-wide state settles after
+   * members when order matters).
+   */
+  forMPEZone(channelNumber: number, fn: (channel: Channel) => void): void {
+    const channel = this.channels[channelNumber] as Channel | undefined;
+    if (!channel) return;
+    fn(channel);
+    if (channel.isMPEManager && this.mpeEnabled) {
+      this.applyToMPEChannels(channelNumber, (ch) => {
+        const member = this.channels[ch] as Channel | undefined;
+        if (member) fn(member);
+      });
     }
   }
 

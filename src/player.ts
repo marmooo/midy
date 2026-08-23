@@ -1,6 +1,7 @@
 /**
- * Full-featured MIDI player with all CacheMode strategies
- * (none / ads / adsr / note / segment / chunk / audio).
+ * Full-featured MIDI player with cache-mode playback strategies.
+ * Mode types and pure helpers live in {@link ./cache-strategy.ts};
+ * this module owns scheduling, offline bake, and Web Audio graph logic.
  * Inherits real-time core from {@link BasePlayer}.
  */
 import { parseMidi } from "midi-file";
@@ -19,235 +20,56 @@ import {
   type TimelineEvent,
 } from "./base-player.ts";
 
-// Cache mode
-// - "none"    for full real-time control (dynamic CC, LFO, pitch)
-// - "ads"     for real-time playback with higher cache hit rate
-// - "adsr"    for real-time playback with accurate release envelope
-// - "note"    for efficient playback when note behavior is fixed
-// - "segment" for heavy polyphony with low CPU and live channel mixing
-// - "chunk"   for heavy polyphony, merging all channels into one offline render
-// - "audio"   for fully pre-rendered playback (lowest CPU)
-//
-// "none"
-//   No caching. Envelope processing is done in real time on every note.
-//   Uses Web Audio API nodes directly, so LFO and pitch envelope are
-//   fully supported. Higher CPU usage.
-// "ads"
-//   Pre-renders the ADS (Attack-Decay-Sustain) phase into an
-//   OfflineAudioContext and caches the result. The sustain tail is
-//   aligned to the loop boundary as a fixed buffer. Release is
-//   handled by fading volumeNode gain to 0 at note-off.
-//   LFO effects (modLfoToPitch, modLfoToFilterFc, modLfoToVolume,
-//   vibLfoToPitch) are applied in real time after playback starts.
-// "adsr"
-//   Pre-renders the full ADSR envelope (Attack-Decay-Sustain-Release)
-//   into an OfflineAudioContext. The cache key includes the note
-//   duration in ticks (tempo-independent) and the volRelease parameter,
-//   so notes with the same duration and release shape share a buffer.
-//   LFO effects are applied in real time after playback starts,
-//   same as "ads" mode. Cache keys include note duration and
-//   volRelease so identical-length notes share a buffer; LFO
-//   variations do not produce separate cache entries.
-// "note"
-//   Renders the full noteOn-to-noteOff duration per note in an
-//   OfflineAudioContext. All events during the note (volume,
-//   expression, pitch bend, LFO, CC#1) are baked into the buffer,
-//   so no real-time processing is needed during playback. Greatly
-//   reduces CPU load for songs with many simultaneous notes.
-//   Caching is unified with the shared simpleNote path: notes with no
-//   automation during their interval are keyed and reused via
-//   simpleNoteBufferCache (same as segment/chunk/audio). Notes with
-//   in-note automation are still fully baked, but are not cached
-//   (per-timeline-index fullVoiceCache was too low-hit to be useful).
-//   MIDI file playback only — does not respond to real-time CC changes.
-// "segment"
-//   Groups simultaneously-sounding notes per channel into short
-//   (segmentDuration-second) buffers instead of one AudioBufferSourceNode
-//   per note. All notes belonging to one segment are baked together in a
-//   single OfflineAudioContext / startRendering() call (each note still
-//   gets its own full envelope/pitch-bend/LFO/CC#1 bake, same as "note"
-//   mode), so segment creation pays the offline-render setup cost once
-//   per segment rather than once per note. Channel volume/pan/expression
-//   are deliberately left out of the bake so they keep responding in real
-//   time through channel.gainL/gainR, like "ads"/"adsr" mode does. This
-//   bounds the number of simultaneously active AudioBufferSourceNodes to
-//   roughly one per channel (occasionally a couple more while a long
-//   release tail overlaps the next segment), regardless of how dense the
-//   polyphony gets. Notes whose ring time exceeds maxSegmentNoteDuration,
-//   or that have a non-zero exclusiveClass (e.g. hi-hat choke groups), are
-//   excluded from tiling and fall back to normal per-note real-time
-//   ("ads"-style) scheduling so they can still be cut off early.
-//   MIDI file playback only, same as "note"/"adsr" mode. Automatically
-//   uses lookAhead + maxSegmentNoteDuration as its effective lookahead
-//   (see lookAhead doc comment) instead of plain lookAhead, since a
-//   segment's worst-case render cost scales with how long a single note
-//   in it can ring, not just lookAhead's note-discovery window. Watch the
-//   console for "missed its scheduled start" warnings; raise
-//   maxSegmentNoteDuration's tier (or lookAhead) if they appear, at the
-//   cost of added playback latency.
-// "chunk"
-//   Like "segment" mode, but merges ALL channels into a single
-//   OfflineAudioContext / startRendering() call per time window instead of
-//   one call per channel per window. Each note still gets its own full
-//   envelope/pitch-bend/LFO/CC#1 bake (same fidelity as "segment" mode).
-//   Channel volume/pan/expression ARE baked into the combined buffer
-//   (unlike "segment" mode), so the result is a stereo mix ready to
-//   connect straight to masterVolume — there is no per-channel gainL/gainR
-//   live mixing. This halves the number of startRendering() calls (from
-//   one per active channel per window to one per window), reducing
-//   OfflineAudioContext setup overhead further. The trade-off is that
-//   channel volume/pan/expression changes are not reflected after the
-//   chunk is baked; they are snapshotted at chunk-open time.
-//   Same MIDI-file-only restriction as "segment" mode.
-// "audio"
-//   Renders the entire MIDI file into a single AudioBuffer offline.
-//   Call render() to complete rendering before calling start().
-//   Playback simply streams an AudioBufferSourceNode, so CPU usage
-//   is near zero. Seek and tempo changes are handled in real time.
-//   A "rendering" event is dispatched when rendering starts, and a
-//   "rendered" event is dispatched when rendering completes.
-export const DEFAULT_CACHE_MODE = "segment";
-export type CacheMode =
-  | "none"
-  | "ads"
-  | "adsr"
-  | "note"
-  | "segment"
-  | "chunk"
-  | "audio";
+import {
+  bakeChannelMixForMode,
+  type BakeNoteEntry,
+  type CacheEntry,
+  type CacheMode,
+  type ChunkNoteEntry,
+  type ChunkState,
+  DEFAULT_CACHE_MODE,
+  isChunkCacheMode,
+  isSegmentCacheMode,
+  isTiledCacheMode,
+  needsNoteOnDurations,
+  type NoteOnEntry,
+  type NoteOnEventEntry,
+  type OpenChunk,
+  type OpenSegment,
+  type PendingChunk,
+  type PendingOffItem,
+  type PendingSegment,
+  type SegmentChannelState,
+  type SegmentNoteEntry,
+  usesSimpleComplexNoteCache,
+} from "./cache-strategy.ts";
 
-export interface CacheEntry {
-  audioBuffer: RenderedBuffer;
-  maxCount: number;
-  counter: number;
-}
-export interface NoteOnEventEntry {
-  duration: number;
-  durationTicks: number;
-  startTime: number;
-  /** Note-on absolute ticks (for relative automation keying). */
-  startTicks: number;
-  events: TimelineEvent[];
-}
-export interface NoteOnEntry {
-  idx: number;
-  startTime: number;
-  startTicks: number;
-  events: TimelineEvent[];
-}
-export interface PendingOffItem {
-  t: number;
-  ticks: number;
-}
-// "segment" mode
-export interface SegmentNoteEntry {
-  offset: number;
-  noteNumber: number;
-  velocity: number;
-  voiceParams: VoiceParams;
-  noteDuration: number;
-  noteEvent: NoteOnEventEntry | undefined;
-  audioBufferId?: number;
-  voice?: Voice;
-  // Snapshot of channel.detune / channel.state at this note's onset (append
-  // time). Required for simple-note bakes: a pitch bend mid-segment must
-  // not leave later simple notes using the segment-open detune.
-  channelDetune: number;
-  channelStateArray: Float32Array;
-  programNumber: number;
-  // Timeline index for simple-note classification / cache lookup.
-  timelineIndex?: number;
-}
-export interface OpenSegment {
-  segmentStart: number;
-  notes: SegmentNoteEntry[];
-  // Snapshot of channel.detune / channel.state.array taken at segment-open
-  // time (the first note's onset), not segment-close time. scheduleTimelineEvents
-  // applies every CC/pitchBend event to the realtime channel as the timeline
-  // is walked, regardless of segment mode, so by the time closeSegment()
-  // runs, the realtime channel.detune already reflects every event that
-  // happened inside this segment. renderSegmentBuffer seeds the offline
-  // channel from this snapshot and replays timeline events in chronological
-  // order (same approach as renderChunkBuffer) so pitch bend is applied
-  // once, not double-counted via setPitchBend's cumulative update.
-  channelDetune: number;
-  channelStateArray: Float32Array;
-  programNumber: number;
-}
-export interface PendingSegment {
-  segmentStart: number;
-  buffer: AudioBuffer | null;
-  bufferReady: boolean;
-  bufferPromise: Promise<AudioBuffer | null>;
-  source: AudioBufferSourceNode | null;
-  done: boolean;
-  // Tags which segmentGeneration this render belongs to. Compared against
-  // the player's current segmentGeneration when the render resolves: if
-  // they no longer match, a seek/stop/loop happened while this segment was
-  // still rendering, so the result is stale and gets discarded instead of
-  // being scheduled. See closeSegment()/stopSegmentSources() doc comments.
-  generation: number;
-}
-export interface SegmentChannelState {
-  openSegment: OpenSegment | null;
-  pending: PendingSegment[];
-}
-// "chunk" mode
-// ChunkNoteEntry mirrors SegmentNoteEntry, with a channelNumber added so
-// the renderer knows which channel each note belongs to.
-export interface ChunkNoteEntry {
-  channelNumber: number;
-  offset: number;
-  noteNumber: number;
-  velocity: number;
-  voiceParams: VoiceParams;
-  noteDuration: number;
-  noteEvent: NoteOnEventEntry | undefined;
-  audioBufferId?: number;
-  voice?: Voice;
-  // Snapshot of per-channel state at the time this note was appended.
-  // Channel volume/pan/expression are baked into the chunk buffer so
-  // they must be captured here (before later events on the same channel
-  // change them).
-  channelDetune: number;
-  channelStateArray: Float32Array;
-  programNumber: number;
-  isDrum: boolean;
-  // Timeline index (for simple-note classification / cache lookup).
-  timelineIndex?: number;
-}
-/** Shared input for single-note offline bakes (simple + complex). */
-export interface BakeNoteEntry {
-  channelNumber: number;
-  noteNumber: number;
-  velocity: number;
-  voiceParams: VoiceParams;
-  noteDuration: number;
-  noteEvent?: NoteOnEventEntry;
-  channelDetune: number;
-  channelStateArray: Float32Array;
-  programNumber: number;
-  isDrum: boolean;
-  audioBufferId?: number;
-  voice?: Voice;
-}
-export interface OpenChunk {
-  chunkStart: number;
-  notes: ChunkNoteEntry[];
-}
-export interface PendingChunk {
-  chunkStart: number;
-  buffer: AudioBuffer | null;
-  bufferReady: boolean;
-  bufferPromise: Promise<AudioBuffer | null>;
-  source: AudioBufferSourceNode | null;
-  done: boolean;
-  generation: number;
-}
-export interface ChunkState {
-  openChunk: OpenChunk | null;
-  pending: PendingChunk[];
-}
+// Re-export cache strategy API (backward compatible with previous player.ts exports).
+export {
+  bakeChannelMixForMode,
+  type BakeNoteEntry,
+  type CacheEntry,
+  type CacheMode,
+  type ChunkNoteEntry,
+  type ChunkState,
+  DEFAULT_CACHE_MODE,
+  isChunkCacheMode,
+  isMidiFileOnlyCacheMode,
+  isRealtimeCacheMode,
+  isSegmentCacheMode,
+  isTiledCacheMode,
+  needsNoteOnDurations,
+  type NoteOnEntry,
+  type NoteOnEventEntry,
+  type OpenChunk,
+  type OpenSegment,
+  type PendingChunk,
+  type PendingOffItem,
+  type PendingSegment,
+  type SegmentChannelState,
+  type SegmentNoteEntry,
+  usesSimpleComplexNoteCache,
+} from "./cache-strategy.ts";
 
 export class Player<
   TNote extends Note = Note,
@@ -582,9 +404,9 @@ export class Player<
       channel.programNumber = 0;
     }
     if (channels[9]) channels[9].isDrum = true;
-    const isSegmentMode = cacheMode === "segment";
-    const isChunkMode = cacheMode === "chunk";
-    const needsSegmentData = isSegmentMode || isChunkMode;
+    const isSegmentMode = isSegmentCacheMode(cacheMode);
+    const isChunkMode = isChunkCacheMode(cacheMode);
+    const needsSegmentData = isTiledCacheMode(cacheMode);
     const segmentVoiceParams: (VoiceParams | null)[] = needsSegmentData
       ? new Array(timeline.length).fill(null)
       : [];
@@ -675,10 +497,7 @@ export class Player<
       }
     }
     this.applySystemDefaultsAfterCache(this.audioContext.currentTime);
-    if (
-      cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
-      cacheMode === "segment" || cacheMode === "chunk"
-    ) {
+    if (needsNoteOnDurations(cacheMode)) {
       this.buildNoteOnDurations();
     }
     if (needsSegmentData) {
@@ -689,7 +508,7 @@ export class Player<
       this.finalizeSimpleNoteClassification();
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
-    } else if (cacheMode === "audio" || cacheMode === "note") {
+    } else if (usesSimpleComplexNoteCache(cacheMode)) {
       // audio mode uses renderChunkBuffer's simple-note path;
       // note mode reuses simpleNoteBufferCache for identical onsets.
       this.finalizeSimpleNoteClassification();
@@ -744,8 +563,8 @@ export class Player<
   ): number {
     const timeOffset = this.resumeTime - this.startTime;
     const cacheMode = this.cacheMode;
-    const isSegmentMode = cacheMode === "segment";
-    const isChunkMode = cacheMode === "chunk";
+    const isSegmentMode = isSegmentCacheMode(cacheMode);
+    const isChunkMode = isChunkCacheMode(cacheMode);
     // Segment/chunk mode needs notes discovered far enough ahead that
     // closeSegment/closeChunk + render have time to finish before each
     // segment/chunk's scheduled start time. The worst case render length scales
@@ -753,7 +572,7 @@ export class Player<
     // (maxSegmentNoteDuration), on top of the segment's own discovery
     // window (lookAhead), so segment/chunk mode adds the two rather than reusing
     // the plain lookAhead other cache modes use for note-on scheduling.
-    const effectiveLookAhead = (isSegmentMode || isChunkMode)
+    const effectiveLookAhead = isTiledCacheMode(cacheMode)
       ? this.lookAhead + this.maxSegmentNoteDuration
       : this.lookAhead;
     const lookAheadCheckTime = scheduleTime + timeOffset + effectiveLookAhead;
@@ -928,8 +747,7 @@ export class Player<
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    if (this.cacheMode === "segment") this.initSegmentPipeline();
-    if (this.cacheMode === "chunk") this.initChunkPipeline();
+    this.initTiledPipeline();
     let exitReason: string | undefined;
     this.notePromises = [];
     while (true) {
@@ -952,19 +770,11 @@ export class Player<
             this.startTime = audioContext.currentTime;
             this.resumeTime = 0;
             queueIndex = 0;
-            if (this.cacheMode === "segment") {
-              this.segmentGeneration++;
-              this.initSegmentPipeline();
-            }
-            if (this.cacheMode === "chunk") {
-              this.chunkGeneration++;
-              this.initChunkPipeline();
-            }
+            this.resetTiledPipeline();
             this.dispatchEvent(new Event("looped"));
             continue;
           } else {
-            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            await this.drainTiledPipeline();
             await this.stopNotes(now);
             await this.suspendAudioContext();
             exitReason = "ended";
@@ -975,8 +785,7 @@ export class Player<
       }
       if (this.isPausing) {
         this.cancelScheduledTasks();
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
+        this.stopTiledSources();
         await this.stopNotes(now);
         // await this.suspendAudioContext();
         this.isPausing = false;
@@ -984,8 +793,7 @@ export class Player<
         break;
       } else if (this.isStopping) {
         this.cancelScheduledTasks();
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
+        this.stopTiledSources();
         await this.stopNotes(now);
         await this.suspendAudioContext();
         this.isStopping = false;
@@ -994,28 +802,20 @@ export class Player<
       } else if (this.isSeeking) {
         this.cancelScheduledTasks();
         await this.stopNotes(now);
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
+        this.stopTiledSources();
         this.startTime = audioContext.currentTime;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        if (this.cacheMode === "segment") this.initSegmentPipeline();
-        if (this.cacheMode === "chunk") this.initChunkPipeline();
+        this.initTiledPipeline();
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
       }
       queueIndex = this.scheduleTimelineEvents(now, queueIndex);
-      if (this.cacheMode === "segment") {
+      if (isTiledCacheMode(this.cacheMode)) {
         const timeOffset = this.resumeTime - this.startTime;
-        this.updateSegmentPipeline(
-          now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
-        );
-      }
-      if (this.cacheMode === "chunk") {
-        const timeOffset = this.resumeTime - this.startTime;
-        this.updateChunkPipeline(
+        this.updateTiledPipeline(
           now + timeOffset + this.lookAhead + this.maxSegmentNoteDuration,
         );
       }
@@ -1061,8 +861,7 @@ export class Player<
     if (this.isPaused) {
       const now = this.audioContext.currentTime;
       await this.stopNotes(now);
-      if (this.cacheMode === "segment") this.stopSegmentSources();
-      if (this.cacheMode === "chunk") this.stopChunkSources();
+      this.stopTiledSources();
       if (this.audioModeBufferSource) {
         try {
           this.audioModeBufferSource.stop();
@@ -1085,18 +884,16 @@ export class Player<
     this.totalTime = this.calcTotalTime();
     this.seekTo(this.currentTime() * timeScale);
     if (
-      cacheMode === "adsr" || cacheMode === "note" || cacheMode === "audio" ||
-      cacheMode === "segment" || cacheMode === "chunk"
+      needsNoteOnDurations(cacheMode)
     ) {
       this.buildNoteOnDurations();
       this.adsrVoiceCache.clear();
     }
-    if (cacheMode === "segment" || cacheMode === "chunk") {
+    if (isTiledCacheMode(cacheMode)) {
       this.finalizeSegmentClassification();
     }
     if (
-      cacheMode === "note" || cacheMode === "segment" ||
-      cacheMode === "chunk" || cacheMode === "audio"
+      usesSimpleComplexNoteCache(cacheMode)
     ) {
       this.finalizeSimpleNoteClassification();
       this.simpleNoteBufferCache.clear();
@@ -1129,6 +926,44 @@ export class Player<
       { length: this.numChannels },
       () => ({ openSegment: null, pending: [] }),
     );
+  }
+
+  /** No-op unless cacheMode is segment/chunk. */
+  initTiledPipeline(): void {
+    if (this.cacheMode === "segment") this.initSegmentPipeline();
+    else if (this.cacheMode === "chunk") this.initChunkPipeline();
+  }
+
+  /** Stop sources + invalidate in-flight offline renders (segment/chunk). */
+  stopTiledSources(): void {
+    if (this.cacheMode === "segment") this.stopSegmentSources();
+    else if (this.cacheMode === "chunk") this.stopChunkSources();
+  }
+
+  /** Close open tiles, await pending bakes, start any ready sources. */
+  async drainTiledPipeline(): Promise<void> {
+    if (this.cacheMode === "segment") await this.drainSegmentPipeline();
+    else if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+  }
+
+  /** Loop boundary: bump generation and open a fresh empty pipeline. */
+  resetTiledPipeline(): void {
+    if (this.cacheMode === "segment") {
+      this.segmentGeneration++;
+      this.initSegmentPipeline();
+    } else if (this.cacheMode === "chunk") {
+      this.chunkGeneration++;
+      this.initChunkPipeline();
+    }
+  }
+
+  /** Advance open tiles / start ready sources for the current tiled mode. */
+  updateTiledPipeline(lookAheadCheckTime: number): void {
+    if (this.cacheMode === "segment") {
+      this.updateSegmentPipeline(lookAheadCheckTime);
+    } else if (this.cacheMode === "chunk") {
+      this.updateChunkPipeline(lookAheadCheckTime);
+    }
   }
 
   async drainSegmentPipeline(): Promise<void> {
@@ -2286,7 +2121,7 @@ export class Player<
     }
     if (this.simpleNoteSet.size === 0) return;
 
-    const bakeChannelMix = cacheMode !== "segment";
+    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
     const channels = Array.from({ length: this.numChannels }, (_, ch) => {
       const channel = this.createChannelInstance(ch, settings);
@@ -2297,7 +2132,7 @@ export class Player<
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    const needsSegmentVoice = cacheMode === "segment" || cacheMode === "chunk";
+    const needsSegmentVoice = isTiledCacheMode(cacheMode);
 
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
@@ -2580,7 +2415,7 @@ export class Player<
       return;
     }
 
-    const bakeChannelMix = cacheMode !== "segment";
+    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
     const channels = Array.from({ length: this.numChannels }, (_, ch) => {
       const channel = this.createChannelInstance(ch, settings);
@@ -2591,7 +2426,7 @@ export class Player<
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    const needsSegmentVoice = cacheMode === "segment" || cacheMode === "chunk";
+    const needsSegmentVoice = isTiledCacheMode(cacheMode);
     // Complex candidates: baked notes that are not simple, or all non-simple
     // noteOns when no segment set exists (note / audio mode).
     const candidates = this.segmentBakedSet.size > 0
