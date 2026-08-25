@@ -1104,13 +1104,63 @@ export class Player<
   }
 
   override clearPlaybackCaches(): void {
+    // Drop tiled sources + pending buffers first so large AudioBuffers are
+    // detached from live AudioBufferSourceNodes before Map.clear().
+    this.releaseTiledPlaybackResources();
+    if (this.audioModeBufferSource) {
+      this.neuterBufferSource(this.audioModeBufferSource);
+      this.audioModeBufferSource = null;
+    }
+    this.renderedAudioBuffer = null;
+
+    this.rawAudioBufferCache.clear();
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
-    this.simpleNoteBufferCache.clear();
-    this.simpleNoteCounts.clear();
-    this.complexNoteBufferCache.clear();
-    this.complexNoteCounts.clear();
+    // Replace maps rather than only clear(): in-flight Promise callbacks that
+    // still hold the old Map entry lose their only strong path into the shared
+    // cache object once we drop this reference.
+    this.simpleNoteBufferCache = new Map();
+    this.simpleNoteCounts = new Map();
+    this.complexNoteBufferCache = new Map();
+    this.complexNoteCounts = new Map();
+  }
+
+  // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
+  // in-flight OfflineAudioContext results are discarded on completion.
+  // Does not change bake logic — only releases references for GC / iOS.
+  protected releaseTiledPlaybackResources(): void {
+    this.segmentGeneration++;
+    this.chunkGeneration++;
+
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        p.bufferReady = true;
+        p.done = true;
+      }
+      state.pending = [];
+      state.openSegment = null;
+    }
+
+    const chunkPending = this.chunkState.pending;
+    for (let i = 0; i < chunkPending.length; i++) {
+      const p = chunkPending[i];
+      this.neuterBufferSource(p.source);
+      p.source = null;
+      p.buffer = null;
+      p.bufferReady = true;
+      p.done = true;
+    }
+    this.chunkState.pending = [];
+    this.chunkState.openChunk = null;
   }
 
   async playAudioBuffer(): Promise<void> {
@@ -1141,7 +1191,7 @@ export class Player<
         const now = audioContext.currentTime;
         await this.scheduleTask(() => {}, now + this.noteCheckInterval);
         if (naturalEnded || this.currentTime() >= this.totalTime) {
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           if (this.loop) {
             this.resumeTime = 0;
@@ -1156,8 +1206,7 @@ export class Player<
         if (this.isPausing) {
           this.cancelScheduledTasks();
           this.resumeTime = this.currentTime();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           // await this.suspendAudioContext();
           this.isPausing = false;
@@ -1165,8 +1214,7 @@ export class Player<
           break outer;
         } else if (this.isStopping) {
           this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           await this.suspendAudioContext();
           this.isStopping = false;
@@ -1174,8 +1222,7 @@ export class Player<
           break outer;
         } else if (this.isSeeking) {
           this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           this.startTime = audioContext.currentTime;
           this.isSeeking = false;
@@ -1328,10 +1375,7 @@ export class Player<
       await this.stopNotes(now);
       this.stopTiledSources();
       if (this.audioModeBufferSource) {
-        try {
-          this.audioModeBufferSource.stop();
-        } catch { /* already stopped */ }
-        this.audioModeBufferSource.disconnect();
+        this.neuterBufferSource(this.audioModeBufferSource);
         this.audioModeBufferSource = null;
       }
       this.resetAllStates();
@@ -1499,6 +1543,7 @@ export class Player<
     // finally finish, and — since startRendering() is serialized by the
     // browser — can delay the fresh segments that should render next,
     // pushing them past lookAhead too.
+    // Also neuter sources + drop buffer refs so iOS can reclaim PCM.
     this.segmentGeneration++;
     const states = this.segmentChannelStates;
     for (let ch = 0; ch < states.length; ch++) {
@@ -1507,15 +1552,11 @@ export class Player<
       const pending = state.pending;
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
-        if (p.source) {
-          try {
-            p.source.stop();
-          } catch {
-            // already stopped/ended
-          }
-          // disconnect is handled by the source's onended handler
-          p.source = null;
-        }
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        p.bufferReady = true;
+        p.done = true;
       }
       state.pending = [];
       state.openSegment = null;
@@ -1596,6 +1637,7 @@ export class Player<
           // array on seek), so it can't be picked up from there either.
           const idx = state.pending.indexOf(pending);
           if (idx !== -1) state.pending.splice(idx, 1);
+          pending.buffer = null;
           pending.done = true;
           return null;
         }
@@ -1605,6 +1647,7 @@ export class Player<
       })
       .catch((err) => {
         console.warn("segment render failed", err);
+        pending.buffer = null;
         pending.bufferReady = true;
         return null;
       });
@@ -1631,7 +1674,11 @@ export class Player<
     source.connect(channel.gainR);
     source.onended = () => {
       pending.done = true;
-      source.disconnect();
+      this.neuterBufferSource(source);
+      // Drop the tile buffer once the source has finished so repeated
+      // loadMIDI/play cycles do not keep every past tile alive via pending.
+      pending.buffer = null;
+      pending.source = null;
     };
     // If the offline bake finished late, start at `now` with a buffer
     // offset so remaining notes stay time-aligned with the rest of the
@@ -1641,7 +1688,9 @@ export class Player<
       const offsetSec = now - nominalStart;
       if (offsetSec >= pending.buffer.duration) {
         pending.done = true;
-        source.disconnect();
+        this.neuterBufferSource(source);
+        pending.buffer = null;
+        pending.source = null;
         return;
       }
       source.start(now, offsetSec);
@@ -1667,7 +1716,16 @@ export class Player<
       const pending = state.pending;
       let write = 0;
       for (let i = 0; i < pending.length; i++) {
-        if (!pending[i].done) pending[write++] = pending[i];
+        const p = pending[i];
+        if (p.done) {
+          // Finished tiles: drop buffer so repeated play cycles don't retain
+          // every past segment AudioBuffer until the next loadMIDI.
+          this.neuterBufferSource(p.source);
+          p.source = null;
+          p.buffer = null;
+          continue;
+        }
+        pending[write++] = p;
       }
       pending.length = write;
       for (let i = 0; i < pending.length; i++) {
@@ -1708,21 +1766,17 @@ export class Player<
   stopChunkSources(): void {
     // Invalidate in-flight renderChunkBuffer() calls (same rationale as
     // stopSegmentSources — stale renders must not be scheduled after a
-    // seek/stop/loop).
+    // seek/stop/loop). Also neuter sources + drop buffer refs for iOS.
     this.chunkGeneration++;
     const state = this.chunkState;
     const pending = state.pending;
     for (let i = 0; i < pending.length; i++) {
       const p = pending[i];
-      if (p.source) {
-        try {
-          p.source.stop();
-        } catch {
-          // already stopped/ended
-        }
-        // disconnect is handled by the source's onended handler
-        p.source = null;
-      }
+      this.neuterBufferSource(p.source);
+      p.source = null;
+      p.buffer = null;
+      p.bufferReady = true;
+      p.done = true;
     }
     state.pending = [];
     state.openChunk = null;
@@ -1788,6 +1842,7 @@ export class Player<
         if (this.chunkGeneration !== generation) {
           const idx = state.pending.indexOf(pending);
           if (idx !== -1) state.pending.splice(idx, 1);
+          pending.buffer = null;
           pending.done = true;
           return null;
         }
@@ -1797,6 +1852,7 @@ export class Player<
       })
       .catch((err) => {
         console.warn("chunk render failed", err);
+        pending.buffer = null;
         pending.bufferReady = true;
         return null;
       });
@@ -1821,7 +1877,9 @@ export class Player<
     source.connect(this.masterVolume);
     source.onended = () => {
       pending.done = true;
-      source.disconnect();
+      this.neuterBufferSource(source);
+      pending.buffer = null;
+      pending.source = null;
     };
     // Same late-start handling as startPendingSegment: offset into the
     // buffer when the offline bake finishes after the scheduled time.
@@ -1829,7 +1887,9 @@ export class Player<
       const offsetSec = now - nominalStart;
       if (offsetSec >= pending.buffer.duration) {
         pending.done = true;
-        source.disconnect();
+        this.neuterBufferSource(source);
+        pending.buffer = null;
+        pending.source = null;
         return;
       }
       source.start(now, offsetSec);
@@ -1850,7 +1910,14 @@ export class Player<
     const pending = state.pending;
     let write = 0;
     for (let i = 0; i < pending.length; i++) {
-      if (!pending[i].done) pending[write++] = pending[i];
+      const p = pending[i];
+      if (p.done) {
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        continue;
+      }
+      pending[write++] = p;
     }
     pending.length = write;
     for (let i = 0; i < pending.length; i++) {

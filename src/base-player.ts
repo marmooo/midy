@@ -774,6 +774,11 @@ export class BasePlayer<
   messageHandlers: MessageHandler[];
   voiceParamsHandlers: Record<string, VoiceParamsHandler<TNote, TChannel>>;
   controlChangeHandlers: ControlChangeHandler<TNote, TChannel>[];
+  // 1-sample buffer used only to detach large AudioBuffers from
+  // AudioBufferSourceNode.buffer on stop/disconnect. On iOS Safari, clearing
+  // the JS reference alone often does not release the underlying PCM until
+  // the source node itself is torn down with buffer reassigned.
+  private scratchBufferForNeuter: AudioBuffer | null = null;
 
   static channelSettings = {
     detune: 0,
@@ -2182,21 +2187,85 @@ export class BasePlayer<
     return note;
   }
 
+  // iOS Safari often retains AudioBuffer memory while it is still attached to
+  // an AudioBufferSourceNode. Replacing .buffer with a 1-sample scratch buffer
+  // after stop/disconnect helps the native side drop the large PCM.
+  protected getScratchBufferForNeuter(): AudioBuffer {
+    if (!this.scratchBufferForNeuter) {
+      this.scratchBufferForNeuter = this.audioContext.createBuffer(
+        1,
+        1,
+        this.audioContext.sampleRate,
+      );
+    }
+    return this.scratchBufferForNeuter;
+  }
+
+  protected neuterBufferSource(
+    source: AudioBufferSourceNode | null | undefined,
+  ): void {
+    if (!source) return;
+    try {
+      source.onended = null;
+    } catch {
+      // ignore
+    }
+    try {
+      source.stop();
+    } catch {
+      // already stopped / never started
+    }
+    try {
+      source.disconnect();
+    } catch {
+      // already disconnected
+    }
+    try {
+      source.buffer = this.getScratchBufferForNeuter();
+    } catch {
+      // Chrome/Firefox may throw if buffer is reassigned after start; ignore.
+    }
+  }
+
   disconnectNote(note: TNote): void {
     this.soundingNotes.delete(note);
-    note.bufferSource?.disconnect();
-    note.filterEnvelopeNode?.disconnect();
-    note.volumeEnvelopeNode?.disconnect();
-    note.volumeNode?.disconnect();
-    if (note.modLfoToPitch) {
-      note.modLfoToFilterFc?.disconnect();
-      note.modLfoToVolume?.disconnect?.();
-      note.modLfoToPitch?.disconnect?.();
+    this.neuterBufferSource(note.bufferSource);
+    note.bufferSource = null;
+    note.renderedBuffer = null;
+    try {
+      note.filterEnvelopeNode?.disconnect();
+    } catch { /* ignore */ }
+    try {
+      note.volumeEnvelopeNode?.disconnect();
+    } catch { /* ignore */ }
+    try {
+      note.volumeNode?.disconnect();
+    } catch { /* ignore */ }
+    note.filterEnvelopeNode = null;
+    note.volumeEnvelopeNode = null;
+    note.volumeNode = null;
+    if (note.modLfoToPitch || note.modLfo) {
+      try {
+        note.modLfoToFilterFc?.disconnect();
+      } catch { /* ignore */ }
+      try {
+        note.modLfoToVolume?.disconnect?.();
+      } catch { /* ignore */ }
+      try {
+        note.modLfoToPitch?.disconnect?.();
+      } catch { /* ignore */ }
       try {
         note.modLfo?.stop();
       } catch {
         // not started / already stopped
       }
+      try {
+        note.modLfo?.disconnect();
+      } catch { /* ignore */ }
+      note.modLfo = null;
+      note.modLfoToPitch = null;
+      note.modLfoToFilterFc = null;
+      note.modLfoToVolume = null;
     }
   }
 
