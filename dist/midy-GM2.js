@@ -5829,6 +5829,11 @@ var BasePlayer = class _BasePlayer extends EventTarget {
   messageHandlers;
   voiceParamsHandlers;
   controlChangeHandlers;
+  // 1-sample buffer used only to detach large AudioBuffers from
+  // AudioBufferSourceNode.buffer on stop/disconnect. On iOS Safari, clearing
+  // the JS reference alone often does not release the underlying PCM until
+  // the source node itself is torn down with buffer reassigned.
+  scratchBufferForNeuter = null;
   static channelSettings = {
     detune: 0,
     programNumber: 0,
@@ -6945,20 +6950,83 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     if (0.5 <= channel2.state.sustainPedal) channel2.sustainNotes.push(note);
     return note;
   }
+  // iOS Safari often retains AudioBuffer memory while it is still attached to
+  // an AudioBufferSourceNode. Replacing .buffer with a 1-sample scratch buffer
+  // after stop/disconnect helps the native side drop the large PCM.
+  getScratchBufferForNeuter() {
+    if (!this.scratchBufferForNeuter) {
+      this.scratchBufferForNeuter = this.audioContext.createBuffer(
+        1,
+        1,
+        this.audioContext.sampleRate
+      );
+    }
+    return this.scratchBufferForNeuter;
+  }
+  neuterBufferSource(source) {
+    if (!source) return;
+    try {
+      source.onended = null;
+    } catch {
+    }
+    try {
+      source.stop();
+    } catch {
+    }
+    try {
+      source.disconnect();
+    } catch {
+    }
+    try {
+      source.buffer = this.getScratchBufferForNeuter();
+    } catch {
+    }
+  }
   disconnectNote(note) {
     this.soundingNotes.delete(note);
-    note.bufferSource?.disconnect();
-    note.filterEnvelopeNode?.disconnect();
-    note.volumeEnvelopeNode?.disconnect();
-    note.volumeNode?.disconnect();
-    if (note.modLfoToPitch) {
-      note.modLfoToFilterFc?.disconnect();
-      note.modLfoToVolume?.disconnect?.();
-      note.modLfoToPitch?.disconnect?.();
+    this.neuterBufferSource(note.bufferSource);
+    note.bufferSource = null;
+    note.renderedBuffer = null;
+    try {
+      note.filterEnvelopeNode?.disconnect();
+    } catch {
+    }
+    try {
+      note.volumeEnvelopeNode?.disconnect();
+    } catch {
+    }
+    try {
+      note.volumeNode?.disconnect();
+    } catch {
+    }
+    note.filterEnvelopeNode = null;
+    note.volumeEnvelopeNode = null;
+    note.volumeNode = null;
+    if (note.modLfoToPitch || note.modLfo) {
+      try {
+        note.modLfoToFilterFc?.disconnect();
+      } catch {
+      }
+      try {
+        note.modLfoToVolume?.disconnect?.();
+      } catch {
+      }
+      try {
+        note.modLfoToPitch?.disconnect?.();
+      } catch {
+      }
       try {
         note.modLfo?.stop();
       } catch {
       }
+      try {
+        note.modLfo?.disconnect();
+      } catch {
+      }
+      note.modLfo = null;
+      note.modLfoToPitch = null;
+      note.modLfoToFilterFc = null;
+      note.modLfoToVolume = null;
     }
   }
   releaseNote(_channel, note, endTime) {
@@ -7562,10 +7630,61 @@ var Player = class _Player extends BasePlayer {
   // chunk mode
   chunkState = { openChunk: null, pending: [] };
   chunkGeneration = 0;
+  // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
+  // AudioBuffer memory aggressively; Promise.all over many complex notes in
+  // one chunk was creating dozens of OACs at once and crashing the tab.
+  // Logic (what gets baked) is unchanged — only peak concurrency.
+  maxConcurrentOfflineRenders = 1;
+  offlineRenderActive = 0;
+  offlineRenderDepth = 0;
+  offlineRenderWaiters = [];
   constructor(audioContext, options) {
     super(audioContext, options);
     this.cacheMode = DEFAULT_CACHE_MODE;
     this.offlineRenderOnly = options?.offlineRenderOnly ?? false;
+  }
+  // Serialize / limit OfflineAudioContext work across the whole Player.
+  // Re-entrant: a gated chunk/segment bake may call renderEntryAudioBuffer
+  // (also gated) without deadlocking when maxConcurrentOfflineRenders === 1.
+  async runWithOfflineRenderGate(fn) {
+    if (this.offlineRenderDepth > 0) {
+      this.offlineRenderDepth++;
+      try {
+        return await fn();
+      } finally {
+        this.offlineRenderDepth--;
+      }
+    }
+    const max = Math.max(1, this.maxConcurrentOfflineRenders | 0);
+    while (this.offlineRenderActive >= max) {
+      await new Promise((resolve) => {
+        this.offlineRenderWaiters.push(resolve);
+      });
+    }
+    this.offlineRenderActive++;
+    this.offlineRenderDepth++;
+    try {
+      return await fn();
+    } finally {
+      this.offlineRenderDepth--;
+      this.offlineRenderActive--;
+      const next = this.offlineRenderWaiters.shift();
+      if (next) next();
+    }
+  }
+  // Copy PCM into a fresh AudioBuffer allocated against the live context so
+  // the OfflineAudioContext's rendered buffer can be dropped. On iOS the
+  // buffer returned by startRendering often keeps the OAC graph alive.
+  detachAudioBuffer(src) {
+    const dst = this.audioContext.createBuffer(
+      src.numberOfChannels,
+      src.length,
+      src.sampleRate
+    );
+    for (let ch = 0; ch < src.numberOfChannels; ch++) {
+      dst.copyToChannel(src.getChannelData(ch), ch);
+    }
+    return dst;
   }
   createOfflineRenderPlayer(offlineContext, activeChannelNumbers, lightweight = false) {
     const offlinePlayer = new this.constructor(
@@ -8360,13 +8479,54 @@ var Player = class _Player extends BasePlayer {
     return queueIndex;
   }
   clearPlaybackCaches() {
+    this.releaseTiledPlaybackResources();
+    if (this.audioModeBufferSource) {
+      this.neuterBufferSource(this.audioModeBufferSource);
+      this.audioModeBufferSource = null;
+    }
+    this.renderedAudioBuffer = null;
+    this.rawAudioBufferCache.clear();
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
-    this.simpleNoteBufferCache.clear();
-    this.simpleNoteCounts.clear();
-    this.complexNoteBufferCache.clear();
-    this.complexNoteCounts.clear();
+    this.simpleNoteBufferCache = /* @__PURE__ */ new Map();
+    this.simpleNoteCounts = /* @__PURE__ */ new Map();
+    this.complexNoteBufferCache = /* @__PURE__ */ new Map();
+    this.complexNoteCounts = /* @__PURE__ */ new Map();
+  }
+  // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
+  // in-flight OfflineAudioContext results are discarded on completion.
+  // Does not change bake logic — only releases references for GC / iOS.
+  releaseTiledPlaybackResources() {
+    this.segmentGeneration++;
+    this.chunkGeneration++;
+    const states = this.segmentChannelStates;
+    for (let ch = 0; ch < states.length; ch++) {
+      const state = states[ch];
+      if (!state) continue;
+      const pending = state.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        p.bufferReady = true;
+        p.done = true;
+      }
+      state.pending = [];
+      state.openSegment = null;
+    }
+    const chunkPending = this.chunkState.pending;
+    for (let i = 0; i < chunkPending.length; i++) {
+      const p = chunkPending[i];
+      this.neuterBufferSource(p.source);
+      p.source = null;
+      p.buffer = null;
+      p.bufferReady = true;
+      p.done = true;
+    }
+    this.chunkState.pending = [];
+    this.chunkState.openChunk = null;
   }
   async playAudioBuffer() {
     const audioContext = this.audioContext;
@@ -8397,7 +8557,7 @@ var Player = class _Player extends BasePlayer {
         await this.scheduleTask(() => {
         }, now + this.noteCheckInterval);
         if (naturalEnded || this.currentTime() >= this.totalTime) {
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           if (this.loop) {
             this.resumeTime = 0;
@@ -8412,16 +8572,14 @@ var Player = class _Player extends BasePlayer {
         if (this.isPausing) {
           this.cancelScheduledTasks();
           this.resumeTime = this.currentTime();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           this.isPausing = false;
           exitReason = "paused";
           break outer;
         } else if (this.isStopping) {
           this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           await this.suspendAudioContext();
           this.isStopping = false;
@@ -8429,8 +8587,7 @@ var Player = class _Player extends BasePlayer {
           break outer;
         } else if (this.isSeeking) {
           this.cancelScheduledTasks();
-          bufferSource.stop();
-          bufferSource.disconnect();
+          this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
           this.startTime = audioContext.currentTime;
           this.isSeeking = false;
@@ -8570,11 +8727,7 @@ var Player = class _Player extends BasePlayer {
       await this.stopNotes(now);
       this.stopTiledSources();
       if (this.audioModeBufferSource) {
-        try {
-          this.audioModeBufferSource.stop();
-        } catch {
-        }
-        this.audioModeBufferSource.disconnect();
+        this.neuterBufferSource(this.audioModeBufferSource);
         this.audioModeBufferSource = null;
       }
       this.resetAllStates();
@@ -8727,13 +8880,11 @@ var Player = class _Player extends BasePlayer {
       const pending = state.pending;
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
-        if (p.source) {
-          try {
-            p.source.stop();
-          } catch {
-          }
-          p.source = null;
-        }
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        p.bufferReady = true;
+        p.done = true;
       }
       state.pending = [];
       state.openSegment = null;
@@ -8793,6 +8944,7 @@ var Player = class _Player extends BasePlayer {
       if (this.segmentGeneration !== generation) {
         const idx = state.pending.indexOf(pending);
         if (idx !== -1) state.pending.splice(idx, 1);
+        pending.buffer = null;
         pending.done = true;
         return null;
       }
@@ -8801,6 +8953,7 @@ var Player = class _Player extends BasePlayer {
       return buffer2;
     }).catch((err) => {
       console.warn("segment render failed", err);
+      pending.buffer = null;
       pending.bufferReady = true;
       return null;
     });
@@ -8826,13 +8979,17 @@ var Player = class _Player extends BasePlayer {
     source.connect(channel2.gainR);
     source.onended = () => {
       pending.done = true;
-      source.disconnect();
+      this.neuterBufferSource(source);
+      pending.buffer = null;
+      pending.source = null;
     };
     if (nominalStart <= now) {
       const offsetSec = now - nominalStart;
       if (offsetSec >= pending.buffer.duration) {
         pending.done = true;
-        source.disconnect();
+        this.neuterBufferSource(source);
+        pending.buffer = null;
+        pending.source = null;
         return;
       }
       source.start(now, offsetSec);
@@ -8853,7 +9010,14 @@ var Player = class _Player extends BasePlayer {
       const pending = state.pending;
       let write = 0;
       for (let i = 0; i < pending.length; i++) {
-        if (!pending[i].done) pending[write++] = pending[i];
+        const p = pending[i];
+        if (p.done) {
+          this.neuterBufferSource(p.source);
+          p.source = null;
+          p.buffer = null;
+          continue;
+        }
+        pending[write++] = p;
       }
       pending.length = write;
       for (let i = 0; i < pending.length; i++) {
@@ -8894,13 +9058,11 @@ var Player = class _Player extends BasePlayer {
     const pending = state.pending;
     for (let i = 0; i < pending.length; i++) {
       const p = pending[i];
-      if (p.source) {
-        try {
-          p.source.stop();
-        } catch {
-        }
-        p.source = null;
-      }
+      this.neuterBufferSource(p.source);
+      p.source = null;
+      p.buffer = null;
+      p.bufferReady = true;
+      p.done = true;
     }
     state.pending = [];
     state.openChunk = null;
@@ -8953,6 +9115,7 @@ var Player = class _Player extends BasePlayer {
       if (this.chunkGeneration !== generation) {
         const idx = state.pending.indexOf(pending);
         if (idx !== -1) state.pending.splice(idx, 1);
+        pending.buffer = null;
         pending.done = true;
         return null;
       }
@@ -8961,6 +9124,7 @@ var Player = class _Player extends BasePlayer {
       return buffer2;
     }).catch((err) => {
       console.warn("chunk render failed", err);
+      pending.buffer = null;
       pending.bufferReady = true;
       return null;
     });
@@ -8982,13 +9146,17 @@ var Player = class _Player extends BasePlayer {
     source.connect(this.masterVolume);
     source.onended = () => {
       pending.done = true;
-      source.disconnect();
+      this.neuterBufferSource(source);
+      pending.buffer = null;
+      pending.source = null;
     };
     if (nominalStart <= now) {
       const offsetSec = now - nominalStart;
       if (offsetSec >= pending.buffer.duration) {
         pending.done = true;
-        source.disconnect();
+        this.neuterBufferSource(source);
+        pending.buffer = null;
+        pending.source = null;
         return;
       }
       source.start(now, offsetSec);
@@ -9005,7 +9173,14 @@ var Player = class _Player extends BasePlayer {
     const pending = state.pending;
     let write = 0;
     for (let i = 0; i < pending.length; i++) {
-      if (!pending[i].done) pending[write++] = pending[i];
+      const p = pending[i];
+      if (p.done) {
+        this.neuterBufferSource(p.source);
+        p.source = null;
+        p.buffer = null;
+        continue;
+      }
+      pending[write++] = p;
     }
     pending.length = write;
     for (let i = 0; i < pending.length; i++) {
@@ -9049,32 +9224,78 @@ var Player = class _Player extends BasePlayer {
     }
     simpleNotes.length = simpleCount;
     complexNotes.length = complexCount;
-    const sampleRate2 = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
-      2,
-      Math.ceil(totalDuration2 * sampleRate2),
-      sampleRate2
-    );
-    const simpleMisses = new Array(simpleCount);
-    let missCount = 0;
-    const simpleCounts = this.simpleNoteCounts;
-    if (simpleCount > 0) {
-      for (let i = 0; i < simpleCount; i++) {
-        const n = simpleNotes[i];
-        const cached = await this.lookupSimpleNoteBuffer(n, true);
-        if (cached) {
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: cached
-          });
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-          continue;
+    return await this.runWithOfflineRenderGate(async () => {
+      const sampleRate2 = this.audioContext.sampleRate;
+      const offlineContext = new OfflineAudioContext(
+        2,
+        Math.ceil(totalDuration2 * sampleRate2),
+        sampleRate2
+      );
+      const simpleMisses = new Array(simpleCount);
+      let missCount = 0;
+      const simpleCounts = this.simpleNoteCounts;
+      if (simpleCount > 0) {
+        for (let i = 0; i < simpleCount; i++) {
+          const n = simpleNotes[i];
+          const cached = await this.lookupSimpleNoteBuffer(n, true);
+          if (cached) {
+            const src = new AudioBufferSourceNode(offlineContext, {
+              buffer: cached
+            });
+            src.connect(offlineContext.destination);
+            src.start(n.offset);
+            continue;
+          }
+          const key = this.makeSimpleNoteKey(n, true);
+          const count = simpleCounts.get(key) ?? 0;
+          if (count > 1) {
+            const noteBuf = await this.getSimpleNoteBuffer(
+              {
+                channelNumber: n.channelNumber,
+                audioBufferId: n.audioBufferId,
+                noteNumber: n.noteNumber,
+                velocity: n.velocity,
+                noteDuration: n.noteDuration,
+                noteEvent: n.noteEvent,
+                channelDetune: n.channelDetune,
+                channelStateArray: n.channelStateArray,
+                programNumber: n.programNumber,
+                isDrum: n.isDrum,
+                voiceParams: n.voiceParams,
+                voice: n.voice
+              },
+              true
+            );
+            const src = new AudioBufferSourceNode(offlineContext, {
+              buffer: noteBuf
+            });
+            src.connect(offlineContext.destination);
+            src.start(n.offset);
+          } else {
+            simpleMisses[missCount++] = n;
+          }
         }
-        const key = this.makeSimpleNoteKey(n, true);
-        const count = simpleCounts.get(key) ?? 0;
-        if (count > 1) {
-          const buffer3 = await this.getSimpleNoteBuffer(
-            {
+        if (missCount > 0) {
+          const seenCh = new Uint8Array(16);
+          const channelNumbers = new Array(16);
+          let chCount = 0;
+          for (let i = 0; i < missCount; i++) {
+            const chn = simpleMisses[i].channelNumber;
+            if (!seenCh[chn]) {
+              seenCh[chn] = 1;
+              channelNumbers[chCount++] = chn;
+            }
+          }
+          channelNumbers.length = chCount;
+          const offlinePlayer = this.createOfflineRenderPlayer(
+            offlineContext,
+            channelNumbers,
+            true
+          );
+          const directNotes = new Array(missCount);
+          for (let i = 0; i < missCount; i++) {
+            const n = simpleMisses[i];
+            directNotes[i] = {
               channelNumber: n.channelNumber,
               audioBufferId: n.audioBufferId,
               noteNumber: n.noteNumber,
@@ -9086,66 +9307,19 @@ var Player = class _Player extends BasePlayer {
               programNumber: n.programNumber,
               isDrum: n.isDrum,
               voiceParams: n.voiceParams,
-              voice: n.voice
-            },
+              voice: n.voice,
+              offset: n.offset
+            };
+          }
+          await this.scheduleSimpleNotesDirect(
+            offlineContext,
+            offlinePlayer,
+            directNotes,
             true
           );
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: buffer3
-          });
-          src.connect(offlineContext.destination);
-          src.start(n.offset);
-        } else {
-          simpleMisses[missCount++] = n;
         }
       }
-      if (missCount > 0) {
-        const seenCh = new Uint8Array(16);
-        const channelNumbers = new Array(16);
-        let chCount = 0;
-        for (let i = 0; i < missCount; i++) {
-          const chn = simpleMisses[i].channelNumber;
-          if (!seenCh[chn]) {
-            seenCh[chn] = 1;
-            channelNumbers[chCount++] = chn;
-          }
-        }
-        channelNumbers.length = chCount;
-        const offlinePlayer = this.createOfflineRenderPlayer(
-          offlineContext,
-          channelNumbers,
-          true
-        );
-        const directNotes = new Array(missCount);
-        for (let i = 0; i < missCount; i++) {
-          const n = simpleMisses[i];
-          directNotes[i] = {
-            channelNumber: n.channelNumber,
-            audioBufferId: n.audioBufferId,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: n.isDrum,
-            voiceParams: n.voiceParams,
-            voice: n.voice,
-            offset: n.offset
-          };
-        }
-        await this.scheduleSimpleNotesDirect(
-          offlineContext,
-          offlinePlayer,
-          directNotes,
-          true
-        );
-      }
-    }
-    const complexLen = complexNotes.length;
-    if (complexLen > 0) {
-      const complexPromises = new Array(complexLen);
+      const complexLen = complexNotes.length;
       for (let i = 0; i < complexLen; i++) {
         const n = complexNotes[i];
         const entry = {
@@ -9162,29 +9336,23 @@ var Player = class _Player extends BasePlayer {
           audioBufferId: n.audioBufferId,
           voice: n.voice
         };
-        complexPromises[i] = (async () => {
-          const cached = await this.lookupComplexNoteBuffer(entry, true);
-          if (cached) {
-            return cached;
-          }
-          return await this.getComplexNoteBuffer(entry, true);
-        })();
-      }
-      const complexBuffers = await Promise.all(complexPromises);
-      for (let i = 0; i < complexLen; i++) {
-        const n = complexNotes[i];
+        let buf = await this.lookupComplexNoteBuffer(entry, true);
+        if (!buf) {
+          buf = await this.getComplexNoteBuffer(entry, true);
+        }
         const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: complexBuffers[i]
+          buffer: buf
         });
         src.connect(offlineContext.destination);
         src.start(n.offset);
       }
-    }
-    const buffer2 = await offlineContext.startRendering();
-    if (!forAudioOffline) {
-      this.softClampBuffer(buffer2);
-    }
-    return buffer2;
+      const rendered = await offlineContext.startRendering();
+      const buffer2 = this.detachAudioBuffer(rendered);
+      if (!forAudioOffline) {
+        this.softClampBuffer(buffer2);
+      }
+      return buffer2;
+    });
   }
   async render() {
     if (this.isRendering) return;
@@ -9761,54 +9929,47 @@ var Player = class _Player extends BasePlayer {
     simpleNotes.length = simpleCount;
     complexNotes.length = complexCount;
     const ch = channel2.channelNumber;
-    const sampleRate2 = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
-      1,
-      Math.ceil(totalDuration2 * sampleRate2),
-      sampleRate2
-    );
-    const maxConcurrent = this.estimateMaxConcurrentNotes(notes);
-    const mixGain = new GainNode(offlineContext, {
-      gain: maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1
-    });
-    mixGain.connect(offlineContext.destination);
-    const isDrum = channel2.isDrum;
-    if (simpleCount > 0) {
-      const simplePromises = new Array(simpleCount);
-      for (let i = 0; i < simpleCount; i++) {
-        const n = simpleNotes[i];
-        const bakeInput = {
-          channelNumber: ch,
-          audioBufferId: n.audioBufferId,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum,
-          voiceParams: n.voiceParams,
-          voice: n.voice
-        };
-        simplePromises[i] = (async () => {
-          const cached = await this.lookupSimpleNoteBuffer(bakeInput, false);
-          if (cached) return cached;
-          return await this.getSimpleNoteBuffer(bakeInput, false);
-        })();
+    return await this.runWithOfflineRenderGate(async () => {
+      const sampleRate2 = this.audioContext.sampleRate;
+      const offlineContext = new OfflineAudioContext(
+        1,
+        Math.ceil(totalDuration2 * sampleRate2),
+        sampleRate2
+      );
+      const maxConcurrent = this.estimateMaxConcurrentNotes(notes);
+      const mixGain = new GainNode(offlineContext, {
+        gain: maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1
+      });
+      mixGain.connect(offlineContext.destination);
+      const isDrum = channel2.isDrum;
+      if (simpleCount > 0) {
+        for (let i = 0; i < simpleCount; i++) {
+          const n = simpleNotes[i];
+          const bakeInput = {
+            channelNumber: ch,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice
+          };
+          let buf = await this.lookupSimpleNoteBuffer(bakeInput, false);
+          if (!buf) {
+            buf = await this.getSimpleNoteBuffer(bakeInput, false);
+          }
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: buf
+          });
+          src.connect(mixGain);
+          src.start(n.offset);
+        }
       }
-      const simpleBuffers = await Promise.all(simplePromises);
-      for (let i = 0; i < simpleCount; i++) {
-        const n = simpleNotes[i];
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: simpleBuffers[i]
-        });
-        src.connect(mixGain);
-        src.start(n.offset);
-      }
-    }
-    if (complexCount > 0) {
-      const complexPromises = new Array(complexCount);
       for (let i = 0; i < complexCount; i++) {
         const n = complexNotes[i];
         const entry = {
@@ -9825,27 +9986,21 @@ var Player = class _Player extends BasePlayer {
           audioBufferId: n.audioBufferId,
           voice: n.voice
         };
-        complexPromises[i] = (async () => {
-          const cached = await this.lookupComplexNoteBuffer(entry, false);
-          if (cached) {
-            return cached;
-          }
-          return await this.getComplexNoteBuffer(entry, false);
-        })();
-      }
-      const complexBuffers = await Promise.all(complexPromises);
-      for (let i = 0; i < complexCount; i++) {
-        const n = complexNotes[i];
+        let buf = await this.lookupComplexNoteBuffer(entry, false);
+        if (!buf) {
+          buf = await this.getComplexNoteBuffer(entry, false);
+        }
         const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: complexBuffers[i]
+          buffer: buf
         });
         src.connect(mixGain);
         src.start(n.offset);
       }
-    }
-    const buffer2 = await offlineContext.startRendering();
-    this.softClampBuffer(buffer2);
-    return buffer2;
+      const rendered = await offlineContext.startRendering();
+      const buffer2 = this.detachAudioBuffer(rendered);
+      this.softClampBuffer(buffer2);
+      return buffer2;
+    });
   }
   // Max number of notes whose sustain intervals overlap in a segment.
   // Release tails are ignored so a few long decays do not inflate the count
@@ -9900,61 +10055,65 @@ var Player = class _Player extends BasePlayer {
   // Simple-note caches (getSimpleNoteBuffer) also land here: with no
   // in-interval automation the event loop is a no-op.
   async renderEntryAudioBuffer(entry, bakeChannelMix) {
-    const { startTime: noteStartTime = 0, events: noteEvents = [] } = entry.noteEvent ?? {};
-    const releaseEndDuration = entry.voiceParams.volRelease * envelopeCurve * 5;
-    const totalDuration2 = Math.max(
-      1e-3,
-      entry.noteDuration + releaseEndDuration
-    );
-    const sampleRate2 = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
-      bakeChannelMix ? 2 : 1,
-      Math.ceil(totalDuration2 * sampleRate2),
-      sampleRate2
-    );
-    const offlinePlayer = this.createOfflineRenderPlayer(
-      offlineContext,
-      [entry.channelNumber],
-      true
-    );
-    const dstChannel = this.prepareOfflineChannel(
-      offlinePlayer,
-      entry,
-      bakeChannelMix,
-      0
-    );
-    if (!dstChannel) {
-      return offlineContext.startRendering();
-    }
-    await this.scheduleOfflineNoteOn(
-      offlinePlayer,
-      offlineContext,
-      dstChannel,
-      entry,
-      0,
-      bakeChannelMix
-    );
-    const tMax = entry.noteDuration + releaseEndDuration;
-    const noteOnEvent = entry.noteEvent;
-    for (let i = 0; i < noteEvents.length; i++) {
-      const event = noteEvents[i];
-      if (event.type === "programChange") continue;
-      let t2 = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
-      if (t2 < -1e-4 || t2 > tMax) continue;
-      if (t2 < 0) t2 = 0;
-      offlinePlayer.processTimelineEvent(event, t2, {
-        channels: offlinePlayer.channels
-      });
-    }
-    offlinePlayer.noteOffChannel(
-      dstChannel,
-      entry.noteNumber,
-      0,
-      entry.noteDuration,
-      true
-    );
-    await Promise.resolve();
-    return await offlineContext.startRendering();
+    return await this.runWithOfflineRenderGate(async () => {
+      const { startTime: noteStartTime = 0, events: noteEvents = [] } = entry.noteEvent ?? {};
+      const releaseEndDuration = entry.voiceParams.volRelease * envelopeCurve * 5;
+      const totalDuration2 = Math.max(
+        1e-3,
+        entry.noteDuration + releaseEndDuration
+      );
+      const sampleRate2 = this.audioContext.sampleRate;
+      const offlineContext = new OfflineAudioContext(
+        bakeChannelMix ? 2 : 1,
+        Math.ceil(totalDuration2 * sampleRate2),
+        sampleRate2
+      );
+      const offlinePlayer = this.createOfflineRenderPlayer(
+        offlineContext,
+        [entry.channelNumber],
+        true
+      );
+      const dstChannel = this.prepareOfflineChannel(
+        offlinePlayer,
+        entry,
+        bakeChannelMix,
+        0
+      );
+      if (!dstChannel) {
+        const empty = await offlineContext.startRendering();
+        return this.detachAudioBuffer(empty);
+      }
+      await this.scheduleOfflineNoteOn(
+        offlinePlayer,
+        offlineContext,
+        dstChannel,
+        entry,
+        0,
+        bakeChannelMix
+      );
+      const tMax = entry.noteDuration + releaseEndDuration;
+      const noteOnEvent = entry.noteEvent;
+      for (let i = 0; i < noteEvents.length; i++) {
+        const event = noteEvents[i];
+        if (event.type === "programChange") continue;
+        let t2 = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
+        if (t2 < -1e-4 || t2 > tMax) continue;
+        if (t2 < 0) t2 = 0;
+        offlinePlayer.processTimelineEvent(event, t2, {
+          channels: offlinePlayer.channels
+        });
+      }
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        entry.noteNumber,
+        0,
+        entry.noteDuration,
+        true
+      );
+      await Promise.resolve();
+      const rendered = await offlineContext.startRendering();
+      return this.detachAudioBuffer(rendered);
+    });
   }
   async createFullRenderedBuffer(channel2, note, voiceParams, noteDuration, noteEvent = void 0) {
     const releaseEndDuration = voiceParams.volRelease * envelopeCurve * 5;
