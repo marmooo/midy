@@ -96,12 +96,12 @@ export function setMockCurrentTime(ctx: BaseAudioContext, time: number): void {
 export function makeDefaultVoiceParams(exclusiveClass = 0) {
   return {
     initialAttenuation: 0,
-    volSustain: 0.5,
-    volDelay: 0,
-    volAttack: 0.01,
-    volHold: 0.01,
-    volDecay: 0.1,
-    volRelease: 0.2,
+    sustainVolEnv: 0.5,
+    delayVolEnv: 0,
+    attackVolEnv: 0.01,
+    holdVolEnv: 0.01,
+    decayVolEnv: 0.1,
+    releaseVolEnv: 0.2,
     sampleRate: 44100,
     playbackRate: 1,
     initialFilterFc: 1000,
@@ -122,18 +122,128 @@ export function makeDefaultVoiceParams(exclusiveClass = 0) {
     exclusiveClass,
     modEnvToPitch: 0,
     modEnvToFilterFc: 0,
-    modDelay: 0,
-    modAttack: 0,
-    modHold: 0,
-    modDecay: 0,
-    modSustain: 0,
-    modRelease: 0,
+    delayModEnv: 0,
+    attackModEnv: 0,
+    holdModEnv: 0,
+    decayModEnv: 0,
+    sustainModEnv: 0,
+    releaseModEnv: 0,
     sample: {
       type: "raw",
       data: new Int16Array(0),
       sampleHeader: { sampleRate: 44100 },
       decodePCM: () => new Float32Array(0),
     },
+  };
+}
+
+// Raw SF2 generator values (spec units: timecents, tenths of a percent,
+// ...) that, once run through base-player.ts's real interpretation math
+// (getVoiceParams / getVoiceParamsForController), reproduce exactly
+// makeDefaultVoiceParams() above. Kept in one place so the mock voice
+// stays a genuine (if minimal) raw-generator source instead of a
+// pre-interpreted stand-in.
+function makeDefaultGeneratorValues(exclusiveClass = 0): {
+  get(key: string): number;
+  clone(): ReturnType<typeof makeDefaultGeneratorValues>;
+  set(key: string, value: number): void;
+} {
+  // timecentToSecond(x) = 2^(x/1200); Infinity/-Infinity map to 1/0
+  // exactly, and finite targets are solved by inverting that formula.
+  const secondsToTimecent = (seconds: number) =>
+    seconds === 0 ? -Infinity : 1200 * Math.log2(seconds);
+  const values: Record<string, number> = {
+    initialAttenuation: 0,
+    initialFilterFc: 1000,
+    initialFilterQ: 1,
+    freqModLFO: 0,
+    freqVibLFO: 0,
+    modLfoToPitch: 0,
+    modLfoToFilterFc: 0,
+    modLfoToVolume: 0,
+    vibLfoToPitch: 0,
+    modEnvToPitch: 0,
+    modEnvToFilterFc: 0,
+    pan: 0,
+    chorusEffectsSend: 0,
+    reverbEffectsSend: 0,
+    sustainVolEnv: 0.5 * 1000,
+    sustainModEnv: 0,
+    delayVolEnv: secondsToTimecent(0),
+    attackVolEnv: secondsToTimecent(0.01),
+    holdVolEnv: secondsToTimecent(0.01),
+    keynumToVolEnvHold: 0,
+    decayVolEnv: secondsToTimecent(0.1),
+    keynumToVolEnvDecay: 0,
+    releaseVolEnv: secondsToTimecent(0.2),
+    delayModLFO: secondsToTimecent(0),
+    delayVibLFO: secondsToTimecent(0),
+    delayModEnv: secondsToTimecent(0),
+    attackModEnv: secondsToTimecent(0),
+    holdModEnv: secondsToTimecent(0),
+    keynumToModEnvHold: 0,
+    decayModEnv: secondsToTimecent(0),
+    keynumToModEnvDecay: 0,
+    releaseModEnv: secondsToTimecent(0),
+    coarseTune: 0,
+    fineTune: 0,
+    // scaleTuning 0 pins playbackRate to 1 regardless of key/rootKey.
+    scaleTuning: 0,
+    overridingRootKey: -1,
+    startAddrsOffset: 0,
+    startAddrsCoarseOffset: 0,
+    endAddrsOffset: 0,
+    endAddrsCoarseOffset: 0,
+    startloopAddrsOffset: 0,
+    startloopAddrsCoarseOffset: 0,
+    endloopAddrsOffset: 0,
+    endloopAddrsCoarseOffset: 0,
+    instrument: 0,
+    sampleID: 0,
+    sampleModes: 0,
+    exclusiveClass,
+  };
+  return {
+    get(key: string) {
+      return values[key] ?? 0;
+    },
+    clone: () => makeDefaultGeneratorValues(exclusiveClass),
+    set(key: string, value: number) {
+      values[key] = value;
+    },
+  };
+}
+
+// A minimal stand-in satisfying the surface base-player.ts's getVoiceParams
+// / getVoiceParamsForController actually read from a Voice: .key,
+// .generators (raw, spec-unit), .sample, .sampleHeader, and the two
+// modulator-application methods (here: no modulators, so both are simple
+// pass-throughs — matches @marmooo/soundfont's own Voice#transformAllParams
+// fast path when no controller is active).
+function makeMockVoice(exclusiveClass = 0) {
+  const generators = makeDefaultGeneratorValues(exclusiveClass);
+  const sampleHeader = {
+    sampleName: "",
+    start: 0,
+    end: 0,
+    loopStart: 0,
+    loopEnd: 0,
+    sampleRate: 44100,
+    originalPitch: 60,
+    pitchCorrection: 0,
+  };
+  return {
+    key: 60,
+    generators,
+    sampleHeader,
+    sample: {
+      type: "raw",
+      data: new Int16Array(0),
+      sampleHeader: { sampleRate: 44100 },
+      decodePCM: () => new Float32Array(0),
+    },
+    transformAllParams: () => generators,
+    transformParams: () => ({}),
   };
 }
 
@@ -221,7 +331,9 @@ export async function flushNotePromises(player: AnyPlayer): Promise<void> {
 
 /**
  * Wire up the minimal soundfont stub that all player classes need.
- * `exclusiveClass` is forwarded to `makeDefaultVoiceParams`.
+ * `exclusiveClass` is forwarded to the mock voice's generator values;
+ * running it through base-player.ts's real getVoiceParams reproduces
+ * makeDefaultVoiceParams(exclusiveClass).
  */
 export function installSoundFontStub(
   player: AnyPlayer,
@@ -230,12 +342,8 @@ export function installSoundFontStub(
   player.soundFontTable[0] = [0];
   player.soundFonts = [
     {
-      getVoice: () => ({
-        generators: { instrument: 0, sampleID: 0 },
-        getParams: () => ({}),
-        getAllParams: () => makeDefaultVoiceParams(exclusiveClass),
-      }),
-    } as unknown as import("@marmooo/soundfont-parser").SoundFont,
+      getVoice: () => makeMockVoice(exclusiveClass),
+    } as unknown as import("@marmooo/soundfont").SoundFont,
   ];
 }
 

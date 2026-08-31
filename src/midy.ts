@@ -884,20 +884,24 @@ export class Midy extends MidyGM2 {
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getChannelAmplitudeControl(ch));
     const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.volSustain);
-    const volDelay = startTime + voiceParams.volDelay;
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const delayVolEnvTime = startTime + voiceParams.delayVolEnv;
     const attackTime = this.getRelativeKeyBasedValue(ch, noteNumber, 73) * 2;
-    const volAttack = volDelay + voiceParams.volAttack * attackTime;
-    const volHold = volAttack + voiceParams.volHold;
+    const attackVolEnvTime = delayVolEnvTime +
+      voiceParams.attackVolEnv * attackTime;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
     const decayTime = this.getRelativeKeyBasedValue(ch, noteNumber, 75) * 2;
-    const decayDuration = voiceParams.volDecay * decayTime;
+    const decayDuration = voiceParams.decayVolEnv * decayTime;
     n.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(1e-6, volDelay)
-      .exponentialRampToValueAtTime(attackVolume, volAttack)
-      .setValueAtTime(attackVolume, volHold)
-      .exponentialRampToValueAtTime(sustainVolume, volHold + decayDuration);
+      .setValueAtTime(1e-6, delayVolEnvTime)
+      .exponentialRampToValueAtTime(attackVolume, attackVolEnvTime)
+      .setValueAtTime(attackVolume, holdVolEnvTime)
+      .exponentialRampToValueAtTime(
+        sustainVolume,
+        holdVolEnvTime + decayDuration,
+      );
   }
 
   setVolumeNode(channel: Channel, note: Note, scheduleTime: number): void {
@@ -1266,10 +1270,11 @@ export class Midy extends MidyGM2 {
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(ch);
     const peekCent = baseCent + voiceParams.modEnvToFilterFc * brightness;
-    // SF2 modSustain is the fraction of the envelope depth that is removed
+    // SF2 sustainModEnv is the fraction of the envelope depth that is removed
     // at sustain (same shape as MidyGM2).
     const sustainCent = baseCent +
-      voiceParams.modEnvToFilterFc * brightness * (1 - voiceParams.modSustain);
+      voiceParams.modEnvToFilterFc * brightness *
+        (1 - voiceParams.sustainModEnv);
     const softPedalFactor = this.getSoftPedalFactor(ch, n);
     const baseFreq = this.clampCutoffFrequency(
       this.centToHz(baseCent) * softPedalFactor,
@@ -1282,20 +1287,21 @@ export class Midy extends MidyGM2 {
     );
     const attackTime = this.getRelativeKeyBasedValue(ch, noteNumber, 73) * 2;
     const decayTime = this.getRelativeKeyBasedValue(ch, noteNumber, 75) * 2;
-    const modDelay = startTime + voiceParams.modDelay;
-    const modAttack = modDelay + voiceParams.modAttack * attackTime;
-    const modHold = modAttack + voiceParams.modHold;
-    const decayDuration = voiceParams.modDecay * decayTime;
+    const delayModEnvTime = startTime + voiceParams.delayModEnv;
+    const attackModEnvTime = delayModEnvTime +
+      voiceParams.attackModEnv * attackTime;
+    const holdModEnvTime = attackModEnvTime + voiceParams.holdModEnv;
+    const decayDuration = voiceParams.decayModEnv * decayTime;
     n.adjustedBaseFreq = baseFreq;
     n.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(baseFreq, startTime)
-      .setValueAtTime(baseFreq, modDelay)
-      .exponentialRampToValueAtTime(Math.max(20, peekFreq), modAttack)
-      .setValueAtTime(Math.max(20, peekFreq), modHold)
+      .setValueAtTime(baseFreq, delayModEnvTime)
+      .exponentialRampToValueAtTime(Math.max(20, peekFreq), attackModEnvTime)
+      .setValueAtTime(Math.max(20, peekFreq), holdModEnvTime)
       .exponentialRampToValueAtTime(
         Math.max(20, sustainFreq),
-        modHold + decayDuration,
+        holdModEnvTime + decayDuration,
       );
   }
 

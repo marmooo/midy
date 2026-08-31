@@ -4,7 +4,7 @@
 // -----
 // - `"none"`    Full real-time control (dynamic CC, LFO, pitch). Highest CPU.
 // - `"ads"`     Pre-render ADS; release fades in real time. LFO stays live.
-// - `"adsr"`    Pre-render full ADSR keyed by duration ticks + volRelease.
+// - `"adsr"`    Pre-render full ADSR keyed by duration ticks + releaseVolEnv.
 // - `"note"`    Per-note offline bake (automation in-interval). MIDI-file only.
 // - `"segment"` Per-channel tiled offline buffers; channel vol/pan stay live.
 // - `"chunk"`   All-channel tiled offline mix; vol/pan snapshotted into buffer.
@@ -21,8 +21,12 @@
 // - `true`  (note / chunk / audio): channel bus + effect sends inside the buffer.
 // - `false` (segment dry): volumeNode rewired to destination; vol/pan/sends live.
 
-import type { Voice, VoiceParams } from "@marmooo/soundfont-parser";
-import type { RenderedBuffer, TimelineEvent } from "./base-player.ts";
+import type { Voice } from "@marmooo/soundfont";
+import type {
+  RenderedBuffer,
+  TimelineEvent,
+  VoiceParams,
+} from "./base-player.ts";
 
 // ---------------------------------------------------------------------------
 // Mode

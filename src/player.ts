@@ -3,7 +3,7 @@
 // this module owns scheduling, offline bake, and Web Audio graph logic.
 // Inherits real-time core from {@link BasePlayer}.
 import { parseMidi } from "midi-file";
-import { type Voice, type VoiceParams } from "@marmooo/soundfont-parser";
+import { type Voice } from "@marmooo/soundfont";
 
 import {
   BasePlayer,
@@ -13,9 +13,11 @@ import {
   envelopeCurve,
   f64ToBigInt,
   FULLY_OPEN_FILTER_CENTS,
+  getVoiceParams,
   Note,
   RenderedBuffer,
   type TimelineEvent,
+  type VoiceParams,
 } from "./base-player.ts";
 
 import {
@@ -519,7 +521,7 @@ export class Player<
                 event.velocity!,
                 0,
               );
-              const voiceParams = voice.getAllParams(controllerState);
+              const voiceParams = getVoiceParams(voice, controllerState);
               if (needsTiledData && !isExcludedDrum) {
                 tiledVoiceParams[i] = voiceParams;
                 tiledVoices[i] = voice;
@@ -625,7 +627,7 @@ export class Player<
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
-      const releaseTail = voiceParams.volRelease * envelopeCurve * 5;
+      const releaseTail = voiceParams.releaseVolEnv * envelopeCurve * 5;
       if (maxTiledNoteDuration < duration + releaseTail) continue;
       bakedSet.add(i);
     }
@@ -735,7 +737,8 @@ export class Player<
               noteEvent.velocity!,
             );
             if (!voice) return;
-            voiceParams = voice.getAllParams(
+            voiceParams = getVoiceParams(
+              voice,
               this.getControllerState(
                 renderChannel,
                 noteEvent.noteNumber!,
@@ -895,7 +898,7 @@ export class Player<
     parts.push(
       n.programNumber,
       n.isDrum ? 1 : 0,
-      Math.round(n.voiceParams.volRelease * 1e6),
+      Math.round(n.voiceParams.releaseVolEnv * 1e6),
       Math.round(n.voiceParams.playbackRate * 1e6),
     );
     if (complex) {
@@ -1041,7 +1044,8 @@ export class Player<
               noteEvent.velocity!,
             );
             if (!voice) return;
-            voiceParams = voice.getAllParams(
+            voiceParams = getVoiceParams(
+              voice,
               this.getControllerState(
                 renderChannel,
                 noteEvent.noteNumber!,
@@ -2006,7 +2010,7 @@ export class Player<
     const notesLen = notes.length;
     for (let i = 0; i < notesLen; i++) {
       const n = notes[i];
-      const releaseEnd = n.voiceParams.volRelease * envelopeCurve * 5;
+      const releaseEnd = n.voiceParams.releaseVolEnv * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > totalDuration) totalDuration = end;
     }
@@ -2235,7 +2239,8 @@ export class Player<
             velocity!,
           );
           if (!voice) return;
-          const voiceParams = voice.getAllParams(
+          const voiceParams = getVoiceParams(
+            voice,
             this.getControllerState(renderChannel, noteNumber!, velocity!, 0),
           );
           notes.push({
@@ -2271,7 +2276,7 @@ export class Player<
     let maxEnd = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEnd = (n.voiceParams.volRelease ?? 0) * envelopeCurve * 5;
+      const releaseEnd = (n.voiceParams.releaseVolEnv ?? 0) * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > maxEnd) maxEnd = end;
     }
@@ -2414,10 +2419,10 @@ export class Player<
       ? (this.isLoopDrum(channel, note.noteNumber) &&
         voiceParams.sampleModes % 2 !== 0)
       : (voiceParams.sampleModes % 2 !== 0);
-    const volAttack = voiceParams.volDelay + voiceParams.volAttack;
-    const volHold = volAttack + voiceParams.volHold;
-    const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration;
+    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
+    const decayDuration = voiceParams.decayVolEnv;
+    const adsDuration = holdVolEnvTime + decayDuration;
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -2503,11 +2508,11 @@ export class Player<
       ? (this.isLoopDrum(channel, note.noteNumber) &&
         voiceParams.sampleModes % 2 !== 0)
       : (voiceParams.sampleModes % 2 !== 0);
-    const volAttack = voiceParams.volDelay + voiceParams.volAttack;
-    const volHold = volAttack + voiceParams.volHold;
-    const decayDuration = voiceParams.volDecay;
-    const adsDuration = volHold + decayDuration;
-    const releaseDuration = voiceParams.volRelease;
+    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
+    const decayDuration = voiceParams.decayVolEnv;
+    const adsDuration = holdVolEnvTime + decayDuration;
+    const releaseDuration = voiceParams.releaseVolEnv;
     const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
     const loopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -2561,20 +2566,21 @@ export class Player<
 
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.volSustain);
-    const volDelayTime = voiceParams.volDelay;
-    const volAttackTime = volDelayTime + voiceParams.volAttack;
-    const volHoldTime = volAttackTime + voiceParams.volHold;
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const volDelayTime = voiceParams.delayVolEnv;
+    const volAttackTime = volDelayTime + voiceParams.attackVolEnv;
+    const volHoldTime = volAttackTime + voiceParams.holdVolEnv;
     let gainAtNoteOff;
     if (noteOffTime <= volDelayTime) {
       gainAtNoteOff = 0;
     } else if (noteOffTime <= volAttackTime) {
       gainAtNoteOff = 1e-6 + (attackVolume - 1e-6) *
-          (noteOffTime - volDelayTime) / voiceParams.volAttack;
+          (noteOffTime - volDelayTime) / voiceParams.attackVolEnv;
     } else if (noteOffTime <= volHoldTime) {
       gainAtNoteOff = attackVolume;
-    } else if (noteOffTime <= volHoldTime + voiceParams.volDecay) {
-      const decayFraction = (noteOffTime - volHoldTime) / voiceParams.volDecay;
+    } else if (noteOffTime <= volHoldTime + voiceParams.decayVolEnv) {
+      const decayFraction = (noteOffTime - volHoldTime) /
+        voiceParams.decayVolEnv;
       gainAtNoteOff = attackVolume *
         Math.pow(sustainVolume / attackVolume, decayFraction);
     } else {
@@ -2592,23 +2598,23 @@ export class Player<
       const sustainFreq = this.clampCutoffFrequency(
         this.centToHz(
           voiceParams.initialFilterFc +
-            modEnvToFilterFc * (1 - voiceParams.modSustain),
+            modEnvToFilterFc * (1 - voiceParams.sustainModEnv),
         ),
       );
-      const modDelayTime = voiceParams.modDelay;
-      const modAttackTime = modDelayTime + voiceParams.modAttack;
-      const modHoldTime = modAttackTime + voiceParams.modHold;
+      const modDelayTime = voiceParams.delayModEnv;
+      const modAttackTime = modDelayTime + voiceParams.attackModEnv;
+      const modHoldTime = modAttackTime + voiceParams.holdModEnv;
       let freqAtNoteOff;
       if (noteOffTime <= modDelayTime) {
         freqAtNoteOff = initialFreq;
       } else if (noteOffTime <= modAttackTime) {
         freqAtNoteOff = initialFreq + (peekFreq - initialFreq) *
-            (noteOffTime - modDelayTime) / voiceParams.modAttack;
+            (noteOffTime - modDelayTime) / voiceParams.attackModEnv;
       } else if (noteOffTime <= modHoldTime) {
         freqAtNoteOff = peekFreq;
-      } else if (noteOffTime <= modHoldTime + voiceParams.modDecay) {
+      } else if (noteOffTime <= modHoldTime + voiceParams.decayModEnv) {
         const decayFraction = (noteOffTime - modHoldTime) /
-          voiceParams.modDecay;
+          voiceParams.decayModEnv;
         freqAtNoteOff = peekFreq *
           Math.pow(sustainFreq / peekFreq, decayFraction);
       } else {
@@ -2619,7 +2625,7 @@ export class Player<
         .setValueAtTime(freqAtNoteOff, noteOffTime)
         .exponentialRampToValueAtTime(
           initialFreq,
-          noteOffTime + voiceParams.modRelease,
+          noteOffTime + voiceParams.releaseModEnv,
         );
     }
 
@@ -2913,7 +2919,8 @@ export class Player<
     let totalDuration = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEndDuration = n.voiceParams.volRelease * envelopeCurve * 5;
+      const releaseEndDuration = n.voiceParams.releaseVolEnv * envelopeCurve *
+        5;
       const end = n.offset + n.noteDuration + releaseEndDuration;
       if (end > totalDuration) totalDuration = end;
     }
@@ -3119,7 +3126,8 @@ export class Player<
     return await this.runWithOfflineRenderGate(async () => {
       const { startTime: noteStartTime = 0, events: noteEvents = [] } =
         entry.noteEvent ?? {};
-      const releaseEndDuration = entry.voiceParams.volRelease * envelopeCurve *
+      const releaseEndDuration = entry.voiceParams.releaseVolEnv *
+        envelopeCurve *
         5;
       const totalDuration = Math.max(
         0.001,
@@ -3196,7 +3204,7 @@ export class Player<
     noteDuration: number,
     noteEvent: NoteOnEventEntry | undefined = undefined,
   ): Promise<RenderedBuffer> {
-    const releaseEndDuration = voiceParams.volRelease * envelopeCurve * 5;
+    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
     const buffer = await this.renderEntryAudioBuffer({
       channelNumber: channel.channelNumber,
       noteNumber: note.noteNumber,
@@ -3324,7 +3332,7 @@ export class Player<
     const safeTicks = noteDurationTicks === Infinity
       ? 0xFFFFFFFFn
       : BigInt(noteDurationTicks);
-    const volReleaseBits = f64ToBigInt(voiceParams.volRelease);
+    const volReleaseBits = f64ToBigInt(voiceParams.releaseVolEnv);
     const playbackRateBits = f64ToBigInt(voiceParams.playbackRate);
     const cacheKey = (BigInt(audioBufferId) << 160n) |
       (playbackRateBits << 96n) |
@@ -3383,7 +3391,7 @@ export class Player<
       ? this.noteOnEvents[timelineIndex]
       : undefined;
     const noteDuration = noteEvent?.duration ?? 0;
-    const releaseEndDuration = voiceParams.volRelease * envelopeCurve * 5;
+    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
 
     if (
       this.isSimpleNote({
@@ -3465,7 +3473,7 @@ export class Player<
       note.pressure,
     );
     const voiceParams = note.voiceParams ??
-      note.voice?.getAllParams(controllerState) ?? null;
+      (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     if (note.isTiledGhost) {
@@ -3587,14 +3595,14 @@ export class Player<
       const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
       const isEarlyCut = endTime < noteOffTime;
       if (isEarlyCut) {
-        const volDuration = note.voiceParams?.volRelease ?? 0;
-        const volRelease = endTime + volDuration;
+        const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
+        const releaseVolEnvTime = endTime + volDuration;
         try {
           note.volumeNode?.gain
             .cancelScheduledValues(endTime)
             .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
         } catch { /* already closed */ }
-        return this.waitSourceEnded(note, volRelease);
+        return this.waitSourceEnded(note, releaseVolEnvTime);
       }
       if (naturalEndTime <= now) {
         this.disconnectNote(note);
@@ -3603,8 +3611,8 @@ export class Player<
       return this.waitSourceEnded(note, naturalEndTime);
     }
 
-    const volDuration = note.voiceParams?.volRelease ?? 0;
-    const volRelease = endTime + volDuration;
+    const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
+    const releaseVolEnvTime = endTime + volDuration;
 
     if (note.volumeEnvelopeNode) {
       // "none" mode
@@ -3613,7 +3621,7 @@ export class Player<
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.modRelease ?? 0),
+            endTime + (note.voiceParams?.releaseModEnv ?? 0),
           );
         note.volumeEnvelopeNode.gain
           .cancelScheduledValues(endTime)
@@ -3634,7 +3642,7 @@ export class Player<
               .cancelScheduledValues(endTime)
               .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           } catch { /* already closed */ }
-          return this.waitSourceEnded(note, volRelease);
+          return this.waitSourceEnded(note, releaseVolEnvTime);
         }
         if (naturalEndTime <= now) {
           this.disconnectNote(note);
@@ -3650,7 +3658,7 @@ export class Player<
     }
 
     // waitSourceEnded always settles (onended or timeout).
-    return this.waitSourceEnded(note, volRelease);
+    return this.waitSourceEnded(note, releaseVolEnvTime);
   }
 }
 
@@ -3665,10 +3673,13 @@ export {
   f64ToBigInt,
   filterEnvelopeKeySet,
   FULLY_OPEN_FILTER_CENTS,
+  getVoiceParams,
+  getVoiceParamsForController,
   type MessageHandler,
   Note,
   pitchEnvelopeKeySet,
   RenderedBuffer,
   type TimelineEvent,
+  type VoiceParams,
   volumeEnvelopeKeySet,
 } from "./base-player.ts";

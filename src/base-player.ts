@@ -1,12 +1,327 @@
 import { type MidiData, type MidiSetTempoEvent, parseMidi } from "midi-file";
 import {
-  AudioData,
+  type AudioData,
+  type GeneratorStore,
   parse,
   SoundFont,
+  type ValueGeneratorKey,
+  ValueGeneratorKeys,
   Voice,
-  type VoiceParams,
-} from "@marmooo/soundfont-parser";
+} from "@marmooo/soundfont";
 import { OggVorbisDecoderWebWorker } from "@wasm-audio-decoders/ogg-vorbis";
+
+// @marmooo/soundfont exposes only raw, spec-unit generator values
+// (Voice.transformAllParams()/transformParams(), read via
+// GeneratorStore.get()). This section interprets those raw values into the
+// playback parameters the rest of this file needs: timecents -> seconds
+// (SF2 spec §8.1.2), centibel/permille scalings, keynum-scaled envelope
+// timings (§8.1.3), and the derived playbackRate/detune (§7.9, §8.1.2).
+// Field names match the SF2 generator names exactly (e.g. attackVolEnv,
+// not an invented alias like "volAttack") except playbackRate/detune,
+// which are genuine composites with no single spec-generator equivalent.
+
+export interface VoiceParams {
+  start: number;
+  end: number;
+  loopStart: number;
+  loopEnd: number;
+  instrument: number;
+  sampleID: number;
+  sample: AudioData;
+  sampleRate: number;
+  sampleName: string;
+  sampleModes: number;
+  exclusiveClass: number;
+  modLfoToPitch: number;
+  vibLfoToPitch: number;
+  modEnvToPitch: number;
+  initialFilterFc: number;
+  initialFilterQ: number;
+  modLfoToFilterFc: number;
+  modEnvToFilterFc: number;
+  modLfoToVolume: number;
+  chorusEffectsSend: number;
+  reverbEffectsSend: number;
+  pan: number;
+  delayModLFO: number;
+  freqModLFO: number;
+  delayVibLFO: number;
+  freqVibLFO: number;
+  delayModEnv: number;
+  attackModEnv: number;
+  holdModEnv: number;
+  decayModEnv: number;
+  sustainModEnv: number;
+  releaseModEnv: number;
+  initialAttenuation: number;
+  detune: number;
+  playbackRate: number;
+  delayVolEnv: number;
+  attackVolEnv: number;
+  holdVolEnv: number;
+  decayVolEnv: number;
+  sustainVolEnv: number;
+  releaseVolEnv: number;
+}
+
+function timecentToSecond(value: number): number {
+  return Math.pow(2, value / 1200);
+}
+
+// holdVolEnv/holdModEnv (and their decay counterparts) are scaled by how
+// far the note key is from C4 (SF2 spec §8.1.3).
+function keynumScaledSecond(
+  key: number,
+  timecents: number,
+  keynumScale: number,
+): number {
+  return timecentToSecond(timecents + (key - 60) * keynumScale);
+}
+
+function getPlaybackRate(
+  key: number,
+  originalPitch: number,
+  generators: GeneratorStore,
+): number {
+  const overridingRootKey = generators.get("overridingRootKey");
+  const scaleTuning = generators.get("scaleTuning");
+  const rootKey = overridingRootKey === -1 ? originalPitch : overridingRootKey;
+  return Math.pow(2, (key - rootKey) * scaleTuning / 1200);
+}
+
+function getDetune(
+  pitchCorrection: number,
+  generators: GeneratorStore,
+): number {
+  const coarseTune = generators.get("coarseTune") * 100;
+  const fineTune = generators.get("fineTune");
+  return coarseTune + fineTune + pitchCorrection;
+}
+
+type VoiceParamsHandlerFn = (
+  params: Partial<VoiceParams>,
+  generators: GeneratorStore,
+  key: number,
+  originalPitch: number,
+  pitchCorrection: number,
+) => void;
+
+// One entry per SF2 value generator (Generator.ts's ValueGeneratorKeys),
+// converting its raw value into the interpreted VoiceParams field(s) it
+// feeds.
+const voiceParamsHandlerFns: Record<ValueGeneratorKey, VoiceParamsHandlerFn> = {
+  modLfoToPitch: (p, g) => {
+    p.modLfoToPitch = g.get("modLfoToPitch");
+  },
+  vibLfoToPitch: (p, g) => {
+    p.vibLfoToPitch = g.get("vibLfoToPitch");
+  },
+  modEnvToPitch: (p, g) => {
+    p.modEnvToPitch = g.get("modEnvToPitch");
+  },
+  initialFilterFc: (p, g) => {
+    p.initialFilterFc = g.get("initialFilterFc");
+  },
+  initialFilterQ: (p, g) => {
+    p.initialFilterQ = g.get("initialFilterQ");
+  },
+  modLfoToFilterFc: (p, g) => {
+    p.modLfoToFilterFc = g.get("modLfoToFilterFc");
+  },
+  modEnvToFilterFc: (p, g) => {
+    p.modEnvToFilterFc = g.get("modEnvToFilterFc");
+  },
+  modLfoToVolume: (p, g) => {
+    p.modLfoToVolume = g.get("modLfoToVolume");
+  },
+  chorusEffectsSend: (p, g) => {
+    p.chorusEffectsSend = g.get("chorusEffectsSend") / 1000;
+  },
+  reverbEffectsSend: (p, g) => {
+    p.reverbEffectsSend = g.get("reverbEffectsSend") / 1000;
+  },
+  pan: (p, g) => {
+    p.pan = g.get("pan") / 1000;
+  },
+  delayModLFO: (p, g) => {
+    p.delayModLFO = timecentToSecond(g.get("delayModLFO"));
+  },
+  freqModLFO: (p, g) => {
+    p.freqModLFO = g.get("freqModLFO");
+  },
+  delayVibLFO: (p, g) => {
+    p.delayVibLFO = timecentToSecond(g.get("delayVibLFO"));
+  },
+  freqVibLFO: (p, g) => {
+    p.freqVibLFO = g.get("freqVibLFO");
+  },
+  delayModEnv: (p, g) => {
+    p.delayModEnv = timecentToSecond(g.get("delayModEnv"));
+  },
+  attackModEnv: (p, g) => {
+    p.attackModEnv = timecentToSecond(g.get("attackModEnv"));
+  },
+  holdModEnv: (p, g, key) => {
+    p.holdModEnv = keynumScaledSecond(
+      key,
+      g.get("holdModEnv"),
+      g.get("keynumToModEnvHold"),
+    );
+  },
+  decayModEnv: (p, g, key) => {
+    p.decayModEnv = keynumScaledSecond(
+      key,
+      g.get("decayModEnv"),
+      g.get("keynumToModEnvDecay"),
+    );
+  },
+  sustainModEnv: (p, g) => {
+    p.sustainModEnv = g.get("sustainModEnv") / 1000;
+  },
+  releaseModEnv: (p, g) => {
+    p.releaseModEnv = timecentToSecond(g.get("releaseModEnv"));
+  },
+  keynumToModEnvHold: (p, g, key) => {
+    p.holdModEnv = keynumScaledSecond(
+      key,
+      g.get("holdModEnv"),
+      g.get("keynumToModEnvHold"),
+    );
+  },
+  keynumToModEnvDecay: (p, g, key) => {
+    p.decayModEnv = keynumScaledSecond(
+      key,
+      g.get("decayModEnv"),
+      g.get("keynumToModEnvDecay"),
+    );
+  },
+  delayVolEnv: (p, g) => {
+    p.delayVolEnv = timecentToSecond(g.get("delayVolEnv"));
+  },
+  attackVolEnv: (p, g) => {
+    p.attackVolEnv = timecentToSecond(g.get("attackVolEnv"));
+  },
+  holdVolEnv: (p, g, key) => {
+    p.holdVolEnv = keynumScaledSecond(
+      key,
+      g.get("holdVolEnv"),
+      g.get("keynumToVolEnvHold"),
+    );
+  },
+  decayVolEnv: (p, g, key) => {
+    p.decayVolEnv = keynumScaledSecond(
+      key,
+      g.get("decayVolEnv"),
+      g.get("keynumToVolEnvDecay"),
+    );
+  },
+  sustainVolEnv: (p, g) => {
+    p.sustainVolEnv = g.get("sustainVolEnv") / 1000;
+  },
+  releaseVolEnv: (p, g) => {
+    p.releaseVolEnv = timecentToSecond(g.get("releaseVolEnv"));
+  },
+  keynumToVolEnvHold: (p, g, key) => {
+    p.holdVolEnv = keynumScaledSecond(
+      key,
+      g.get("holdVolEnv"),
+      g.get("keynumToVolEnvHold"),
+    );
+  },
+  keynumToVolEnvDecay: (p, g, key) => {
+    p.decayVolEnv = keynumScaledSecond(
+      key,
+      g.get("decayVolEnv"),
+      g.get("keynumToVolEnvDecay"),
+    );
+  },
+  initialAttenuation: (p, g) => {
+    p.initialAttenuation = g.get("initialAttenuation");
+  },
+  coarseTune: (p, g, _key, _originalPitch, pitchCorrection) => {
+    p.detune = getDetune(pitchCorrection, g);
+  },
+  fineTune: (p, g, _key, _originalPitch, pitchCorrection) => {
+    p.detune = getDetune(pitchCorrection, g);
+  },
+  scaleTuning: (p, g, key, originalPitch) => {
+    p.playbackRate = getPlaybackRate(key, originalPitch, g);
+  },
+} as Record<ValueGeneratorKey, VoiceParamsHandlerFn>;
+
+// Full interpreted VoiceParams for a voice at its current controller state
+// (modulator application + SF2 §9.5 clamping is done by Voice itself;
+// this only converts the resulting raw values into playback units).
+export function getVoiceParams(
+  voice: Voice,
+  controllerState: Float32Array,
+): VoiceParams {
+  const key = voice.key;
+  const sampleHeader = voice.sampleHeader;
+  const staticGenerators = voice.generators;
+  const params: Partial<VoiceParams> = {
+    start: staticGenerators.get("startAddrsCoarseOffset") * 32768 +
+      staticGenerators.get("startAddrsOffset"),
+    end: staticGenerators.get("endAddrsCoarseOffset") * 32768 +
+      staticGenerators.get("endAddrsOffset"),
+    loopStart: sampleHeader.loopStart +
+      staticGenerators.get("startloopAddrsCoarseOffset") * 32768 +
+      staticGenerators.get("startloopAddrsOffset"),
+    loopEnd: sampleHeader.loopEnd +
+      staticGenerators.get("endloopAddrsCoarseOffset") * 32768 +
+      staticGenerators.get("endloopAddrsOffset"),
+    instrument: staticGenerators.get("instrument"),
+    sampleID: staticGenerators.get("sampleID"),
+    sample: voice.sample,
+    sampleRate: sampleHeader.sampleRate,
+    sampleName: sampleHeader.sampleName,
+    sampleModes: staticGenerators.get("sampleModes"),
+    exclusiveClass: staticGenerators.get("exclusiveClass"),
+  };
+  const generators = voice.transformAllParams(controllerState);
+  for (let i = 0; i < ValueGeneratorKeys.length; i++) {
+    const generatorKey = ValueGeneratorKeys[i];
+    voiceParamsHandlerFns[generatorKey](
+      params,
+      generators,
+      key,
+      sampleHeader.originalPitch,
+      sampleHeader.pitchCorrection,
+    );
+  }
+  return params as VoiceParams;
+}
+
+// Interpreted VoiceParams fields affected by a single controller change
+// (e.g. one MIDI CC), for incremental updates instead of recomputing every
+// field on every controller message.
+export function getVoiceParamsForController(
+  voice: Voice,
+  controllerType: number,
+  controllerState: Float32Array,
+): Partial<VoiceParams> {
+  const params: Partial<VoiceParams> = {};
+  const updatedParams = voice.transformParams(controllerType, controllerState);
+  const updatedKeys = Object.keys(updatedParams) as ValueGeneratorKey[];
+  if (updatedKeys.length === 0) return params;
+  const generators = voice.generators.clone();
+  for (let i = 0; i < updatedKeys.length; i++) {
+    const generatorKey = updatedKeys[i];
+    generators.set(generatorKey, updatedParams[generatorKey]!);
+  }
+  const key = voice.key;
+  const sampleHeader = voice.sampleHeader;
+  for (let i = 0; i < updatedKeys.length; i++) {
+    voiceParamsHandlerFns[updatedKeys[i]](
+      params,
+      generators,
+      key,
+      sampleHeader.originalPitch,
+      sampleHeader.pitchCorrection,
+    );
+  }
+  return params;
+}
 
 const _f64Buf = new ArrayBuffer(8);
 const _f64Array = new Float64Array(_f64Buf);
@@ -546,12 +861,12 @@ export class ControllerState {
 }
 
 const volumeEnvelopeKeys = [
-  "volDelay",
-  "volAttack",
-  "volHold",
-  "volDecay",
-  "volSustain",
-  "volRelease",
+  "delayVolEnv",
+  "attackVolEnv",
+  "holdVolEnv",
+  "decayVolEnv",
+  "sustainVolEnv",
+  "releaseVolEnv",
   "initialAttenuation",
 ];
 export const volumeEnvelopeKeySet = new Set(volumeEnvelopeKeys);
@@ -559,20 +874,20 @@ const filterEnvelopeKeys = [
   "modEnvToPitch",
   "initialFilterFc",
   "modEnvToFilterFc",
-  "modDelay",
-  "modAttack",
-  "modHold",
-  "modDecay",
-  "modSustain",
+  "delayModEnv",
+  "attackModEnv",
+  "holdModEnv",
+  "decayModEnv",
+  "sustainModEnv",
 ];
 export const filterEnvelopeKeySet = new Set(filterEnvelopeKeys);
 const pitchEnvelopeKeys = [
   "modEnvToPitch",
-  "modDelay",
-  "modAttack",
-  "modHold",
-  "modDecay",
-  "modSustain",
+  "delayModEnv",
+  "attackModEnv",
+  "holdModEnv",
+  "decayModEnv",
+  "sustainModEnv",
   "playbackRate",
 ];
 export const pitchEnvelopeKeySet = new Set(pitchEnvelopeKeys);
@@ -854,7 +1169,7 @@ export class BasePlayer<
   addSoundFont(soundFont: SoundFont): void {
     const index = this.soundFonts.length;
     this.soundFonts.push(soundFont);
-    const presetHeaders = soundFont.parsed.presetHeaders;
+    const presetHeaders = soundFont.presetHeaders;
     const soundFontTable = this.soundFontTable;
     for (let i = 0; i < presetHeaders.length; i++) {
       const { preset, bank } = presetHeaders[i];
@@ -885,14 +1200,12 @@ export class BasePlayer<
       }
       const uint8Arrays = await Promise.all(promises);
       for (let i = 0; i < uint8Arrays.length; i++) {
-        const parsed = parse(uint8Arrays[i]);
-        const soundFont = new SoundFont(parsed);
+        const soundFont = parse(uint8Arrays[i]);
         this.addSoundFont(soundFont);
       }
     } else {
       const uint8Array = await this.toUint8Array(input);
-      const parsed = parse(uint8Array);
-      const soundFont = new SoundFont(parsed);
+      const soundFont = parse(uint8Array);
       this.addSoundFont(soundFont);
     }
   }
@@ -924,7 +1237,8 @@ export class BasePlayer<
   ): number | undefined {
     const resolved = this.resolveVoiceResult(channel, noteNumber, velocity);
     if (!resolved) return;
-    const { instrument, sampleID } = resolved.voice.generators;
+    const instrument = resolved.voice.generators.get("instrument");
+    const sampleID = resolved.voice.generators.get("sampleID");
     // Include a coarse start-offset tag so two presets that share sampleID
     // but slice different regions don't collide in rawAudioBufferCache
     // (createAudioBuffer applies voiceParams.start/end for PCM).
@@ -934,7 +1248,7 @@ export class BasePlayer<
       velocity,
       0,
     );
-    const params = resolved.voice.getAllParams(controllerState);
+    const params = getVoiceParams(resolved.voice, controllerState);
     const startTag = (params.start | 0) & 0xffff;
     return resolved.soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
       ((sampleID & 0xffff) << 8) + startTag;
@@ -1673,7 +1987,7 @@ export class BasePlayer<
     programNumber: number;
   } | null {
     for (let sfIndex = 0; sfIndex < this.soundFonts.length; sfIndex++) {
-      const headers = this.soundFonts[sfIndex].parsed.presetHeaders;
+      const headers = this.soundFonts[sfIndex].presetHeaders;
       for (let i = 0; i < headers.length; i++) {
         const { preset, bank } = headers[i];
         if (drumOnly) {
@@ -1881,18 +2195,21 @@ export class BasePlayer<
     if (!voiceParams) return;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
     const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.volSustain);
-    const volDelay = startTime + voiceParams.volDelay;
-    const volAttack = volDelay + voiceParams.volAttack;
-    const volHold = volAttack + voiceParams.volHold;
-    const decayDuration = voiceParams.volDecay;
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const delayVolEnvTime = startTime + voiceParams.delayVolEnv;
+    const attackVolEnvTime = delayVolEnvTime + voiceParams.attackVolEnv;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
+    const decayDuration = voiceParams.decayVolEnv;
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(1e-6, volDelay)
-      .exponentialRampToValueAtTime(attackVolume, volAttack)
-      .setValueAtTime(attackVolume, volHold)
-      .exponentialRampToValueAtTime(sustainVolume, volHold + decayDuration);
+      .setValueAtTime(1e-6, delayVolEnvTime)
+      .exponentialRampToValueAtTime(attackVolume, attackVolEnvTime)
+      .setValueAtTime(attackVolume, holdVolEnvTime)
+      .exponentialRampToValueAtTime(
+        sustainVolume,
+        holdVolEnvTime + decayDuration,
+      );
   }
 
   setDetune(channel: TChannel, note: TNote, scheduleTime: number): void {
@@ -1914,16 +2231,19 @@ export class BasePlayer<
     if (modEnvToPitch === 0) return;
     const peekRate = baseRate * this.centToRate(modEnvToPitch);
     const sustainRate = baseRate *
-      this.centToRate(modEnvToPitch * (1 - voiceParams.modSustain));
-    const modDelay = note.startTime + voiceParams.modDelay;
-    const modAttack = modDelay + voiceParams.modAttack;
-    const modHold = modAttack + voiceParams.modHold;
-    const decayDuration = voiceParams.modDecay;
+      this.centToRate(modEnvToPitch * (1 - voiceParams.sustainModEnv));
+    const delayModEnvTime = note.startTime + voiceParams.delayModEnv;
+    const attackModEnvTime = delayModEnvTime + voiceParams.attackModEnv;
+    const holdModEnvTime = attackModEnvTime + voiceParams.holdModEnv;
+    const decayDuration = voiceParams.decayModEnv;
     bufferSource.playbackRate
-      .setValueAtTime(baseRate, modDelay)
-      .exponentialRampToValueAtTime(peekRate, modAttack)
-      .setValueAtTime(peekRate, modHold)
-      .exponentialRampToValueAtTime(sustainRate, modHold + decayDuration);
+      .setValueAtTime(baseRate, delayModEnvTime)
+      .exponentialRampToValueAtTime(peekRate, attackModEnvTime)
+      .setValueAtTime(peekRate, holdModEnvTime)
+      .exponentialRampToValueAtTime(
+        sustainRate,
+        holdModEnvTime + decayDuration,
+      );
   }
 
   clampCutoffFrequency(frequency: number): number {
@@ -1944,27 +2264,27 @@ export class BasePlayer<
     const baseCent = voiceParams.initialFilterFc;
     const peekCent = baseCent + modEnvToFilterFc;
     const sustainCent = baseCent +
-      modEnvToFilterFc * (1 - voiceParams.modSustain);
+      modEnvToFilterFc * (1 - voiceParams.sustainModEnv);
     const baseFreq = this.centToHz(baseCent);
     const peekFreq = this.centToHz(peekCent);
     const sustainFreq = this.centToHz(sustainCent);
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const modDelay = startTime + voiceParams.modDelay;
-    const modAttack = modDelay + voiceParams.modAttack;
-    const modHold = modAttack + voiceParams.modHold;
-    const decayDuration = voiceParams.modDecay;
+    const delayModEnvTime = startTime + voiceParams.delayModEnv;
+    const attackModEnvTime = delayModEnvTime + voiceParams.attackModEnv;
+    const holdModEnvTime = attackModEnvTime + voiceParams.holdModEnv;
+    const decayDuration = voiceParams.decayModEnv;
     note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
-      .setValueAtTime(adjustedBaseFreq, modDelay)
-      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
-      .setValueAtTime(adjustedPeekFreq, modHold)
+      .setValueAtTime(adjustedBaseFreq, delayModEnvTime)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, attackModEnvTime)
+      .setValueAtTime(adjustedPeekFreq, holdModEnvTime)
       .exponentialRampToValueAtTime(
         adjustedSustainFreq,
-        modHold + decayDuration,
+        holdModEnvTime + decayDuration,
       );
   }
 
@@ -2017,7 +2337,7 @@ export class BasePlayer<
       note.pressure,
     );
     const voiceParams = note.voiceParams ??
-      note.voice?.getAllParams(controllerState) ?? null;
+      (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     if (note.isTiledGhost) return;
@@ -2275,8 +2595,8 @@ export class BasePlayer<
     endTime: number,
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
-    const volDuration = note.voiceParams?.volRelease ?? 0;
-    const volRelease = endTime + volDuration;
+    const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
+    const releaseVolEnvTime = endTime + volDuration;
 
     if (note.volumeEnvelopeNode) {
       try {
@@ -2284,7 +2604,7 @@ export class BasePlayer<
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.modRelease ?? 0),
+            endTime + (note.voiceParams?.releaseModEnv ?? 0),
           );
         note.volumeEnvelopeNode.gain
           .cancelScheduledValues(endTime)
@@ -2300,7 +2620,7 @@ export class BasePlayer<
 
     // waitSourceEnded always settles (onended or timeout), so notePromises
     // cannot hang if the browser skips onended under load.
-    return this.waitSourceEnded(note, volRelease);
+    return this.waitSourceEnded(note, releaseVolEnvTime);
   }
 
   noteOffChannel(
@@ -2546,10 +2866,13 @@ export class BasePlayer<
         note.velocity,
         note.pressure,
       );
-      const voiceParams = note.voice?.getParams(
-        controllerType,
-        controllerState,
-      );
+      const voiceParams = note.voice
+        ? getVoiceParamsForController(
+          note.voice,
+          controllerType,
+          controllerState,
+        )
+        : undefined;
       if (!voiceParams) return;
       let applyVolumeEnvelope = false;
       let applyFilterEnvelope = false;
@@ -2918,7 +3241,7 @@ export class BasePlayer<
                 event.velocity!,
                 0,
               );
-              const voiceParams = voice.getAllParams(controllerState);
+              const voiceParams = getVoiceParams(voice, controllerState);
               if (!seenPreloadIds.has(audioBufferId)) {
                 seenPreloadIds.add(audioBufferId);
                 preloadEntries.push({ audioBufferId, voiceParams });

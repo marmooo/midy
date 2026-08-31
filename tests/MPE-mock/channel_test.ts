@@ -18,7 +18,7 @@ import {
   assertEquals,
   assertNotEquals,
   flushNotePromises,
-  makeDefaultVoiceParams,
+  makeMockVoice,
   sanOptions,
   setMockCurrentTime,
   setupMidyPlayer,
@@ -163,12 +163,8 @@ Deno.test(
   async () => {
     const player = setupMidyPlayer();
     player.soundFonts[0] = {
-      getVoice: () => ({
-        generators: { instrument: 0, sampleID: 0 },
-        getParams: () => ({}),
-        getAllParams: () => makeDefaultVoiceParams(2),
-      }),
-    } as unknown as import("@marmooo/soundfont-parser").SoundFont;
+      getVoice: () => makeMockVoice(2),
+    } as unknown as import("@marmooo/soundfont").SoundFont;
 
     setMockCurrentTime(player.audioContext, 320.0);
     const t = player.audioContext.currentTime;

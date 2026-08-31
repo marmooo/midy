@@ -281,7 +281,7 @@ export function registerNoteTests(
     sanOptions,
     async () => {
       // exclusiveClass is read from note.voiceParams.exclusiveClass, which is
-      // set via note.voice.getAllParams(). Pass exclusiveClass=1 to the factory
+      // set via getVoiceParams(). Pass exclusiveClass=1 to the factory
       // so the soundfont stub returns it correctly.
       const player = makePlayer(1);
       const channel = player.channels[0];

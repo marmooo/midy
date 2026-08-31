@@ -11,6 +11,8 @@ import {
   envelopeCurve,
   filterEnvelopeKeySet,
   FULLY_OPEN_FILTER_CENTS,
+  getVoiceParams,
+  getVoiceParamsForController,
   type MessageHandler,
   Note as BaseNote,
   type NoteOnEntry,
@@ -19,10 +21,11 @@ import {
   Player,
   RenderedBuffer,
   type TimelineEvent,
+  type VoiceParams,
   volumeEnvelopeKeySet,
 } from "./player.ts";
 import { type MidiData, type MidiSetTempoEvent } from "midi-file";
-import { Voice, type VoiceParams } from "@marmooo/soundfont-parser";
+import { type Voice } from "@marmooo/soundfont";
 import {
   createConvolutionReverb,
   createConvolutionReverbImpulse,
@@ -1269,7 +1272,8 @@ export class MidyGM2 extends Player<Note, Channel> {
   ): number | undefined {
     const resolved = this.resolveVoiceResult(channel, noteNumber, velocity);
     if (!resolved) return;
-    const { instrument, sampleID } = resolved.voice.generators;
+    const instrument = resolved.voice.generators.get("instrument");
+    const sampleID = resolved.voice.generators.get("sampleID");
     return resolved.soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
       (sampleID << 8);
   }
@@ -1855,7 +1859,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     programNumber: number;
   } | null {
     for (let sfIndex = 0; sfIndex < this.soundFonts.length; sfIndex++) {
-      const headers = this.soundFonts[sfIndex].parsed.presetHeaders;
+      const headers = this.soundFonts[sfIndex].presetHeaders;
       for (let i = 0; i < headers.length; i++) {
         const { preset, bank } = headers[i];
         if (drumOnly) {
@@ -2044,7 +2048,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (!voiceParams) return;
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getAmplitudeControl(channel));
-    const sustainVolume = attackVolume * (1 - voiceParams.volSustain);
+    const sustainVolume = attackVolume * (1 - voiceParams.sustainVolEnv);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
     note.volumeEnvelopeNode?.gain
       .cancelScheduledValues(scheduleTime)
@@ -2062,18 +2066,21 @@ export class MidyGM2 extends Player<Note, Channel> {
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
       (1 + this.getAmplitudeControl(channel));
     const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.volSustain);
-    const volDelay = startTime + voiceParams.volDelay;
-    const volAttack = volDelay + voiceParams.volAttack;
-    const volHold = volAttack + voiceParams.volHold;
-    const decayDuration = voiceParams.volDecay;
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const delayVolEnvTime = startTime + voiceParams.delayVolEnv;
+    const attackVolEnvTime = delayVolEnvTime + voiceParams.attackVolEnv;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
+    const decayDuration = voiceParams.decayVolEnv;
     note.volumeEnvelopeNode.gain
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(0, startTime)
-      .setValueAtTime(1e-6, volDelay)
-      .exponentialRampToValueAtTime(attackVolume, volAttack)
-      .setValueAtTime(attackVolume, volHold)
-      .exponentialRampToValueAtTime(sustainVolume, volHold + decayDuration);
+      .setValueAtTime(1e-6, delayVolEnvTime)
+      .exponentialRampToValueAtTime(attackVolume, attackVolEnvTime)
+      .setValueAtTime(attackVolume, holdVolEnvTime)
+      .exponentialRampToValueAtTime(
+        sustainVolume,
+        holdVolEnvTime + decayDuration,
+      );
   }
 
   setPortamentoDetune(
@@ -2137,18 +2144,18 @@ export class MidyGM2 extends Player<Note, Channel> {
     const baseCent = voiceParams.initialFilterFc +
       this.getFilterCutoffControl(channel);
     const sustainCent = baseCent +
-      voiceParams.modEnvToFilterFc * (1 - voiceParams.modSustain);
+      voiceParams.modEnvToFilterFc * (1 - voiceParams.sustainModEnv);
     const baseFreq = this.centToHz(baseCent) * scale;
     const sustainFreq = this.centToHz(sustainCent) * scale;
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
     const portamentoTime = startTime + this.getPortamentoTime(channel, note);
-    const modDelay = startTime + voiceParams.modDelay;
+    const delayModEnvTime = startTime + voiceParams.delayModEnv;
     note.adjustedBaseFreq = adjustedSustainFreq;
     note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
-      .setValueAtTime(adjustedBaseFreq, modDelay)
+      .setValueAtTime(adjustedBaseFreq, delayModEnvTime)
       .exponentialRampToValueAtTime(adjustedSustainFreq, portamentoTime);
   }
 
@@ -2165,7 +2172,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       this.getFilterCutoffControl(channel);
     const peekCent = baseCent + modEnvToFilterFc;
     const sustainCent = baseCent +
-      modEnvToFilterFc * (1 - voiceParams.modSustain);
+      modEnvToFilterFc * (1 - voiceParams.sustainModEnv);
     const softPedalFactor = this.getSoftPedalFactor(channel, note);
     const baseFreq = this.centToHz(baseCent) * softPedalFactor;
     const peekFreq = this.centToHz(peekCent) * softPedalFactor;
@@ -2173,20 +2180,20 @@ export class MidyGM2 extends Player<Note, Channel> {
     const adjustedBaseFreq = this.clampCutoffFrequency(baseFreq);
     const adjustedPeekFreq = this.clampCutoffFrequency(peekFreq);
     const adjustedSustainFreq = this.clampCutoffFrequency(sustainFreq);
-    const modDelay = startTime + voiceParams.modDelay;
-    const modAttack = modDelay + voiceParams.modAttack;
-    const modHold = modAttack + voiceParams.modHold;
-    const decayDuration = voiceParams.modDecay;
+    const delayModEnvTime = startTime + voiceParams.delayModEnv;
+    const attackModEnvTime = delayModEnvTime + voiceParams.attackModEnv;
+    const holdModEnvTime = attackModEnvTime + voiceParams.holdModEnv;
+    const decayDuration = voiceParams.decayModEnv;
     note.adjustedBaseFreq = adjustedBaseFreq;
     note.filterEnvelopeNode.frequency
       .cancelScheduledValues(scheduleTime)
       .setValueAtTime(adjustedBaseFreq, startTime)
-      .setValueAtTime(adjustedBaseFreq, modDelay)
-      .exponentialRampToValueAtTime(adjustedPeekFreq, modAttack)
-      .setValueAtTime(adjustedPeekFreq, modHold)
+      .setValueAtTime(adjustedBaseFreq, delayModEnvTime)
+      .exponentialRampToValueAtTime(adjustedPeekFreq, attackModEnvTime)
+      .setValueAtTime(adjustedPeekFreq, holdModEnvTime)
       .exponentialRampToValueAtTime(
         adjustedSustainFreq,
-        modHold + decayDuration,
+        holdModEnvTime + decayDuration,
       );
   }
 
@@ -2219,7 +2226,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       velocity,
     );
     const voiceParams = note.voiceParams ??
-      note.voice?.getAllParams(controllerState) ?? null;
+      (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     if (note.isTiledGhost) {
@@ -2493,14 +2500,14 @@ export class MidyGM2 extends Player<Note, Channel> {
       const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
       const isEarlyCut = endTime < noteOffTime;
       if (isEarlyCut) {
-        const volDuration = note.voiceParams?.volRelease ?? 0;
-        const volRelease = endTime + volDuration;
+        const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
+        const releaseVolEnvTime = endTime + volDuration;
         try {
           note.volumeNode?.gain
             .cancelScheduledValues(endTime)
             .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
         } catch { /* already closed */ }
-        return this.waitSourceEnded(note, volRelease);
+        return this.waitSourceEnded(note, releaseVolEnvTime);
       }
       if (naturalEndTime <= now) {
         this.disconnectNote(note);
@@ -2509,8 +2516,8 @@ export class MidyGM2 extends Player<Note, Channel> {
       return this.waitSourceEnded(note, naturalEndTime);
     }
 
-    const volDuration = note.voiceParams?.volRelease ?? 0;
-    const volRelease = endTime + volDuration;
+    const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
+    const releaseVolEnvTime = endTime + volDuration;
 
     if (note.volumeEnvelopeNode) {
       // "none" mode
@@ -2519,7 +2526,7 @@ export class MidyGM2 extends Player<Note, Channel> {
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.modRelease ?? 0),
+            endTime + (note.voiceParams?.releaseModEnv ?? 0),
           );
         note.volumeEnvelopeNode.gain
           .cancelScheduledValues(endTime)
@@ -2540,7 +2547,7 @@ export class MidyGM2 extends Player<Note, Channel> {
               .cancelScheduledValues(endTime)
               .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
           } catch { /* already closed */ }
-          return this.waitSourceEnded(note, volRelease);
+          return this.waitSourceEnded(note, releaseVolEnvTime);
         }
         if (naturalEndTime <= now) {
           this.disconnectNote(note);
@@ -2555,7 +2562,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       } catch { /* already closed */ }
     }
 
-    return this.waitSourceEnded(note, volRelease);
+    return this.waitSourceEnded(note, releaseVolEnvTime);
   }
 
   override noteOffChannel(
@@ -2854,10 +2861,13 @@ export class MidyGM2 extends Player<Note, Channel> {
         note.noteNumber,
         note.velocity,
       );
-      const voiceParams = note.voice?.getParams(
-        controllerType,
-        controllerState,
-      );
+      const voiceParams = note.voice
+        ? getVoiceParamsForController(
+          note.voice,
+          controllerType,
+          controllerState,
+        )
+        : undefined;
       if (!voiceParams) return;
       let applyVolumeEnvelope = false;
       let applyFilterEnvelope = false;
