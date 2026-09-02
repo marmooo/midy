@@ -2177,6 +2177,7 @@ export class BasePlayer<
   updateChannelDetune(channel: TChannel, scheduleTime: number): void {
     channel.processScheduledNotes((note) => {
       if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
+      if (!note.bufferSource) return;
       this.setDetune(channel, note, scheduleTime);
     });
   }
@@ -2213,9 +2214,11 @@ export class BasePlayer<
   }
 
   setDetune(channel: TChannel, note: TNote, scheduleTime: number): void {
+    const src = note.bufferSource;
+    if (!src) return;
     const detune = this.calcNoteDetune(channel, note);
     const timeConstant = this.perceptualSmoothingTime / 5;
-    (note.bufferSource as AudioBufferSourceNode).detune
+    src.detune
       .cancelAndHoldAtTime(scheduleTime)
       .setTargetAtTime(detune, scheduleTime, timeConstant);
   }
