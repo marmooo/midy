@@ -2295,6 +2295,8 @@ export class BasePlayer<
     const audioContext = this.audioContext;
     const { voiceParams } = note;
     if (!voiceParams) return;
+    const src = note.bufferSource;
+    if (!src) return;
     note.modLfo = new OscillatorNode(audioContext, {
       frequency: this.centToHz(voiceParams.freqModLFO),
     });
@@ -2316,7 +2318,7 @@ export class BasePlayer<
       note.modLfoToFilterFc.connect(note.filterEnvelopeNode!.frequency);
     }
     note.modLfo!.connect(note.modLfoToPitch);
-    note.modLfoToPitch.connect(note.bufferSource!.detune);
+    note.modLfoToPitch.connect(src.detune);
     note.modLfo!.connect(note.modLfoToVolume);
     const volumeTarget = note.volumeEnvelopeNode ?? note.volumeNode;
     if (volumeTarget) note.modLfoToVolume.connect(volumeTarget.gain);
@@ -2797,7 +2799,7 @@ export class BasePlayer<
       note.modLfoToPitch?.gain
         .cancelAndHoldAtTime(scheduleTime)
         .setTargetAtTime(depth, scheduleTime, timeConstant);
-    } else {
+    } else if (note.bufferSource) {
       this.startModulation(channel, note, scheduleTime);
     }
   }
@@ -2918,7 +2920,7 @@ export class BasePlayer<
         note.modLfoToPitch?.gain
           .cancelAndHoldAtTime(scheduleTime)
           .setTargetAtTime(depth, scheduleTime, timeConstant);
-      } else {
+      } else if (note.bufferSource) {
         this.startModulation(channel, note, scheduleTime);
       }
     });
