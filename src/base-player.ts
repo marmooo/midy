@@ -1073,6 +1073,13 @@ export class BasePlayer<
   ignoreDrumNoteOff: boolean = true;
   noteAudioBufferIds: (number | undefined)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
+  // Soft limit on concurrent live voices (entries in soundingNotes).
+  // Sustained-pedal songs that never release can otherwise accumulate
+  // unbounded voices and collapse the audio graph / tab.
+  // Default 64. <= 0 means unlimited (legacy behaviour).
+  // Not applied under OfflineAudioContext (offline bakes must keep every
+  // scheduled onset).
+  maxVoices: number = 64;
   // Max time to wait for natural note-release tails at song end before
   // force-stopping remaining notes. Also bounds
   // waitNotePromisesInterruptible so seek/pause/stop can break out of a
@@ -2466,6 +2473,8 @@ export class BasePlayer<
     if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
+    // Free room for this voice before it joins soundingNotes.
+    this.enforceMaxVoices(startTime, 1);
     if (note.renderedBuffer?.isFull) {
       volumeNode.connect((this.masterVolume as unknown) as AudioNode);
     } else {
@@ -2475,6 +2484,54 @@ export class BasePlayer<
     this.handleExclusiveClass(note, channel, startTime);
     this.handleDrumExclusiveClass(note, channel, startTime);
     this.soundingNotes.add(note);
+  }
+
+  // Count non-ending live voices currently in the sounding set.
+  protected countSoundingVoices(): number {
+    let n = 0;
+    for (const note of this.soundingNotes) {
+      if (!note.ending && !note.isTiledGhost) n++;
+    }
+    return n;
+  }
+
+  // Force-stop the oldest live voice (FIFO via Set insertion order).
+  // Removes it from activeNotes / sustainNotes so sustain-held notes can
+  // actually leave the pool. Returns true if a voice was stolen.
+  protected stealOldestVoice(scheduleTime: number): boolean {
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      note.ending = true;
+      const channels = this.channels;
+      for (let ch = 0; ch < channels.length; ch++) {
+        const channel = channels[ch];
+        if (!channel) continue;
+        const stack = channel.activeNotes[note.noteNumber];
+        if (stack) {
+          const idx = stack.indexOf(note);
+          if (idx >= 0) stack.splice(idx, 1);
+        }
+        const sIdx = channel.sustainNotes.indexOf(note);
+        if (sIdx >= 0) channel.sustainNotes.splice(sIdx, 1);
+      }
+      // Fire-and-forget; soundOffNote always settles.
+      void this.soundOffNote(note, scheduleTime);
+      return true;
+    }
+    return false;
+  }
+
+  // Keep concurrent live voices at or under maxVoices.
+  // reserve: slots to leave free for notes about to join (usually 1).
+  // maxVoices <= 0 disables the limit. Offline renders are never clipped.
+  protected enforceMaxVoices(scheduleTime: number, reserve = 1): void {
+    if (this.audioContext instanceof OfflineAudioContext) return;
+    const max = this.maxVoices | 0;
+    if (max <= 0) return;
+    const need = Math.max(0, reserve | 0);
+    while (this.countSoundingVoices() + need > max) {
+      if (!this.stealOldestVoice(scheduleTime)) break;
+    }
   }
 
   async noteOnChannel(
@@ -2491,6 +2548,11 @@ export class BasePlayer<
       note.voice = this.resolveVoice(channel, noteNumber, velocity);
     }
     if (!note.voice) return;
+    // Free oldest voices early so async prep does not start on top of an
+    // already-over-budget sustain pile (steal runs again in setNoteRouting).
+    if (!note.isTiledGhost) {
+      this.enforceMaxVoices(t, 1);
+    }
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
     }
