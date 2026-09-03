@@ -373,6 +373,9 @@ export class Note {
   // buffer (no per-note AudioBufferSourceNode). BasePlayer treats these as no-ops.
   isTiledGhost: boolean = false;
   tiledNoteDuration: number = 0;
+  // True after noteOff was deferred because the sustain pedal is down.
+  // Counts toward maxPedalVoices (not merely "pedal was on at noteOn").
+  heldByPedal: boolean = false;
   audioBufferId?: number;
   // Polyphonic key pressure (MIDI poly aftertouch), 0-127. Only meaningful
   // for subclasses (e.g. Midy's) whose Channel actually tracks/updates it
@@ -1074,12 +1077,13 @@ export class BasePlayer<
   noteAudioBufferIds: (number | undefined)[] = [];
   preloadEntries: { audioBufferId: number; voiceParams: VoiceParams }[] = [];
   // Soft limit on concurrent live voices (entries in soundingNotes).
-  // Sustained-pedal songs that never release can otherwise accumulate
-  // unbounded voices and collapse the audio graph / tab.
-  // Default 64. <= 0 means unlimited (legacy behaviour).
-  // Not applied under OfflineAudioContext (offline bakes must keep every
-  // scheduled onset).
+  // Default 64. <= 0 means unlimited.
+  // Not applied under OfflineAudioContext.
   maxVoices: number = 64;
+  // Cap on voices kept alive only by the sustain pedal (noteOff already
+  // received, heldByPedal). Keeps whole-song sustain from eating the entire
+  // maxVoices budget. Default 32. <= 0 means unlimited.
+  maxPedalVoices: number = 32;
   // Max time to wait for natural note-release tails at song end before
   // force-stopping remaining notes. Also bounds
   // waitNotePromisesInterruptible so seek/pause/stop can break out of a
@@ -2495,33 +2499,62 @@ export class BasePlayer<
     return n;
   }
 
+  // Count voices kept alive only by sustain (key already released).
+  protected countPedalVoices(): number {
+    let n = 0;
+    for (const note of this.soundingNotes) {
+      if (!note.ending && !note.isTiledGhost && note.heldByPedal) n++;
+    }
+    return n;
+  }
+
+  // Remove a note from activeNotes / sustainNotes on every channel that
+  // might hold it, then force-stop the audio graph.
+  protected forceStopVoice(note: TNote, scheduleTime: number): void {
+    note.ending = true;
+    note.heldByPedal = false;
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
+      if (!channel) continue;
+      const stack = channel.activeNotes[note.noteNumber];
+      if (stack) {
+        const idx = stack.indexOf(note);
+        if (idx >= 0) stack.splice(idx, 1);
+      }
+      const sIdx = channel.sustainNotes.indexOf(note);
+      if (sIdx >= 0) channel.sustainNotes.splice(sIdx, 1);
+    }
+    void this.soundOffNote(note, scheduleTime);
+  }
+
   // Force-stop the oldest live voice (FIFO via Set insertion order).
-  // Removes it from activeNotes / sustainNotes so sustain-held notes can
-  // actually leave the pool. Returns true if a voice was stolen.
-  protected stealOldestVoice(scheduleTime: number): boolean {
+  // pedalOnly: only steal notes with heldByPedal (sustain residual).
+  protected stealOldestVoice(
+    scheduleTime: number,
+    pedalOnly = false,
+  ): boolean {
     for (const note of this.soundingNotes) {
       if (note.ending || note.isTiledGhost) continue;
-      note.ending = true;
-      const channels = this.channels;
-      for (let ch = 0; ch < channels.length; ch++) {
-        const channel = channels[ch];
-        if (!channel) continue;
-        const stack = channel.activeNotes[note.noteNumber];
-        if (stack) {
-          const idx = stack.indexOf(note);
-          if (idx >= 0) stack.splice(idx, 1);
-        }
-        const sIdx = channel.sustainNotes.indexOf(note);
-        if (sIdx >= 0) channel.sustainNotes.splice(sIdx, 1);
-      }
-      // Fire-and-forget; soundOffNote always settles.
-      void this.soundOffNote(note, scheduleTime);
+      if (pedalOnly && !note.heldByPedal) continue;
+      this.forceStopVoice(note, scheduleTime);
       return true;
     }
     return false;
   }
 
+  // Cap sustain-only residuals. Called when a noteOff is deferred to pedal.
+  protected enforceMaxPedalVoices(scheduleTime: number): void {
+    if (this.audioContext instanceof OfflineAudioContext) return;
+    const max = this.maxPedalVoices | 0;
+    if (max <= 0) return;
+    while (this.countPedalVoices() > max) {
+      if (!this.stealOldestVoice(scheduleTime, true)) break;
+    }
+  }
+
   // Keep concurrent live voices at or under maxVoices.
+  // Prefer stealing pedal residuals before still-held keys.
   // reserve: slots to leave free for notes about to join (usually 1).
   // maxVoices <= 0 disables the limit. Offline renders are never clipped.
   protected enforceMaxVoices(scheduleTime: number, reserve = 1): void {
@@ -2530,7 +2563,8 @@ export class BasePlayer<
     if (max <= 0) return;
     const need = Math.max(0, reserve | 0);
     while (this.countSoundingVoices() + need > max) {
-      if (!this.stealOldestVoice(scheduleTime)) break;
+      if (this.stealOldestVoice(scheduleTime, true)) continue;
+      if (!this.stealOldestVoice(scheduleTime, false)) break;
     }
   }
 
@@ -2708,11 +2742,24 @@ export class BasePlayer<
           return;
         }
       }
-      if (0.5 <= channel.state.sustainPedal) return;
+      if (0.5 <= channel.state.sustainPedal) {
+        // Defer release to pedal-up, but mark as pedal residual so
+        // maxPedalVoices can drop the oldest when the sustain pile grows.
+        const deferred = this.findNoteForOff(channel, noteNumber);
+        if (deferred && !deferred.heldByPedal) {
+          deferred.heldByPedal = true;
+          if (channel.sustainNotes.indexOf(deferred) < 0) {
+            channel.sustainNotes.push(deferred);
+          }
+          this.enforceMaxPedalVoices(endTime);
+        }
+        return;
+      }
     }
     const note = this.findNoteForOff(channel, noteNumber);
     if (!note) return;
     note.ending = true;
+    note.heldByPedal = false;
     this.removeFromActiveNotes(channel, noteNumber);
     const promise = note.ready.then(() => {
       if (!note.voice) return;
