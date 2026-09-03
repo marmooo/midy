@@ -2385,8 +2385,11 @@ export class MidyGM2 extends Player<Note, Channel> {
     note: Note,
     startTime: number,
   ): void {
+    if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
+    // Free room for this voice before it joins soundingNotes.
+    this.enforceMaxVoices(startTime, 1);
     if (note.renderedBuffer?.isFull) {
       volumeNode.connect((this.masterVolume as unknown) as AudioNode);
     } else {
@@ -2429,6 +2432,12 @@ export class MidyGM2 extends Player<Note, Channel> {
       note.voice = this.resolveVoice(channel, noteNumber, velocity);
     }
     if (!note.voice) return;
+    // Free oldest voices early so async prep does not start on top of an
+    // already-over-budget sustain / sostenuto pile (steal runs again in
+    // setNoteRouting).
+    if (!note.isTiledGhost) {
+      this.enforceMaxVoices(t, 1);
+    }
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
     }
@@ -2585,15 +2594,37 @@ export class MidyGM2 extends Player<Note, Channel> {
         }
       }
       const state = channel.state;
-      if (0.5 <= state.sustainPedal) return;
+      // Defer release while sustain is down. Mark as pedal residual so
+      // maxPedalVoices can drop the oldest when the sustain pile grows.
+      if (0.5 <= state.sustainPedal) {
+        const deferred = this.findNoteForOff(channel, noteNumber);
+        if (deferred && !deferred.heldByPedal) {
+          deferred.heldByPedal = true;
+          if (channel.sustainNotes.indexOf(deferred) < 0) {
+            channel.sustainNotes.push(deferred);
+          }
+          this.enforceMaxPedalVoices(endTime);
+        }
+        return;
+      }
+      // Same treatment for sostenuto: notes captured by the pedal count
+      // toward maxPedalVoices while they remain held after key release.
       const heldBySostenuto = channel.sostenutoNotes.some(
         (n) => n.noteNumber === noteNumber && !n.ending,
       );
-      if (0.5 <= state.sostenutoPedal && heldBySostenuto) return;
+      if (0.5 <= state.sostenutoPedal && heldBySostenuto) {
+        const deferred = this.findNoteForOff(channel, noteNumber);
+        if (deferred && !deferred.heldByPedal) {
+          deferred.heldByPedal = true;
+          this.enforceMaxPedalVoices(endTime);
+        }
+        return;
+      }
     }
     const note = this.findNoteForOff(channel, noteNumber);
     if (!note) return;
     note.ending = true;
+    note.heldByPedal = false;
     this.removeFromActiveNotes(channel, noteNumber);
     const promise = note.ready.then(() => {
       if (!note.voice) return;
@@ -2601,6 +2632,27 @@ export class MidyGM2 extends Player<Note, Channel> {
     });
     this.notePromises.push(promise);
     return promise;
+  }
+
+  // Also drop from sostenutoNotes (base only cleans sustainNotes).
+  protected override forceStopVoice(note: Note, scheduleTime: number): void {
+    note.ending = true;
+    note.heldByPedal = false;
+    const channels = this.channels;
+    for (let ch = 0; ch < channels.length; ch++) {
+      const channel = channels[ch];
+      if (!channel) continue;
+      const stack = channel.activeNotes[note.noteNumber];
+      if (stack) {
+        const idx = stack.indexOf(note);
+        if (idx >= 0) stack.splice(idx, 1);
+      }
+      const sIdx = channel.sustainNotes.indexOf(note);
+      if (sIdx >= 0) channel.sustainNotes.splice(sIdx, 1);
+      const oIdx = channel.sostenutoNotes.indexOf(note);
+      if (oIdx >= 0) channel.sostenutoNotes.splice(oIdx, 1);
+    }
+    void this.soundOffNote(note, scheduleTime);
   }
 
   override releaseSustainPedal(
