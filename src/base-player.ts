@@ -356,6 +356,9 @@ export class Note {
   voice: Voice | null = null;
   voiceParams: VoiceParams | null = null;
   adjustedBaseFreq: number = 20000;
+  // SF2 filter DC-gain compensation (1/√Q). Multiplied into the volume
+  // envelope so resonance does not raise overall level (SF2 §8.1.3).
+  filterDcGain: number = 1;
   index: number = -1;
   ending: boolean = false;
   bufferSource: AudioBufferSourceNode | null = null;
@@ -946,6 +949,40 @@ export const envelopeCurve = 1 / (-Math.log(cbToRatio(-1000)));
 // generator: 13500 cents (≈19913Hz via centToHz, see clampCutoffFrequency).
 // The spec treats this as "no filtering" / fully open by convention
 export const FULLY_OPEN_FILTER_CENTS = 13500;
+
+// SF2 initialFilterQ is in centibels (cB) above DC gain (§8.1.3).
+// Web Audio BiquadFilterNode.Q is the linear quality factor of
+//   H(s) = 1 / (s² + s/Q + 1), not dB.
+//
+//   q_dB  = cB/10 − 20·log10(√2)   // so 0 cB → Q = 1/√2 (Butterworth, no peak)
+//   q_lin = 10^(q_dB/20)           // 100 cB → 10 dB of peak above that baseline
+//   dcGain = 1/√q_lin              // SF2: DC reduced by half the peak height
+//
+// Without the 20·log10(√2) offset, 0 cB would map to Q=1, which still has a
+// small resonance hump. SF2 at Q=0 means no peak (“gain at fc may be < 0”).
+export function sf2FilterQ(centibels: number): { q: number; dcGain: number } {
+  let qDb = centibels / 10;
+  if (qDb < 0) qDb = 0;
+  if (qDb > 96) qDb = 96;
+  // 0 cB → Q = 1/√2 (Butterworth); see comment above.
+  qDb -= 20 * Math.log10(Math.SQRT2);
+  const qLin = Math.pow(10, qDb / 20);
+  const q = Math.max(0.001, qLin);
+  const dcGain = 1 / Math.sqrt(q);
+  return { q, dcGain };
+}
+
+// True when the lowpass can still shape the signal. SF2: no effect only
+// when Fc ≥ ~20 kHz and Q ≤ 0.
+export function isFilterAudible(
+  initialFilterFc: number,
+  initialFilterQ: number,
+  modEnvToFilterFc: number,
+): boolean {
+  return modEnvToFilterFc !== 0 ||
+    initialFilterFc < FULLY_OPEN_FILTER_CENTS ||
+    initialFilterQ > 0;
+}
 
 export interface TimelineEvent {
   type: string;
@@ -2205,7 +2242,10 @@ export class BasePlayer<
     if (!note.volumeEnvelopeNode) return;
     const { voiceParams, startTime } = note;
     if (!voiceParams) return;
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
+    // Fold SF2 filter DC-gain compensation into the volume envelope so
+    // resonant peaks do not raise overall level (see sf2FilterQ).
+    const dc = note.filterDcGain;
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * dc;
     const sustainVolume = attackVolume *
       cbToRatio(-1000 * voiceParams.sustainVolEnv);
     const delayVolEnvTime = startTime + voiceParams.delayVolEnv;
@@ -2378,14 +2418,22 @@ export class BasePlayer<
     note.volumeNode = new GainNode(audioContext);
 
     note.volumeEnvelopeNode = new GainNode(audioContext);
-    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
-      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
-    note.filterEnvelopeNode = filterIsAudible
-      ? new BiquadFilterNode(audioContext, {
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    if (filterAudible) {
+      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+      note.filterDcGain = dcGain;
+      note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
         type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10,
-      })
-      : null;
+        Q: q,
+      });
+    } else {
+      note.filterDcGain = 1;
+      note.filterEnvelopeNode = null;
+    }
     this.setVolumeEnvelope(channel, note, now);
     if (note.filterEnvelopeNode) this.setFilterEnvelope(channel, note, now);
     this.setPitchEnvelope(note, now);

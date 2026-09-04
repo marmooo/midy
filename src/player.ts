@@ -12,10 +12,11 @@ import {
   ControllerState,
   envelopeCurve,
   f64ToBigInt,
-  FULLY_OPEN_FILTER_CENTS,
   getVoiceParams,
+  isFilterAudible,
   Note,
   RenderedBuffer,
+  sf2FilterQ,
   type TimelineEvent,
   type VoiceParams,
 } from "./base-player.ts";
@@ -2454,15 +2455,22 @@ export class Player<
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
-      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
-    const filterEnvelopeNode = filterIsAudible
-      ? new BiquadFilterNode(offlineContext, {
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    let filterEnvelopeNode: BiquadFilterNode | null = null;
+    let filterDcGain = 1;
+    if (filterAudible) {
+      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+      filterDcGain = dcGain;
+      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
         type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10,
+        Q: q,
         frequency: initialFreq,
-      })
-      : null;
+      });
+    }
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -2471,6 +2479,7 @@ export class Player<
         filterEnvelopeNode,
         volumeEnvelopeNode,
         adjustedBaseFreq: note.adjustedBaseFreq,
+        filterDcGain,
       },
     ) as unknown as TNote;
     this.setVolumeEnvelope(channel, offlineNote, 0);
@@ -2542,15 +2551,22 @@ export class Player<
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
-      voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
-    const filterEnvelopeNode = filterIsAudible
-      ? new BiquadFilterNode(offlineContext, {
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    let filterEnvelopeNode: BiquadFilterNode | null = null;
+    let filterDcGain = 1;
+    if (filterAudible) {
+      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+      filterDcGain = dcGain;
+      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
         type: "lowpass",
-        Q: voiceParams.initialFilterQ / 10,
+        Q: q,
         frequency: initialFreq,
-      })
-      : null;
+      });
+    }
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -2559,12 +2575,15 @@ export class Player<
         filterEnvelopeNode,
         volumeEnvelopeNode,
         adjustedBaseFreq: note.adjustedBaseFreq,
+        filterDcGain,
       },
     ) as unknown as TNote;
     this.setVolumeEnvelope(channel, offlineNote, 0);
-    this.setFilterEnvelope(channel, offlineNote, 0);
+    if (filterEnvelopeNode) this.setFilterEnvelope(channel, offlineNote, 0);
 
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
+    // Same DC compensation as setVolumeEnvelope (manual note-off ramp below).
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
+      filterDcGain;
     const sustainVolume = attackVolume *
       cbToRatio(-1000 * voiceParams.sustainVolEnv);
     const volDelayTime = voiceParams.delayVolEnv;
@@ -3515,15 +3534,23 @@ export class Player<
       } else {
         note.volumeEnvelopeNode = new GainNode(audioContext);
       }
-      // Skip Biquad when filter is fully open and mod envelope does not move it.
-      const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
-        voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS;
-      note.filterEnvelopeNode = filterIsAudible
-        ? new BiquadFilterNode(audioContext, {
+      // Skip Biquad when filter is fully open, Q is zero, and mod env is idle.
+      const filterAudible = isFilterAudible(
+        voiceParams.initialFilterFc,
+        voiceParams.initialFilterQ,
+        voiceParams.modEnvToFilterFc,
+      );
+      if (filterAudible) {
+        const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+        note.filterDcGain = dcGain;
+        note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
           type: "lowpass",
-          Q: voiceParams.initialFilterQ / 10,
-        })
-        : null;
+          Q: q,
+        });
+      } else {
+        note.filterDcGain = 1;
+        note.filterEnvelopeNode = null;
+      }
       this.setVolumeEnvelope(channel, note, now);
       if (note.filterEnvelopeNode) this.setFilterEnvelope(channel, note, now);
       // Pitch env only when modEnv actually sweeps rate; otherwise a single
@@ -3675,10 +3702,12 @@ export {
   FULLY_OPEN_FILTER_CENTS,
   getVoiceParams,
   getVoiceParamsForController,
+  isFilterAudible,
   type MessageHandler,
   Note,
   pitchEnvelopeKeySet,
   RenderedBuffer,
+  sf2FilterQ,
   type TimelineEvent,
   type VoiceParams,
   volumeEnvelopeKeySet,
