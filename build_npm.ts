@@ -12,6 +12,7 @@ await build({
   shims: {
     deno: true,
   },
+  rootTestDir: "./tests",
   package: {
     name: "@marmooo/midy",
     version: "0.6.4",
