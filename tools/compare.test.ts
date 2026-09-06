@@ -6,6 +6,8 @@
 //   3. Pitch bend — frequency shifts with channel pitch bend
 //   4. CC7 volume — level tracks control change during a note
 //   5. Sustain pedal — note continues after note-off while pedal is down
+//   6. CC11 expression — same squared curve as volume, independent of CC7
+//   7. CC10 pan — hard-left then hard-right balance shift
 //
 // Usage:
 //   deno test -A tools/compare.test.ts
@@ -13,7 +15,9 @@
 // WAV outputs land in OUT_DIR for manual inspection.
 import { buildSingleNoteMidi } from "./gen-single-note-midi.ts";
 import {
+  buildExpressionCcMidi,
   buildHiHatExclusiveMidi,
+  buildPanCcMidi,
   buildPitchBendMidi,
   buildSustainPedalMidi,
   buildVolumeCcMidi,
@@ -1068,4 +1072,312 @@ Deno.test("sustain pedal holds note after note-off vs fluidsynth", async (t) => 
     refMono,
     refRate,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Test 6: CC11 expression
+// ---------------------------------------------------------------------------
+// Same squared curve as CC7: (expr/127)² with volume held fixed.
+const EXPR_HIGH_START = 0.15;
+const EXPR_HIGH_END = 0.4;
+const EXPR_LOW_START = 0.7;
+const EXPR_LOW_END = 1.0;
+const EXPR_DROP_MIN_DB = 20;
+const EXPR_DROP_ERR_MAX_DB = 10;
+
+Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  const midiPath = `${OUT_DIR}/expression-cc.mid`;
+
+  await t.step("generate expression-CC MIDI", async () => {
+    const bytes = buildExpressionCcMidi({});
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  const { mono: refMono, sampleRate: refRate } = await renderScenarioReference(
+    t,
+    midiPath,
+    `${OUT_DIR}/fluidsynth-expression-cc.wav`,
+    fluidsynthBin,
+  );
+
+  await t.step("sanity-check fluidsynth expression drop", () => {
+    const high = windowRmsDb(refMono, refRate, EXPR_HIGH_START, EXPR_HIGH_END);
+    const low = windowRmsDb(refMono, refRate, EXPR_LOW_START, EXPR_LOW_END);
+    const drop = high - low;
+    console.log(
+      `  fluidsynth expression: high=${high.toFixed(1)}dB low=${
+        low.toFixed(1)
+      }dB drop=${drop.toFixed(1)}dB`,
+    );
+    if (drop < EXPR_DROP_MIN_DB) {
+      throw new Error(
+        `fluidsynth expression drop only ${
+          drop.toFixed(1)
+        }dB — CC11 may be ignored`,
+      );
+    }
+  });
+
+  await forEachCacheModeRender(
+    t,
+    midiPath,
+    "midy-expression-cc",
+    (label, candMono, sr) => {
+      const high = windowRmsDb(candMono, sr, EXPR_HIGH_START, EXPR_HIGH_END);
+      const low = windowRmsDb(candMono, sr, EXPR_LOW_START, EXPR_LOW_END);
+      const drop = high - low;
+      const refHigh = windowRmsDb(
+        refMono,
+        refRate,
+        EXPR_HIGH_START,
+        EXPR_HIGH_END,
+      );
+      const refLow = windowRmsDb(
+        refMono,
+        refRate,
+        EXPR_LOW_START,
+        EXPR_LOW_END,
+      );
+      const refDrop = refHigh - refLow;
+      const err = Math.abs(drop - refDrop);
+      console.log(
+        `  ${label}: high=${high.toFixed(1)}dB low=${low.toFixed(1)}dB ` +
+          `drop=${drop.toFixed(1)}dB (ref drop=${refDrop.toFixed(1)} err=${
+            err.toFixed(1)
+          })`,
+      );
+      if (drop < EXPR_DROP_MIN_DB) {
+        throw new Error(
+          `${label}: expression drop only ${
+            drop.toFixed(1)
+          }dB — CC11 may be ignored`,
+        );
+      }
+      if (err > EXPR_DROP_ERR_MAX_DB) {
+        throw new Error(
+          `${label}: expression drop diverges from fluidsynth by ${
+            err.toFixed(1)
+          }dB`,
+        );
+      }
+    },
+    refMono,
+    refRate,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 7: CC10 pan
+// ---------------------------------------------------------------------------
+const PAN_LEFT_START = 0.15;
+const PAN_LEFT_END = 0.4;
+const PAN_RIGHT_START = 0.7;
+const PAN_RIGHT_END = 1.0;
+// Balance = (R - L) / (R + L) in linear RMS space; hard L ≈ -1, hard R ≈ +1.
+const PAN_BALANCE_MIN_SHIFT = 0.8; // must flip clearly left→right
+const PAN_BALANCE_ERR_MAX = 0.35; // vs fluidsynth balance delta
+
+function windowChannelRms(
+  samples: Float32Array,
+  sampleRate: number,
+  startSec: number,
+  endSec: number,
+): number {
+  const from = Math.floor(startSec * sampleRate);
+  const to = Math.floor(endSec * sampleRate);
+  return rms(samples, from, to);
+}
+
+/** Signed balance in [-1, +1]: negative = left-heavy, positive = right-heavy. */
+function stereoBalance(
+  left: Float32Array,
+  right: Float32Array,
+  sampleRate: number,
+  startSec: number,
+  endSec: number,
+): number {
+  const l = windowChannelRms(left, sampleRate, startSec, endSec);
+  const r = windowChannelRms(right, sampleRate, startSec, endSec);
+  const sum = l + r;
+  if (sum < 1e-12) return 0;
+  return (r - l) / sum;
+}
+
+Deno.test("CC10 pan left→right vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  const midiPath = `${OUT_DIR}/pan-cc.mid`;
+
+  await t.step("generate pan-CC MIDI", async () => {
+    const bytes = buildPanCcMidi({});
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  let refLeft: Float32Array | null = null;
+  let refRight: Float32Array | null = null;
+  let refRate = SAMPLE_RATE;
+
+  await t.step("render fluidsynth reference", async () => {
+    const wavPath = `${OUT_DIR}/fluidsynth-pan-cc.wav`;
+    await renderWithFluidsynth({
+      fluidsynthBin,
+      sf2Path: SF2_PATH,
+      midiPath,
+      wavPath,
+      sampleRate: SAMPLE_RATE,
+    });
+    await assertNonEmptyFile(wavPath);
+    const wav = readWav(await Deno.readFile(wavPath));
+    if (wav.numChannels < 2) {
+      throw new Error(
+        `fluidsynth pan reference is mono (${wav.numChannels} ch) — need stereo`,
+      );
+    }
+    refLeft = wav.channelData[0];
+    refRight = wav.channelData[1];
+    refRate = wav.sampleRate;
+  });
+  if (!refLeft || !refRight) {
+    throw new Error("fluidsynth pan reference missing");
+  }
+
+  await t.step("sanity-check fluidsynth pan shift", () => {
+    const leftBal = stereoBalance(
+      refLeft!,
+      refRight!,
+      refRate,
+      PAN_LEFT_START,
+      PAN_LEFT_END,
+    );
+    const rightBal = stereoBalance(
+      refLeft!,
+      refRight!,
+      refRate,
+      PAN_RIGHT_START,
+      PAN_RIGHT_END,
+    );
+    const shift = rightBal - leftBal;
+    console.log(
+      `  fluidsynth pan: leftBal=${leftBal.toFixed(3)} rightBal=${
+        rightBal.toFixed(3)
+      } shift=${shift.toFixed(3)}`,
+    );
+    if (leftBal > -0.2) {
+      throw new Error(
+        `fluidsynth left window not left-heavy (bal=${leftBal.toFixed(3)})`,
+      );
+    }
+    if (rightBal < 0.2) {
+      throw new Error(
+        `fluidsynth right window not right-heavy (bal=${rightBal.toFixed(3)})`,
+      );
+    }
+    if (shift < PAN_BALANCE_MIN_SHIFT) {
+      throw new Error(
+        `fluidsynth pan shift only ${shift.toFixed(3)} — CC10 may be ignored`,
+      );
+    }
+  });
+
+  for (const cacheMode of CACHE_MODES) {
+    const midyWavPath = `${OUT_DIR}/midy-pan-cc-${cacheMode}.wav`;
+    await t.step(`render midy (${cacheMode})`, async () => {
+      const wavBytes = await renderMidyMode({
+        harnessDir: HARNESS_DIR,
+        midiPath,
+        soundFontPath: SF2_PATH,
+        cacheMode,
+        sampleRate: SAMPLE_RATE,
+      });
+      if (wavBytes.length === 0) {
+        throw new Error(`midy (${cacheMode}) returned empty WAV`);
+      }
+      await Deno.writeFile(midyWavPath, wavBytes);
+    });
+    await t.step(`check midy (${cacheMode})`, async () => {
+      const wav = readWav(await Deno.readFile(midyWavPath));
+      if (wav.numChannels < 2) {
+        throw new Error(
+          `midy(${cacheMode}) pan render is mono — need stereo for CC10`,
+        );
+      }
+      const left = wav.channelData[0];
+      const right = wav.channelData[1];
+      const leftBal = stereoBalance(
+        left,
+        right,
+        wav.sampleRate,
+        PAN_LEFT_START,
+        PAN_LEFT_END,
+      );
+      const rightBal = stereoBalance(
+        left,
+        right,
+        wav.sampleRate,
+        PAN_RIGHT_START,
+        PAN_RIGHT_END,
+      );
+      const shift = rightBal - leftBal;
+      const refLeftBal = stereoBalance(
+        refLeft!,
+        refRight!,
+        refRate,
+        PAN_LEFT_START,
+        PAN_LEFT_END,
+      );
+      const refRightBal = stereoBalance(
+        refLeft!,
+        refRight!,
+        refRate,
+        PAN_RIGHT_START,
+        PAN_RIGHT_END,
+      );
+      const refShift = refRightBal - refLeftBal;
+      const err = Math.abs(shift - refShift);
+      const label = `midy(${cacheMode})`;
+      console.log(
+        `  ${label}: leftBal=${leftBal.toFixed(3)} rightBal=${
+          rightBal.toFixed(3)
+        } shift=${shift.toFixed(3)} (ref shift=${refShift.toFixed(3)} err=${
+          err.toFixed(3)
+        })`,
+      );
+      if (leftBal > -0.15) {
+        throw new Error(
+          `${label}: left window not left-heavy (bal=${leftBal.toFixed(3)})`,
+        );
+      }
+      if (rightBal < 0.15) {
+        throw new Error(
+          `${label}: right window not right-heavy (bal=${rightBal.toFixed(3)})`,
+        );
+      }
+      if (shift < PAN_BALANCE_MIN_SHIFT) {
+        throw new Error(
+          `${label}: pan shift only ${shift.toFixed(3)} — CC10 may be ignored`,
+        );
+      }
+      if (err > PAN_BALANCE_ERR_MAX) {
+        throw new Error(
+          `${label}: pan shift diverges from fluidsynth by ${err.toFixed(3)}`,
+        );
+      }
+    });
+  }
 });

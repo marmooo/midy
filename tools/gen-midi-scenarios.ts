@@ -375,6 +375,96 @@ export function buildVolumeCcMidi(options?: {
 }
 
 /**
+ * CC11 expression scenario: note starts at high expression, then CC11 drops.
+ * Volume (CC7) stays fixed so only expression drives the level change.
+ *
+ * Timeline:
+ *   0.0  CC7=100, CC11=100, note on
+ *   0.5  CC11=20
+ *   1.2  note off
+ */
+export function buildExpressionCcMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  volume?: number;
+  highExpression?: number;
+  lowExpression?: number;
+  dropAt?: number;
+  noteDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const dropAt = options?.dropAt ?? 0.5;
+  const noteDuration = options?.noteDuration ?? 1.2;
+  const volume = options?.volume ?? 100;
+  const high = options?.highExpression ?? 100;
+  const low = options?.lowExpression ?? 20;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers: [
+      { time: 0, channel, controllerType: 7, value: volume },
+      { time: 0, channel, controllerType: 11, value: high },
+      { time: dropAt, channel, controllerType: 11, value: low },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * CC10 pan scenario: note starts hard-left, then pans hard-right.
+ *
+ * Timeline:
+ *   0.0  CC10=0 (left), note on
+ *   0.5  CC10=127 (right)
+ *   1.2  note off
+ */
+export function buildPanCcMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  leftPan?: number;
+  rightPan?: number;
+  panAt?: number;
+  noteDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const panAt = options?.panAt ?? 0.5;
+  const noteDuration = options?.noteDuration ?? 1.2;
+  const left = options?.leftPan ?? 0;
+  const right = options?.rightPan ?? 127;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers: [
+      { time: 0, channel, controllerType: 10, value: left },
+      { time: panAt, channel, controllerType: 10, value: right },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
  * Sustain pedal scenario: note-off while sustain is held, then pedal release.
  * Without sustain the note would be silent after note-off; with sustain it
  * must keep sounding until pedal up.
