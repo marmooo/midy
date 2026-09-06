@@ -515,8 +515,10 @@ export class Channel<TNote extends Note = Note> {
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     this.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
+    // Apply via channel.detune → setDetune only. Calling applyVoiceParams(14)
+    // would also run SF2 pitch-wheel modulators into voiceParams.detune and
+    // double the bend (±2 semitones → ±4).
     player.updateChannelDetune(this, t);
-    player.applyVoiceParams(this, 14, t);
   }
 
   setControlChange(
@@ -1525,9 +1527,14 @@ export class BasePlayer<
       case "programChange":
         channel.setProgramChange(event.programNumber!);
         break;
-      case "pitchBend":
-        channel.setPitchBend(event.value! + 8192, scheduleTime);
+      case "pitchBend": {
+        // midi-file uses signed [-8192, 8191]; raw MIDI / some paths use
+        // absolute [0, 16383]. Accept both without double-shifting.
+        const v = event.value!;
+        const absolute = (v >= -8192 && v <= 8191) ? v + 8192 : v;
+        channel.setPitchBend(absolute, scheduleTime);
         break;
+      }
       case "sysEx":
         this.handleSysEx(new Uint8Array(event.data!), scheduleTime, channels);
     }
@@ -2244,11 +2251,20 @@ export class BasePlayer<
   }
 
   updateChannelDetune(channel: TChannel, scheduleTime: number): void {
-    channel.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
-      if (!note.bufferSource) return;
-      this.setDetune(channel, note, scheduleTime);
-    });
+    // Apply synchronously to notes that already have a bufferSource.
+    // processScheduledNotes() defers via note.ready.then(...), which can
+    // race offline timeline walks that do not await controller events.
+    for (let i = 0; i < 128; i++) {
+      const stack = channel.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        if (note.renderedBuffer?.isFull || note.isTiledGhost) continue;
+        if (!note.bufferSource) continue;
+        this.setDetune(channel, note, scheduleTime);
+      }
+    }
   }
 
   calcNoteDetune(channel: TChannel, note: TNote): number {
@@ -2289,6 +2305,21 @@ export class BasePlayer<
     const src = note.bufferSource;
     if (!src) return;
     const detune = this.calcNoteDetune(channel, note);
+    // OfflineAudioContext: fold cents into playbackRate. Some Chromium
+    // offline paths apply bufferSource.detune automation unreliably, while
+    // playbackRate setValueAtTime is observed in the rendered buffer.
+    if (this.audioContext instanceof OfflineAudioContext) {
+      const baseRate = note.voiceParams?.playbackRate ?? 1;
+      const rate = baseRate * Math.pow(2, detune / 1200);
+      src.detune.cancelScheduledValues(scheduleTime).setValueAtTime(
+        0,
+        scheduleTime,
+      );
+      src.playbackRate
+        .cancelScheduledValues(scheduleTime)
+        .setValueAtTime(rate, scheduleTime);
+      return;
+    }
     const timeConstant = this.perceptualSmoothingTime / 5;
     src.detune
       .cancelAndHoldAtTime(scheduleTime)
@@ -3115,7 +3146,12 @@ export class BasePlayer<
   updateChannelVolume(channel: TChannel, scheduleTime: number): void {
     if (!channel.gainL) return;
     const state = channel.state;
-    const gain = state.volumeMSB * state.expressionMSB;
+    // GM / FluidSynth convention: channel volume and expression are applied
+    // as squared linear gains so equal CC steps feel closer to equal loudness.
+    // MIDI 1.0 does not mandate the curve; GM practice and fluidsynth use x².
+    const vol = state.volumeMSB;
+    const expr = state.expressionMSB;
+    const gain = vol * vol * expr * expr;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain

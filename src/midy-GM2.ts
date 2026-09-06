@@ -540,8 +540,8 @@ export class Channel extends BaseChannel<Note> {
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     this.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
+    // channel.detune only — applyVoiceParams(14) would double via SF2 modulators.
     player.updateChannelDetune(this, t);
-    player.applyVoiceParams(this, 14, t);
   }
 
   override setControlChange(
@@ -1347,9 +1347,14 @@ export class MidyGM2 extends Player<Note, Channel> {
       case "programChange":
         channel.setProgramChange(event.programNumber!);
         break;
-      case "pitchBend":
-        channel.setPitchBend(event.value! + 8192, scheduleTime);
+      case "pitchBend": {
+        // midi-file uses signed [-8192, 8191]; raw MIDI / some paths use
+        // absolute [0, 16383]. Accept both without double-shifting.
+        const v = event.value!;
+        const absolute = (v >= -8192 && v <= 8191) ? v + 8192 : v;
+        channel.setPitchBend(absolute, scheduleTime);
         break;
+      }
       case "sysEx":
         this.handleSysEx(new Uint8Array(event.data!), scheduleTime, channels);
         break;
@@ -1959,14 +1964,24 @@ export class MidyGM2 extends Player<Note, Channel> {
   }
 
   override updateChannelDetune(channel: Channel, scheduleTime: number): void {
-    channel.processScheduledNotes((note) => {
-      if (note.renderedBuffer?.isFull || note.isTiledGhost) return;
-      if (this.isPortamento(channel, note)) {
-        this.setPortamentoDetune(channel, note, scheduleTime);
-      } else {
-        this.setDetune(channel, note, scheduleTime);
+    // Apply synchronously. processScheduledNotes() defers via note.ready.then
+    // and offline timeline walks do not await controller events, so pitch
+    // bend / RPN updates would otherwise miss already-started bufferSources.
+    for (let i = 0; i < 128; i++) {
+      const stack = channel.activeNotes[i];
+      if (!stack) continue;
+      for (let j = 0; j < stack.length; j++) {
+        const note = stack[j];
+        if (note.ending) continue;
+        if (note.renderedBuffer?.isFull || note.isTiledGhost) continue;
+        if (!note.bufferSource) continue;
+        if (this.isPortamento(channel, note)) {
+          this.setPortamentoDetune(channel, note, scheduleTime);
+        } else {
+          this.setDetune(channel, note, scheduleTime);
+        }
       }
-    });
+    }
   }
 
   calcScaleOctaveTuning(channel: Channel, note: Note): number {
@@ -2984,7 +2999,10 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (!channel.gainL) return;
     const state = channel.state;
     const effect = this.getChannelAmplitudeControl(channel);
-    const gain = state.volumeMSB * state.expressionMSB * (1 + effect);
+    // GM / FluidSynth: volume and expression are squared linear gains.
+    const vol = state.volumeMSB;
+    const expr = state.expressionMSB;
+    const gain = vol * vol * expr * expr * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
@@ -3004,7 +3022,9 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (!gainL) return;
     const gainR = channel.keyBasedGainRs[keyNumber]!;
     const state = channel.state;
-    const defaultGain = state.volumeMSB * state.expressionMSB;
+    const vol = state.volumeMSB;
+    const expr = state.expressionMSB;
+    const defaultGain = vol * vol * expr * expr;
     const defaultPan = state.panMSB;
     const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
     const gain = (0 <= keyBasedVolume)

@@ -1344,6 +1344,7 @@ export class Midy extends MidyGM2 {
   }
 
   // Volume / expression / pan use virtual 14-bit readouts.
+  // GM / FluidSynth: volume and expression are squared linear gains.
   override updateChannelVolume(
     channel: GM2Channel,
     scheduleTime: number,
@@ -1352,7 +1353,9 @@ export class Midy extends MidyGM2 {
     if (!ch.gainL) return;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    const gain = state.volume * state.expression * (1 + effect);
+    const vol = state.volume;
+    const expr = state.expression;
+    const gain = vol * vol * expr * expr * (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.gainL.gain
@@ -1373,7 +1376,9 @@ export class Midy extends MidyGM2 {
     if (!gainL) return;
     const gainR = ch.keyBasedGainRs[keyNumber]!;
     const state = ch.state as ControllerState;
-    const defaultGain = state.volume * state.expression;
+    const vol = state.volume;
+    const expr = state.expression;
+    const defaultGain = vol * vol * expr * expr;
     const defaultPan = state.pan;
     const keyBasedVolume = this.getKeyBasedValue(ch, keyNumber, 7);
     const gain = (0 <= keyBasedVolume)
