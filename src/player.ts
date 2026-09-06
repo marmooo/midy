@@ -3835,21 +3835,6 @@ export class Player<
     } else {
       note.bufferSource.start(startTime);
     }
-    console.log(
-      "[setNoteAudioNode]",
-      "note",
-      note.noteNumber,
-      "cacheMode",
-      cacheMode,
-      "isOfflineBake",
-      isOfflineBake,
-      "isFullCached",
-      isFullCached,
-      "startTime",
-      startTime,
-      "audioBufferId",
-      note.audioBufferId,
-    );
   }
 
   override releaseNote(

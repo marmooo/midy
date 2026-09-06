@@ -1730,13 +1730,22 @@ export class BasePlayer<
     afterDisconnect?: () => void,
   ): Promise<void> {
     return new Promise((resolve) => {
+      // OfflineAudioContext.currentTime stays at 0 until startRendering().
+      // Disconnecting/neutering the graph here (via the wall-clock timeout
+      // below) would tear the nodes down *before* the offline render runs,
+      // producing a silent buffer. Leave the graph intact for OAC; the
+      // context is discarded after startRendering() anyway.
+      const isOffline = this.audioContext instanceof OfflineAudioContext;
+
       let settled = false;
       const finish = () => {
         if (settled) return;
         settled = true;
         try {
-          this.disconnectNote(note);
-          afterDisconnect?.();
+          if (!isOffline) {
+            this.disconnectNote(note);
+            afterDisconnect?.();
+          }
         } catch {
           // disconnect / modLfo.stop may throw if already torn down
         }
@@ -1744,6 +1753,18 @@ export class BasePlayer<
       };
       const src = note.bufferSource;
       if (!src) {
+        finish();
+        return;
+      }
+      // Offline: schedule stop for the render timeline, then resolve
+      // immediately so callers (e.g. renderWholeSongLive) are not blocked
+      // waiting for onended that only fires during startRendering().
+      if (isOffline) {
+        try {
+          src.stop(stopAt);
+        } catch {
+          // already stopped / never started
+        }
         finish();
         return;
       }
