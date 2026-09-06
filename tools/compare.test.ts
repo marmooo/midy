@@ -8,6 +8,9 @@
 //   5. Sustain pedal — note continues after note-off while pedal is down
 //   6. CC11 expression — same squared curve as volume, independent of CC7
 //   7. CC10 pan — hard-left then hard-right balance shift
+//   8. RPN pitch-bend range — sensitivity 12 semitones → +1 octave at max bend
+//   9. All Sound Off / All Notes Off — CC120 instant mute vs CC123 release
+//  10. Velocity dynamics — soft vs loud note level ratio vs fluidsynth
 //
 // Usage:
 //   deno test -A tools/compare.test.ts
@@ -15,11 +18,14 @@
 // WAV outputs land in OUT_DIR for manual inspection.
 import { buildSingleNoteMidi } from "./gen-single-note-midi.ts";
 import {
+  buildAllOffMidi,
   buildExpressionCcMidi,
   buildHiHatExclusiveMidi,
   buildPanCcMidi,
   buildPitchBendMidi,
+  buildPitchBendRangeMidi,
   buildSustainPedalMidi,
+  buildVelocityDynamicsMidi,
   buildVolumeCcMidi,
 } from "./gen-midi-scenarios.ts";
 import {
@@ -216,23 +222,17 @@ function assertSingleNoteMatch(
   const lagMs = (Math.abs(cmp.align.lagFrames) / ref.sampleRate) * 1000;
   if (lagMs > SINGLE_NOTE_MAX_LAG_MS) {
     throw new Error(
-      `${label}: onset lag ${
-        lagMs.toFixed(1)
-      }ms exceeds ${SINGLE_NOTE_MAX_LAG_MS}ms`,
+      `${label}: onset lag ${lagMs.toFixed(1)}ms exceeds ${SINGLE_NOTE_MAX_LAG_MS}ms`,
     );
   }
   if (cmp.residualDb > SINGLE_NOTE_RESIDUAL_DB_MAX) {
     throw new Error(
-      `${label}: residual ${
-        cmp.residualDb.toFixed(1)
-      }dB is above max ${SINGLE_NOTE_RESIDUAL_DB_MAX}dB (waveforms diverge)`,
+      `${label}: residual ${cmp.residualDb.toFixed(1)}dB is above max ${SINGLE_NOTE_RESIDUAL_DB_MAX}dB (waveforms diverge)`,
     );
   }
   if (cmp.envelopeCorrelation < SINGLE_NOTE_ENV_CORR_MIN) {
     throw new Error(
-      `${label}: envelope correlation ${
-        cmp.envelopeCorrelation.toFixed(3)
-      } below min ${SINGLE_NOTE_ENV_CORR_MIN}`,
+      `${label}: envelope correlation ${cmp.envelopeCorrelation.toFixed(3)} below min ${SINGLE_NOTE_ENV_CORR_MIN}`,
     );
   }
 }
@@ -356,9 +356,9 @@ function assertExclusiveCut(
   if (deltaError > 12) {
     throw new Error(
       `${label}: exclusive cut energy change diverges from fluidsynth ` +
-        `(cand Δ=${candDelta.toFixed(1)}dB ref Δ=${
-          refDelta.toFixed(1)
-        }dB, |err|=${deltaError.toFixed(1)}dB)`,
+        `(cand Δ=${candDelta.toFixed(1)}dB ref Δ=${refDelta.toFixed(1)}dB, |err|=${
+          deltaError.toFixed(1)
+        }dB)`,
     );
   }
 
@@ -368,9 +368,7 @@ function assertExclusiveCut(
   if (candTail > candAttack - EXCL_TAIL_VS_ATTACK_DB) {
     throw new Error(
       `${label}: tail (${candTail.toFixed(1)}dB) still near attack ` +
-        `(${
-          candAttack.toFixed(1)
-        }dB) — exclusive cut / release may not have fired`,
+        `(${candAttack.toFixed(1)}dB) — exclusive cut / release may not have fired`,
     );
   }
 
@@ -378,9 +376,7 @@ function assertExclusiveCut(
   console.log(formatCompareResult(`${label} waveform`, cmp));
   if (cmp.residualDb > EXCL_RESIDUAL_DB_MAX) {
     throw new Error(
-      `${label}: residual ${
-        cmp.residualDb.toFixed(1)
-      }dB above max ${EXCL_RESIDUAL_DB_MAX}dB`,
+      `${label}: residual ${cmp.residualDb.toFixed(1)}dB above max ${EXCL_RESIDUAL_DB_MAX}dB`,
     );
   }
   if (cmp.envelopeCorrelation < EXCL_ENV_CORR_MIN) {
@@ -455,22 +451,19 @@ Deno.test("single-note GM2 conformance (sanity + fluidsynth compare)", async (t)
       await Deno.writeFile(midyWavPath, wavBytes);
     });
 
-    await t.step(
-      `sanity + compare midy (${cacheMode}) vs fluidsynth`,
-      async () => {
-        const bytes = await Deno.readFile(midyWavPath);
-        const cand = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
-        console.log(
-          `  midy(${cacheMode}): onset=${cand.onsetTime.toFixed(3)}s sustain=${
-            cand.sustainDb.toFixed(1)
-          }dB pitch=${cand.pitchHz?.toFixed(1)}Hz (${
-            cand.pitchCentsError?.toFixed(1)
-          } cents)`,
-        );
-        if (!refCheck) throw new Error("fluidsynth reference missing");
-        assertSingleNoteMatch(`midy(${cacheMode})`, refCheck, cand);
-      },
-    );
+    await t.step(`sanity + compare midy (${cacheMode}) vs fluidsynth`, async () => {
+      const bytes = await Deno.readFile(midyWavPath);
+      const cand = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
+      console.log(
+        `  midy(${cacheMode}): onset=${cand.onsetTime.toFixed(3)}s sustain=${
+          cand.sustainDb.toFixed(1)
+        }dB pitch=${cand.pitchHz?.toFixed(1)}Hz (${
+          cand.pitchCentsError?.toFixed(1)
+        } cents)`,
+      );
+      if (!refCheck) throw new Error("fluidsynth reference missing");
+      assertSingleNoteMatch(`midy(${cacheMode})`, refCheck, cand);
+    });
   }
 });
 
@@ -823,9 +816,7 @@ Deno.test("pitch-bend up (+2 semitones) vs fluidsynth", async (t) => {
         );
         throw new Error(
           `${label}: pitch undetectable before=${before} after=${after}` +
-            ` (raw before=${rawBefore?.toFixed(1)} after=${
-              rawAfter?.toFixed(1)
-            })`,
+            ` (raw before=${rawBefore?.toFixed(1)} after=${rawAfter?.toFixed(1)})`,
         );
       }
       if (refBefore === null || refAfter === null) {
@@ -843,16 +834,12 @@ Deno.test("pitch-bend up (+2 semitones) vs fluidsynth", async (t) => {
       );
       if (candCents < 80) {
         throw new Error(
-          `${label}: pitch barely rose (Δ=${
-            candCents.toFixed(0)
-          }c) — bend may be ignored`,
+          `${label}: pitch barely rose (Δ=${candCents.toFixed(0)}c) — bend may be ignored`,
         );
       }
       if (err > PB_CENTS_TOLERANCE) {
         throw new Error(
-          `${label}: bend amount diverges from fluidsynth by ${
-            err.toFixed(0)
-          } cents`,
+          `${label}: bend amount diverges from fluidsynth by ${err.toFixed(0)} cents`,
         );
       }
       // Also check absolute after-pitch vs fluidsynth.
@@ -947,16 +934,12 @@ Deno.test("CC7 volume drop vs fluidsynth", async (t) => {
       );
       if (drop < VOL_DROP_MIN_DB) {
         throw new Error(
-          `${label}: volume drop only ${
-            drop.toFixed(1)
-          }dB — CC7 may be ignored`,
+          `${label}: volume drop only ${drop.toFixed(1)}dB — CC7 may be ignored`,
         );
       }
       if (err > VOL_DROP_ERR_MAX_DB) {
         throw new Error(
-          `${label}: volume drop diverges from fluidsynth by ${
-            err.toFixed(1)
-          }dB`,
+          `${label}: volume drop diverges from fluidsynth by ${err.toFixed(1)}dB`,
         );
       }
     },
@@ -1020,9 +1003,7 @@ Deno.test("sustain pedal holds note after note-off vs fluidsynth", async (t) => 
     if (!(held - released >= SUS_RELEASE_DROP_DB / 2)) {
       // Soft check on reference only
       console.log(
-        `  warn: fluidsynth release drop small (${
-          (held - released).toFixed(1)
-        }dB)`,
+        `  warn: fluidsynth release drop small (${(held - released).toFixed(1)}dB)`,
       );
     }
   });
@@ -1120,9 +1101,7 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
     );
     if (drop < EXPR_DROP_MIN_DB) {
       throw new Error(
-        `fluidsynth expression drop only ${
-          drop.toFixed(1)
-        }dB — CC11 may be ignored`,
+        `fluidsynth expression drop only ${drop.toFixed(1)}dB — CC11 may be ignored`,
       );
     }
   });
@@ -1141,12 +1120,7 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
         EXPR_HIGH_START,
         EXPR_HIGH_END,
       );
-      const refLow = windowRmsDb(
-        refMono,
-        refRate,
-        EXPR_LOW_START,
-        EXPR_LOW_END,
-      );
+      const refLow = windowRmsDb(refMono, refRate, EXPR_LOW_START, EXPR_LOW_END);
       const refDrop = refHigh - refLow;
       const err = Math.abs(drop - refDrop);
       console.log(
@@ -1157,9 +1131,7 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
       );
       if (drop < EXPR_DROP_MIN_DB) {
         throw new Error(
-          `${label}: expression drop only ${
-            drop.toFixed(1)
-          }dB — CC11 may be ignored`,
+          `${label}: expression drop only ${drop.toFixed(1)}dB — CC11 may be ignored`,
         );
       }
       if (err > EXPR_DROP_ERR_MAX_DB) {
@@ -1253,9 +1225,7 @@ Deno.test("CC10 pan left→right vs fluidsynth", async (t) => {
     refRight = wav.channelData[1];
     refRate = wav.sampleRate;
   });
-  if (!refLeft || !refRight) {
-    throw new Error("fluidsynth pan reference missing");
-  }
+  if (!refLeft || !refRight) throw new Error("fluidsynth pan reference missing");
 
   await t.step("sanity-check fluidsynth pan shift", () => {
     const leftBal = stereoBalance(
@@ -1380,4 +1350,420 @@ Deno.test("CC10 pan left→right vs fluidsynth", async (t) => {
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Test 8: RPN pitch-bend range (12 semitones → +1 octave at max)
+// ---------------------------------------------------------------------------
+const PBR_NOTE = 60;
+const PBR_PROGRAM = 0;
+const PBR_RANGE = 12; // semitones
+const PBR_BEFORE_START = 0.12;
+const PBR_BEFORE_END = 0.32;
+const PBR_AFTER_START = 0.55;
+const PBR_AFTER_END = 0.95;
+const PBR_CENTS_TOLERANCE = 120; // octave jump is large; allow SF variance
+
+Deno.test("RPN pitch-bend range (+12 semitones) vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  const midiPath = `${OUT_DIR}/pitch-bend-range.mid`;
+  const expectedHz = midiNoteToHz(PBR_NOTE);
+  // Unbent F0 band; after-band centred near +1 octave.
+  const beforeMinHz = expectedHz * 0.85;
+  const beforeMaxHz = expectedHz * 1.12;
+  const afterMinHz = expectedHz * 1.6;
+  const afterMaxHz = expectedHz * 2.4;
+
+  await t.step("generate RPN pitch-bend-range MIDI", async () => {
+    const bytes = buildPitchBendRangeMidi({
+      noteNumber: PBR_NOTE,
+      program: PBR_PROGRAM,
+      rangeSemitones: PBR_RANGE,
+    });
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  const { mono: refMono, sampleRate: refRate } = await renderScenarioReference(
+    t,
+    midiPath,
+    `${OUT_DIR}/fluidsynth-pitch-bend-range.wav`,
+    fluidsynthBin,
+  );
+
+  const pitchInWindow = (
+    mono: Float32Array,
+    sr: number,
+    a: number,
+    b: number,
+    minHz: number,
+    maxHz: number,
+  ): number | null =>
+    estimatePitchHz(
+      mono,
+      sr,
+      Math.floor(a * sr),
+      Math.floor(b * sr),
+      minHz,
+      maxHz,
+    );
+
+  await t.step("sanity-check fluidsynth octave bend", () => {
+    const before = pitchInWindow(
+      refMono,
+      refRate,
+      PBR_BEFORE_START,
+      PBR_BEFORE_END,
+      beforeMinHz,
+      beforeMaxHz,
+    );
+    const after = pitchInWindow(
+      refMono,
+      refRate,
+      PBR_AFTER_START,
+      PBR_AFTER_END,
+      afterMinHz,
+      afterMaxHz,
+    );
+    if (before === null || after === null) {
+      throw new Error(
+        `fluidsynth pitch undetectable before=${before} after=${after}`,
+      );
+    }
+    const cents = 1200 * Math.log2(after / before);
+    console.log(
+      `  fluidsynth range12: before=${before.toFixed(1)}Hz after=${
+        after.toFixed(1)
+      }Hz (Δ=${cents.toFixed(0)} cents)`,
+    );
+    // Expect roughly +1200 cents (±12 semitones).
+    if (cents < 800 || cents > 1500) {
+      throw new Error(
+        `fluidsynth range12 Δ=${cents.toFixed(0)} cents not near +1200`,
+      );
+    }
+  });
+
+  await forEachCacheModeRender(
+    t,
+    midiPath,
+    "midy-pitch-bend-range",
+    (label, candMono, sr) => {
+      const before = pitchInWindow(
+        candMono,
+        sr,
+        PBR_BEFORE_START,
+        PBR_BEFORE_END,
+        beforeMinHz,
+        beforeMaxHz,
+      );
+      const after = pitchInWindow(
+        candMono,
+        sr,
+        PBR_AFTER_START,
+        PBR_AFTER_END,
+        afterMinHz,
+        afterMaxHz,
+      );
+      const refBefore = pitchInWindow(
+        refMono,
+        refRate,
+        PBR_BEFORE_START,
+        PBR_BEFORE_END,
+        beforeMinHz,
+        beforeMaxHz,
+      );
+      const refAfter = pitchInWindow(
+        refMono,
+        refRate,
+        PBR_AFTER_START,
+        PBR_AFTER_END,
+        afterMinHz,
+        afterMaxHz,
+      );
+      if (before === null || after === null) {
+        const rawBefore = estimatePitchHz(
+          candMono,
+          sr,
+          Math.floor(PBR_BEFORE_START * sr),
+          Math.floor(PBR_BEFORE_END * sr),
+        );
+        const rawAfter = estimatePitchHz(
+          candMono,
+          sr,
+          Math.floor(PBR_AFTER_START * sr),
+          Math.floor(PBR_AFTER_END * sr),
+        );
+        throw new Error(
+          `${label}: pitch undetectable before=${before} after=${after}` +
+            ` (raw before=${rawBefore?.toFixed(1)} after=${rawAfter?.toFixed(1)})`,
+        );
+      }
+      if (refBefore === null || refAfter === null) {
+        throw new Error(`${label}: fluidsynth pitch missing`);
+      }
+      const candCents = 1200 * Math.log2(after / before);
+      const refCents = 1200 * Math.log2(refAfter / refBefore);
+      const err = Math.abs(candCents - refCents);
+      console.log(
+        `  ${label}: before=${before.toFixed(1)}Hz after=${
+          after.toFixed(1)
+        }Hz Δ=${candCents.toFixed(0)}c (ref Δ=${refCents.toFixed(0)}c err=${
+          err.toFixed(0)
+        }c)`,
+      );
+      if (candCents < 700) {
+        throw new Error(
+          `${label}: bend barely rose (Δ=${candCents.toFixed(0)}c) — RPN range may be ignored`,
+        );
+      }
+      if (err > PBR_CENTS_TOLERANCE) {
+        throw new Error(
+          `${label}: range12 bend diverges from fluidsynth by ${
+            err.toFixed(0)
+          } cents`,
+        );
+      }
+    },
+    refMono,
+    refRate,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 9: All Sound Off (CC120) / All Notes Off (CC123)
+// ---------------------------------------------------------------------------
+const ALLOFF_ACTIVE_START = 0.15;
+const ALLOFF_ACTIVE_END = 0.35;
+const ALLOFF_AFTER_START = 0.55;
+const ALLOFF_AFTER_END = 0.9;
+// Sound off should drop hard; notes off may leave a short release tail.
+const ASO_DROP_MIN_DB = 20;
+const ANO_DROP_MIN_DB = 8;
+const ALLOFF_DROP_ERR_MAX_DB = 15;
+
+async function runAllOffTest(
+  t: Deno.TestContext,
+  kind: "sound" | "notes",
+): Promise<void> {
+  const controllerType = kind === "sound" ? 120 : 123;
+  const dropMin = kind === "sound" ? ASO_DROP_MIN_DB : ANO_DROP_MIN_DB;
+  const midiPath = `${OUT_DIR}/all-${kind}-off.mid`;
+  const outPrefix = `midy-all-${kind}-off`;
+  const refWav = `${OUT_DIR}/fluidsynth-all-${kind}-off.wav`;
+
+  await t.step(`generate All ${kind} Off MIDI`, async () => {
+    const bytes = buildAllOffMidi({ controllerType });
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  const { mono: refMono, sampleRate: refRate } = await renderScenarioReference(
+    t,
+    midiPath,
+    refWav,
+    fluidsynthBin,
+  );
+
+  await t.step(`sanity-check fluidsynth All ${kind} Off`, () => {
+    const active = windowRmsDb(
+      refMono,
+      refRate,
+      ALLOFF_ACTIVE_START,
+      ALLOFF_ACTIVE_END,
+    );
+    const after = windowRmsDb(
+      refMono,
+      refRate,
+      ALLOFF_AFTER_START,
+      ALLOFF_AFTER_END,
+    );
+    const drop = active - after;
+    console.log(
+      `  fluidsynth all-${kind}-off: active=${active.toFixed(1)}dB after=${
+        after.toFixed(1)
+      }dB drop=${drop.toFixed(1)}dB`,
+    );
+    if (drop < dropMin) {
+      throw new Error(
+        `fluidsynth all-${kind}-off drop only ${drop.toFixed(1)}dB`,
+      );
+    }
+  });
+
+  await forEachCacheModeRender(
+    t,
+    midiPath,
+    outPrefix,
+    (label, candMono, sr) => {
+      const active = windowRmsDb(
+        candMono,
+        sr,
+        ALLOFF_ACTIVE_START,
+        ALLOFF_ACTIVE_END,
+      );
+      const after = windowRmsDb(
+        candMono,
+        sr,
+        ALLOFF_AFTER_START,
+        ALLOFF_AFTER_END,
+      );
+      const drop = active - after;
+      const refActive = windowRmsDb(
+        refMono,
+        refRate,
+        ALLOFF_ACTIVE_START,
+        ALLOFF_ACTIVE_END,
+      );
+      const refAfter = windowRmsDb(
+        refMono,
+        refRate,
+        ALLOFF_AFTER_START,
+        ALLOFF_AFTER_END,
+      );
+      const refDrop = refActive - refAfter;
+      const err = Math.abs(drop - refDrop);
+      console.log(
+        `  ${label}: active=${active.toFixed(1)}dB after=${
+          after.toFixed(1)
+        }dB drop=${drop.toFixed(1)}dB (ref drop=${refDrop.toFixed(1)} err=${
+          err.toFixed(1)
+        })`,
+      );
+      if (drop < dropMin) {
+        throw new Error(
+          `${label}: all-${kind}-off drop only ${drop.toFixed(1)}dB — CC may be ignored`,
+        );
+      }
+      if (err > ALLOFF_DROP_ERR_MAX_DB) {
+        throw new Error(
+          `${label}: all-${kind}-off drop diverges from fluidsynth by ${
+            err.toFixed(1)
+          }dB`,
+        );
+      }
+    },
+    refMono,
+    refRate,
+  );
+}
+
+Deno.test("All Sound Off (CC120) vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  await runAllOffTest(t, "sound");
+});
+
+Deno.test("All Notes Off (CC123) vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  await runAllOffTest(t, "notes");
+});
+
+// ---------------------------------------------------------------------------
+// Test 10: Velocity dynamics (soft vs loud)
+// ---------------------------------------------------------------------------
+const VEL_SOFT_START = 0.1;
+const VEL_SOFT_END = 0.45;
+const VEL_LOUD_START = 1.0;
+const VEL_LOUD_END = 1.35;
+const VEL_RATIO_MIN_DB = 4; // loud must be clearly louder than soft
+const VEL_RATIO_ERR_MAX_DB = 10;
+
+Deno.test("velocity soft vs loud vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  const midiPath = `${OUT_DIR}/velocity-dynamics.mid`;
+
+  await t.step("generate velocity-dynamics MIDI", async () => {
+    const bytes = buildVelocityDynamicsMidi({});
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  const { mono: refMono, sampleRate: refRate } = await renderScenarioReference(
+    t,
+    midiPath,
+    `${OUT_DIR}/fluidsynth-velocity-dynamics.wav`,
+    fluidsynthBin,
+  );
+
+  await t.step("sanity-check fluidsynth velocity ratio", () => {
+    const soft = windowRmsDb(refMono, refRate, VEL_SOFT_START, VEL_SOFT_END);
+    const loud = windowRmsDb(refMono, refRate, VEL_LOUD_START, VEL_LOUD_END);
+    const ratio = loud - soft;
+    console.log(
+      `  fluidsynth velocity: soft=${soft.toFixed(1)}dB loud=${
+        loud.toFixed(1)
+      }dB ratio=${ratio.toFixed(1)}dB`,
+    );
+    if (ratio < VEL_RATIO_MIN_DB) {
+      throw new Error(
+        `fluidsynth velocity ratio only ${ratio.toFixed(1)}dB — vel may be ignored`,
+      );
+    }
+  });
+
+  await forEachCacheModeRender(
+    t,
+    midiPath,
+    "midy-velocity-dynamics",
+    (label, candMono, sr) => {
+      const soft = windowRmsDb(candMono, sr, VEL_SOFT_START, VEL_SOFT_END);
+      const loud = windowRmsDb(candMono, sr, VEL_LOUD_START, VEL_LOUD_END);
+      const ratio = loud - soft;
+      const refSoft = windowRmsDb(
+        refMono,
+        refRate,
+        VEL_SOFT_START,
+        VEL_SOFT_END,
+      );
+      const refLoud = windowRmsDb(
+        refMono,
+        refRate,
+        VEL_LOUD_START,
+        VEL_LOUD_END,
+      );
+      const refRatio = refLoud - refSoft;
+      const err = Math.abs(ratio - refRatio);
+      console.log(
+        `  ${label}: soft=${soft.toFixed(1)}dB loud=${loud.toFixed(1)}dB ` +
+          `ratio=${ratio.toFixed(1)}dB (ref ratio=${refRatio.toFixed(1)} err=${
+            err.toFixed(1)
+          })`,
+      );
+      if (ratio < VEL_RATIO_MIN_DB) {
+        throw new Error(
+          `${label}: velocity ratio only ${ratio.toFixed(1)}dB — vel may be ignored`,
+        );
+      }
+      if (err > VEL_RATIO_ERR_MAX_DB) {
+        throw new Error(
+          `${label}: velocity ratio diverges from fluidsynth by ${
+            err.toFixed(1)
+          }dB`,
+        );
+      }
+    },
+    refMono,
+    refRate,
+  );
 });

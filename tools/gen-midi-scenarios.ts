@@ -465,6 +465,153 @@ export function buildPanCcMidi(options?: {
 }
 
 /**
+ * RPN pitch-bend range scenario: set sensitivity to N semitones, then bend max.
+ *
+ * Timeline:
+ *   0.0  RPN (CC101=0, CC100=0), Data Entry MSB=rangeSemitones, null RPN
+ *   0.0  note on
+ *   bendAt  pitch bend max (+8191)
+ *   noteDuration  note off
+ *
+ * Default rangeSemitones=12 → max bend ≈ +1 octave.
+ */
+export function buildPitchBendRangeMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  /** Pitch-bend sensitivity in semitones (Data Entry MSB). Default 12. */
+  rangeSemitones?: number;
+  bendAt?: number;
+  noteDuration?: number;
+  bendValue?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const bendAt = options?.bendAt ?? 0.4;
+  const noteDuration = options?.noteDuration ?? 1.2;
+  const rangeSemitones = options?.rangeSemitones ?? 12;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers: [
+      // Select RPN 0,0 (pitch bend sensitivity)
+      { time: 0, channel, controllerType: 101, value: 0 },
+      { time: 0, channel, controllerType: 100, value: 0 },
+      // Data Entry MSB = semitones
+      { time: 0, channel, controllerType: 6, value: rangeSemitones },
+      { time: 0, channel, controllerType: 38, value: 0 },
+      // Null RPN
+      { time: 0, channel, controllerType: 101, value: 127 },
+      { time: 0, channel, controllerType: 100, value: 127 },
+    ],
+    pitchBends: [
+      { time: bendAt, channel, value: options?.bendValue ?? 8191 },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * All Sound Off (CC120) or All Notes Off (CC123) during a sustained note.
+ *
+ * Timeline:
+ *   0.0  note on (long)
+ *   cutAt  CC120 or CC123
+ *   (note-off never sent — the CC should end the voice)
+ */
+export function buildAllOffMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  /** 120 = All Sound Off, 123 = All Notes Off. */
+  controllerType?: 120 | 123;
+  cutAt?: number;
+  noteDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const cutAt = options?.cutAt ?? 0.4;
+  const noteDuration = options?.noteDuration ?? 2.0;
+  const controllerType = options?.controllerType ?? 120;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers: [
+      { time: cutAt, channel, controllerType, value: 0 },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 1,
+  });
+}
+
+/**
+ * Velocity dynamics: soft note then loud note (same pitch, fixed CC7/CC11).
+ *
+ * Timeline:
+ *   0.0  note on vel=soft, duration softDur
+ *   gap   silence
+ *   loudAt  note on vel=loud, duration loudDur
+ */
+export function buildVelocityDynamicsMidi(options?: {
+  noteNumber?: number;
+  channel?: number;
+  program?: number;
+  softVelocity?: number;
+  loudVelocity?: number;
+  softDuration?: number;
+  loudDuration?: number;
+  loudAt?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const softDuration = options?.softDuration ?? 0.6;
+  const loudDuration = options?.loudDuration ?? 0.6;
+  const loudAt = options?.loudAt ?? 0.9;
+  const noteNumber = options?.noteNumber ?? 60;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber,
+        velocity: options?.softVelocity ?? 40,
+        duration: softDuration,
+      },
+      {
+        time: loudAt,
+        channel,
+        noteNumber,
+        velocity: options?.loudVelocity ?? 100,
+        duration: loudDuration,
+      },
+    ],
+    controllers: [
+      { time: 0, channel, controllerType: 7, value: 100 },
+      { time: 0, channel, controllerType: 11, value: 100 },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 1.5,
+  });
+}
+
+/**
  * Sustain pedal scenario: note-off while sustain is held, then pedal release.
  * Without sustain the note would be silent after note-off; with sustain it
  * must keep sounding until pedal up.
