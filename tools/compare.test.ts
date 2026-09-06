@@ -222,17 +222,23 @@ function assertSingleNoteMatch(
   const lagMs = (Math.abs(cmp.align.lagFrames) / ref.sampleRate) * 1000;
   if (lagMs > SINGLE_NOTE_MAX_LAG_MS) {
     throw new Error(
-      `${label}: onset lag ${lagMs.toFixed(1)}ms exceeds ${SINGLE_NOTE_MAX_LAG_MS}ms`,
+      `${label}: onset lag ${
+        lagMs.toFixed(1)
+      }ms exceeds ${SINGLE_NOTE_MAX_LAG_MS}ms`,
     );
   }
   if (cmp.residualDb > SINGLE_NOTE_RESIDUAL_DB_MAX) {
     throw new Error(
-      `${label}: residual ${cmp.residualDb.toFixed(1)}dB is above max ${SINGLE_NOTE_RESIDUAL_DB_MAX}dB (waveforms diverge)`,
+      `${label}: residual ${
+        cmp.residualDb.toFixed(1)
+      }dB is above max ${SINGLE_NOTE_RESIDUAL_DB_MAX}dB (waveforms diverge)`,
     );
   }
   if (cmp.envelopeCorrelation < SINGLE_NOTE_ENV_CORR_MIN) {
     throw new Error(
-      `${label}: envelope correlation ${cmp.envelopeCorrelation.toFixed(3)} below min ${SINGLE_NOTE_ENV_CORR_MIN}`,
+      `${label}: envelope correlation ${
+        cmp.envelopeCorrelation.toFixed(3)
+      } below min ${SINGLE_NOTE_ENV_CORR_MIN}`,
     );
   }
 }
@@ -356,9 +362,9 @@ function assertExclusiveCut(
   if (deltaError > 12) {
     throw new Error(
       `${label}: exclusive cut energy change diverges from fluidsynth ` +
-        `(cand Δ=${candDelta.toFixed(1)}dB ref Δ=${refDelta.toFixed(1)}dB, |err|=${
-          deltaError.toFixed(1)
-        }dB)`,
+        `(cand Δ=${candDelta.toFixed(1)}dB ref Δ=${
+          refDelta.toFixed(1)
+        }dB, |err|=${deltaError.toFixed(1)}dB)`,
     );
   }
 
@@ -368,7 +374,9 @@ function assertExclusiveCut(
   if (candTail > candAttack - EXCL_TAIL_VS_ATTACK_DB) {
     throw new Error(
       `${label}: tail (${candTail.toFixed(1)}dB) still near attack ` +
-        `(${candAttack.toFixed(1)}dB) — exclusive cut / release may not have fired`,
+        `(${
+          candAttack.toFixed(1)
+        }dB) — exclusive cut / release may not have fired`,
     );
   }
 
@@ -376,7 +384,9 @@ function assertExclusiveCut(
   console.log(formatCompareResult(`${label} waveform`, cmp));
   if (cmp.residualDb > EXCL_RESIDUAL_DB_MAX) {
     throw new Error(
-      `${label}: residual ${cmp.residualDb.toFixed(1)}dB above max ${EXCL_RESIDUAL_DB_MAX}dB`,
+      `${label}: residual ${
+        cmp.residualDb.toFixed(1)
+      }dB above max ${EXCL_RESIDUAL_DB_MAX}dB`,
     );
   }
   if (cmp.envelopeCorrelation < EXCL_ENV_CORR_MIN) {
@@ -451,19 +461,22 @@ Deno.test("single-note GM2 conformance (sanity + fluidsynth compare)", async (t)
       await Deno.writeFile(midyWavPath, wavBytes);
     });
 
-    await t.step(`sanity + compare midy (${cacheMode}) vs fluidsynth`, async () => {
-      const bytes = await Deno.readFile(midyWavPath);
-      const cand = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
-      console.log(
-        `  midy(${cacheMode}): onset=${cand.onsetTime.toFixed(3)}s sustain=${
-          cand.sustainDb.toFixed(1)
-        }dB pitch=${cand.pitchHz?.toFixed(1)}Hz (${
-          cand.pitchCentsError?.toFixed(1)
-        } cents)`,
-      );
-      if (!refCheck) throw new Error("fluidsynth reference missing");
-      assertSingleNoteMatch(`midy(${cacheMode})`, refCheck, cand);
-    });
+    await t.step(
+      `sanity + compare midy (${cacheMode}) vs fluidsynth`,
+      async () => {
+        const bytes = await Deno.readFile(midyWavPath);
+        const cand = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
+        console.log(
+          `  midy(${cacheMode}): onset=${cand.onsetTime.toFixed(3)}s sustain=${
+            cand.sustainDb.toFixed(1)
+          }dB pitch=${cand.pitchHz?.toFixed(1)}Hz (${
+            cand.pitchCentsError?.toFixed(1)
+          } cents)`,
+        );
+        if (!refCheck) throw new Error("fluidsynth reference missing");
+        assertSingleNoteMatch(`midy(${cacheMode})`, refCheck, cand);
+      },
+    );
   }
 });
 
@@ -816,7 +829,9 @@ Deno.test("pitch-bend up (+2 semitones) vs fluidsynth", async (t) => {
         );
         throw new Error(
           `${label}: pitch undetectable before=${before} after=${after}` +
-            ` (raw before=${rawBefore?.toFixed(1)} after=${rawAfter?.toFixed(1)})`,
+            ` (raw before=${rawBefore?.toFixed(1)} after=${
+              rawAfter?.toFixed(1)
+            })`,
         );
       }
       if (refBefore === null || refAfter === null) {
@@ -834,12 +849,16 @@ Deno.test("pitch-bend up (+2 semitones) vs fluidsynth", async (t) => {
       );
       if (candCents < 80) {
         throw new Error(
-          `${label}: pitch barely rose (Δ=${candCents.toFixed(0)}c) — bend may be ignored`,
+          `${label}: pitch barely rose (Δ=${
+            candCents.toFixed(0)
+          }c) — bend may be ignored`,
         );
       }
       if (err > PB_CENTS_TOLERANCE) {
         throw new Error(
-          `${label}: bend amount diverges from fluidsynth by ${err.toFixed(0)} cents`,
+          `${label}: bend amount diverges from fluidsynth by ${
+            err.toFixed(0)
+          } cents`,
         );
       }
       // Also check absolute after-pitch vs fluidsynth.
@@ -934,12 +953,16 @@ Deno.test("CC7 volume drop vs fluidsynth", async (t) => {
       );
       if (drop < VOL_DROP_MIN_DB) {
         throw new Error(
-          `${label}: volume drop only ${drop.toFixed(1)}dB — CC7 may be ignored`,
+          `${label}: volume drop only ${
+            drop.toFixed(1)
+          }dB — CC7 may be ignored`,
         );
       }
       if (err > VOL_DROP_ERR_MAX_DB) {
         throw new Error(
-          `${label}: volume drop diverges from fluidsynth by ${err.toFixed(1)}dB`,
+          `${label}: volume drop diverges from fluidsynth by ${
+            err.toFixed(1)
+          }dB`,
         );
       }
     },
@@ -1003,7 +1026,9 @@ Deno.test("sustain pedal holds note after note-off vs fluidsynth", async (t) => 
     if (!(held - released >= SUS_RELEASE_DROP_DB / 2)) {
       // Soft check on reference only
       console.log(
-        `  warn: fluidsynth release drop small (${(held - released).toFixed(1)}dB)`,
+        `  warn: fluidsynth release drop small (${
+          (held - released).toFixed(1)
+        }dB)`,
       );
     }
   });
@@ -1101,7 +1126,9 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
     );
     if (drop < EXPR_DROP_MIN_DB) {
       throw new Error(
-        `fluidsynth expression drop only ${drop.toFixed(1)}dB — CC11 may be ignored`,
+        `fluidsynth expression drop only ${
+          drop.toFixed(1)
+        }dB — CC11 may be ignored`,
       );
     }
   });
@@ -1120,7 +1147,12 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
         EXPR_HIGH_START,
         EXPR_HIGH_END,
       );
-      const refLow = windowRmsDb(refMono, refRate, EXPR_LOW_START, EXPR_LOW_END);
+      const refLow = windowRmsDb(
+        refMono,
+        refRate,
+        EXPR_LOW_START,
+        EXPR_LOW_END,
+      );
       const refDrop = refHigh - refLow;
       const err = Math.abs(drop - refDrop);
       console.log(
@@ -1131,7 +1163,9 @@ Deno.test("CC11 expression drop vs fluidsynth", async (t) => {
       );
       if (drop < EXPR_DROP_MIN_DB) {
         throw new Error(
-          `${label}: expression drop only ${drop.toFixed(1)}dB — CC11 may be ignored`,
+          `${label}: expression drop only ${
+            drop.toFixed(1)
+          }dB — CC11 may be ignored`,
         );
       }
       if (err > EXPR_DROP_ERR_MAX_DB) {
@@ -1225,7 +1259,9 @@ Deno.test("CC10 pan left→right vs fluidsynth", async (t) => {
     refRight = wav.channelData[1];
     refRate = wav.sampleRate;
   });
-  if (!refLeft || !refRight) throw new Error("fluidsynth pan reference missing");
+  if (!refLeft || !refRight) {
+    throw new Error("fluidsynth pan reference missing");
+  }
 
   await t.step("sanity-check fluidsynth pan shift", () => {
     const leftBal = stereoBalance(
@@ -1503,7 +1539,9 @@ Deno.test("RPN pitch-bend range (+12 semitones) vs fluidsynth", async (t) => {
         );
         throw new Error(
           `${label}: pitch undetectable before=${before} after=${after}` +
-            ` (raw before=${rawBefore?.toFixed(1)} after=${rawAfter?.toFixed(1)})`,
+            ` (raw before=${rawBefore?.toFixed(1)} after=${
+              rawAfter?.toFixed(1)
+            })`,
         );
       }
       if (refBefore === null || refAfter === null) {
@@ -1521,7 +1559,9 @@ Deno.test("RPN pitch-bend range (+12 semitones) vs fluidsynth", async (t) => {
       );
       if (candCents < 700) {
         throw new Error(
-          `${label}: bend barely rose (Δ=${candCents.toFixed(0)}c) — RPN range may be ignored`,
+          `${label}: bend barely rose (Δ=${
+            candCents.toFixed(0)
+          }c) — RPN range may be ignored`,
         );
       }
       if (err > PBR_CENTS_TOLERANCE) {
@@ -1646,7 +1686,9 @@ async function runAllOffTest(
       );
       if (drop < dropMin) {
         throw new Error(
-          `${label}: all-${kind}-off drop only ${drop.toFixed(1)}dB — CC may be ignored`,
+          `${label}: all-${kind}-off drop only ${
+            drop.toFixed(1)
+          }dB — CC may be ignored`,
         );
       }
       if (err > ALLOFF_DROP_ERR_MAX_DB) {
@@ -1717,7 +1759,9 @@ Deno.test("velocity soft vs loud vs fluidsynth", async (t) => {
     );
     if (ratio < VEL_RATIO_MIN_DB) {
       throw new Error(
-        `fluidsynth velocity ratio only ${ratio.toFixed(1)}dB — vel may be ignored`,
+        `fluidsynth velocity ratio only ${
+          ratio.toFixed(1)
+        }dB — vel may be ignored`,
       );
     }
   });
@@ -1752,7 +1796,9 @@ Deno.test("velocity soft vs loud vs fluidsynth", async (t) => {
       );
       if (ratio < VEL_RATIO_MIN_DB) {
         throw new Error(
-          `${label}: velocity ratio only ${ratio.toFixed(1)}dB — vel may be ignored`,
+          `${label}: velocity ratio only ${
+            ratio.toFixed(1)
+          }dB — vel may be ignored`,
         );
       }
       if (err > VEL_RATIO_ERR_MAX_DB) {
