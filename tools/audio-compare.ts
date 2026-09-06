@@ -3,12 +3,7 @@
 // residual error so absolute level / small onset lag differences do not
 // dominate. Not a perceptual model — just enough to catch "wrong note",
 // "missing cut-off", "envelope shape wildly different" class failures.
-import {
-  findOffsetFrame,
-  findOnsetFrame,
-  rms,
-  toDb,
-} from "./audio-metrics.ts";
+import { findOffsetFrame, findOnsetFrame, rms, toDb } from "./audio-metrics.ts";
 
 export interface AlignResult {
   /** Sample lag of `candidate` relative to `reference` (positive = candidate late). */
@@ -62,7 +57,10 @@ export function alignByCrossCorrelation(
   // Use a window near the start (where onset energy lives) for speed.
   const window = Math.min(n, Math.max(2048, Math.floor(n * 0.25)));
   const ref = reference.subarray(0, window);
-  const cand = candidate.subarray(0, Math.min(candidate.length, window + maxLagFrames));
+  const cand = candidate.subarray(
+    0,
+    Math.min(candidate.length, window + maxLagFrames),
+  );
 
   let refEnergy = 0;
   for (let i = 0; i < ref.length; i++) refEnergy += ref[i] * ref[i];
@@ -185,7 +183,10 @@ export function compareMono(
     : -Infinity;
   const mae = absErr / n;
 
-  const envWin = Math.max(1, Math.round((envelopeWindowMs / 1000) * sampleRate));
+  const envWin = Math.max(
+    1,
+    Math.round((envelopeWindowMs / 1000) * sampleRate),
+  );
   const refEnv = amplitudeEnvelope(reference, envWin);
   const candEnv = amplitudeEnvelope(aligned, envWin);
   const envelopeCorrelation = pearsonCorrelation(refEnv, candEnv);
@@ -228,7 +229,7 @@ export function formatCompareResult(label: string, c: CompareResult): string {
   return (
     `  ${label}: residual=${c.residualDb.toFixed(1)}dB ` +
     `envCorr=${c.envelopeCorrelation.toFixed(3)} ` +
-    `lag=${(c.align.lagFrames).toFixed(0)}f ` +
+    `lag=${c.align.lagFrames.toFixed(0)}f ` +
     `xcorr=${c.align.correlation.toFixed(3)} ` +
     `gain=${c.gain.toFixed(3)} ` +
     `onsetΔ=${((c.candOnsetSec - c.refOnsetSec) * 1000).toFixed(1)}ms ` +
