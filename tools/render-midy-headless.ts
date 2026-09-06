@@ -23,7 +23,9 @@
 //   deno run -A tools/render-midy-headless.ts --harness-dir tools \
 //     --midi /tmp/single-note.mid --sf2 /path/to.sf2 --mode segment \
 //     --out /tmp/midy-segment.wav
-import puppeteer from "npm:puppeteer";
+
+// deno-lint-ignore-file no-import-prefix
+import puppeteer from "npm:puppeteer@25.10.0";
 
 export type CacheMode =
   | "none"
