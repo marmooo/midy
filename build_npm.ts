@@ -15,7 +15,7 @@ await build({
   rootTestDir: "./tests",
   package: {
     name: "@marmooo/midy",
-    version: "0.6.4",
+    version: "0.6.5",
     description:
       "A MIDI player/synthesizer written in TypeScript that supports GM-Lite/GM1 and SF2/SF3.",
     license: "Apache-2.0",
