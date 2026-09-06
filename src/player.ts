@@ -2192,6 +2192,21 @@ export class Player<
     });
   }
 
+  // Offline "render to one WAV" entry point, dispatched by cacheMode so the
+  // exported audio matches what that mode actually sounds like during real
+  // playback (useful for e.g. diffing against a reference synth per mode).
+  //
+  // - "audio" (and anything unrecognized): renderFastMode() — belongs to no
+  //   real playback pipeline; it's a cheap windowed offline mix used both as
+  //   the "audio" cache mode's own definition (its whole point is "entire
+  //   song pre-rendered to one buffer") and as the fallback/"fast" render.
+  // - "note" / "segment" / "chunk" / "adsr" / "ads" / "none": renderWholeSongLive()
+  //   drives the exact same scheduling code real playback uses
+  //   (scheduleTimelineEvents' building blocks: appendToSegmentQueue /
+  //   appendToChunkQueue / closeSegment / closeChunk / noteOnChannel), just
+  //   against one OfflineAudioContext sized for the whole song instead of
+  //   the real-time AudioContext, so the exported buffer is what that mode
+  //   would actually play.
   async render(): Promise<AudioBuffer | undefined> {
     if (this.isRendering) return;
     if (this.timeline.length === 0) return;
@@ -2200,11 +2215,35 @@ export class Player<
     this.renderedAudioBuffer = null;
     this.dispatchEvent(new Event("rendering"));
 
-    // Collect every note into ChunkNoteEntry[], then bake in short time
-    // windows via renderChunkBuffer(). A single OfflineAudioContext holding
-    // the entire song can produce a buffer where only the opening attack is
-    // audible under heavy per-note graphs. Windowed renders keep the node
-    // count bounded; windows are mixed into one final AudioBuffer.
+    let buffer: AudioBuffer | undefined;
+    switch (this.cacheMode) {
+      case "note":
+      case "segment":
+      case "chunk":
+      case "adsr":
+      case "ads":
+      case "none":
+        buffer = await this.renderWholeSongLive(this.cacheMode);
+        break;
+      case "audio":
+      default:
+        buffer = await this.renderFastMode();
+        break;
+    }
+
+    this.renderedAudioBuffer = buffer ?? null;
+    this.isRendering = false;
+    this.dispatchEvent(new Event("rendered"));
+    return this.renderedAudioBuffer ?? undefined;
+  }
+
+  // Belongs to no cacheMode's real pipeline (see render() doc above).
+  // Collect every note into ChunkNoteEntry[], then bake in short time
+  // windows via renderChunkBuffer(). A single OfflineAudioContext holding
+  // the entire song can produce a buffer where only the opening attack is
+  // audible under heavy per-note graphs. Windowed renders keep the node
+  // count bounded; windows are mixed into one final AudioBuffer.
+  async renderFastMode(): Promise<AudioBuffer | undefined> {
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
     const renderChannels = new Array<TChannel>(numChannels);
@@ -2265,8 +2304,6 @@ export class Player<
     }
 
     if (notes.length === 0) {
-      this.isRendering = false;
-      this.dispatchEvent(new Event("rendered"));
       return undefined;
     }
 
@@ -2340,10 +2377,201 @@ export class Player<
     // the peak exceeds the target; quiet songs keep their original level.
     this.peakNormalizeBuffer(mixed);
 
-    this.renderedAudioBuffer = mixed;
-    this.isRendering = false;
-    this.dispatchEvent(new Event("rendered"));
-    return this.renderedAudioBuffer;
+    return mixed;
+  }
+
+  // Drive the real note/segment/chunk/ads/adsr/none scheduling pipelines
+  // against one OfflineAudioContext sized for the whole song, so the
+  // exported buffer matches what `cacheMode` actually sounds like live.
+  //
+  // Builds a fresh, non-lightweight Player of the same subclass bound to
+  // that OfflineAudioContext, with its own cacheMode set to the requested
+  // mode — note classification (tiledBakedSet / simpleNoteSet /
+  // noteOnDurations) depends on cacheMode, so it must be (re)computed for
+  // the mode being rendered rather than reused from `this`.
+  //
+  // Segment/chunk buffers are scheduled via the same appendToSegmentQueue /
+  // appendToChunkQueue / closeSegment / closeChunk / startPendingSegment /
+  // startPendingChunk used by real playback. note / adsr / ads / none notes
+  // go through the same channel.noteOn() -> noteOnChannel() ->
+  // setNoteAudioNode() dispatch real playback uses (cacheMode picks the
+  // live-graph / cached-buffer / ads(r)-buffer branch there).
+  //
+  // Deliberately does NOT reuse waitForPendingSources()/drainChunkPipeline():
+  // those poll AudioBufferSourceNode.onended, which only fires once
+  // offlineContext.startRendering() actually runs — polling for it before
+  // that call would hang. Instead this awaits each pending tile's
+  // bufferPromise directly, then starts its source without waiting for it
+  // to finish playing.
+  private async renderWholeSongLive(
+    cacheMode: CacheMode,
+  ): Promise<AudioBuffer | undefined> {
+    if (this.timeline.length === 0) return undefined;
+
+    // Release tails / segment-chunk lookahead aren't known ahead of the
+    // scheduling walk here, so pad generously rather than measuring exactly
+    // (renderFastMode's windowed mixer does the tight per-note version).
+    const tailMargin = Math.max(0, this.maxTiledNoteDuration) + 10;
+    const totalDuration = Math.max(0.001, this.totalTime + tailMargin);
+    const sampleRate = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      2,
+      Math.ceil(totalDuration * sampleRate),
+      sampleRate,
+    );
+    // Match createOfflineRenderPlayer(): OAC.suspend/resume are unused here
+    // but some shared code paths call them defensively.
+    offlineContext.suspend = () => Promise.resolve();
+    offlineContext.resume = () => Promise.resolve();
+
+    const activeChannelNumbers = Array.from(
+      { length: this.numChannels },
+      (_, i) => i,
+    );
+    const offlinePlayer = new (this.constructor as new (
+      audioContext: AudioContext | OfflineAudioContext,
+      options?: {
+        activeChannelNumbers?: Iterable<number>;
+        offlineRenderOnly?: boolean;
+      },
+    ) => Player<TNote, TChannel>)(
+      offlineContext as unknown as AudioContext,
+      { activeChannelNumbers, offlineRenderOnly: false },
+    );
+    offlinePlayer.soundFonts = this.soundFonts;
+    offlinePlayer.soundFontTable = this.soundFontTable;
+    offlinePlayer.rawAudioBufferCache = this.rawAudioBufferCache;
+    offlinePlayer.instruments = this.instruments;
+    offlinePlayer.timeline = this.timeline;
+    offlinePlayer.ticksPerBeat = this.ticksPerBeat;
+    offlinePlayer.tempo = this.tempo;
+    offlinePlayer.totalTime = this.totalTime;
+    offlinePlayer.tileDuration = this.tileDuration;
+    offlinePlayer.maxTiledNoteDuration = this.maxTiledNoteDuration;
+    offlinePlayer.lookAhead = this.lookAhead;
+    offlinePlayer.cacheMode = cacheMode;
+    // Absolute time base: no real-time start delay / resume offset.
+    offlinePlayer.startTime = 0;
+    offlinePlayer.resumeTime = 0;
+    offlinePlayer.startDelay = 0;
+
+    // (Re)classify notes for THIS mode — tiledBakedSet / simpleNoteSet /
+    // noteOnDurations all depend on cacheMode, so this cannot be reused
+    // from `this.cacheVoiceIds()` unless `this.cacheMode === cacheMode`.
+    offlinePlayer.cacheVoiceIds();
+    await offlinePlayer.preloadSamples();
+
+    const isSegmentMode = isSegmentCacheMode(cacheMode);
+    const isChunkMode = isChunkCacheMode(cacheMode);
+    if (isSegmentMode) offlinePlayer.initSegmentPipeline();
+    if (isChunkMode) offlinePlayer.initChunkPipeline();
+
+    const timeline = offlinePlayer.timeline;
+    const inverseTempo = 1 / offlinePlayer.tempo;
+    const channels = offlinePlayer.channels;
+    const tiledBakedSet = offlinePlayer.tiledBakedSet;
+    const noteOnDurations = offlinePlayer.noteOnDurations;
+    const noteAudioBufferIds = offlinePlayer.noteAudioBufferIds;
+    const allNotes: TNote[] = [];
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const t = event.startTime * inverseTempo;
+      // Track this iteration's noteOn/noteOff promise so it can be awaited
+      // before moving to the next timeline event (see below) — real-time
+      // playback can safely fire-and-forget these because noteOn and its
+      // note's later noteOff are naturally seconds apart in wall-clock
+      // time, but here the whole timeline is walked in one tight loop, so
+      // without awaiting, a note's noteOff can reach noteOnChannel() before
+      // its own noteOn's async setNoteAudioNode() has finished. noteOnChannel
+      // checks note.ending (set by noteOff) right after that await and, if
+      // it's already true, skips setNoteRouting() entirely — the note gets
+      // built but never connected to any output, i.e. silently dropped.
+      let pending: Promise<unknown> | undefined;
+      offlinePlayer.processTimelineEvent(event, t, {
+        channels,
+        onNoteOn: (channel, ev) => {
+          const note = offlinePlayer.createNoteInstance(
+            ev.noteNumber!,
+            ev.velocity!,
+            t,
+          );
+          note.timelineIndex = i;
+          note.audioBufferId = noteAudioBufferIds[i];
+          const isSegmentNote = isSegmentMode && tiledBakedSet.has(i);
+          const isChunkNote = isChunkMode && tiledBakedSet.has(i);
+          if (isSegmentNote || isChunkNote) {
+            note.isTiledGhost = true;
+            note.tiledNoteDuration = noteOnDurations[i] ?? 0;
+          }
+          allNotes.push(note);
+          pending = channel.noteOn(ev.noteNumber!, ev.velocity!, t, note);
+          if (isSegmentNote) {
+            offlinePlayer.appendToSegmentQueue(
+              channel.channelNumber,
+              t,
+              i,
+              ev.noteNumber!,
+              ev.velocity!,
+            );
+          }
+          if (isChunkNote) {
+            offlinePlayer.appendToChunkQueue(
+              channel,
+              t,
+              i,
+              ev.noteNumber!,
+              ev.velocity!,
+            );
+          }
+        },
+        onNoteOff: (channel, ev) => {
+          pending = channel.noteOff(ev.noteNumber!, ev.velocity!, t, false);
+        },
+      });
+      if (pending) await pending;
+    }
+
+    // Wait for every note's async setup (decode / getAudioBuffer / bake) to
+    // finish before rendering, or its bufferSource.start() may not have
+    // been called yet.
+    await Promise.all(allNotes.map((n) => n.ready));
+
+    if (isSegmentMode) {
+      const states = offlinePlayer.segmentChannelStates;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (state?.openSegment) {
+          offlinePlayer.closeSegment(state, channels[ch]);
+        }
+      }
+      const allPending = states.flatMap((s) => s?.pending ?? []);
+      await Promise.allSettled(allPending.map((p) => p.bufferPromise));
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        for (let i = 0; i < state.pending.length; i++) {
+          const p = state.pending[i];
+          if (!p.source && p.bufferReady) {
+            offlinePlayer.startPendingSegment(channels[ch], p);
+          }
+        }
+      }
+    }
+    if (isChunkMode) {
+      const state = offlinePlayer.chunkState;
+      if (state.openChunk) offlinePlayer.closeChunk(state);
+      await Promise.allSettled(state.pending.map((p) => p.bufferPromise));
+      for (let i = 0; i < state.pending.length; i++) {
+        const p = state.pending[i];
+        if (!p.source && p.bufferReady) {
+          offlinePlayer.startPendingChunk(p);
+        }
+      }
+    }
+
+    const rendered = await offlineContext.startRendering();
+    return this.detachAudioBuffer(rendered);
   }
 
   // Clamp any sample outside [-1, 1] without changing overall gain.
@@ -3607,6 +3835,21 @@ export class Player<
     } else {
       note.bufferSource.start(startTime);
     }
+    console.log(
+      "[setNoteAudioNode]",
+      "note",
+      note.noteNumber,
+      "cacheMode",
+      cacheMode,
+      "isOfflineBake",
+      isOfflineBake,
+      "isFullCached",
+      isFullCached,
+      "startTime",
+      startTime,
+      "audioBufferId",
+      note.audioBufferId,
+    );
   }
 
   override releaseNote(
