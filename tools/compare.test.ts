@@ -1,17 +1,17 @@
-// Runs the whole single-note GM2 comparison pipeline as `deno test -A
-// tools/compare.test.ts`: generate the MIDI once, render the fluidsynth
-// reference, then render midy for every cacheMode — each as its own
-// reportable `t.step`, so a failure at any stage names exactly which stage
-// failed instead of a bare pass/fail on the whole thing.
+// fluidsynth ↔ midy conformance pipeline.
+//
+// Stages (each a reportable `t.step`):
+//   1. Single melodic note — sanity + residual/envelope compare vs fluidsynth
+//   2. Drum exclusive (open HH cut by closed HH) — exclusiveClass behaviour
 //
 // Usage:
 //   deno test -A tools/compare.test.ts
 //
-// Output WAVs land in OUT_DIR (edit the constants below to change any of
-// this) for follow-up inspection/diffing — this step only generates them
-// and sanity-checks they're non-empty; it doesn't compare them against each
-// other yet.
+// WAV outputs land in OUT_DIR for manual inspection.
 import { buildSingleNoteMidi } from "./gen-single-note-midi.ts";
+import {
+  buildHiHatExclusiveMidi,
+} from "./gen-midi-scenarios.ts";
 import {
   ensureFluidsynthBinary,
   renderWithFluidsynth,
@@ -25,6 +25,11 @@ import {
   rms,
   toDb,
 } from "./audio-metrics.ts";
+import {
+  compareMono,
+  formatCompareResult,
+  windowRmsDb,
+} from "./audio-compare.ts";
 
 const OUT_DIR = "/tmp/midy-gm2-check";
 const SF2_PATH = "tools/GeneralUser_GS_v1.472.sf3";
@@ -37,16 +42,46 @@ const NOTE_VELOCITY = 100;
 const NOTE_DURATION = 1; // seconds
 const EXPECTED_FREQ_HZ = midiNoteToHz(NOTE_NUMBER);
 
-// How far into the note the attack transient/onset detection noise is
-// assumed to have settled, and how close to note-off we stop measuring to
-// avoid the release ramp — both relative to the detected onset time.
 const SUSTAIN_START_OFFSET = 0.15;
 const SUSTAIN_END_MARGIN = 0.1;
-
-// Cents (1/100 semitone) of pitch drift we tolerate before calling a render
-// "wrong note" rather than "slightly off due to autocorrelation quantization
-// or a soundfont's fine-tune". 50 cents = quarter of a semitone.
 const PITCH_TOLERANCE_CENTS = 50;
+
+// After align + peak-gain match, residual energy relative to reference.
+// FluidSynth and Web Audio DSP differ; -6 dB residual is still a strong
+// structural match for a single piano note (not bit-identical).
+const SINGLE_NOTE_RESIDUAL_DB_MAX = -6;
+// Envelope shape correlation after align/gain (1 = identical shape).
+const SINGLE_NOTE_ENV_CORR_MIN = 0.85;
+// Max |lag| allowed after cross-correlation (onset timing).
+const SINGLE_NOTE_MAX_LAG_MS = 30;
+
+// Exclusive scenario timings (must match buildHiHatExclusiveMidi defaults).
+const EXCL_OPEN_START = 0;
+const EXCL_CLOSED_START = 0.4;
+const EXCL_CLOSED_DURATION = 0.3;
+// Attack of the open hat — GeneralUser's open HH is a short one-shot in
+// fluidsynth, so energy is only reliable near the onset (not at 0.25s+).
+const EXCL_ATTACK_START = 0.02;
+const EXCL_ATTACK_END = 0.12;
+// Just before / after closed-hat onset (exclusive cut point).
+const EXCL_PRE_START = 0.25;
+const EXCL_PRE_END = 0.38;
+const EXCL_POST_START = 0.42;
+const EXCL_POST_END = 0.55;
+// Late tail after both notes should have released.
+const EXCL_TAIL_START = 1.2;
+const EXCL_TAIL_END = 1.6;
+// Attack energy must be within this many dB of the file's own peak RMS
+// (relative, so absolute level differences vs fluidsynth do not matter).
+const EXCL_ATTACK_REL_DB = 25;
+// Drum hits are short/noisy; residual after align+gain is looser than piano.
+// "audio" mode (full-song bake + peak normalize) sits around -1.4 dB on this
+// hi-hat scenario, so the floor is set just below that rather than -1.5.
+const EXCL_RESIDUAL_DB_MAX = -1.0;
+const EXCL_ENV_CORR_MIN = 0.7;
+// Tail may still hold a quiet release; fail only if it stays within this
+// many dB of the attack level (open hat never released / exclusive no-op).
+const EXCL_TAIL_VS_ATTACK_DB = 8;
 
 const CACHE_MODES: CacheMode[] = [
   "none",
@@ -71,13 +106,12 @@ interface SingleNoteCheck {
   sustainDb: number;
   pitchHz: number | null;
   pitchCentsError: number | null;
+  mono: Float32Array;
+  sampleRate: number;
 }
 
 /**
- * Mechanically sanity-check a single-note WAV: does it start near t=0, does
- * it actually sustain audible sound for roughly NOTE_DURATION seconds, and
- * is the sustained pitch close to the expected MIDI note. Throws with a
- * descriptive message on any failure; returns the measurements otherwise.
+ * Sanity-check a single-note WAV and return mono samples for further compare.
  */
 function checkSingleNoteWav(label: string, bytes: Uint8Array): SingleNoteCheck {
   const wav = readWav(bytes);
@@ -100,9 +134,7 @@ function checkSingleNoteWav(label: string, bytes: Uint8Array): SingleNoteCheck {
   const onsetTime = onsetFrame / wav.sampleRate;
   if (onsetTime > 0.2) {
     throw new Error(
-      `${label}: onset at ${
-        onsetTime.toFixed(3)
-      }s, expected near 0s (note-on is scheduled at t=0)`,
+      `${label}: onset at ${onsetTime.toFixed(3)}s, expected near 0s`,
     );
   }
 
@@ -114,20 +146,14 @@ function checkSingleNoteWav(label: string, bytes: Uint8Array): SingleNoteCheck {
   );
   if (sustainEnd <= sustainStart) {
     throw new Error(
-      `${label}: NOTE_DURATION too short for SUSTAIN_START_OFFSET/SUSTAIN_END_MARGIN — nothing to measure`,
+      `${label}: NOTE_DURATION too short for sustain window`,
     );
   }
   const sustainRmsValue = rms(mono, sustainStart, sustainEnd);
   const sustainDb = toDb(sustainRmsValue);
-  // -50dBFS is "clearly not silence" without being so strict that a quiet
-  // patch/soundfont trips a false failure.
   if (sustainDb < -50) {
     throw new Error(
-      `${label}: note is not sustaining — RMS in [${
-        (sustainStart / wav.sampleRate).toFixed(2)
-      }s, ${(sustainEnd / wav.sampleRate).toFixed(2)}s] is ${
-        sustainDb.toFixed(1)
-      }dB (expected a sustained tone for ~${NOTE_DURATION}s)`,
+      `${label}: note is not sustaining — RMS is ${sustainDb.toFixed(1)}dB`,
     );
   }
 
@@ -147,11 +173,7 @@ function checkSingleNoteWav(label: string, bytes: Uint8Array): SingleNoteCheck {
     throw new Error(
       `${label}: pitch is ${pitchHz.toFixed(1)}Hz, expected ~${
         EXPECTED_FREQ_HZ.toFixed(1)
-      }Hz ` +
-        `(MIDI note ${NOTE_NUMBER}) — off by ${
-          pitchCentsError.toFixed(1)
-        } cents, ` +
-        `tolerance is ${PITCH_TOLERANCE_CENTS} cents`,
+      }Hz — off by ${pitchCentsError.toFixed(1)} cents`,
     );
   }
 
@@ -161,10 +183,198 @@ function checkSingleNoteWav(label: string, bytes: Uint8Array): SingleNoteCheck {
     sustainDb,
     pitchHz,
     pitchCentsError,
+    mono,
+    sampleRate: wav.sampleRate,
   };
 }
 
-Deno.test("single-note GM2 conformance render pipeline", async (t) => {
+function assertSingleNoteMatch(
+  label: string,
+  ref: SingleNoteCheck,
+  cand: SingleNoteCheck,
+): void {
+  if (ref.sampleRate !== cand.sampleRate) {
+    throw new Error(
+      `${label}: sample rate mismatch ref=${ref.sampleRate} cand=${cand.sampleRate}`,
+    );
+  }
+  const cmp = compareMono(ref.mono, cand.mono, ref.sampleRate, {
+    maxLagMs: SINGLE_NOTE_MAX_LAG_MS + 20,
+  });
+  console.log(formatCompareResult(label, cmp));
+
+  const lagMs = (Math.abs(cmp.align.lagFrames) / ref.sampleRate) * 1000;
+  if (lagMs > SINGLE_NOTE_MAX_LAG_MS) {
+    throw new Error(
+      `${label}: onset lag ${lagMs.toFixed(1)}ms exceeds ${SINGLE_NOTE_MAX_LAG_MS}ms`,
+    );
+  }
+  if (cmp.residualDb > SINGLE_NOTE_RESIDUAL_DB_MAX) {
+    throw new Error(
+      `${label}: residual ${cmp.residualDb.toFixed(1)}dB is above max ${SINGLE_NOTE_RESIDUAL_DB_MAX}dB (waveforms diverge)`,
+    );
+  }
+  if (cmp.envelopeCorrelation < SINGLE_NOTE_ENV_CORR_MIN) {
+    throw new Error(
+      `${label}: envelope correlation ${cmp.envelopeCorrelation.toFixed(3)} below min ${SINGLE_NOTE_ENV_CORR_MIN}`,
+    );
+  }
+}
+
+function peakRmsDb(samples: Float32Array, sampleRate: number): number {
+  // Peak of short sliding RMS (20ms) — more stable than sample peak for drums.
+  const win = Math.max(1, Math.round(0.02 * sampleRate));
+  let best = 0;
+  let run = 0;
+  for (let i = 0; i < samples.length; i++) {
+    run += samples[i] * samples[i];
+    if (i >= win) {
+      const old = samples[i - win];
+      run -= old * old;
+    }
+    const n = Math.min(win, i + 1);
+    const r = Math.sqrt(run / n);
+    if (r > best) best = r;
+  }
+  return toDb(best);
+}
+
+/**
+ * Exclusive-class checks against fluidsynth.
+ *
+ * Absolute levels differ a lot (midy is typically ~20dB hotter; fluidsynth's
+ * open HH is a short one-shot that is already near silence by 0.25s). So we:
+ *  - require each side's *attack* to be audible relative to its own peak
+ *  - compare envelope shape after align+gain (not absolute pre-window dB)
+ *  - require midy's tail to decay vs its own attack (exclusive / release fired)
+ *  - track post−pre energy delta vs fluidsynth within a wide tolerance
+ */
+function assertExclusiveCut(
+  label: string,
+  refMono: Float32Array,
+  candMono: Float32Array,
+  sampleRate: number,
+): void {
+  const refAttack = windowRmsDb(
+    refMono,
+    sampleRate,
+    EXCL_ATTACK_START,
+    EXCL_ATTACK_END,
+  );
+  const candAttack = windowRmsDb(
+    candMono,
+    sampleRate,
+    EXCL_ATTACK_START,
+    EXCL_ATTACK_END,
+  );
+  const refPre = windowRmsDb(refMono, sampleRate, EXCL_PRE_START, EXCL_PRE_END);
+  const refPost = windowRmsDb(
+    refMono,
+    sampleRate,
+    EXCL_POST_START,
+    EXCL_POST_END,
+  );
+  const candPre = windowRmsDb(
+    candMono,
+    sampleRate,
+    EXCL_PRE_START,
+    EXCL_PRE_END,
+  );
+  const candPost = windowRmsDb(
+    candMono,
+    sampleRate,
+    EXCL_POST_START,
+    EXCL_POST_END,
+  );
+  const refTail = windowRmsDb(
+    refMono,
+    sampleRate,
+    EXCL_TAIL_START,
+    EXCL_TAIL_END,
+  );
+  const candTail = windowRmsDb(
+    candMono,
+    sampleRate,
+    EXCL_TAIL_START,
+    EXCL_TAIL_END,
+  );
+  const refPeakDb = peakRmsDb(refMono, sampleRate);
+  const candPeakDb = peakRmsDb(candMono, sampleRate);
+
+  console.log(
+    `  ${label}: attack=${candAttack.toFixed(1)}dB pre=${candPre.toFixed(1)} ` +
+      `post=${candPost.toFixed(1)} tail=${candTail.toFixed(1)} ` +
+      `(peak=${candPeakDb.toFixed(1)}) | ref attack=${refAttack.toFixed(1)} ` +
+      `pre=${refPre.toFixed(1)} post=${refPost.toFixed(1)} tail=${
+        Number.isFinite(refTail) ? refTail.toFixed(1) : "-inf"
+      } (peak=${refPeakDb.toFixed(1)})`,
+  );
+
+  if (!Number.isFinite(candPeakDb) || candPeakDb < -80) {
+    throw new Error(`${label}: candidate is effectively silent`);
+  }
+  if (!Number.isFinite(refPeakDb) || refPeakDb < -80) {
+    throw new Error(`${label}: fluidsynth reference is effectively silent`);
+  }
+
+  // Attack must be present relative to each renderer's own peak.
+  if (candAttack < candPeakDb - EXCL_ATTACK_REL_DB) {
+    throw new Error(
+      `${label}: open-hat attack missing ` +
+        `(attack=${candAttack.toFixed(1)}dB peak=${candPeakDb.toFixed(1)}dB)`,
+    );
+  }
+  if (refAttack < refPeakDb - EXCL_ATTACK_REL_DB) {
+    throw new Error(
+      `${label}: fluidsynth open-hat attack missing ` +
+        `(attack=${refAttack.toFixed(1)}dB peak=${refPeakDb.toFixed(1)}dB)`,
+    );
+  }
+
+  // post−pre delta should roughly track fluidsynth (closed hat vs residual open).
+  // Fluidsynth's open HH is often already quiet by pre, so |refDelta| can be
+  // small; only fail on large divergences.
+  const refDelta = refPost - refPre;
+  const candDelta = candPost - candPre;
+  const deltaError = Math.abs(candDelta - refDelta);
+  if (deltaError > 12) {
+    throw new Error(
+      `${label}: exclusive cut energy change diverges from fluidsynth ` +
+        `(cand Δ=${candDelta.toFixed(1)}dB ref Δ=${refDelta.toFixed(1)}dB, |err|=${
+          deltaError.toFixed(1)
+        }dB)`,
+    );
+  }
+
+  // Tail must decay relative to this render's own attack (exclusive/release).
+  // Absolute comparison to fluidsynth's -inf tail is not meaningful when midy
+  // keeps a longer natural release.
+  if (candTail > candAttack - EXCL_TAIL_VS_ATTACK_DB) {
+    throw new Error(
+      `${label}: tail (${candTail.toFixed(1)}dB) still near attack ` +
+        `(${candAttack.toFixed(1)}dB) — exclusive cut / release may not have fired`,
+    );
+  }
+
+  const cmp = compareMono(refMono, candMono, sampleRate, { maxLagMs: 40 });
+  console.log(formatCompareResult(`${label} waveform`, cmp));
+  if (cmp.residualDb > EXCL_RESIDUAL_DB_MAX) {
+    throw new Error(
+      `${label}: residual ${cmp.residualDb.toFixed(1)}dB above max ${EXCL_RESIDUAL_DB_MAX}dB`,
+    );
+  }
+  if (cmp.envelopeCorrelation < EXCL_ENV_CORR_MIN) {
+    throw new Error(
+      `${label}: envelope correlation ${cmp.envelopeCorrelation.toFixed(3)} ` +
+        `below min ${EXCL_ENV_CORR_MIN}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: single melodic note
+// ---------------------------------------------------------------------------
+Deno.test("single-note GM2 conformance (sanity + fluidsynth compare)", async (t) => {
   await Deno.mkdir(OUT_DIR, { recursive: true });
   const midiPath = `${OUT_DIR}/single-note.mid`;
 
@@ -185,8 +395,10 @@ Deno.test("single-note GM2 conformance render pipeline", async (t) => {
     });
   });
 
-  const fluidsynthWavPath = `${OUT_DIR}/fluidsynth.wav`;
-  await t.step("render reference WAV via fluidsynth", async () => {
+  const fluidsynthWavPath = `${OUT_DIR}/fluidsynth-single.wav`;
+  let refCheck: SingleNoteCheck | null = null;
+
+  await t.step("render + sanity-check fluidsynth reference", async () => {
     await renderWithFluidsynth({
       fluidsynthBin,
       sf2Path: SF2_PATH,
@@ -195,24 +407,21 @@ Deno.test("single-note GM2 conformance render pipeline", async (t) => {
       sampleRate: SAMPLE_RATE,
     });
     await assertNonEmptyFile(fluidsynthWavPath);
-  });
-
-  await t.step("sanity-check the fluidsynth reference itself", async () => {
     const bytes = await Deno.readFile(fluidsynthWavPath);
-    const result = checkSingleNoteWav("fluidsynth", bytes);
+    refCheck = checkSingleNoteWav("fluidsynth", bytes);
     console.log(
-      `  fluidsynth: onset=${result.onsetTime.toFixed(3)}s sustain=${
-        result.sustainDb.toFixed(1)
-      }dB pitch=${result.pitchHz?.toFixed(1)}Hz (${
-        result.pitchCentsError?.toFixed(1)
+      `  fluidsynth: onset=${refCheck.onsetTime.toFixed(3)}s sustain=${
+        refCheck.sustainDb.toFixed(1)
+      }dB pitch=${refCheck.pitchHz?.toFixed(1)}Hz (${
+        refCheck.pitchCentsError?.toFixed(1)
       } cents)`,
     );
   });
 
   for (const cacheMode of CACHE_MODES) {
-    const midyWavPath = `${OUT_DIR}/midy-${cacheMode}.wav`;
+    const midyWavPath = `${OUT_DIR}/midy-single-${cacheMode}.wav`;
 
-    await t.step(`render midy WAV (cacheMode=${cacheMode})`, async () => {
+    await t.step(`render midy (cacheMode=${cacheMode})`, async () => {
       const wavBytes = await renderMidyMode({
         harnessDir: HARNESS_DIR,
         midiPath,
@@ -221,21 +430,125 @@ Deno.test("single-note GM2 conformance render pipeline", async (t) => {
         sampleRate: SAMPLE_RATE,
       });
       if (wavBytes.length === 0) {
-        throw new Error(`midy (cacheMode=${cacheMode}) returned an empty WAV`);
+        throw new Error(`midy (cacheMode=${cacheMode}) returned empty WAV`);
       }
       await Deno.writeFile(midyWavPath, wavBytes);
     });
 
-    await t.step(`check midy WAV (cacheMode=${cacheMode})`, async () => {
+    await t.step(`sanity + compare midy (${cacheMode}) vs fluidsynth`, async () => {
       const bytes = await Deno.readFile(midyWavPath);
-      const result = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
+      const cand = checkSingleNoteWav(`midy(${cacheMode})`, bytes);
       console.log(
-        `  midy(${cacheMode}): onset=${result.onsetTime.toFixed(3)}s sustain=${
-          result.sustainDb.toFixed(1)
-        }dB pitch=${result.pitchHz?.toFixed(1)}Hz (${
-          result.pitchCentsError?.toFixed(1)
+        `  midy(${cacheMode}): onset=${cand.onsetTime.toFixed(3)}s sustain=${
+          cand.sustainDb.toFixed(1)
+        }dB pitch=${cand.pitchHz?.toFixed(1)}Hz (${
+          cand.pitchCentsError?.toFixed(1)
         } cents)`,
       );
+      if (!refCheck) throw new Error("fluidsynth reference missing");
+      assertSingleNoteMatch(`midy(${cacheMode})`, refCheck, cand);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Test 2: drum exclusive class (open HH cut by closed HH)
+// ---------------------------------------------------------------------------
+Deno.test("exclusive-class hi-hat cut vs fluidsynth", async (t) => {
+  await Deno.mkdir(OUT_DIR, { recursive: true });
+  const midiPath = `${OUT_DIR}/exclusive-hihat.mid`;
+
+  await t.step("generate exclusive hi-hat MIDI", async () => {
+    const bytes = buildHiHatExclusiveMidi({
+      openStart: EXCL_OPEN_START,
+      closedStart: EXCL_CLOSED_START,
+      closedDuration: EXCL_CLOSED_DURATION,
+    });
+    await Deno.writeFile(midiPath, bytes);
+    await assertNonEmptyFile(midiPath);
+  });
+
+  let fluidsynthBin = "";
+  await t.step("build/ensure fluidsynth binary", async () => {
+    fluidsynthBin = await ensureFluidsynthBinary({
+      version: FLUIDSYNTH_VERSION,
+    });
+  });
+
+  const fluidsynthWavPath = `${OUT_DIR}/fluidsynth-exclusive.wav`;
+  let refMono: Float32Array | null = null;
+  let refRate = SAMPLE_RATE;
+
+  await t.step("render + load fluidsynth reference", async () => {
+    await renderWithFluidsynth({
+      fluidsynthBin,
+      sf2Path: SF2_PATH,
+      midiPath,
+      wavPath: fluidsynthWavPath,
+      sampleRate: SAMPLE_RATE,
+    });
+    await assertNonEmptyFile(fluidsynthWavPath);
+    const wav = readWav(await Deno.readFile(fluidsynthWavPath));
+    refMono = toMono(wav);
+    refRate = wav.sampleRate;
+    const peakDb = peakRmsDb(refMono, refRate);
+    const attack = windowRmsDb(
+      refMono,
+      refRate,
+      EXCL_ATTACK_START,
+      EXCL_ATTACK_END,
+    );
+    const pre = windowRmsDb(refMono, refRate, EXCL_PRE_START, EXCL_PRE_END);
+    const post = windowRmsDb(refMono, refRate, EXCL_POST_START, EXCL_POST_END);
+    // Open HH in GeneralUser is a short one-shot: only the attack is reliably
+    // audible; by the pre-cut window fluidsynth is often already near silence.
+    if (!Number.isFinite(peakDb) || peakDb < -80) {
+      throw new Error(
+        `fluidsynth exclusive reference is effectively silent (peak=${peakDb}dB)`,
+      );
+    }
+    if (attack < peakDb - EXCL_ATTACK_REL_DB) {
+      throw new Error(
+        `fluidsynth exclusive reference: open-hat attack missing ` +
+          `(attack=${attack.toFixed(1)}dB peak=${peakDb.toFixed(1)}dB)`,
+      );
+    }
+    console.log(
+      `  fluidsynth exclusive: attack=${attack.toFixed(1)}dB pre=${
+        pre.toFixed(1)
+      } post=${post.toFixed(1)} peak=${peakDb.toFixed(1)}`,
+    );
+  });
+
+  // Exclusive is most sensitive on realtime-ish modes; still check all modes
+  // so a regression in segment/chunk ghost notes is caught.
+  for (const cacheMode of CACHE_MODES) {
+    const midyWavPath = `${OUT_DIR}/midy-exclusive-${cacheMode}.wav`;
+
+    await t.step(`render midy exclusive (cacheMode=${cacheMode})`, async () => {
+      const wavBytes = await renderMidyMode({
+        harnessDir: HARNESS_DIR,
+        midiPath,
+        soundFontPath: SF2_PATH,
+        cacheMode,
+        sampleRate: SAMPLE_RATE,
+      });
+      if (wavBytes.length === 0) {
+        throw new Error(`midy exclusive (${cacheMode}) returned empty WAV`);
+      }
+      await Deno.writeFile(midyWavPath, wavBytes);
+    });
+
+    await t.step(`compare exclusive cut (${cacheMode})`, async () => {
+      if (!refMono) throw new Error("fluidsynth reference missing");
+      const wav = readWav(await Deno.readFile(midyWavPath));
+      const candMono = toMono(wav);
+      if (wav.sampleRate !== refRate) {
+        throw new Error(
+          `sample rate mismatch: midy=${wav.sampleRate} ref=${refRate}`,
+        );
+      }
+      assertExclusiveCut(`midy(${cacheMode})`, refMono, candMono, refRate);
     });
   }
 });
