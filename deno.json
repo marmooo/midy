@@ -14,5 +14,6 @@
   },
   "tasks": {
     "build": "deno run -RWE --allow-run build.ts"
-  }
+  },
+  "exclude": ["dist", ".cache"]
 }
