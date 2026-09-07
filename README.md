@@ -205,12 +205,18 @@ function getSoundFontPaths() {
     const programNumber = Number(program);
     const index = midy.soundFontTable[programNumber][bankNumber];
     if (index !== undefined) continue;
-    paths.push(`${soundFontURL}/${bank}/${program}.sf3`);
+    const bankDir = String(bankNumber).padStart(3, "0");
+    const programFile = String(programNumber).padStart(3, "0");
+    paths.push(`${soundFontURL}/${bankDir}/${programFile}.sf3`);
   }
   return paths;
 }
 const paths = getSoundFontPaths();
 await midy.loadSoundFont(paths);
+// Optional: custom URL fallback
+// (default: melodic .../BBB/PPP → .../000/PPP, drums .../128/PPP → .../128/000)
+// await midy.loadSoundFont(paths, { fallback: (url) => [...] });
+// await midy.loadSoundFont(paths, { fallback: null }); // disable
 ```
 
 ## Build
