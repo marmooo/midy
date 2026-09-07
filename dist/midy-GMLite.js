@@ -6616,23 +6616,70 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       soundFontTable[preset][bank] = index;
     }
   }
-  async toUint8Array(input) {
-    if (typeof input === "string") {
-      const response = await fetch(input);
-      const arrayBuffer = await response.arrayBuffer();
-      return new Uint8Array(arrayBuffer);
-    } else if (input instanceof Uint8Array) {
+  // Default fallback for split soundfonts in the form .../BBB/PPP.sf3.
+  // - Melodic (bank != 128): .../BBB/PPP.sf3 → .../000/PPP.sf3
+  // - Drums   (bank == 128): .../128/PPP.sf3 → .../128/000.sf3
+  static defaultSoundFontFallback(url) {
+    const m = url.match(/^(.*)\/(\d{1,3})\/(\d{1,3})\.sf3$/i);
+    if (!m) return [];
+    const [, base, bank, prog] = m;
+    const bankNum = Number(bank);
+    const progNum = Number(prog);
+    const progPadded = String(progNum).padStart(3, "0");
+    if (bankNum === 128) {
+      if (progNum === 0) return [];
+      return [`${base}/128/000.sf3`];
+    }
+    if (bankNum === 0) return [];
+    return [`${base}/000/${progPadded}.sf3`];
+  }
+  async toUint8Array(input, options) {
+    if (input instanceof Uint8Array) {
       return input;
     }
-    throw new TypeError("input must be a URL string or Uint8Array");
+    if (typeof input !== "string") {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+    const tryFetch = async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      if (bytes.byteLength < 12 || bytes[0] !== 82 || // R
+      bytes[1] !== 73 || // I
+      bytes[2] !== 70 || // F
+      bytes[3] !== 70) {
+        throw new Error(
+          `Failed to fetch ${url}: not a SoundFont (missing RIFF header)`
+        );
+      }
+      return bytes;
+    };
+    try {
+      return await tryFetch(input);
+    } catch (primaryError) {
+      const fallbackFn = options?.fallback === void 0 ? _BasePlayer.defaultSoundFontFallback : options.fallback;
+      if (!fallbackFn) throw primaryError;
+      const candidates = await fallbackFn(input);
+      for (const candidate of candidates) {
+        if (candidate === input) continue;
+        try {
+          return await tryFetch(candidate);
+        } catch {
+        }
+      }
+      throw primaryError;
+    }
   }
-  async loadSoundFont(input) {
+  async loadSoundFont(input, options) {
     this.voiceCounter.clear();
     this.rawAudioBufferCache = /* @__PURE__ */ new Map();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
       for (let i = 0; i < input.length; i++) {
-        promises[i] = this.toUint8Array(input[i]);
+        promises[i] = this.toUint8Array(input[i], options);
       }
       const uint8Arrays = await Promise.all(promises);
       for (let i = 0; i < uint8Arrays.length; i++) {
@@ -6640,7 +6687,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
         this.addSoundFont(soundFont);
       }
     } else {
-      const uint8Array2 = await this.toUint8Array(input);
+      const uint8Array2 = await this.toUint8Array(input, options);
       const soundFont = parse(uint8Array2);
       this.addSoundFont(soundFont);
     }
