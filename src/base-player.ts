@@ -1227,26 +1227,99 @@ export class BasePlayer<
     }
   }
 
-  async toUint8Array(input: string | Uint8Array): Promise<Uint8Array> {
-    if (typeof input === "string") {
-      const response = await fetch(input);
-      const arrayBuffer = await response.arrayBuffer();
-      return new Uint8Array(arrayBuffer);
-    } else if (input instanceof Uint8Array) {
+  // Default fallback for split soundfonts in the form .../BBB/PPP.sf3.
+  // - Melodic (bank != 128): .../BBB/PPP.sf3 → .../000/PPP.sf3
+  // - Drums   (bank == 128): .../128/PPP.sf3 → .../128/000.sf3
+  static defaultSoundFontFallback(url: string): string[] {
+    const m = url.match(/^(.*)\/(\d{1,3})\/(\d{1,3})\.sf3$/i);
+    if (!m) return [];
+    const [, base, bank, prog] = m;
+    const bankNum = Number(bank);
+    const progNum = Number(prog);
+    const progPadded = String(progNum).padStart(3, "0");
+    if (bankNum === 128) {
+      // Drum kits: fall back to Standard Kit (program 0) in bank 128
+      if (progNum === 0) return [];
+      return [`${base}/128/000.sf3`];
+    }
+    // Melodic: fall back to GM bank 0, same program
+    if (bankNum === 0) return [];
+    return [`${base}/000/${progPadded}.sf3`];
+  }
+
+  async toUint8Array(
+    input: string | Uint8Array,
+    options?: {
+      // Candidate URLs to try when the primary URL fails.
+      // Pass `null` to disable fallback. Defaults to
+      // {@link BasePlayer.defaultSoundFontFallback}.
+      fallback?: ((url: string) => string[] | Promise<string[]>) | null;
+    },
+  ): Promise<Uint8Array> {
+    if (input instanceof Uint8Array) {
       return input;
     }
-    throw new TypeError("input must be a URL string or Uint8Array");
+    if (typeof input !== "string") {
+      throw new TypeError("input must be a URL string or Uint8Array");
+    }
+
+    const tryFetch = async (url: string): Promise<Uint8Array> => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      // Reject non-SF2/SF3 payloads (HTML error pages, empty files, etc.)
+      // so parse() never sees them and raises "wrong chunk length".
+      // SF2/SF3 start with RIFF (...sfbk).
+      if (
+        bytes.byteLength < 12 ||
+        bytes[0] !== 0x52 || // R
+        bytes[1] !== 0x49 || // I
+        bytes[2] !== 0x46 || // F
+        bytes[3] !== 0x46 // F
+      ) {
+        throw new Error(
+          `Failed to fetch ${url}: not a SoundFont (missing RIFF header)`,
+        );
+      }
+      return bytes;
+    };
+
+    try {
+      return await tryFetch(input);
+    } catch (primaryError) {
+      const fallbackFn = options?.fallback === undefined
+        ? BasePlayer.defaultSoundFontFallback
+        : options.fallback;
+      if (!fallbackFn) throw primaryError;
+
+      const candidates = await fallbackFn(input);
+      for (const candidate of candidates) {
+        if (candidate === input) continue;
+        try {
+          return await tryFetch(candidate);
+        } catch {
+          // try next candidate
+        }
+      }
+      throw primaryError;
+    }
   }
 
   async loadSoundFont(
     input: string | Uint8Array | (string | Uint8Array)[],
+    options?: {
+      fallback?: ((url: string) => string[] | Promise<string[]>) | null;
+    },
   ): Promise<void> {
     this.voiceCounter.clear();
     this.rawAudioBufferCache = new Map();
     if (Array.isArray(input)) {
       const promises = new Array(input.length);
       for (let i = 0; i < input.length; i++) {
-        promises[i] = this.toUint8Array(input[i]);
+        promises[i] = this.toUint8Array(input[i], options);
       }
       const uint8Arrays = await Promise.all(promises);
       for (let i = 0; i < uint8Arrays.length; i++) {
@@ -1254,7 +1327,7 @@ export class BasePlayer<
         this.addSoundFont(soundFont);
       }
     } else {
-      const uint8Array = await this.toUint8Array(input);
+      const uint8Array = await this.toUint8Array(input, options);
       const soundFont = parse(uint8Array);
       this.addSoundFont(soundFont);
     }
