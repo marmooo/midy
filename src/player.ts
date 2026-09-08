@@ -349,9 +349,9 @@ export class Player<
                   const offItems = pairs[pi][1];
                   const activeStack = activeNotes.get(key);
                   for (let oi = 0; oi < offItems.length; oi++) {
-                    const item = offItems[oi];
                     if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift()!, item.t, item.ticks);
+                      // Release at pedal-up time, not the deferred note-off time.
+                      finalizeEntry(activeStack.shift()!, t, event.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -3517,7 +3517,10 @@ export class Player<
     realtime: boolean,
   ): Promise<RenderedBuffer | AudioBuffer | undefined> {
     if (!audioBufferId) return undefined;
-    const cacheKey = audioBufferId + (note.noteNumber << 1) + 1;
+    // Include velocity: ADS bake embeds initialAttenuation (velocity-dependent).
+    // Without it, soft and loud notes of the same sample collide and dynamics vanish.
+    const cacheKey = (audioBufferId! * 128 + note.velocity) * 128 +
+      note.noteNumber;
     const voiceParams = note.voiceParams;
     if (!voiceParams) return undefined;
     if (realtime) {

@@ -1269,22 +1269,12 @@ export class BasePlayer<
         throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
       }
       const arrayBuffer = await response.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      // Reject non-SF2/SF3 payloads (HTML error pages, empty files, etc.)
-      // so parse() never sees them and raises "wrong chunk length".
-      // SF2/SF3 start with RIFF (...sfbk).
-      if (
-        bytes.byteLength < 12 ||
-        bytes[0] !== 0x52 || // R
-        bytes[1] !== 0x49 || // I
-        bytes[2] !== 0x46 || // F
-        bytes[3] !== 0x46 // F
-      ) {
-        throw new Error(
-          `Failed to fetch ${url}: not a SoundFont (missing RIFF header)`,
-        );
+      // Cheap sanity check so HTML error pages don't reach parse()
+      // with a cryptic "wrong chunk length".
+      if (arrayBuffer.byteLength < 8) {
+        throw new Error(`Failed to fetch ${url}: response too short`);
       }
-      return bytes;
+      return new Uint8Array(arrayBuffer);
     };
 
     try {

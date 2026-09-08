@@ -842,9 +842,17 @@ export class Channel extends BaseChannel<Note> {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const promises: Promise<void>[] = [];
-    this.processActiveNotes(t, (note) => {
-      promises.push(player.soundOffNote(note, t));
-    });
+    for (let i = 0; i < 128; i++) {
+      const stack = this.activeNotes[i];
+      if (!stack) continue;
+      const notes = stack.slice();
+      for (let j = 0; j < notes.length; j++) {
+        const note = notes[j];
+        if (note.ending) continue;
+        if (t < note.startTime) continue;
+        promises.push(player.soundOffNote(note, t));
+      }
+    }
     return Promise.all(promises);
   }
 
@@ -917,11 +925,19 @@ export class Channel extends BaseChannel<Note> {
     const player = this.player;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const promises: Promise<void>[] = [];
-    this.processActiveNotes(t, (note) => {
-      // https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp15.pdf
-      const promise = this.noteOff(note.noteNumber, 0, t, true);
-      if (promise !== undefined) promises.push(promise);
-    });
+    // Synchronous iteration — see Channel.allNotesOff in base-player.ts.
+    for (let i = 0; i < 128; i++) {
+      const stack = this.activeNotes[i];
+      if (!stack) continue;
+      const notes = stack.slice();
+      for (let j = 0; j < notes.length; j++) {
+        const note = notes[j];
+        if (note.ending) continue;
+        if (t < note.startTime) continue;
+        const promise = this.noteOff(note.noteNumber, 0, t, true);
+        if (promise !== undefined) promises.push(promise);
+      }
+    }
     this.sustainNotes = [];
     return Promise.all(promises);
   }
@@ -1124,12 +1140,14 @@ export class MidyGM2 extends Player<Note, Channel> {
                 for (let pi = 0; pi < pairs.length; pi++) {
                   const key = pairs[pi][0];
                   if (key % numChannels !== ch) continue;
+                  // Notes held by sostenuto keep sounding until sostenuto up.
+                  if (sostenutoKeys[ch].has(key)) continue;
                   const offItems = pairs[pi][1];
                   const activeStack = activeNotes.get(key);
                   for (let oi = 0; oi < offItems.length; oi++) {
-                    const item = offItems[oi];
                     if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift()!, item.t, item.ticks);
+                      // Release at pedal-up time, not the deferred note-off time.
+                      finalizeEntry(activeStack.shift()!, t, event.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -1147,6 +1165,25 @@ export class MidyGM2 extends Player<Note, Channel> {
                   if (key % numChannels === ch) sostenutoKeys[ch].add(key);
                 }
               } else if (!on) {
+                // Release notes that received note-off while sostenuto held,
+                // unless the damper pedal is still sustaining them.
+                if (!sustainPedal[ch]) {
+                  const pairs = Array.from(pendingOff);
+                  for (let pi = 0; pi < pairs.length; pi++) {
+                    const key = pairs[pi][0];
+                    if (key % numChannels !== ch) continue;
+                    if (!sostenutoKeys[ch].has(key)) continue;
+                    const offItems = pairs[pi][1];
+                    const activeStack = activeNotes.get(key);
+                    for (let oi = 0; oi < offItems.length; oi++) {
+                      if (activeStack && activeStack.length > 0) {
+                        finalizeEntry(activeStack.shift()!, t, event.ticks);
+                        if (activeStack.length === 0) activeNotes.delete(key);
+                      }
+                    }
+                    pendingOff.delete(key);
+                  }
+                }
                 sostenutoKeys[ch].clear();
               }
               sostenutoPedal[ch] = on ? 1 : 0;
