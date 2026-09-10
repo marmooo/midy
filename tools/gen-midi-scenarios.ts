@@ -339,6 +339,49 @@ export function buildPitchBendMidi(options?: {
  *   0.5  CC7=20
  *   1.2  note off
  */
+
+/**
+ * CC1 modulation wheel: sustained note with modulation depth rising mid-note.
+ * Exercises SF2 default mod-wheel → vibLFO/modLFO modulators vs fluidsynth.
+ *
+ * Timeline:
+ *   0.0  note on, CC1=0
+ *   0.5  CC1 → 127 (full depth)
+ *   1.4  note off
+ */
+export function buildModulationCcMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  modOnTime?: number;
+  noteOffTime?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const noteNumber = options?.noteNumber ?? 60;
+  const velocity = options?.velocity ?? 100;
+  const modOnTime = options?.modOnTime ?? 0.5;
+  const noteOffTime = options?.noteOffTime ?? 1.4;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber,
+        velocity,
+        duration: noteOffTime,
+      },
+    ],
+    controllers: [
+      { time: 0, channel, controllerType: 1, value: 0 },
+      { time: modOnTime, channel, controllerType: 1, value: 127 },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
 export function buildVolumeCcMidi(options?: {
   noteNumber?: number;
   velocity?: number;
