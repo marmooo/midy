@@ -2372,7 +2372,18 @@ export class BasePlayer<
     // offline paths apply bufferSource.detune automation unreliably, while
     // playbackRate setValueAtTime is observed in the rendered buffer.
     if (this.audioContext instanceof OfflineAudioContext) {
-      const baseRate = note.voiceParams?.playbackRate ?? 1;
+      // ADS / ADSR (and any non-full RenderedBuffer) already baked
+      // voiceParams.playbackRate into the PCM during createAdsRenderedBuffer /
+      // createAdsrRenderedBuffer. Re-multiplying it here double-shifts pitch
+      // for any sample whose root key ≠ note number (e.g. the upper note of
+      // a chord) and collapses polyphony residual vs fluidsynth.
+      // Full "note" mode buffers skip setDetune entirely; raw ("none")
+      // buffers still need the full rate.
+      const pitchAlreadyBaked = note.renderedBuffer != null &&
+        !note.renderedBuffer.isFull;
+      const baseRate = pitchAlreadyBaked
+        ? 1
+        : (note.voiceParams?.playbackRate ?? 1);
       const rate = baseRate * Math.pow(2, detune / 1200);
       src.detune.cancelScheduledValues(scheduleTime).setValueAtTime(
         0,
