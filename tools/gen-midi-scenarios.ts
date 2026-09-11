@@ -261,6 +261,85 @@ export function buildClosedHatRetriggerMidi(options?: {
 }
 
 /**
+ * Rapid same-note drum hits on channel 9 (GM drum kit).
+ * Default: 4 hits at 80ms spacing — dense enough to stress exclusive-class
+ * cut / voice steal on long-decay cymbals (crash, open HH, ride).
+ *
+ * GM note numbers (defaults):
+ *   49 Crash Cymbal 1
+ *   51 Ride Cymbal 1
+ *   46 Open Hi-Hat
+ *   42 Closed Hi-Hat
+ */
+export function buildDrumRapidHitsMidi(options?: {
+  /** GM drum note number. Default 49 (Crash Cymbal 1). */
+  noteNumber?: number;
+  /** Number of hits. Default 4. */
+  hitCount?: number;
+  /** Interval between hit onsets in seconds. Default 0.08. */
+  interval?: number;
+  /** Each note-on duration in seconds. Default 0.4 (long enough to overlap). */
+  eachDuration?: number;
+  velocity?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const noteNumber = options?.noteNumber ?? 49;
+  const hitCount = options?.hitCount ?? 4;
+  const interval = options?.interval ?? 0.08;
+  const eachDuration = options?.eachDuration ?? 0.4;
+  const velocity = options?.velocity ?? 100;
+  const notes: TimedNote[] = [];
+  for (let i = 0; i < hitCount; i++) {
+    notes.push({
+      time: i * interval,
+      channel: 9,
+      noteNumber,
+      velocity,
+      duration: eachDuration,
+    });
+  }
+  return buildScenarioMidi({
+    notes,
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Alternating crash (49) + ride (51) hits — two long-decay cymbals that may
+ * or may not share exclusive class depending on the soundfont.
+ */
+export function buildCymbalAlternateMidi(options?: {
+  noteA?: number;
+  noteB?: number;
+  hitCount?: number;
+  interval?: number;
+  eachDuration?: number;
+  velocity?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const noteA = options?.noteA ?? 49;
+  const noteB = options?.noteB ?? 51;
+  const hitCount = options?.hitCount ?? 4;
+  const interval = options?.interval ?? 0.1;
+  const eachDuration = options?.eachDuration ?? 0.5;
+  const velocity = options?.velocity ?? 100;
+  const notes: TimedNote[] = [];
+  for (let i = 0; i < hitCount; i++) {
+    notes.push({
+      time: i * interval,
+      channel: 9,
+      noteNumber: i % 2 === 0 ? noteA : noteB,
+      velocity,
+      duration: eachDuration,
+    });
+  }
+  return buildScenarioMidi({
+    notes,
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
  * Melodic single note (non-drum) for baseline single-note compare.
  * Same defaults as buildSingleNoteMidi but expressed as a scenario.
  */
