@@ -697,7 +697,7 @@ export function buildSustainPedalMidi(options?: {
 
 /**
  * Two-note polyphony (C major third): simultaneous notes on one channel.
- * Catches voice allocation / mix gain issues.
+ * Catches voice allocation / mix gain issues and ADS pitch double-apply.
  *
  * Timeline:
  *   0.0  note 60 + note 64 on
@@ -733,6 +733,165 @@ export function buildPolyphonyMidi(options?: {
       },
     ],
     programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Three-note chord (C major triad): more concurrent voices on one channel.
+ *
+ * Timeline:
+ *   0.0  notes 60 + 64 + 67 on
+ *   1.0  all off
+ */
+export function buildChordPolyphonyMidi(options?: {
+  notes?: number[];
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  duration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const duration = options?.duration ?? 1;
+  const velocity = options?.velocity ?? 100;
+  const noteNumbers = options?.notes ?? [60, 64, 67];
+  return buildScenarioMidi({
+    notes: noteNumbers.map((noteNumber) => ({
+      time: 0,
+      channel,
+      noteNumber,
+      velocity,
+      duration,
+    })),
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Wide-interval dyad (C3 + C5). Different sample zones / root keys stress
+ * the ADS/ADSR playbackRate bake path (double-apply regression).
+ *
+ * Timeline:
+ *   0.0  note 48 + note 72 on
+ *   1.0  both off
+ */
+export function buildWideIntervalPolyphonyMidi(options?: {
+  noteLow?: number;
+  noteHigh?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  duration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  return buildPolyphonyMidi({
+    noteA: options?.noteLow ?? 48,
+    noteB: options?.noteHigh ?? 72,
+    velocity: options?.velocity,
+    channel: options?.channel,
+    program: options?.program,
+    duration: options?.duration,
+    tailSilence: options?.tailSilence,
+  });
+}
+
+/**
+ * Staggered overlap: second note starts while the first is still held.
+ * Exercises concurrent sustain mixing without a shared onset.
+ *
+ * Timeline (defaults):
+ *   0.0  note A on
+ *   0.35 note B on
+ *   1.0  note A off
+ *   1.35 note B off
+ */
+export function buildStaggeredPolyphonyMidi(options?: {
+  noteA?: number;
+  noteB?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  /** When note A starts. Default 0. */
+  startA?: number;
+  /** When note B starts. Default 0.35. */
+  startB?: number;
+  /** Duration of each note. Default 1. */
+  duration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const duration = options?.duration ?? 1;
+  const velocity = options?.velocity ?? 100;
+  const startA = options?.startA ?? 0;
+  const startB = options?.startB ?? 0.35;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: startA,
+        channel,
+        noteNumber: options?.noteA ?? 60,
+        velocity,
+        duration,
+      },
+      {
+        time: startB,
+        channel,
+        noteNumber: options?.noteB ?? 64,
+        velocity,
+        duration,
+      },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Cross-channel polyphony: same pitches on two channels (independent buses).
+ * Catches channel-gain / pan mix mistakes that same-channel tests miss.
+ *
+ * Timeline:
+ *   0.0  ch0 note 60 + ch1 note 64 on
+ *   1.0  both off
+ */
+export function buildCrossChannelPolyphonyMidi(options?: {
+  noteA?: number;
+  noteB?: number;
+  velocity?: number;
+  channelA?: number;
+  channelB?: number;
+  programA?: number;
+  programB?: number;
+  duration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channelA = options?.channelA ?? 0;
+  const channelB = options?.channelB ?? 1;
+  const duration = options?.duration ?? 1;
+  const velocity = options?.velocity ?? 100;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel: channelA,
+        noteNumber: options?.noteA ?? 60,
+        velocity,
+        duration,
+      },
+      {
+        time: 0,
+        channel: channelB,
+        noteNumber: options?.noteB ?? 64,
+        velocity,
+        duration,
+      },
+    ],
+    programs: {
+      [channelA]: options?.programA ?? 0,
+      [channelB]: options?.programB ?? 0,
+    },
     tailSilence: options?.tailSilence ?? 2,
   });
 }
