@@ -3,7 +3,6 @@
 // Usage:
 //   deno test -A tools/compare-pitch.test.ts
 //
-import { parseMidi } from "midi-file";
 import {
   buildPitchBendMidi,
   buildPitchBendRangeMidi,

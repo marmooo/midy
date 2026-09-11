@@ -14,11 +14,9 @@ import {
 import {
   assertNonEmptyFile,
   CACHE_MODES,
-  compareMono,
   ensureFsBin,
   ensureOutDir,
   forEachCacheModeRender,
-  formatCompareResult,
   HARNESS_DIR,
   OUT_DIR,
   readWav,
@@ -28,7 +26,6 @@ import {
   SAMPLE_RATE,
   SF2_PATH,
   stereoBalance,
-  toMono,
   windowRmsDb,
 } from "./compare-common.ts";
 
