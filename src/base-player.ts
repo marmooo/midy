@@ -2086,18 +2086,45 @@ export class BasePlayer<
     bank: number;
     programNumber: number;
   } | null {
+    const voices = this.tryGetVoices(bank, programNumber, noteNumber, velocity);
+    return voices[0] ?? null;
+  }
+
+  tryGetVoices(
+    bank: number,
+    programNumber: number,
+    noteNumber: number,
+    velocity: number,
+  ): {
+    voice: Voice;
+    soundFontIndex: number;
+    bank: number;
+    programNumber: number;
+  }[] {
     const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return null;
+    if (!bankTable) return [];
     const soundFontIndex = bankTable[bank];
-    if (soundFontIndex === undefined) return null;
-    const voice = this.soundFonts[soundFontIndex].getVoice(
+    if (soundFontIndex === undefined) return [];
+    const sf = this.soundFonts[soundFontIndex];
+    // Prefer getVoices (all layers) when available; fall back to getVoice.
+    const raw: Voice[] =
+      typeof (sf as { getVoices?: typeof sf.getVoice }).getVoices === "function"
+        ? (sf as unknown as { getVoices: typeof sf.getVoices }).getVoices(
+          bank,
+          programNumber,
+          noteNumber,
+          velocity,
+        )
+        : (() => {
+          const v = sf.getVoice(bank, programNumber, noteNumber, velocity);
+          return v ? [v] : [];
+        })();
+    return raw.map((voice) => ({
+      voice,
+      soundFontIndex,
       bank,
       programNumber,
-      noteNumber,
-      velocity,
-    );
-    if (!voice) return null;
-    return { voice, soundFontIndex, bank, programNumber };
+    }));
   }
 
   // GM instrument families are groups of 8 (0–7 Piano, 8–15 Chromatic, …).
@@ -2174,29 +2201,44 @@ export class BasePlayer<
     bank: number;
     programNumber: number;
   } | null {
+    return this.resolveVoices(channel, noteNumber, velocity)[0] ?? null;
+  }
+
+  resolveVoices(
+    channel: TChannel,
+    noteNumber: number,
+    velocity: number,
+  ): {
+    voice: Voice;
+    soundFontIndex: number;
+    bank: number;
+    programNumber: number;
+  }[] {
     const programNumber = channel.programNumber;
     if (channel.isDrum) {
-      let result = this.tryGetVoice(128, programNumber, noteNumber, velocity);
-      if (result) return result;
+      let result = this.tryGetVoices(128, programNumber, noteNumber, velocity);
+      if (result.length) return result;
       if (programNumber !== 0) {
-        result = this.tryGetVoice(128, 0, noteNumber, velocity);
-        if (result) return result;
+        result = this.tryGetVoices(128, 0, noteNumber, velocity);
+        if (result.length) return result;
       }
-      return this.findFirstPresetVoice(noteNumber, velocity, true);
+      const fb = this.findFirstPresetVoice(noteNumber, velocity, true);
+      return fb ? [fb] : [];
     }
 
-    let result = this.tryGetVoice(0, programNumber, noteNumber, velocity);
-    if (result) return result;
+    let result = this.tryGetVoices(0, programNumber, noteNumber, velocity);
+    if (result.length) return result;
     const family = BasePlayer.gmFamilyCandidates(programNumber);
     for (let i = 0; i < family.length; i++) {
-      result = this.tryGetVoice(0, family[i], noteNumber, velocity);
-      if (result) return result;
+      result = this.tryGetVoices(0, family[i], noteNumber, velocity);
+      if (result.length) return result;
     }
     if (programNumber !== 0) {
-      result = this.tryGetVoice(0, 0, noteNumber, velocity);
-      if (result) return result;
+      result = this.tryGetVoices(0, 0, noteNumber, velocity);
+      if (result.length) return result;
     }
-    return this.findFirstPresetVoice(noteNumber, velocity, false);
+    const fb = this.findFirstPresetVoice(noteNumber, velocity, false);
+    return fb ? [fb] : [];
   }
 
   resolveVoice(
@@ -2751,35 +2793,46 @@ export class BasePlayer<
   ): Promise<TNote | void> {
     const t: number = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === undefined;
-    if (!note) note = this.createNoteInstance(noteNumber, velocity, t);
-    if (!note.voice) {
-      note.voice = this.resolveVoice(channel, noteNumber, velocity);
-    }
-    if (!note.voice) return;
-    // Free oldest voices early so async prep does not start on top of an
-    // already-over-budget sustain pile (steal runs again in setNoteRouting).
-    if (!note.isTiledGhost) {
-      this.enforceMaxVoices(t, 1);
-    }
+
+    // Resolve all SF2 layers first. When the caller already attached a voice
+    // (cache / preload paths), keep single-voice behaviour for that note.
+    const layers = note?.voice
+      ? [{ voice: note.voice }]
+      : this.resolveVoices(channel, noteNumber, velocity);
+    if (!layers.length) return;
+
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
     }
-    channel.activeNotes[noteNumber].push(note);
-    try {
-      await this.setNoteAudioNode(channel, note, realtime);
-      if (note.ending) {
-        // When pause/stop is interrupted in the middle of setNoteAudioNode
-        if (note.bufferSource || note.volumeNode) {
-          await this.soundOffNote(note, this.audioContext.currentTime);
-        }
-        return note;
+
+    let primary: TNote | undefined = note;
+    for (let i = 0; i < layers.length; i++) {
+      const layerNote = i === 0 && primary
+        ? primary
+        : this.createNoteInstance(noteNumber, velocity, t);
+      layerNote.voice = layers[i].voice;
+      if (!layerNote.isTiledGhost) {
+        this.enforceMaxVoices(t, 1);
       }
-      this.setNoteRouting(channel, note, t);
-    } finally {
-      note.resolveReady();
+      channel.activeNotes[noteNumber].push(layerNote);
+      try {
+        await this.setNoteAudioNode(channel, layerNote, realtime);
+        if (layerNote.ending) {
+          if (layerNote.bufferSource || layerNote.volumeNode) {
+            await this.soundOffNote(layerNote, this.audioContext.currentTime);
+          }
+        } else {
+          this.setNoteRouting(channel, layerNote, t);
+        }
+      } finally {
+        layerNote.resolveReady();
+      }
+      if (0.5 <= channel.state.sustainPedal) {
+        channel.sustainNotes.push(layerNote);
+      }
+      if (i === 0) primary = layerNote;
     }
-    if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
-    return note;
+    return primary;
   }
 
   // iOS Safari often retains AudioBuffer memory while it is still attached to
