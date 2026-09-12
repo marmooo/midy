@@ -279,6 +279,28 @@ export function getVoiceParams(
     exclusiveClass: staticGenerators.get("exclusiveClass"),
   };
   const generators = voice.transformAllParams(controllerState);
+
+  // EMU8k/10k / FluidSynth compatibility for initialAttenuation.
+  //
+  // SF2.01 defines initialAttenuation in centibels (1 cB = 0.1 dB), and the
+  // final amplitude conversion remains 10^(cb/200) via cbToRatio().
+  // Creative's EMU8000 hardware, however, applied only ~0.4× that scale to the
+  // *static* generator values written in the SoundFont (preset/instrument
+  // zones). Most banks (including GeneralUser GS) were authored against that
+  // EMU response. FluidSynth mirrors the hardware at load time
+  // (fluid_defsfont.c: EMU_ATTENUATION_FACTOR = 0.4 applied to gen.val only).
+  //
+  // Modulator contributions (e.g. default velocity→attenuation amount 960)
+  // are NOT scaled — they stay full-scale, matching FluidSynth.
+  //
+  // effective = staticAtten * 0.4 + (afterModulators - staticAtten)
+  {
+    const staticAtten = staticGenerators.get("initialAttenuation");
+    const afterMod = generators.get("initialAttenuation");
+    const modDelta = afterMod - staticAtten;
+    generators.set("initialAttenuation", staticAtten * 0.4 + modDelta);
+  }
+
   for (let i = 0; i < ValueGeneratorKeys.length; i++) {
     const generatorKey = ValueGeneratorKeys[i];
     voiceParamsHandlerFns[generatorKey](
@@ -309,6 +331,20 @@ export function getVoiceParamsForController(
     const generatorKey = updatedKeys[i];
     generators.set(generatorKey, updatedParams[generatorKey]!);
   }
+
+  // Same EMU static-atten scale as getVoiceParams (see comment there).
+  // Only rewrite when this controller path touched initialAttenuation.
+  if (
+    Object.prototype.hasOwnProperty.call(updatedParams, "initialAttenuation")
+  ) {
+    const staticAtten = voice.generators.get("initialAttenuation");
+    const afterMod = updatedParams.initialAttenuation!;
+    const modDelta = afterMod - staticAtten;
+    const scaled = staticAtten * 0.4 + modDelta;
+    updatedParams.initialAttenuation = scaled;
+    generators.set("initialAttenuation", scaled);
+  }
+
   const key = voice.key;
   const sampleHeader = voice.sampleHeader;
   for (let i = 0; i < updatedKeys.length; i++) {
@@ -930,6 +966,12 @@ export class RenderedBuffer {
   }
 }
 
+// SF2 centibel → amplitude ratio: 10^(cb/200) (1 cB = 0.1 dB).
+// Do NOT change this to /500 for "EMU compatibility". FluidSynth applies the
+// 0.4 EMU factor only to the static initialAttenuation generator value at
+// load time (see getVoiceParams), then still converts with /200 here.
+// Scaling this function would also weaken velocity modulators and break
+// absolute levels vs FluidSynth.
 export function cbToRatio(cb: number): number {
   return Math.pow(10, cb / 200);
 }
