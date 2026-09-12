@@ -974,3 +974,105 @@ export function buildCrossChannelPolyphonyMidi(options?: {
     tailSilence: options?.tailSilence ?? 2,
   });
 }
+
+/**
+ * Melody single-note level scenario (pitched instrument, non-drum).
+ * Alias-style helper used by compare-melody.test.ts; same shape as
+ * buildMelodicNoteMidi but with explicit defaults suited to level checks.
+ */
+export function buildMelodySingleNoteMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  duration?: number;
+  channel?: number;
+  program?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  return buildMelodicNoteMidi({
+    noteNumber: options?.noteNumber ?? 60,
+    velocity: options?.velocity ?? 100,
+    duration: options?.duration ?? 1,
+    channel: options?.channel ?? 0,
+    program: options?.program ?? 0,
+    tailSilence: options?.tailSilence ?? 3,
+  });
+}
+
+/**
+ * Melody release-curve scenario: hold a note, then note-off with enough
+ * trailing silence to measure early/late release windows.
+ *
+ * Timeline (defaults):
+ *   0.0  note on
+ *   holdDuration  note off
+ *   +tailSilence  end
+ */
+export function buildMelodyReleaseMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  holdDuration?: number;
+  channel?: number;
+  program?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const holdDuration = options?.holdDuration ?? 0.5;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: holdDuration,
+      },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    // Enough silence after note-off for late release window (hold+0.7).
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Velocity-zone / multi-layer switch: soft note then loud note on the same
+ * pitch so SF2 velocity layers can be exercised.
+ *
+ * Defaults match compare-melody.test.ts windows (loudAt=1.2, durations 0.7).
+ */
+export function buildVelocityZoneMidi(options?: {
+  noteNumber?: number;
+  softVelocity?: number;
+  loudVelocity?: number;
+  softDuration?: number;
+  loudDuration?: number;
+  loudAt?: number;
+  channel?: number;
+  program?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const softDuration = options?.softDuration ?? 0.7;
+  const loudDuration = options?.loudDuration ?? 0.7;
+  const loudAt = options?.loudAt ?? 1.2;
+  const noteNumber = options?.noteNumber ?? 60;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber,
+        velocity: options?.softVelocity ?? 40,
+        duration: softDuration,
+      },
+      {
+        time: loudAt,
+        channel,
+        noteNumber,
+        velocity: options?.loudVelocity ?? 100,
+        duration: loudDuration,
+      },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
