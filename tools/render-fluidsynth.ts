@@ -125,8 +125,18 @@ export interface RenderWithFluidsynthOptions {
    * noise, which matters when diffing against midy's Float32 AudioBuffer
    * output directly. Default: "float". */
   sampleFormat?: "16bits" | "float";
-  /** Extra raw CLI args appended after the built-in ones, e.g.
-   * ["-o", "synth.gain=1"]. */
+  /**
+   * Master gain passed as `-o synth.gain=...`.
+   *
+   * FluidSynth's built-in default is 0.2 (about -14 dB). midy's Web Audio
+   * masterVolume is unity (1.0). Comparing dry voice levels against that
+   * default makes every midy render look ~14 dB hot even when per-voice
+   * attenuation already matches. Default here is 1 so conformance tests
+   * compare DSP at the same master scale. Pass 0.2 only when you want the
+   * stock FluidSynth listening level.
+   */
+  gain?: number;
+  /** Extra raw CLI args appended after the built-in ones. */
   extraArgs?: string[];
 }
 
@@ -138,10 +148,13 @@ export async function renderWithFluidsynth(
   const disableReverb = options.disableReverb ?? true;
   const disableChorus = options.disableChorus ?? true;
   const sampleFormat = options.sampleFormat ?? "float";
+  // Unity gain by default — see RenderWithFluidsynthOptions.gain.
+  const gain = options.gain ?? 1;
 
   const args = ["-ni"];
   if (disableReverb) args.push("-o", "synth.reverb.active=0");
   if (disableChorus) args.push("-o", "synth.chorus.active=0");
+  args.push("-o", `synth.gain=${gain}`);
   args.push("-o", `audio.file.format=${sampleFormat}`);
   args.push("-F", options.wavPath, "-r", String(sampleRate));
   if (options.extraArgs) args.push(...options.extraArgs);
