@@ -45,6 +45,8 @@ This library provides several files depending on the implementation level.
 - Games
   - [Tip Tap Notes](https://marmooo.github.io/tip-tap-notes/) - Falling-note
     rhythm game with tap notes
+  - [Flip Flap Notes](https://marmooo.github.io/flip-flap-notes/) - Falling-note
+    rhythm game with various notes
 
 ## Support Status
 
