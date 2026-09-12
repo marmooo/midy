@@ -87,7 +87,7 @@ export class Player<
   // Notes with no pitch-bend / CC automation during their interval can be
   // fully baked once and reused (keyed by voice params + duration + channel
   // mix snapshot) instead of re-running the full noteOn path for every
-  // identical onset — including "note" mode playback and offline segment/
+  // identical onset -- including "note" mode playback and offline segment/
   // chunk/audio mixes.
   simpleNoteCache: boolean = true;
   simpleNoteSet: Set<number> = new Set();
@@ -135,7 +135,7 @@ export class Player<
   // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
   // AudioBuffer memory aggressively; Promise.all over many complex notes in
   // one chunk was creating dozens of OACs at once and crashing the tab.
-  // Logic (what gets baked) is unchanged — only peak concurrency.
+  // Logic (what gets baked) is unchanged -- only peak concurrency.
   maxConcurrentOfflineRenders: number = 1;
   private offlineRenderActive: number = 0;
   private offlineRenderDepth: number = 0;
@@ -152,7 +152,6 @@ export class Player<
     this.cacheMode = DEFAULT_CACHE_MODE;
     this.offlineRenderOnly = options?.offlineRenderOnly ?? false;
   }
-
   // Serialize / limit OfflineAudioContext work across the whole Player.
   // Re-entrant: a gated chunk/segment bake may call renderEntryAudioBuffer
   // (also gated) without deadlocking when maxConcurrentOfflineRenders === 1.
@@ -497,7 +496,7 @@ export class Player<
           //
           // Exclusive-class drum notes are excluded from tiledVoiceParams
           // (and therefore from segment/chunk notes) because segmenting them
-          // would bring no benefit — exclusive class guarantees at most one
+          // would bring no benefit -- exclusive class guarantees at most one
           // note of the same class sounds at a time, so they're scheduled via
           // the normal noteOnChannel path instead. However they still need
           // their raw sample decoded and cached so that noteOnChannel path
@@ -615,7 +614,7 @@ export class Player<
   // that loop) to decide which notes are safe to bake into a segment/chunk.
   // Notes that ring too long, or that participate in an exclusive class
   // (hi-hat choke groups etc.), are left out so they keep going through
-  // normal per-note real-time ("ads"-style) scheduling instead — that
+  // normal per-note real-time ("ads"-style) scheduling instead -- that
   // path is the only way to cut a note off early once it has started.
   // Cheap (no voice resolution), so tempoChange() can call this again
   // after buildNoteOnDurations() without redoing the full classification.
@@ -635,14 +634,32 @@ export class Player<
     this.tiledBakedSet = bakedSet;
   }
 
-  // Treat notes with no in-interval automation as simple.
+  // Sustain (CC#64) and note-stop controllers only determine the duration,
+  // which buildNoteOnDurations has already resolved. They do not alter a
+  // baked waveform, so they must not force an expensive complex-note bake.
+  protected hasWaveformAutomation(noteEvent: NoteOnEventEntry): boolean {
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend" || event.type === "sysEx") return true;
+      if (event.type !== "controller") continue;
+      const controller = event.controllerType ?? -1;
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // Treat notes with no waveform-changing in-interval automation as simple.
   // noteEvent.events is filled by buildNoteOnDurations with every
   // controller / pitchBend / sysEx / programChange that occurs while the
-  // note is active — so pitch bend IS part of the simple/complex test,
+  // note is active -- so pitch bend IS part of the simple/complex test,
   // not only CC. Notes that start after a pitch bend but have no further
   // automation remain simple; their onset detune is taken from the
   // per-note channelDetune snapshot instead.
-  // (Conservative approximation — events in the release gap after noteOff
+  // (Conservative approximation -- events in the release gap after noteOff
   // are not captured.)
   finalizeSimpleNoteClassification(): void {
     const simple = new Set<number>();
@@ -658,7 +675,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
     } else {
@@ -667,7 +684,7 @@ export class Player<
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
     }
@@ -782,7 +799,7 @@ export class Player<
     const noteEvent = n.noteEvent;
     if (!noteEvent || noteEvent.duration <= 0) return false;
     if (noteEvent.durationTicks === Infinity) return false;
-    return noteEvent.events.length === 0;
+    return !this.hasWaveformAutomation(noteEvent);
   }
 
   // bakeChannelMix flag (keys, getSimple/ComplexNoteBuffer, renderEntryAudioBuffer):
@@ -817,7 +834,7 @@ export class Player<
 
   // Controllers that change the offline-baked waveform when replayed inside
   // renderEntryAudioBuffer. Sustain (64), all-notes-off, etc. affect note
-  // lifetime which is already captured by durationTicks — including them in
+  // lifetime which is already captured by durationTicks -- including them in
   // the key would split otherwise-identical bakes.
   // Subclasses extend via isComplexKeyController (do not replace this set).
   static readonly COMPLEX_KEY_CONTROLLER_TYPES: ReadonlySet<number> = new Set([
@@ -839,7 +856,7 @@ export class Player<
 
   // Append channel-state fields that affect the offline bake to a note
   // cache key. Base: volumeMSB / panMSB / expressionMSB when bakeChannelMix
-  // (zeros when dry so field positions stay stable — dry leaves the channel
+  // (zeros when dry so field positions stay stable -- dry leaves the channel
   // bus live). Subclasses push note-body slots always and mix-level slots
   // (LSB, delay send, …) only when bakeChannelMix is true.
   protected appendNoteKeyStateParts(
@@ -1019,8 +1036,8 @@ export class Player<
       const noteOnEvent = noteOnEvents[i];
       if (!noteOnEvent || noteOnEvent.duration <= 0) return false;
       if (noteOnEvent.durationTicks === Infinity) return false;
-      // Must have automation — otherwise it would be simple.
-      if (noteOnEvent.events.length === 0) return false;
+      // Must have automation -- otherwise it would be simple.
+      if (!this.hasWaveformAutomation(noteOnEvent)) return false;
       return true;
     };
 
@@ -1188,7 +1205,7 @@ export class Player<
 
   // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
   // in-flight OfflineAudioContext results are discarded on completion.
-  // Does not change bake logic — only releases references for GC / iOS.
+  // Does not change bake logic -- only releases references for GC / iOS.
   protected releaseTiledPlaybackResources(): void {
     this.segmentGeneration++;
     this.chunkGeneration++;
@@ -1418,7 +1435,6 @@ export class Player<
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
-    // Fresh playthrough: reset so console stats reflect this run only.
     this.playPromise = this.playNotes();
     await this.playPromise;
   }
@@ -1600,8 +1616,8 @@ export class Player<
     // discards stale results instead of scheduling them or re-adding them
     // to state.pending. Without this, a backlog of now-irrelevant renders
     // from before a seek/stop/loop can play at the wrong moment once they
-    // finally finish, and — since startRendering() is serialized by the
-    // browser — can delay the fresh segments that should render next,
+    // finally finish, and -- since startRendering() is serialized by the
+    // browser -- can delay the fresh segments that should render next,
     // pushing them past lookAhead too.
     // Also neuter sources + drop buffer refs so iOS can reclaim PCM.
     this.segmentGeneration++;
@@ -1659,7 +1675,7 @@ export class Player<
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
       voice: this.tiledVoices[timelineIndex] ?? undefined,
-      // Per-note onset snapshot — simple-note bakes need the detune/state
+      // Per-note onset snapshot -- simple-note bakes need the detune/state
       // at this note's start, not the segment-open values (pitch bend may
       // have moved them in the meantime).
       channelDetune: channel.detune,
@@ -1825,7 +1841,7 @@ export class Player<
 
   stopChunkSources(): void {
     // Invalidate in-flight renderChunkBuffer() calls (same rationale as
-    // stopSegmentSources — stale renders must not be scheduled after a
+    // stopSegmentSources -- stale renders must not be scheduled after a
     // seek/stop/loop). Also neuter sources + drop buffer refs for iOS.
     this.chunkGeneration++;
     const state = this.chunkState;
@@ -1872,7 +1888,7 @@ export class Player<
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
       voice: this.tiledVoices[timelineIndex] ?? undefined,
-      // Snapshot per-channel state now — channel volume/pan/expression
+      // Snapshot per-channel state now -- channel volume/pan/expression
       // are baked into the buffer so they must be captured at note-append
       // time before subsequent events on the same channel change them.
       channelDetune: channel.detune,
@@ -1993,7 +2009,7 @@ export class Player<
   // Both paths use simpleNote when the note has no in-interval automation
   // (pitch bend / CC are already excluded by isSimpleNote). Onset detune /
   // volume come from the per-note channelDetune / channelStateArray
-  // snapshot taken at append (or offline walk) time — same as segment.
+  // snapshot taken at append (or offline walk) time -- same as segment.
   //
   // Simple-note optimization: cache hits are placed as BufferSources; cache
   // misses are scheduled directly into this offline context (no per-note
@@ -2017,7 +2033,7 @@ export class Player<
     }
     if (totalDuration <= 0) return null;
 
-    // Over-allocate then trim — avoids a second isSimpleNote pass.
+    // Over-allocate then trim -- avoids a second isSimpleNote pass.
     const simpleNotes = new Array<ChunkNoteEntry>(notesLen);
     const complexNotes = new Array<ChunkNoteEntry>(notesLen);
     let simpleCount = 0;
@@ -2058,12 +2074,14 @@ export class Player<
             src.start(n.offset);
             continue;
           }
+
           const key = this.makeSimpleNoteKey(n, true);
           const count = simpleCounts.get(key) ?? 0;
           if (count > 1) {
             // First (or concurrent) occurrence of a multi-use key: bake once
             // into simpleNoteBufferCache so later hits in this or other
             // windows/segments skip graph setup entirely.
+
             const noteBuf = await this.getSimpleNoteBuffer(
               {
                 channelNumber: n.channelNumber,
@@ -2149,13 +2167,16 @@ export class Player<
         }
       }
 
-      // --- complex: per-note full bake (in-note pitch bend / CC) ---
-      // Sequential (not Promise.all): parallel OACs were the main iPad OOM
-      // source under dense pitch-bend / CC automation.
+      // --- complex: cache hits use a BufferSource. Cache misses are scheduled
+      // directly into this mix context with isolated per-note channel state; this
+      // avoids a separate OfflineAudioContext/startRendering per automated note.
+      const directComplexNotes = new Array<
+        BakeNoteEntry & { offset: number }
+      >();
       const complexLen = complexNotes.length;
       for (let i = 0; i < complexLen; i++) {
         const n = complexNotes[i];
-        const entry = {
+        const entry: BakeNoteEntry = {
           channelNumber: n.channelNumber,
           noteNumber: n.noteNumber,
           velocity: n.velocity,
@@ -2169,15 +2190,21 @@ export class Player<
           audioBufferId: n.audioBufferId,
           voice: n.voice,
         };
-        let buf = await this.lookupComplexNoteBuffer(entry, true);
+        const buf = await this.lookupComplexNoteBuffer(entry, true);
         if (!buf) {
-          buf = await this.getComplexNoteBuffer(entry, true);
+          directComplexNotes.push({ ...entry, offset: n.offset });
+          continue;
         }
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: buf,
-        });
+        const src = new AudioBufferSourceNode(offlineContext, { buffer: buf });
         src.connect(offlineContext.destination);
         src.start(n.offset);
+      }
+      if (directComplexNotes.length > 0) {
+        await this.scheduleComplexNotesDirect(
+          offlineContext,
+          directComplexNotes,
+          true,
+        );
       }
 
       const rendered = await offlineContext.startRendering();
@@ -2196,7 +2223,7 @@ export class Player<
   // exported audio matches what that mode actually sounds like during real
   // playback (useful for e.g. diffing against a reference synth per mode).
   //
-  // - "audio" (and anything unrecognized): renderFastMode() — belongs to no
+  // - "audio" (and anything unrecognized): renderFastMode() -- belongs to no
   //   real playback pipeline; it's a cheap windowed offline mix used both as
   //   the "audio" cache mode's own definition (its whole point is "entire
   //   song pre-rendered to one buffer") and as the fallback/"fast" render.
@@ -2343,7 +2370,7 @@ export class Player<
         const n = notes[ni];
         if (n.offset < winStart || n.offset >= winEnd) continue;
         // Shift offsets so the offline context starts near 0 (small context).
-        // channelStateArray is a typed array — copy so mutations in one
+        // channelStateArray is a typed array -- copy so mutations in one
         // window can't affect another.
         localNotes[localCount++] = {
           ...n,
@@ -2386,7 +2413,7 @@ export class Player<
   //
   // Builds a fresh, non-lightweight Player of the same subclass bound to
   // that OfflineAudioContext, with its own cacheMode set to the requested
-  // mode — note classification (tiledBakedSet / simpleNoteSet /
+  // mode -- note classification (tiledBakedSet / simpleNoteSet /
   // noteOnDurations) depends on cacheMode, so it must be (re)computed for
   // the mode being rendered rather than reused from `this`.
   //
@@ -2399,7 +2426,7 @@ export class Player<
   //
   // Deliberately does NOT reuse waitForPendingSources()/drainChunkPipeline():
   // those poll AudioBufferSourceNode.onended, which only fires once
-  // offlineContext.startRendering() actually runs — polling for it before
+  // offlineContext.startRendering() actually runs -- polling for it before
   // that call would hang. Instead this awaits each pending tile's
   // bufferPromise directly, then starts its source without waiting for it
   // to finish playing.
@@ -2455,7 +2482,7 @@ export class Player<
     offlinePlayer.resumeTime = 0;
     offlinePlayer.startDelay = 0;
 
-    // (Re)classify notes for THIS mode — tiledBakedSet / simpleNoteSet /
+    // (Re)classify notes for THIS mode -- tiledBakedSet / simpleNoteSet /
     // noteOnDurations all depend on cacheMode, so this cannot be reused
     // from `this.cacheVoiceIds()` unless `this.cacheMode === cacheMode`.
     offlinePlayer.cacheVoiceIds();
@@ -2478,14 +2505,14 @@ export class Player<
       const event = timeline[i];
       const t = event.startTime * inverseTempo;
       // Track this iteration's noteOn/noteOff promise so it can be awaited
-      // before moving to the next timeline event (see below) — real-time
+      // before moving to the next timeline event (see below) -- real-time
       // playback can safely fire-and-forget these because noteOn and its
       // note's later noteOff are naturally seconds apart in wall-clock
       // time, but here the whole timeline is walked in one tight loop, so
       // without awaiting, a note's noteOff can reach noteOnChannel() before
       // its own noteOn's async setNoteAudioNode() has finished. noteOnChannel
       // checks note.ending (set by noteOff) right after that await and, if
-      // it's already true, skips setNoteRouting() entirely — the note gets
+      // it's already true, skips setNoteRouting() entirely -- the note gets
       // built but never connected to any output, i.e. silently dropped.
       let pending: Promise<unknown> | undefined;
       offlinePlayer.processTimelineEvent(event, t, {
@@ -2593,9 +2620,9 @@ export class Player<
 
   // Peak-normalize an AudioBuffer in place so the absolute peak is at most
   // PEAK_TARGET (0.95). Used by audio (final mix) offline renders.
-  // Linear gain only scales *down* when needed — quiet material is unchanged.
+  // Linear gain only scales *down* when needed -- quiet material is unchanged.
   // Not used for realtime chunk windows (softClamp) or segment tiles
-  // (polyphony pre-gain + softClamp) — independent per-tile peakNormalize
+  // (polyphony pre-gain + softClamp) -- independent per-tile peakNormalize
   // would silence dense glissandi / chords.
   peakNormalizeBuffer(buffer: AudioBuffer, peakTarget = 0.95): void {
     const channels = buffer.numberOfChannels;
@@ -3019,7 +3046,7 @@ export class Player<
 
   // noteOn into an offline player: preload sample, attach voiceParams.
   // bakeChannelMix=false (dry): after noteOn, disconnect volumeNode from the
-  // channel bus (and any mix-level sends hung off it — delay, etc.) and
+  // channel bus (and any mix-level sends hung off it -- delay, etc.) and
   // connect it straight to the offline destination. That keeps the baked
   // buffer free of channel vol/pan and effect sends so segment mode can
   // apply them live.
@@ -3071,7 +3098,7 @@ export class Player<
   }
 
   // Schedule simple notes (no in-interval automation) into an existing
-  // OfflineAudioContext via a lightweight offline Player — used on cache
+  // OfflineAudioContext via a lightweight offline Player -- used on cache
   // miss so segment/chunk/audio mix pays one startRendering instead of
   // one per note + one mix. Does not populate simpleNoteBufferCache
   // (approach: critical path first; cache remains for note mode / hits
@@ -3105,6 +3132,62 @@ export class Player<
         n.noteNumber,
         0,
         n.offset + n.noteDuration,
+        true,
+      );
+    }
+  }
+
+  // Schedule automated notes directly into the chunk's OfflineAudioContext.
+  // Each note receives its own Player/Channel state, so CC and pitch-bend
+  // automation cannot leak to another overlapping note. This preserves the
+  // per-note rendering semantics without an extra OfflineAudioContext and
+  // startRendering() call for every cache miss.
+  protected async scheduleComplexNotesDirect(
+    offlineContext: OfflineAudioContext,
+    notes: (BakeNoteEntry & { offset: number })[],
+    bakeChannelMix: boolean,
+  ): Promise<void> {
+    for (let i = 0; i < notes.length; i++) {
+      const entry = notes[i];
+      const offlinePlayer = this.createOfflineRenderPlayer(
+        offlineContext,
+        [entry.channelNumber],
+        true,
+      );
+      const channel = this.prepareOfflineChannel(
+        offlinePlayer,
+        entry,
+        bakeChannelMix,
+        entry.offset,
+      );
+      if (!channel) continue;
+      await this.scheduleOfflineNoteOn(
+        offlinePlayer,
+        offlineContext,
+        channel,
+        entry,
+        entry.offset,
+        bakeChannelMix,
+      );
+      const noteEvents = entry.noteEvent?.events ?? [];
+      const noteStartTime = entry.noteEvent?.startTime ?? 0;
+      const releaseEnd = entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const tMax = entry.noteDuration + releaseEnd;
+      for (let ei = 0; ei < noteEvents.length; ei++) {
+        const event = noteEvents[ei];
+        if (event.type === "programChange") continue;
+        let t = this.relativeTimeInNote(event, entry.noteEvent, noteStartTime);
+        if (t < -1e-4 || t > tMax) continue;
+        if (t < 0) t = 0;
+        offlinePlayer.processTimelineEvent(event, entry.offset + t, {
+          channels: offlinePlayer.channels,
+        });
+      }
+      offlinePlayer.noteOffChannel(
+        channel,
+        entry.noteNumber,
+        0,
+        entry.offset + entry.noteDuration,
         true,
       );
     }
@@ -3147,7 +3230,7 @@ export class Player<
   // context per note followed by a manual JS mixdown. Each note still gets
   // its own full envelope/pitch-bend/LFO/CC#1 bake (same fidelity as
   // "note" mode), but all notes share one offline render graph and are
-  // simply scheduled at their respective offsets within it — the audio
+  // simply scheduled at their respective offsets within it -- the audio
   // graph itself does the mixing instead of a JS sample-accumulation loop.
   // TChannel volume/pan/expression are intentionally NOT baked in (same as
   // before): each note's volumeNode is rewired to bypass the channel bus
@@ -3221,7 +3304,7 @@ export class Player<
       // every onset, at the cost of one Offline render per unique note.
       // Multi-use keys still fill simpleNoteBufferCache via getSimpleNoteBuffer.
       const isDrum = channel.isDrum;
-      // Sequential bakes (not Promise.all) — same fidelity, lower peak OAC count.
+      // Sequential bakes (not Promise.all) -- same fidelity, lower peak OAC count.
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
@@ -3249,7 +3332,7 @@ export class Player<
           const src = new AudioBufferSourceNode(offlineContext, {
             buffer: buf,
           });
-          // dry mono — channel vol/pan stay live via gainL/gainR
+          // dry mono -- channel vol/pan stay live via gainL/gainR
           src.connect(mixGain);
           src.start(n.offset);
         }
@@ -3362,7 +3445,7 @@ export class Player<
   // bakeChannelMix=false → mono dry bake (volumeNode rewired to destination;
   //                       segment keeps gainL/gainR and delay live)
   // Complex notes in segment/chunk/audio all go through this path so pitch
-  // bend is applied exactly like "note" mode's createFullRenderedBuffer —
+  // bend is applied exactly like "note" mode's createFullRenderedBuffer --
   // one offline graph per note, no shared-channel event replay.
   // Simple-note caches (getSimpleNoteBuffer) also land here: with no
   // in-interval automation the event loop is a no-op.
@@ -3628,7 +3711,7 @@ export class Player<
 
   // "note" mode buffer: simple notes share simpleNoteBufferCache; complex
   // notes (in-note automation) are fully baked once per onset with no
-  // secondary cache — the old per-timelineIndex fullVoiceCache rarely hit.
+  // secondary cache -- the old per-timelineIndex fullVoiceCache rarely hit.
   async getNoteModeBuffer(
     channel: TChannel,
     note: TNote,
@@ -3791,7 +3874,7 @@ export class Player<
       } else {
         note.bufferSource.playbackRate.value = voiceParams.playbackRate;
       }
-      // Keep setDetune (smoothed setTarget) for offline too — static
+      // Keep setDetune (smoothed setTarget) for offline too -- static
       // .value assignment can sound slightly different at the attack.
       this.setDetune(channel, note, now);
       // LFO nodes only when the voice routes LFO somewhere and mod wheel > 0.
