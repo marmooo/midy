@@ -141,6 +141,15 @@ export class Player<
   private offlineRenderDepth: number = 0;
   private offlineRenderWaiters: Array<() => void> = [];
 
+  // Simple-note prewarm budget (start() before playNotes).
+  // Keys with count >= prewarmSimpleMinCount are candidates; sorted by
+  // frequency desc then earliest onset. Stops when wall time exceeds
+  // prewarmSimpleMaxMs -- faster devices warm more keys in the same budget.
+  // Wall-clock budget for prewarm (ms). 0 = bake all multi-use keys.
+  prewarmSimpleMaxMs: number = 3000;
+  // Minimum appearances to qualify (default: multi-use only).
+  prewarmSimpleMinCount: number = 2;
+
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
     options?: {
@@ -1435,8 +1444,139 @@ export class Player<
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
+    // Chunk/segment/note/audio: fill multi-use simple buffers before the
+    // realtime pipeline so early tiles are mostly BufferSource hits instead
+    // of blocking per-note OACs (or a heavy all-direct mix graph).
+    if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
+      await this.prewarmSimpleNoteCache();
+    }
     this.playPromise = this.playNotes();
     await this.playPromise;
+  }
+
+  // Bake high-value simple-note cache keys before playNotes.
+  // Candidates: count >= prewarmSimpleMinCount. Ordered by frequency desc,
+  // then earliest onset (helps early tiles / late-start). Stops when
+  // prewarmSimpleMaxMs elapses (0 = bake all candidates).
+  async prewarmSimpleNoteCache(): Promise<void> {
+    if (!this.simpleNoteCache) return;
+    if (this.simpleNoteCounts.size === 0) return;
+    const cacheMode = this.cacheMode;
+    if (!usesSimpleComplexNoteCache(cacheMode)) return;
+
+    const minCount = Math.max(2, this.prewarmSimpleMinCount | 0);
+    const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
+
+    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
+    const settings = (this.constructor as typeof Player).channelSettings;
+    const numChannels = this.numChannels;
+    const channels = new Array<TChannel>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
+      const channel = this.createChannelInstance(ch, settings);
+      channel.player = this;
+      channels[ch] = channel;
+    }
+    if (channels[9]) channels[9].isDrum = true;
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const needsSegmentVoice = isTiledCacheMode(cacheMode);
+    const simpleNoteSet = this.simpleNoteSet;
+    const noteOnEvents = this.noteOnEvents;
+    const tiledVoiceParams = this.tiledVoiceParams;
+    const tiledVoices = this.tiledVoices;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+    const simpleNoteCounts = this.simpleNoteCounts;
+
+    type Cand = {
+      key: string;
+      entry: BakeNoteEntry;
+      count: number;
+      earliest: number;
+    };
+    const candidates = new Map<string, Cand>();
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo;
+      this.processTimelineEvent(event, offset, {
+        channels,
+        onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
+          if (!simpleNoteSet.has(i)) return;
+          const noteOnEvent = noteOnEvents[i];
+          if (!noteOnEvent || noteOnEvent.duration <= 0) return;
+
+          let voiceParams: VoiceParams | null = null;
+          let voice: Voice | null | undefined = null;
+          if (needsSegmentVoice) {
+            voiceParams = tiledVoiceParams[i];
+            voice = tiledVoices[i];
+          }
+          if (!voiceParams) {
+            voice = this.resolveVoice(
+              renderChannel,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+            if (!voice) return;
+            voiceParams = getVoiceParams(
+              voice,
+              this.getControllerState(
+                renderChannel,
+                noteEvent.noteNumber!,
+                noteEvent.velocity!,
+                0,
+              ),
+            );
+          }
+          if (!voiceParams) return;
+
+          const entry: BakeNoteEntry = {
+            channelNumber: renderChannel.channelNumber,
+            audioBufferId: noteAudioBufferIds[i],
+            noteNumber: noteEvent.noteNumber!,
+            velocity: noteEvent.velocity!,
+            noteDuration: noteOnEvent.duration,
+            noteEvent: noteOnEvent,
+            channelDetune: renderChannel.detune,
+            channelStateArray: renderChannel.state.array.slice(),
+            programNumber: renderChannel.programNumber,
+            isDrum: renderChannel.isDrum,
+            voiceParams,
+            voice: voice ?? undefined,
+          };
+          const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+          const count = simpleNoteCounts.get(key) ?? 0;
+          if (count < minCount) return;
+          const prev = candidates.get(key);
+          if (prev) {
+            if (offset < prev.earliest) prev.earliest = offset;
+            return;
+          }
+          candidates.set(key, { key, entry, count, earliest: offset });
+        },
+      });
+    }
+
+    if (candidates.size === 0) return;
+
+    const ranked = Array.from(candidates.values());
+    ranked.sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.earliest - b.earliest;
+    });
+
+    const t0 = performance.now();
+    for (let i = 0; i < ranked.length; i++) {
+      if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+        break;
+      }
+      try {
+        await this.getSimpleNoteBuffer(ranked[i].entry, bakeChannelMix);
+      } catch {
+        // Prewarm is best-effort; a failed key is skipped.
+      }
+    }
   }
 
   override async stop(): Promise<void> {
@@ -2013,8 +2153,8 @@ export class Player<
   //
   // Simple-note optimization: cache hits are placed as BufferSources; cache
   // misses are scheduled directly into this offline context (no per-note
-  // OfflineAudioContext / startRendering). Complex notes still use one OAC
-  // each so in-note pitch-bend / CC cannot cross-talk on a shared channel.
+  // OfflineAudioContext / startRendering). Complex notes share one mix OAC
+  // and are grouped by MIDI channel (see scheduleComplexNotesDirect).
   async renderChunkBuffer(
     chunk: OpenChunk,
     forAudioOffline = false,
@@ -2059,6 +2199,8 @@ export class Player<
       // --- simple: hit → BufferSource; miss →
       //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
       //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
+      // Multi-use keys are ideally pre-warmed in start() so realtime chunks
+      // see hits and keep the mix graph light (BufferSource only).
       const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
       let missCount = 0;
       const simpleCounts = this.simpleNoteCounts;
@@ -2078,10 +2220,6 @@ export class Player<
           const key = this.makeSimpleNoteKey(n, true);
           const count = simpleCounts.get(key) ?? 0;
           if (count > 1) {
-            // First (or concurrent) occurrence of a multi-use key: bake once
-            // into simpleNoteBufferCache so later hits in this or other
-            // windows/segments skip graph setup entirely.
-
             const noteBuf = await this.getSimpleNoteBuffer(
               {
                 channelNumber: n.channelNumber,
@@ -2168,8 +2306,8 @@ export class Player<
       }
 
       // --- complex: cache hits use a BufferSource. Cache misses are scheduled
-      // directly into this mix context with isolated per-note channel state; this
-      // avoids a separate OfflineAudioContext/startRendering per automated note.
+      // directly into this mix context, grouped by MIDI channel (one Player /
+      // Channel + one deduped CC/pitch-bend column per channel).
       const directComplexNotes = new Array<
         BakeNoteEntry & { offset: number }
       >();
@@ -3138,58 +3276,137 @@ export class Player<
   }
 
   // Schedule automated notes directly into the chunk's OfflineAudioContext.
-  // Each note receives its own Player/Channel state, so CC and pitch-bend
-  // automation cannot leak to another overlapping note. This preserves the
-  // per-note rendering semantics without an extra OfflineAudioContext and
-  // startRendering() call for every cache miss.
+  //
+  // Complex notes are grouped by MIDI channel: one offline Player / Channel
+  // per channel, with CC / pitch-bend applied once in absolute time order.
+  // Overlapping notes on the same channel (common dense passages) used to
+  // rebuild an isolated graph + replay the same expression/bend column for
+  // every note; channel-level bake matches MIDI semantics and cuts duplicate
+  // work dramatically.
   protected async scheduleComplexNotesDirect(
     offlineContext: OfflineAudioContext,
     notes: (BakeNoteEntry & { offset: number })[],
     bakeChannelMix: boolean,
   ): Promise<void> {
+    if (notes.length === 0) return;
+    const byChannel = new Map<number, (BakeNoteEntry & { offset: number })[]>();
     for (let i = 0; i < notes.length; i++) {
-      const entry = notes[i];
+      const n = notes[i];
+      let list = byChannel.get(n.channelNumber);
+      if (!list) {
+        list = [];
+        byChannel.set(n.channelNumber, list);
+      }
+      list.push(n);
+    }
+
+    for (const [channelNumber, channelNotes] of byChannel) {
+      channelNotes.sort((a, b) => a.offset - b.offset);
       const offlinePlayer = this.createOfflineRenderPlayer(
         offlineContext,
-        [entry.channelNumber],
+        [channelNumber],
         true,
       );
+      const seed = channelNotes[0];
       const channel = this.prepareOfflineChannel(
         offlinePlayer,
-        entry,
+        seed,
         bakeChannelMix,
-        entry.offset,
+        seed.offset,
       );
       if (!channel) continue;
-      await this.scheduleOfflineNoteOn(
-        offlinePlayer,
-        offlineContext,
-        channel,
-        entry,
-        entry.offset,
-        bakeChannelMix,
-      );
-      const noteEvents = entry.noteEvent?.events ?? [];
-      const noteStartTime = entry.noteEvent?.startTime ?? 0;
-      const releaseEnd = entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
-      const tMax = entry.noteDuration + releaseEnd;
-      for (let ei = 0; ei < noteEvents.length; ei++) {
-        const event = noteEvents[ei];
-        if (event.type === "programChange") continue;
-        let t = this.relativeTimeInNote(event, entry.noteEvent, noteStartTime);
-        if (t < -1e-4 || t > tMax) continue;
-        if (t < 0) t = 0;
-        offlinePlayer.processTimelineEvent(event, entry.offset + t, {
-          channels: offlinePlayer.channels,
+
+      // Build a single chronological action list for this channel:
+      // noteOn / noteOff / automation. Overlapping notes share the same CC
+      // column; dedupe so each MIDI event is applied once.
+      type Action =
+        | { kind: "on"; t: number; entry: BakeNoteEntry & { offset: number } }
+        | {
+          kind: "off";
+          t: number;
+          noteNumber: number;
+          entry: BakeNoteEntry & { offset: number };
+        }
+        | { kind: "ev"; t: number; event: TimelineEvent; key: string };
+
+      const actions: Action[] = [];
+      const seenKeys = new Set<string>();
+
+      for (let ni = 0; ni < channelNotes.length; ni++) {
+        const entry = channelNotes[ni];
+        actions.push({ kind: "on", t: entry.offset, entry });
+        actions.push({
+          kind: "off",
+          t: entry.offset + entry.noteDuration,
+          noteNumber: entry.noteNumber,
+          entry,
         });
+
+        const noteEvents = entry.noteEvent?.events ?? [];
+        const noteStartTime = entry.noteEvent?.startTime ?? 0;
+        const releaseEnd = entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+        const tMax = entry.noteDuration + releaseEnd;
+        for (let ei = 0; ei < noteEvents.length; ei++) {
+          const event = noteEvents[ei];
+          if (event.type === "programChange") continue;
+          let rel = this.relativeTimeInNote(
+            event,
+            entry.noteEvent,
+            noteStartTime,
+          );
+          if (rel < -1e-4 || rel > tMax) continue;
+          if (rel < 0) rel = 0;
+          const absT = entry.offset + rel;
+          const key = event.ticks != null
+            ? `${event.ticks}|${event.type}|${event.controllerType ?? ""}|${
+              event.value ?? ""
+            }|${event.programNumber ?? ""}`
+            : `${absT.toFixed(5)}|${event.type}|${event.controllerType ?? ""}|${
+              event.value ?? ""
+            }|${event.programNumber ?? ""}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          actions.push({ kind: "ev", t: absT, event, key });
+        }
       }
-      offlinePlayer.noteOffChannel(
-        channel,
-        entry.noteNumber,
-        0,
-        entry.offset + entry.noteDuration,
-        true,
-      );
+
+      // Order: time ascending; at equal time: events → noteOn → noteOff so
+      // onset state already reflects same-tick automation.
+      const kindOrder = { ev: 0, on: 1, off: 2 } as const;
+      actions.sort((a, b) => {
+        if (a.t !== b.t) return a.t - b.t;
+        return kindOrder[a.kind] - kindOrder[b.kind];
+      });
+
+      for (let ai = 0; ai < actions.length; ai++) {
+        const action = actions[ai];
+        if (action.kind === "ev") {
+          offlinePlayer.processTimelineEvent(action.event, action.t, {
+            channels: offlinePlayer.channels,
+          });
+        } else if (action.kind === "on") {
+          const entry = action.entry;
+          if (channel.programNumber !== entry.programNumber) {
+            channel.programNumber = entry.programNumber;
+          }
+          await this.scheduleOfflineNoteOn(
+            offlinePlayer,
+            offlineContext,
+            channel,
+            entry,
+            entry.offset,
+            bakeChannelMix,
+          );
+        } else {
+          offlinePlayer.noteOffChannel(
+            channel,
+            action.noteNumber,
+            0,
+            action.t,
+            true,
+          );
+        }
+      }
     }
   }
 
