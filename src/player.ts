@@ -123,6 +123,9 @@ export class Player<
   // tiled modes (segment / chunk): shared window + classification
   tileDuration: number = 1;
   maxTiledNoteDuration: number = 8;
+  // Hard cap on OfflineAudioContext length for one chunk (seconds).
+  // 0 = no cap. (Kept for later; default off while measuring other costs.)
+  maxChunkBufferDuration: number = 3.5;
   tiledBakedSet: Set<number> = new Set();
   tiledVoiceParams: (VoiceParams | null)[] = [];
   tiledVoices: (Voice | null)[] = [];
@@ -143,8 +146,9 @@ export class Player<
 
   // Simple-note prewarm budget (start() before playNotes).
   // Keys with count >= prewarmSimpleMinCount are candidates; sorted by
-  // frequency desc then earliest onset. Stops when wall time exceeds
-  // prewarmSimpleMaxMs -- faster devices warm more keys in the same budget.
+  // earliest onset first (song start priority), then frequency desc.
+  // Stops when wall time exceeds prewarmSimpleMaxMs — faster devices
+  // warm more keys in the same budget.
   // Wall-clock budget for prewarm (ms). 0 = bake all multi-use keys.
   prewarmSimpleMaxMs: number = 3000;
   // Minimum appearances to qualify (default: multi-use only).
@@ -1455,9 +1459,9 @@ export class Player<
   }
 
   // Bake high-value simple-note cache keys before playNotes.
-  // Candidates: count >= prewarmSimpleMinCount. Ordered by frequency desc,
-  // then earliest onset (helps early tiles / late-start). Stops when
-  // prewarmSimpleMaxMs elapses (0 = bake all candidates).
+  // Candidates: count >= prewarmSimpleMinCount. Ordered by earliest onset
+  // first (prioritize song start / early tiles), then frequency desc as
+  // tiebreaker. Stops when prewarmSimpleMaxMs elapses (0 = bake all).
   async prewarmSimpleNoteCache(): Promise<void> {
     if (!this.simpleNoteCache) return;
     if (this.simpleNoteCounts.size === 0) return;
@@ -1561,20 +1565,21 @@ export class Player<
     if (candidates.size === 0) return;
 
     const ranked = Array.from(candidates.values());
+    // Song-start first: early tiles hit the cache before the realtime
+    // pipeline needs them. Frequency is secondary (same onset → more
+    // reuse first).
     ranked.sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count;
-      return a.earliest - b.earliest;
+      if (a.earliest !== b.earliest) return a.earliest - b.earliest;
+      return b.count - a.count;
     });
 
     const t0 = performance.now();
     for (let i = 0; i < ranked.length; i++) {
-      if (maxMs > 0 && performance.now() - t0 >= maxMs) {
-        break;
-      }
+      if (maxMs > 0 && performance.now() - t0 >= maxMs) break;
       try {
         await this.getSimpleNoteBuffer(ranked[i].entry, bakeChannelMix);
       } catch {
-        // Prewarm is best-effort; a failed key is skipped.
+        // Ignore individual key failures; playback can still bake on demand.
       }
     }
   }
@@ -2172,6 +2177,13 @@ export class Player<
       if (end > totalDuration) totalDuration = end;
     }
     if (totalDuration <= 0) return null;
+    // Cap buffer length so startRendering stays proportional to tile size.
+    // Without this, a few long-release notes force 6–8s OACs and multi-second
+    // bakes that outrun lookAhead and starve the realtime note path.
+    const maxBuf = this.maxChunkBufferDuration;
+    if (maxBuf > 0 && totalDuration > maxBuf) {
+      totalDuration = maxBuf;
+    }
 
     // Over-allocate then trim -- avoids a second isSimpleNote pass.
     const simpleNotes = new Array<ChunkNoteEntry>(notesLen);
@@ -2197,10 +2209,12 @@ export class Player<
       );
 
       // --- simple: hit → BufferSource; miss →
-      //   count > 1 → getSimpleNoteBuffer (separate OAC + cache fill for reuse)
-      //   count ≤ 1 → direct into this mix OAC (no extra startRendering)
-      // Multi-use keys are ideally pre-warmed in start() so realtime chunks
-      // see hits and keep the mix graph light (BufferSource only).
+      //   realtime chunk (forAudioOffline=false): always direct into this mix
+      //     OAC. Nested getSimpleNoteBuffer (separate startRendering per key)
+      //     was dominating simplePhase when prewarm missed early tiles.
+      //     Cache fill stays the job of prewarm / offline paths only.
+      //   offline/audio (forAudioOffline=true): count > 1 still uses
+      //     getSimpleNoteBuffer so the shared cache is populated for reuse.
       const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
       let missCount = 0;
       const simpleCounts = this.simpleNoteCounts;
@@ -2214,6 +2228,12 @@ export class Player<
             });
             src.connect(offlineContext.destination);
             src.start(n.offset);
+            continue;
+          }
+
+          // Realtime: never nest a per-note OAC on the critical path.
+          if (!forAudioOffline) {
+            simpleMisses[missCount++] = n;
             continue;
           }
 
