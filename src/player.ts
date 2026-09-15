@@ -125,7 +125,7 @@ export class Player<
   maxTiledNoteDuration: number = 8;
   // Hard cap on OfflineAudioContext length for one chunk (seconds).
   // 0 = no cap. (Kept for later; default off while measuring other costs.)
-  maxChunkBufferDuration: number = 3.5;
+  maxChunkBufferDuration: number = 2;
   tiledBakedSet: Set<number> = new Set();
   tiledVoiceParams: (VoiceParams | null)[] = [];
   tiledVoices: (Voice | null)[] = [];
@@ -141,18 +141,24 @@ export class Player<
   // Logic (what gets baked) is unchanged -- only peak concurrency.
   maxConcurrentOfflineRenders: number = 1;
   private offlineRenderActive: number = 0;
-  private offlineRenderDepth: number = 0;
   private offlineRenderWaiters: Array<() => void> = [];
 
   // Simple-note prewarm budget (start() before playNotes).
-  // Keys with count >= prewarmSimpleMinCount are candidates; sorted by
-  // earliest onset first (song start priority), then frequency desc.
-  // Stops when wall time exceeds prewarmSimpleMaxMs — faster devices
-  // warm more keys in the same budget.
-  // Wall-clock budget for prewarm (ms). 0 = bake all multi-use keys.
+  // Phase 1: keys whose earliest onset falls in the song-head window
+  // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
+  // Head keys use prewarmSimpleHeadMinCount (default 1 = include one-shots).
+  // Phase 2: remaining multi-use keys (prewarmSimpleMinCount) if budget left.
+  // Within each phase: earliest onset first, then frequency desc.
+  // Stops when wall time exceeds prewarmSimpleMaxMs (0 = no limit).
+  // Wall-clock budget for prewarm (ms). 0 = bake all candidates.
   prewarmSimpleMaxMs: number = 3000;
-  // Minimum appearances to qualify (default: multi-use only).
+  // Min appearances for post-head (phase 2) keys. Default: multi-use only.
   prewarmSimpleMinCount: number = 2;
+  // Song-time window (seconds) for phase-1 priority. 0 = auto
+  // (lookAhead + maxTiledNoteDuration).
+  prewarmSimpleHeadSec: number = 0;
+  // Min appearances inside the head window (1 = include one-shot keys).
+  prewarmSimpleHeadMinCount: number = 1;
 
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
@@ -165,20 +171,23 @@ export class Player<
     this.cacheMode = DEFAULT_CACHE_MODE;
     this.offlineRenderOnly = options?.offlineRenderOnly ?? false;
   }
-  // Serialize / limit OfflineAudioContext work across the whole Player.
-  // Re-entrant: a gated chunk/segment bake may call renderEntryAudioBuffer
-  // (also gated) without deadlocking when maxConcurrentOfflineRenders === 1.
+  // Serialize OfflineAudioContext work across the whole Player.
+  //
+  // Always waits for a slot. Sibling bakers (chunk / segment / prewarm /
+  // note-mode) therefore cannot pile up N OfflineAudioContexts after the
+  // first one yields on await — the previous depth>0 early-return did that
+  // because depth stayed raised while scheduleTimelineEvents closed the
+  // next tiles.
+  //
+  // Nested per-note bakes from inside an already-held slot MUST NOT call
+  // this method (deadlock at maxConcurrentOfflineRenders === 1). They go
+  // through renderEntryAudioBufferUngated via fromOuterSlot on
+  // getSimpleNoteBuffer / getComplexNoteBuffer. A global "in slot" flag
+  // would look held to sibling note-mode bakes too; the opt-in argument
+  // is scoped to the call, not to the Player instance.
   protected async runWithOfflineRenderGate<T>(
     fn: () => Promise<T>,
   ): Promise<T> {
-    if (this.offlineRenderDepth > 0) {
-      this.offlineRenderDepth++;
-      try {
-        return await fn();
-      } finally {
-        this.offlineRenderDepth--;
-      }
-    }
     const max = Math.max(1, this.maxConcurrentOfflineRenders | 0);
     while (this.offlineRenderActive >= max) {
       await new Promise<void>((resolve) => {
@@ -186,11 +195,9 @@ export class Player<
       });
     }
     this.offlineRenderActive++;
-    this.offlineRenderDepth++;
     try {
       return await fn();
     } finally {
-      this.offlineRenderDepth--;
       this.offlineRenderActive--;
       const next = this.offlineRenderWaiters.shift();
       if (next) next();
@@ -1343,6 +1350,9 @@ export class Player<
     this.isPlaying = true;
     this.isPaused = false;
     this.startTime = audioContext.currentTime;
+    if (!paused) {
+    }
+    // Always (re)arm wall clock: resume path and external wrappers sometimes
     if (paused) {
       this.dispatchEvent(new Event("resumed"));
     } else {
@@ -1458,18 +1468,23 @@ export class Player<
     await this.playPromise;
   }
 
-  // Bake high-value simple-note cache keys before playNotes.
-  // Candidates: count >= prewarmSimpleMinCount. Ordered by earliest onset
-  // first (prioritize song start / early tiles), then frequency desc as
-  // tiebreaker. Stops when prewarmSimpleMaxMs elapses (0 = bake all).
+  // Bake simple-note cache keys before playNotes, prioritizing the song head.
+  // Phase 1 fills keys whose earliest onset is inside prewarmSimpleHeadSec
+  // (including one-shots when headMinCount=1). Phase 2 spends any remaining
+  // wall budget on later multi-use keys. Logging is intentional for bake
+  // diagnosis (share console output when tuning budgets).
   async prewarmSimpleNoteCache(): Promise<void> {
     if (!this.simpleNoteCache) return;
     if (this.simpleNoteCounts.size === 0) return;
     const cacheMode = this.cacheMode;
     if (!usesSimpleComplexNoteCache(cacheMode)) return;
 
-    const minCount = Math.max(2, this.prewarmSimpleMinCount | 0);
+    const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
+    const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
     const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
+    const headSec = this.prewarmSimpleHeadSec > 0
+      ? this.prewarmSimpleHeadSec
+      : Math.max(0.001, this.lookAhead + this.maxTiledNoteDuration);
 
     const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
@@ -1498,7 +1513,8 @@ export class Player<
       count: number;
       earliest: number;
     };
-    const candidates = new Map<string, Cand>();
+    // All simple keys seen while walking; earliest onset tracked.
+    const allKeys = new Map<string, Cand>();
 
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
@@ -1551,36 +1567,65 @@ export class Player<
           };
           const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
           const count = simpleNoteCounts.get(key) ?? 0;
-          if (count < minCount) return;
-          const prev = candidates.get(key);
+          const prev = allKeys.get(key);
           if (prev) {
-            if (offset < prev.earliest) prev.earliest = offset;
+            if (offset < prev.earliest) {
+              prev.earliest = offset;
+              // Prefer the earliest-onset snapshot for the bake entry.
+              prev.entry = entry;
+            }
             return;
           }
-          candidates.set(key, { key, entry, count, earliest: offset });
+          allKeys.set(key, { key, entry, count, earliest: offset });
         },
       });
     }
 
-    if (candidates.size === 0) return;
+    if (allKeys.size === 0) return;
 
-    const ranked = Array.from(candidates.values());
-    // Song-start first: early tiles hit the cache before the realtime
-    // pipeline needs them. Frequency is secondary (same onset → more
-    // reuse first).
-    ranked.sort((a, b) => {
+    const head: Cand[] = [];
+    const rest: Cand[] = [];
+    {
+      const values = Array.from(allKeys.values());
+      for (let i = 0; i < values.length; i++) {
+        const c = values[i];
+        if (c.earliest < headSec && c.count >= headMinCount) {
+          head.push(c);
+        } else if (c.count >= restMinCount) {
+          // Post-head multi-use, or head keys that failed headMinCount
+          // (shouldn't happen when headMinCount <= restMinCount).
+          if (c.earliest >= headSec) rest.push(c);
+        }
+      }
+    }
+
+    const byEarliestThenCount = (a: Cand, b: Cand): number => {
       if (a.earliest !== b.earliest) return a.earliest - b.earliest;
       return b.count - a.count;
-    });
+    };
+    head.sort(byEarliestThenCount);
+    rest.sort(byEarliestThenCount);
 
     const t0 = performance.now();
-    for (let i = 0; i < ranked.length; i++) {
-      if (maxMs > 0 && performance.now() - t0 >= maxMs) break;
-      try {
-        await this.getSimpleNoteBuffer(ranked[i].entry, bakeChannelMix);
-      } catch {
-        // Ignore individual key failures; playback can still bake on demand.
+    let stoppedEarly = false;
+
+    const bakeList = async (list: Cand[]): Promise<void> => {
+      for (let i = 0; i < list.length; i++) {
+        if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+          stoppedEarly = true;
+          break;
+        }
+        try {
+          await this.getSimpleNoteBuffer(list[i].entry, bakeChannelMix);
+        } catch {
+          // Skip failed keys; playback will bake on demand.
+        }
       }
+    };
+
+    await bakeList(head);
+    if (!stoppedEarly && rest.length > 0) {
+      await bakeList(rest);
     }
   }
 
@@ -2256,6 +2301,7 @@ export class Player<
                 voice: n.voice,
               },
               true,
+              true, // already in renderChunkBuffer's gate slot
             );
             const src = new AudioBufferSourceNode(offlineContext, {
               buffer: noteBuf,
@@ -2366,6 +2412,7 @@ export class Player<
       }
 
       const rendered = await offlineContext.startRendering();
+
       const buffer = this.detachAudioBuffer(rendered);
       // Realtime chunk: never peak-normalize per window (dense chunks would
       // get quieter than sparse ones). Soft-clamp only samples outside
@@ -2373,6 +2420,7 @@ export class Player<
       if (!forAudioOffline) {
         this.softClampBuffer(buffer);
       }
+
       return buffer;
     });
   }
@@ -3127,11 +3175,16 @@ export class Player<
   async getComplexNoteBuffer(
     entry: BakeNoteEntry,
     bakeChannelMix: boolean,
+    fromOuterSlot = false,
   ): Promise<AudioBuffer> {
     const key = this.makeComplexNoteKey(entry, bakeChannelMix);
     const count = this.complexNoteCounts.get(key) ?? 0;
+    const bake = () =>
+      fromOuterSlot
+        ? this.renderEntryAudioBufferUngated(entry, bakeChannelMix)
+        : this.renderEntryAudioBuffer(entry, bakeChannelMix);
     if (count <= 1) {
-      return await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+      return await bake();
     }
     const cached = this.complexNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) return cached;
@@ -3139,7 +3192,7 @@ export class Player<
 
     const renderPromise = (async () => {
       try {
-        const buffer = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+        const buffer = await bake();
         this.complexNoteBufferCache.set(key, buffer);
         return buffer;
       } catch (err) {
@@ -3433,6 +3486,10 @@ export class Player<
   // Bake a simple note and cache it.
   // bakeChannelMix=true: stereo with channel vol/pan (chunk/audio).
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
+  // fromOuterSlot=true: already inside runWithOfflineRenderGate (segment /
+  //   audio-chunk mix). Skip the gate and bake ungated so maxConcurrent=1
+  //   does not deadlock. Never pass true from a sibling / fire-and-forget
+  //   caller — that is the closeChunk storm the gate exists to serialize.
   // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
   // schedule on miss so the mix OAC does not wait on a second startRendering.
   // Implementation is renderEntryAudioBuffer + cache (simple notes have no
@@ -3440,6 +3497,7 @@ export class Player<
   async getSimpleNoteBuffer(
     n: BakeNoteEntry,
     bakeChannelMix = true,
+    fromOuterSlot = false,
   ): Promise<AudioBuffer> {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
@@ -3447,7 +3505,9 @@ export class Player<
     if (cached instanceof Promise) return await cached;
 
     const renderPromise = (async () => {
-      const buffer = await this.renderEntryAudioBuffer(n, bakeChannelMix);
+      const buffer = fromOuterSlot
+        ? await this.renderEntryAudioBufferUngated(n, bakeChannelMix)
+        : await this.renderEntryAudioBuffer(n, bakeChannelMix);
       this.simpleNoteBufferCache.set(key, buffer);
       return buffer;
     })();
@@ -3564,7 +3624,7 @@ export class Player<
             // getSimpleNoteBuffer always caches; even one-shot keys are safe
             // here because segment tiles are short and the alternate
             // scheduleSimpleNotesDirect path is unsafe for same-channel polyphony.
-            buf = await this.getSimpleNoteBuffer(bakeInput, false);
+            buf = await this.getSimpleNoteBuffer(bakeInput, false, true); // gate slot held
           }
           const src = new AudioBufferSourceNode(offlineContext, {
             buffer: buf,
@@ -3598,7 +3658,7 @@ export class Player<
         };
         let buf = await this.lookupComplexNoteBuffer(entry, false);
         if (!buf) {
-          buf = await this.getComplexNoteBuffer(entry, false);
+          buf = await this.getComplexNoteBuffer(entry, false, true); // gate slot held
         }
         const src = new AudioBufferSourceNode(offlineContext, {
           buffer: buf,
@@ -3690,78 +3750,89 @@ export class Player<
     entry: BakeNoteEntry,
     bakeChannelMix: boolean,
   ): Promise<AudioBuffer> {
-    return await this.runWithOfflineRenderGate(async () => {
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } =
-        entry.noteEvent ?? {};
-      const releaseEndDuration = entry.voiceParams.releaseVolEnv *
-        envelopeCurve *
-        5;
-      const totalDuration = Math.max(
-        0.001,
-        entry.noteDuration + releaseEndDuration,
-      );
-      const sampleRate = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        bakeChannelMix ? 2 : 1,
-        Math.ceil(totalDuration * sampleRate),
-        sampleRate,
-      );
-      const offlinePlayer = this.createOfflineRenderPlayer(
-        offlineContext,
-        [entry.channelNumber],
-        true,
-      );
-      const dstChannel = this.prepareOfflineChannel(
-        offlinePlayer,
-        entry,
-        bakeChannelMix,
-        0,
-      );
-      if (!dstChannel) {
-        const empty = await offlineContext.startRendering();
-        return this.detachAudioBuffer(empty);
-      }
-      await this.scheduleOfflineNoteOn(
-        offlinePlayer,
-        offlineContext,
-        dstChannel,
-        entry,
-        0,
-        bakeChannelMix,
-      );
-      // Replay in-note automation relative to note-on.
-      // Prefer ticks→seconds via this note's duration/durationTicks so the
-      // curve stays aligned with the baked note length even when startTime
-      // units and tempo interact poorly. Fallback keeps the historical
-      // startTime/tempo formula.
-      //
-      // Allow events through the release tail (not only up to noteDuration):
-      // realtime playback still applies pitch bend after note-off while the
-      // voice is releasing; skipping those made bends sound early/shifted.
-      const tMax = entry.noteDuration + releaseEndDuration;
-      const noteOnEvent = entry.noteEvent;
-      for (let i = 0; i < noteEvents.length; i++) {
-        const event = noteEvents[i];
-        if (event.type === "programChange") continue;
-        let t = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
-        if (t < -1e-4 || t > tMax) continue;
-        if (t < 0) t = 0;
-        offlinePlayer.processTimelineEvent(event, t, {
-          channels: offlinePlayer.channels,
-        });
-      }
-      offlinePlayer.noteOffChannel(
-        dstChannel,
-        entry.noteNumber,
-        0,
-        entry.noteDuration,
-        true,
-      );
-      await Promise.resolve();
-      const rendered = await offlineContext.startRendering();
-      // Detach from OfflineAudioContext so iOS can reclaim the OAC graph.
-      return this.detachAudioBuffer(rendered);
-    });
+    return await this.runWithOfflineRenderGate(() =>
+      this.renderEntryAudioBufferUngated(entry, bakeChannelMix)
+    );
+  }
+
+  // Per-note OAC bake with no gate. Callers that already hold a slot
+  // (segment / audio-chunk mix) must use this (via fromOuterSlot) so
+  // maxConcurrentOfflineRenders === 1 does not deadlock. Everyone else
+  // goes through renderEntryAudioBuffer.
+  private async renderEntryAudioBufferUngated(
+    entry: BakeNoteEntry,
+    bakeChannelMix: boolean,
+  ): Promise<AudioBuffer> {
+    const { startTime: noteStartTime = 0, events: noteEvents = [] } =
+      entry.noteEvent ?? {};
+    const releaseEndDuration = entry.voiceParams.releaseVolEnv *
+      envelopeCurve *
+      5;
+    const totalDuration = Math.max(
+      0.001,
+      entry.noteDuration + releaseEndDuration,
+    );
+    const sampleRate = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      bakeChannelMix ? 2 : 1,
+      Math.ceil(totalDuration * sampleRate),
+      sampleRate,
+    );
+    const offlinePlayer = this.createOfflineRenderPlayer(
+      offlineContext,
+      [entry.channelNumber],
+      true,
+    );
+    const dstChannel = this.prepareOfflineChannel(
+      offlinePlayer,
+      entry,
+      bakeChannelMix,
+      0,
+    );
+    if (!dstChannel) {
+      const empty = await offlineContext.startRendering();
+      return this.detachAudioBuffer(empty);
+    }
+    await this.scheduleOfflineNoteOn(
+      offlinePlayer,
+      offlineContext,
+      dstChannel,
+      entry,
+      0,
+      bakeChannelMix,
+    );
+    // Replay in-note automation relative to note-on.
+    // Prefer ticks→seconds via this note's duration/durationTicks so the
+    // curve stays aligned with the baked note length even when startTime
+    // units and tempo interact poorly. Fallback keeps the historical
+    // startTime/tempo formula.
+    //
+    // Allow events through the release tail (not only up to noteDuration):
+    // realtime playback still applies pitch bend after note-off while the
+    // voice is releasing; skipping those made bends sound early/shifted.
+    const tMax = entry.noteDuration + releaseEndDuration;
+    const noteOnEvent = entry.noteEvent;
+    for (let i = 0; i < noteEvents.length; i++) {
+      const event = noteEvents[i];
+      if (event.type === "programChange") continue;
+      let t = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
+      if (t < -1e-4 || t > tMax) continue;
+      if (t < 0) t = 0;
+      offlinePlayer.processTimelineEvent(event, t, {
+        channels: offlinePlayer.channels,
+      });
+    }
+    offlinePlayer.noteOffChannel(
+      dstChannel,
+      entry.noteNumber,
+      0,
+      entry.noteDuration,
+      true,
+    );
+    await Promise.resolve();
+    const rendered = await offlineContext.startRendering();
+    // Detach from OfflineAudioContext so iOS can reclaim the OAC graph.
+    return this.detachAudioBuffer(rendered);
   }
 
   async createFullRenderedBuffer(
