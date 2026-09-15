@@ -123,9 +123,6 @@ export class Player<
   // tiled modes (segment / chunk): shared window + classification
   tileDuration: number = 1;
   maxTiledNoteDuration: number = 8;
-  // Hard cap on OfflineAudioContext length for one chunk (seconds).
-  // 0 = no cap. (Kept for later; default off while measuring other costs.)
-  maxChunkBufferDuration: number = 2;
   tiledBakedSet: Set<number> = new Set();
   tiledVoiceParams: (VoiceParams | null)[] = [];
   tiledVoices: (Voice | null)[] = [];
@@ -2222,13 +2219,6 @@ export class Player<
       if (end > totalDuration) totalDuration = end;
     }
     if (totalDuration <= 0) return null;
-    // Cap buffer length so startRendering stays proportional to tile size.
-    // Without this, a few long-release notes force 6–8s OACs and multi-second
-    // bakes that outrun lookAhead and starve the realtime note path.
-    const maxBuf = this.maxChunkBufferDuration;
-    if (maxBuf > 0 && totalDuration > maxBuf) {
-      totalDuration = maxBuf;
-    }
 
     // Over-allocate then trim -- avoids a second isSimpleNote pass.
     const simpleNotes = new Array<ChunkNoteEntry>(notesLen);
