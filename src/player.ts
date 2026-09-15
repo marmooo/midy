@@ -157,6 +157,17 @@ export class Player<
   // Min appearances inside the head window (1 = include one-shot keys).
   prewarmSimpleHeadMinCount: number = 1;
 
+  // Song-time window (seconds) to fully bake before arming the playback clock.
+  // Only applies to segment/chunk modes. 0 = disable preroll.
+  // Light songs finish early; heavy songs wait up to prerollMaxMs.
+  prerollSec: number = 6;
+  // Wall-clock cap for preroll bake (ms). 0 = no cap.
+  prerollMaxMs: number = 0;
+  // Song time up to which tiled notes were already queued/baked in preroll.
+  // scheduleTimelineEvents skips appendTo*Queue for tiled notes with t < this
+  // so preroll tiles are not duplicated. Reset on stop / non-tiled play.
+  prerollUntilSongTime: number = 0;
+
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
     options?: {
@@ -1169,7 +1180,10 @@ export class Player<
             startTime,
             note,
           );
-          if (isSegmentNote) {
+          // Tiled notes with t < prerollUntilSongTime were already appended
+          // and baked during prerollTiledPipeline — do not queue them again.
+          const alreadyPrerolled = t < this.prerollUntilSongTime;
+          if (isSegmentNote && !alreadyPrerolled) {
             this.appendToSegmentQueue(
               channel.channelNumber,
               t,
@@ -1178,7 +1192,7 @@ export class Player<
               event.velocity!,
             );
           }
-          if (isChunkNote) {
+          if (isChunkNote && !alreadyPrerolled) {
             this.appendToChunkQueue(
               channel,
               t,
@@ -1226,6 +1240,7 @@ export class Player<
   protected releaseTiledPlaybackResources(): void {
     this.segmentGeneration++;
     this.chunkGeneration++;
+    this.prerollUntilSongTime = 0;
 
     const states = this.segmentChannelStates;
     for (let ch = 0; ch < states.length; ch++) {
@@ -1346,17 +1361,25 @@ export class Player<
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
-    this.startTime = audioContext.currentTime;
-    if (!paused) {
+    // Preroll tiled tiles BEFORE arming startTime so bake time does not
+    // eat into the lookAhead window (late chunk/note starts at song head).
+    this.prerollUntilSongTime = 0;
+    if (isTiledCacheMode(this.cacheMode)) {
+      await this.prerollTiledPipeline();
+    } else {
+      this.initTiledPipeline();
     }
-    // Always (re)arm wall clock: resume path and external wrappers sometimes
+    // Arm playback clock only after head tiles are ready (or preroll skipped).
+    this.startTime = audioContext.currentTime;
+    if (isTiledCacheMode(this.cacheMode)) {
+      this.startReadyTiledSources();
+    }
     if (paused) {
       this.dispatchEvent(new Event("resumed"));
     } else {
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    this.initTiledPipeline();
     let exitReason: string | undefined;
     this.notePromises = [];
     while (true) {
@@ -1376,10 +1399,17 @@ export class Player<
         if (result === "completed") {
           if (this.loop) {
             this.resetAllStates();
-            this.startTime = audioContext.currentTime;
             this.resumeTime = 0;
             queueIndex = 0;
+            this.prerollUntilSongTime = 0;
             this.resetTiledPipeline();
+            if (isTiledCacheMode(this.cacheMode)) {
+              await this.prerollTiledPipeline();
+            }
+            this.startTime = audioContext.currentTime;
+            if (isTiledCacheMode(this.cacheMode)) {
+              this.startReadyTiledSources();
+            }
             this.dispatchEvent(new Event("looped"));
             continue;
           } else {
@@ -1412,11 +1442,19 @@ export class Player<
         this.cancelScheduledTasks();
         await this.stopNotes(now);
         this.stopTiledSources();
-        this.startTime = audioContext.currentTime;
+        this.prerollUntilSongTime = 0;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        this.initTiledPipeline();
+        if (isTiledCacheMode(this.cacheMode)) {
+          await this.prerollTiledPipeline();
+        } else {
+          this.initTiledPipeline();
+        }
+        this.startTime = audioContext.currentTime;
+        if (isTiledCacheMode(this.cacheMode)) {
+          this.startReadyTiledSources();
+        }
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
@@ -1691,6 +1729,183 @@ export class Player<
       return this.resumeTime + (now - this.startTime) * this.tempo;
     }
     return now + this.resumeTime - this.startTime;
+  }
+
+  // Bake tiled tiles covering [resumeTime, resumeTime + prerollSec] before the
+  // playback clock is armed. Uses a shadow channel walk so this.channels is
+  // left untouched for the live scheduleTimelineEvents pass.
+  // Pending buffers stay in chunkState / segmentChannelStates; sources are
+  // started later via startReadyTiledSources() once startTime is set.
+  async prerollTiledPipeline(): Promise<void> {
+    const cacheMode = this.cacheMode;
+    if (!isTiledCacheMode(cacheMode)) {
+      this.initTiledPipeline();
+      return;
+    }
+    const prerollSec = Math.max(0, this.prerollSec);
+    this.initTiledPipeline();
+    if (prerollSec <= 0) {
+      this.prerollUntilSongTime = 0;
+      return;
+    }
+
+    const t0 = performance.now();
+    const maxMs = Math.max(0, this.prerollMaxMs | 0);
+    const songStart = this.resumeTime;
+    const songEnd = Math.min(this.totalTime, songStart + prerollSec);
+    if (songEnd <= songStart) {
+      this.prerollUntilSongTime = songStart;
+      return;
+    }
+
+    const isSegmentMode = isSegmentCacheMode(cacheMode);
+    const isChunkMode = isChunkCacheMode(cacheMode);
+    // Walk this.channels so appendToSegmentQueue snapshots match (it reads
+    // this.channels by channelNumber). Controller events set absolute values,
+    // so the later live scheduleTimelineEvents re-walk from resumeTime is safe.
+    // Do NOT call channel.noteOn here — only queue tiled notes for offline bake.
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const tiledBakedSet = this.tiledBakedSet;
+    let queueIndex = this.getQueueIndex(songStart);
+    let notesQueued = 0;
+    let stoppedEarly = false;
+
+    while (queueIndex < timeline.length) {
+      if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+        stoppedEarly = true;
+        break;
+      }
+      const event = timeline[queueIndex];
+      const t = event.startTime * inverseTempo;
+      if (t >= songEnd) break;
+
+      this.processTimelineEvent(event, t, {
+        onNoteOn: (channel: TChannel, noteEvent: TimelineEvent) => {
+          const isSegmentNote = isSegmentMode &&
+            tiledBakedSet.has(queueIndex);
+          const isChunkNote = isChunkMode &&
+            tiledBakedSet.has(queueIndex);
+          if (!isSegmentNote && !isChunkNote) return;
+          if (isSegmentNote) {
+            this.appendToSegmentQueue(
+              channel.channelNumber,
+              t,
+              queueIndex,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+          }
+          if (isChunkNote) {
+            this.appendToChunkQueue(
+              channel,
+              t,
+              queueIndex,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+          }
+          notesQueued++;
+        },
+      });
+      queueIndex++;
+    }
+
+    // Close any open tile still collecting notes inside the preroll window.
+    if (isChunkMode && this.chunkState.openChunk) {
+      this.closeChunk(this.chunkState);
+    }
+    if (isSegmentMode) {
+      const states = this.segmentChannelStates;
+      const liveChannels = this.channels;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (state?.openSegment) {
+          this.closeSegment(state, liveChannels[ch]);
+        }
+      }
+    }
+
+    // Await every in-flight offline bake before arming the clock.
+    const bufferPromises: Promise<AudioBuffer | null>[] = [];
+    if (isChunkMode) {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        bufferPromises.push(pending[i].bufferPromise);
+      }
+    }
+    if (isSegmentMode) {
+      const states = this.segmentChannelStates;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          bufferPromises.push(pending[i].bufferPromise);
+        }
+      }
+    }
+    if (bufferPromises.length > 0) {
+      await Promise.allSettled(bufferPromises);
+    }
+
+    // Mark song time covered so live scheduling does not re-append these notes.
+    // If we stopped early on wall budget, only claim time up to the last event
+    // we actually walked (queueIndex points at the first unprocessed event).
+    let coveredEnd = songEnd;
+    if (stoppedEarly && queueIndex > 0 && queueIndex <= timeline.length) {
+      const lastIdx = Math.min(queueIndex, timeline.length) - 1;
+      if (lastIdx >= 0) {
+        const lastT = timeline[lastIdx].startTime * inverseTempo;
+        // Include the tile that may still be open beyond last note onset:
+        // we already closed open tiles, so coveredEnd is last onset + epsilon.
+        coveredEnd = Math.min(songEnd, lastT + 1e-6);
+      }
+    }
+    this.prerollUntilSongTime = coveredEnd;
+
+    const waitMs = performance.now() - t0;
+    const tileCount = isChunkMode
+      ? this.chunkState.pending.length
+      : this.segmentChannelStates.reduce(
+        (n, s) => n + (s?.pending.length ?? 0),
+        0,
+      );
+    console.log(
+      `[midy preroll] song=${songStart.toFixed(2)}–${coveredEnd.toFixed(2)}s ` +
+        `tiles=${tileCount} notes=${notesQueued} ` +
+        `wait=${waitMs.toFixed(0)}ms` +
+        (stoppedEarly ? " (time budget)" : "") +
+        (maxMs > 0 ? ` cap=${maxMs}ms` : ""),
+    );
+  }
+
+  // Start preroll-baked tiles now that startTime is set.
+  startReadyTiledSources(): void {
+    if (this.cacheMode === "chunk") {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        if (!p.source && p.bufferReady) {
+          this.startPendingChunk(p);
+        }
+      }
+    } else if (this.cacheMode === "segment") {
+      const states = this.segmentChannelStates;
+      const channels = this.channels;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          const p = pending[i];
+          if (!p.source && p.bufferReady) {
+            this.startPendingSegment(channels[ch], p);
+          }
+        }
+      }
+    }
   }
 
   initSegmentPipeline(): void {
