@@ -140,6 +140,13 @@ export class Player<
   private offlineRenderActive: number = 0;
   private offlineRenderWaiters: Array<() => void> = [];
 
+  // Debug / experiment: mix cached simple-note AudioBuffers by direct
+  // TypedArray addition instead of scheduling AudioBufferSourceNodes into
+  // OfflineAudioContext + startRendering. Complex notes and uncached
+  // simple misses still go through OAC. Set false to force the legacy OAC
+  // mix path for A/B comparison.
+  useTypedArraySimpleMix: boolean = true;
+
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
   // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
@@ -1769,7 +1776,6 @@ export class Player<
     const inverseTempo = 1 / this.tempo;
     const tiledBakedSet = this.tiledBakedSet;
     let queueIndex = this.getQueueIndex(songStart);
-    let notesQueued = 0;
     let stoppedEarly = false;
 
     while (queueIndex < timeline.length) {
@@ -1806,7 +1812,6 @@ export class Player<
               noteEvent.velocity!,
             );
           }
-          notesQueued++;
         },
       });
       queueIndex++;
@@ -1864,21 +1869,6 @@ export class Player<
       }
     }
     this.prerollUntilSongTime = coveredEnd;
-
-    const waitMs = performance.now() - t0;
-    const tileCount = isChunkMode
-      ? this.chunkState.pending.length
-      : this.segmentChannelStates.reduce(
-        (n, s) => n + (s?.pending.length ?? 0),
-        0,
-      );
-    console.log(
-      `[midy preroll] song=${songStart.toFixed(2)}–${coveredEnd.toFixed(2)}s ` +
-        `tiles=${tileCount} notes=${notesQueued} ` +
-        `wait=${waitMs.toFixed(0)}ms` +
-        (stoppedEarly ? " (time budget)" : "") +
-        (maxMs > 0 ? ` cap=${maxMs}ms` : ""),
-    );
   }
 
   // Start preroll-baked tiles now that startTime is set.
@@ -2452,32 +2442,26 @@ export class Player<
     // pending chunks cannot each allocate a large OfflineAudioContext at once.
     return await this.runWithOfflineRenderGate(async () => {
       const sampleRate = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        2,
-        Math.ceil(totalDuration * sampleRate),
-        sampleRate,
-      );
+      const bufferLength = Math.ceil(totalDuration * sampleRate);
+      const useTA = this.useTypedArraySimpleMix;
 
-      // --- simple: hit → BufferSource; miss →
-      //   realtime chunk (forAudioOffline=false): always direct into this mix
-      //     OAC. Nested getSimpleNoteBuffer (separate startRendering per key)
-      //     was dominating simplePhase when prewarm missed early tiles.
-      //     Cache fill stays the job of prewarm / offline paths only.
-      //   offline/audio (forAudioOffline=true): count > 1 still uses
-      //     getSimpleNoteBuffer so the shared cache is populated for reuse.
+      // Collect simple hits for TypedArray mix (or schedule into OAC if !useTA).
+      const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
       const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
       let missCount = 0;
       const simpleCounts = this.simpleNoteCounts;
+
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
           const cached = await this.lookupSimpleNoteBuffer(n, true);
           if (cached) {
-            const src = new AudioBufferSourceNode(offlineContext, {
-              buffer: cached,
-            });
-            src.connect(offlineContext.destination);
-            src.start(n.offset);
+            if (useTA) {
+              simpleHits.push({ buffer: cached, offset: n.offset });
+            } else {
+              // legacy path filled below once offlineContext exists
+              simpleHits.push({ buffer: cached, offset: n.offset });
+            }
             continue;
           }
 
@@ -2508,72 +2492,103 @@ export class Player<
               true,
               true, // already in renderChunkBuffer's gate slot
             );
-            const src = new AudioBufferSourceNode(offlineContext, {
-              buffer: noteBuf,
-            });
-            src.connect(offlineContext.destination);
-            src.start(n.offset);
+            if (useTA) {
+              simpleHits.push({ buffer: noteBuf, offset: n.offset });
+            } else {
+              simpleHits.push({ buffer: noteBuf, offset: n.offset });
+            }
           } else {
             simpleMisses[missCount++] = n;
           }
         }
-        if (missCount > 0) {
-          const seenCh = new Uint8Array(16);
-          const channelNumbers = new Array<number>(16);
-          let chCount = 0;
-          for (let i = 0; i < missCount; i++) {
-            const chn = simpleMisses[i].channelNumber;
-            if (!seenCh[chn]) {
-              seenCh[chn] = 1;
-              channelNumbers[chCount++] = chn;
-            }
-          }
-          channelNumbers.length = chCount;
-          const offlinePlayer = this.createOfflineRenderPlayer(
-            offlineContext,
-            channelNumbers,
-            true,
-          );
-          const directNotes = new Array<{
-            channelNumber: number;
-            audioBufferId?: number;
-            noteNumber: number;
-            velocity: number;
-            noteDuration: number;
-            noteEvent?: NoteOnEventEntry;
-            channelDetune: number;
-            channelStateArray: Float32Array;
-            programNumber: number;
-            isDrum: boolean;
-            voiceParams: VoiceParams;
-            voice?: Voice;
-            offset: number;
-          }>(missCount);
-          for (let i = 0; i < missCount; i++) {
-            const n = simpleMisses[i];
-            directNotes[i] = {
-              channelNumber: n.channelNumber,
-              audioBufferId: n.audioBufferId,
-              noteNumber: n.noteNumber,
-              velocity: n.velocity,
-              noteDuration: n.noteDuration,
-              noteEvent: n.noteEvent,
-              channelDetune: n.channelDetune,
-              channelStateArray: n.channelStateArray,
-              programNumber: n.programNumber,
-              isDrum: n.isDrum,
-              voiceParams: n.voiceParams,
-              voice: n.voice,
-              offset: n.offset,
-            };
-          }
-          await this.scheduleSimpleNotesDirect(
-            offlineContext,
-            offlinePlayer,
-            directNotes,
-            true,
-          );
+      }
+
+      const needsOAC = !useTA || missCount > 0 || complexCount > 0;
+      // Pure simple-hits TypedArray path: skip OfflineAudioContext entirely.
+      if (useTA && !needsOAC) {
+        const buffer = this.createEmptyBuffer(2, bufferLength, sampleRate);
+        this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+        if (!forAudioOffline) {
+          this.softClampBuffer(buffer);
         }
+        return buffer;
+      }
+
+      // OAC path (legacy full mix, or hybrid: complex/misses via OAC + simple hits via TA)
+      const offlineContext = new OfflineAudioContext(
+        2,
+        bufferLength,
+        sampleRate,
+      );
+
+      if (!useTA) {
+        // Legacy: schedule all simple hits as BufferSources
+        for (let i = 0; i < simpleHits.length; i++) {
+          const h = simpleHits[i];
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: h.buffer,
+          });
+          src.connect(offlineContext.destination);
+          src.start(h.offset);
+        }
+      }
+
+      if (missCount > 0) {
+        const seenCh = new Uint8Array(16);
+        const channelNumbers = new Array<number>(16);
+        let chCount = 0;
+        for (let i = 0; i < missCount; i++) {
+          const chn = simpleMisses[i].channelNumber;
+          if (!seenCh[chn]) {
+            seenCh[chn] = 1;
+            channelNumbers[chCount++] = chn;
+          }
+        }
+        channelNumbers.length = chCount;
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          channelNumbers,
+          true,
+        );
+        const directNotes = new Array<{
+          channelNumber: number;
+          audioBufferId?: number;
+          noteNumber: number;
+          velocity: number;
+          noteDuration: number;
+          noteEvent?: NoteOnEventEntry;
+          channelDetune: number;
+          channelStateArray: Float32Array;
+          programNumber: number;
+          isDrum: boolean;
+          voiceParams: VoiceParams;
+          voice?: Voice;
+          offset: number;
+        }>(missCount);
+        for (let i = 0; i < missCount; i++) {
+          const n = simpleMisses[i];
+          directNotes[i] = {
+            channelNumber: n.channelNumber,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice,
+            offset: n.offset,
+          };
+        }
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          directNotes,
+          true,
+        );
       }
 
       // --- complex: cache hits use a BufferSource. Cache misses are scheduled
@@ -2618,7 +2633,13 @@ export class Player<
 
       const rendered = await offlineContext.startRendering();
 
-      const buffer = this.detachAudioBuffer(rendered);
+      let buffer = this.detachAudioBuffer(rendered);
+
+      // Hybrid: add simple hits on top of OAC result via TypedArray
+      if (useTA && simpleHits.length > 0) {
+        this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+      }
+
       // Realtime chunk: never peak-normalize per window (dense chunks would
       // get quieter than sparse ones). Soft-clamp only samples outside
       // [-1, 1] so relative level stays stable across chunk boundaries.
@@ -3027,6 +3048,60 @@ export class Player<
         else if (x < -1) data[i] = -1;
       }
     }
+  }
+
+  // Sum pre-baked simple-note buffers into a destination AudioBuffer by
+  // direct Float32Array addition (no OfflineAudioContext). Used when
+  // useTypedArraySimpleMix is true. gain scales the mix (segment polyphony
+  // headroom). mono dest + stereo src takes channel 0 of src.
+  protected mixSimpleBuffersTypedArray(
+    dest: AudioBuffer,
+    entries: { buffer: AudioBuffer; offset: number }[],
+    sampleRate: number,
+    gain = 1,
+  ): void {
+    const destChCount = dest.numberOfChannels;
+    const destLen = dest.length;
+    const destChannels: Float32Array[] = new Array(destChCount);
+    for (let c = 0; c < destChCount; c++) {
+      destChannels[c] = dest.getChannelData(c);
+    }
+    const g = gain;
+    for (let ei = 0; ei < entries.length; ei++) {
+      const { buffer: src, offset } = entries[ei];
+      const startSample = Math.round(offset * sampleRate);
+      if (startSample >= destLen) continue;
+      const srcChCount = src.numberOfChannels;
+      const srcLen = src.length;
+      const copyLen = Math.min(srcLen, destLen - startSample);
+      if (copyLen <= 0) continue;
+      if (destChCount === 1) {
+        // mono dest: sum L (or mono) of src
+        const srcData = src.getChannelData(0);
+        const dst = destChannels[0];
+        for (let i = 0; i < copyLen; i++) {
+          dst[startSample + i] += srcData[i] * g;
+        }
+      } else {
+        // stereo dest
+        for (let c = 0; c < destChCount; c++) {
+          const srcData = src.getChannelData(Math.min(c, srcChCount - 1));
+          const dst = destChannels[c];
+          for (let i = 0; i < copyLen; i++) {
+            dst[startSample + i] += srcData[i] * g;
+          }
+        }
+      }
+    }
+  }
+
+  // Create an empty AudioBuffer on the live context (for TypedArray mix dest).
+  protected createEmptyBuffer(
+    numberOfChannels: number,
+    length: number,
+    sampleRate: number,
+  ): AudioBuffer {
+    return this.audioContext.createBuffer(numberOfChannels, length, sampleRate);
   }
 
   // Peak-normalize an AudioBuffer in place so the absolute peak is at most
@@ -3775,11 +3850,8 @@ export class Player<
     const ch = channel.channelNumber;
     return await this.runWithOfflineRenderGate(async () => {
       const sampleRate = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        1,
-        Math.ceil(totalDuration * sampleRate),
-        sampleRate,
-      );
+      const bufferLength = Math.ceil(totalDuration * sampleRate);
+      const useTA = this.useTypedArraySimpleMix;
 
       // Headroom for dense tiles (glissandi / big chords): scale the *mix*
       // by 1/sqrt(maxConcurrent) so expected level stays stable without
@@ -3788,25 +3860,18 @@ export class Player<
       // Count concurrent notes over the sustained interval only (not the
       // long release tail) so a few long-decaying notes don't over-attenuate.
       const maxConcurrent = this.estimateMaxConcurrentNotes(notes);
-      const mixGain = new GainNode(offlineContext, {
-        gain: maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1,
-      });
-      mixGain.connect(offlineContext.destination);
+      const mixGainValue = maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1;
 
-      // --- simple: hit → BufferSource; miss → individual dry bake → BufferSource
-      // Use per-note onset snapshots so mid-segment pitch bend / CC does not
-      // leave later simple notes at the segment-open detune/volume state.
-      //
+      const isDrum = channel.isDrum;
+      const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
+
+      // --- simple: resolve buffers (cache hit or bake) ---
       // Important: do NOT route segment simple-misses through
       // scheduleSimpleNotesDirect on a shared offline channel. That path
       // shares activeNotes / exclusive-class / polyphony state across
       // overlapping onsets on the same channel, so dense runs (glissandi)
       // could steal or choke earlier notes and drop them from the bake.
-      // Baking each miss independently (same as the complex path) keeps
-      // every onset, at the cost of one Offline render per unique note.
-      // Multi-use keys still fill simpleNoteBufferCache via getSimpleNoteBuffer.
-      const isDrum = channel.isDrum;
-      // Sequential bakes (not Promise.all) -- same fidelity, lower peak OAC count.
+      // Baking each miss independently keeps every onset.
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
@@ -3831,51 +3896,90 @@ export class Player<
             // scheduleSimpleNotesDirect path is unsafe for same-channel polyphony.
             buf = await this.getSimpleNoteBuffer(bakeInput, false, true); // gate slot held
           }
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: buf,
-          });
-          // dry mono -- channel vol/pan stay live via gainL/gainR
-          src.connect(mixGain);
-          src.start(n.offset);
+          simpleHits.push({ buffer: buf, offset: n.offset });
         }
       }
 
-      // --- complex: per-note full bake (same fidelity as "note" mode) ---
-      // One offline context per automated note avoids shared-channel pitch-bend
-      // replay bugs. Dry mono buffers keep channel vol/pan live via gainL/R.
-      // Identical automation patterns (count > 1) share one OAC via
-      // complexNoteBufferCache; unique patterns still bake once each.
-      for (let i = 0; i < complexCount; i++) {
-        const n = complexNotes[i];
-        const entry = {
-          channelNumber: ch,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          voiceParams: n.voiceParams,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum,
-          audioBufferId: n.audioBufferId,
-          voice: n.voice,
-        };
-        let buf = await this.lookupComplexNoteBuffer(entry, false);
-        if (!buf) {
-          buf = await this.getComplexNoteBuffer(entry, false, true); // gate slot held
+      // Complex: still need individual bakes (automation)
+      const complexBufs: { buffer: AudioBuffer; offset: number }[] = [];
+      if (complexCount > 0) {
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry = {
+            channelNumber: ch,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice,
+          };
+          let buf = await this.lookupComplexNoteBuffer(entry, false);
+          if (!buf) {
+            buf = await this.getComplexNoteBuffer(entry, false, true); // gate slot held
+          }
+          complexBufs.push({ buffer: buf, offset: n.offset });
         }
+      }
+
+      if (useTA) {
+        // Pure TypedArray mix: no OfflineAudioContext for the tile mix.
+        const buffer = this.createEmptyBuffer(1, bufferLength, sampleRate);
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(
+            buffer,
+            simpleHits,
+            sampleRate,
+            mixGainValue,
+          );
+        }
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(
+            buffer,
+            complexBufs,
+            sampleRate,
+            mixGainValue,
+          );
+        }
+        this.softClampBuffer(buffer);
+        return buffer;
+      }
+
+      // Legacy OAC path
+      const offlineContext = new OfflineAudioContext(
+        1,
+        bufferLength,
+        sampleRate,
+      );
+      const mixGain = new GainNode(offlineContext, {
+        gain: mixGainValue,
+      });
+      mixGain.connect(offlineContext.destination);
+
+      for (let i = 0; i < simpleHits.length; i++) {
+        const h = simpleHits[i];
         const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: buf,
+          buffer: h.buffer,
         });
         src.connect(mixGain);
-        src.start(n.offset);
+        src.start(h.offset);
+      }
+      for (let i = 0; i < complexBufs.length; i++) {
+        const h = complexBufs[i];
+        const src = new AudioBufferSourceNode(offlineContext, {
+          buffer: h.buffer,
+        });
+        src.connect(mixGain);
+        src.start(h.offset);
       }
 
       const rendered = await offlineContext.startRendering();
       const buffer = this.detachAudioBuffer(rendered);
-      // Safety only: polyphony pre-gain should keep most peaks ≤1. Hard-clamp
-      // residual overshoots without waveshaping the rest of the waveform.
       this.softClampBuffer(buffer);
       return buffer;
     });
