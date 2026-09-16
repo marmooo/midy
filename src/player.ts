@@ -311,6 +311,7 @@ export class Player<
       entry: NoteOnEntry,
       endTime: number,
       endTicks: number | null,
+      soundOff = false,
     ): void => {
       const duration = Math.max(0, endTime - entry.startTime);
       const durationTicks = (endTicks == null || endTicks === Infinity)
@@ -323,6 +324,7 @@ export class Player<
         startTime: entry.startTime,
         startTicks: entry.startTicks,
         events: entry.events,
+        soundOff: soundOff || undefined,
       };
     };
     for (let i = 0; i < timeline.length; i++) {
@@ -397,15 +399,16 @@ export class Player<
             case 121: // Reset All Controllers
               sustainPedal[ch] = 0;
               break;
-            case 120: // All Sound Off
-            case 123: { // All Notes Off
+            case 120: // All Sound Off — instant mute, no release tail
+            case 123: { // All Notes Off — normal release
+              const soundOff = event.controllerType === 120;
               const pairs = Array.from(activeNotes);
               for (let pi = 0; pi < pairs.length; pi++) {
                 const key = pairs[pi][0];
                 if (key % numChannels !== ch) continue;
                 const stack = pairs[pi][1];
                 for (let ei = 0; ei < stack.length; ei++) {
-                  finalizeEntry(stack[ei], t, event.ticks);
+                  finalizeEntry(stack[ei], t, event.ticks, soundOff);
                 }
                 activeNotes.delete(key);
               }
@@ -655,14 +658,22 @@ export class Player<
   // after buildNoteOnDurations() without redoing the full classification.
 
   finalizeSegmentClassification(): void {
-    const { noteOnDurations, tiledVoiceParams, maxTiledNoteDuration } = this;
+    const {
+      noteOnDurations,
+      tiledVoiceParams,
+      noteOnEvents,
+      maxTiledNoteDuration,
+    } = this;
     const bakedSet = new Set<number>();
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
-      const releaseTail = voiceParams.releaseVolEnv * envelopeCurve * 5;
+      // All Sound Off ends the voice with no release tail.
+      const releaseTail = noteOnEvents[i]?.soundOff
+        ? 0
+        : voiceParams.releaseVolEnv * envelopeCurve * 5;
       if (maxTiledNoteDuration < duration + releaseTail) continue;
       bakedSet.add(i);
     }
@@ -953,6 +964,10 @@ export class Player<
       n.isDrum ? 1 : 0,
       Math.round(n.voiceParams.releaseVolEnv * 1e6),
       Math.round(n.voiceParams.playbackRate * 1e6),
+      // Distinguish All Sound Off (zero release) from normal note-off of the
+      // same duration so the shared simple-note cache never reuses a buffer
+      // that still has a release tail.
+      n.noteEvent?.soundOff ? 1 : 0,
     );
     if (complex) {
       parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
@@ -2419,7 +2434,9 @@ export class Player<
     const notesLen = notes.length;
     for (let i = 0; i < notesLen; i++) {
       const n = notes[i];
-      const releaseEnd = n.voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const releaseEnd = n.noteEvent?.soundOff
+        ? 0
+        : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > totalDuration) totalDuration = end;
     }
@@ -2773,7 +2790,9 @@ export class Player<
     let maxEnd = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEnd = (n.voiceParams.releaseVolEnv ?? 0) * envelopeCurve * 5;
+      const releaseEnd = n.noteEvent?.soundOff
+        ? 0
+        : (n.voiceParams.releaseVolEnv ?? 0) * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > maxEnd) maxEnd = end;
     }
@@ -3618,13 +3637,22 @@ export class Player<
         n.offset,
         bakeChannelMix,
       );
-      offlinePlayer.noteOffChannel(
-        dstChannel,
-        n.noteNumber,
-        0,
-        n.offset + n.noteDuration,
-        true,
-      );
+      const offTime = n.offset + n.noteDuration;
+      if (n.noteEvent?.soundOff) {
+        const note = offlinePlayer.findNoteForOff(dstChannel, n.noteNumber);
+        if (note) {
+          offlinePlayer.removeFromActiveNotes(dstChannel, n.noteNumber);
+          void offlinePlayer.soundOffNote(note, offTime);
+        }
+      } else {
+        offlinePlayer.noteOffChannel(
+          dstChannel,
+          n.noteNumber,
+          0,
+          offTime,
+          true,
+        );
+      }
     }
   }
 
@@ -3697,7 +3725,9 @@ export class Player<
 
         const noteEvents = entry.noteEvent?.events ?? [];
         const noteStartTime = entry.noteEvent?.startTime ?? 0;
-        const releaseEnd = entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+        const releaseEnd = entry.noteEvent?.soundOff
+          ? 0
+          : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
         const tMax = entry.noteDuration + releaseEnd;
         for (let ei = 0; ei < noteEvents.length; ei++) {
           const event = noteEvents[ei];
@@ -3751,13 +3781,24 @@ export class Player<
             bakeChannelMix,
           );
         } else {
-          offlinePlayer.noteOffChannel(
-            channel,
-            action.noteNumber,
-            0,
-            action.t,
-            true,
-          );
+          if (action.entry.noteEvent?.soundOff) {
+            const note = offlinePlayer.findNoteForOff(
+              channel,
+              action.noteNumber,
+            );
+            if (note) {
+              offlinePlayer.removeFromActiveNotes(channel, action.noteNumber);
+              void offlinePlayer.soundOffNote(note, action.t);
+            }
+          } else {
+            offlinePlayer.noteOffChannel(
+              channel,
+              action.noteNumber,
+              0,
+              action.t,
+              true,
+            );
+          }
         }
       }
     }
@@ -3826,8 +3867,9 @@ export class Player<
     let totalDuration = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEndDuration = n.voiceParams.releaseVolEnv * envelopeCurve *
-        5;
+      const releaseEndDuration = n.noteEvent?.soundOff
+        ? 0
+        : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEndDuration;
       if (end > totalDuration) totalDuration = end;
     }
@@ -4074,9 +4116,10 @@ export class Player<
   ): Promise<AudioBuffer> {
     const { startTime: noteStartTime = 0, events: noteEvents = [] } =
       entry.noteEvent ?? {};
-    const releaseEndDuration = entry.voiceParams.releaseVolEnv *
-      envelopeCurve *
-      5;
+    // All Sound Off (CC120): mute instantly — no volEnv release tail.
+    const releaseEndDuration = entry.noteEvent?.soundOff
+      ? 0
+      : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
     const totalDuration = Math.max(
       0.001,
       entry.noteDuration + releaseEndDuration,
@@ -4131,13 +4174,22 @@ export class Player<
         channels: offlinePlayer.channels,
       });
     }
-    offlinePlayer.noteOffChannel(
-      dstChannel,
-      entry.noteNumber,
-      0,
-      entry.noteDuration,
-      true,
-    );
+    if (entry.noteEvent?.soundOff) {
+      // Instant mute (CC120 All Sound Off) — match realtime soundOffNote.
+      const note = offlinePlayer.findNoteForOff(dstChannel, entry.noteNumber);
+      if (note) {
+        offlinePlayer.removeFromActiveNotes(dstChannel, entry.noteNumber);
+        await offlinePlayer.soundOffNote(note, entry.noteDuration);
+      }
+    } else {
+      offlinePlayer.noteOffChannel(
+        dstChannel,
+        entry.noteNumber,
+        0,
+        entry.noteDuration,
+        true,
+      );
+    }
     await Promise.resolve();
     const rendered = await offlineContext.startRendering();
     // Detach from OfflineAudioContext so iOS can reclaim the OAC graph.
@@ -4151,7 +4203,12 @@ export class Player<
     noteDuration: number,
     noteEvent: NoteOnEventEntry | undefined = undefined,
   ): Promise<RenderedBuffer> {
-    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
+    // releaseEndDuration is unused for allocation (renderEntry handles it);
+    // keep local only for any future callers that need the span.
+    const _releaseEndDuration = noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    void _releaseEndDuration;
     const buffer = await this.renderEntryAudioBuffer({
       channelNumber: channel.channelNumber,
       noteNumber: note.noteNumber,
@@ -4341,7 +4398,9 @@ export class Player<
       ? this.noteOnEvents[timelineIndex]
       : undefined;
     const noteDuration = noteEvent?.duration ?? 0;
-    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const releaseEndDuration = noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
 
     if (
       this.isSimpleNote({

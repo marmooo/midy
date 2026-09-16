@@ -1070,6 +1070,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       entry: NoteOnEntry,
       endTime: number,
       endTicks: number | null,
+      soundOff = false,
     ): void => {
       const duration = Math.max(0, endTime - entry.startTime);
       const durationTicks = (endTicks == null || endTicks === Infinity)
@@ -1082,6 +1083,7 @@ export class MidyGM2 extends Player<Note, Channel> {
         startTime: entry.startTime,
         startTicks: entry.startTicks,
         events: entry.events,
+        soundOff: soundOff || undefined,
       };
     };
     for (let i = 0; i < timeline.length; i++) {
@@ -1194,15 +1196,16 @@ export class MidyGM2 extends Player<Note, Channel> {
               sostenutoPedal[ch] = 0;
               sostenutoKeys[ch].clear();
               break;
-            case 120: // All Sound Off
-            case 123: { // All Notes Off
+            case 120: // All Sound Off — instant mute, no release tail
+            case 123: { // All Notes Off — normal release
+              const soundOff = event.controllerType === 120;
               const pairs = Array.from(activeNotes);
               for (let pi = 0; pi < pairs.length; pi++) {
                 const key = pairs[pi][0];
                 if (key % numChannels !== ch) continue;
                 const stack = pairs[pi][1];
                 for (let ei = 0; ei < stack.length; ei++) {
-                  finalizeEntry(stack[ei], t, event.ticks);
+                  finalizeEntry(stack[ei], t, event.ticks, soundOff);
                 }
                 activeNotes.delete(key);
               }

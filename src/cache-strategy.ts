@@ -120,6 +120,10 @@ export interface NoteOnEventEntry {
   // Note-on absolute ticks (for relative automation keying).
   startTicks: number;
   events: TimelineEvent[];
+  // True when the note was ended by All Sound Off (CC120).
+  // Offline bakes (note / segment / chunk / audio) must mute instantly with
+  // zero release instead of applying the normal volEnv release tail.
+  soundOff?: boolean;
 }
 
 export interface NoteOnEntry {
