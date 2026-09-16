@@ -147,6 +147,11 @@ export class Player<
   // mix path for A/B comparison.
   useTypedArraySimpleMix: boolean = true;
 
+  // Switch for simple-note full bake path.
+  // true  → TypedArray (no Offline OAC) when simple + modulationDepthMSB === 0
+  // false → always use the OfflineAudioContext path
+  useTypedArraySimpleNoteBake: boolean = true;
+
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
   // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
@@ -4313,14 +4318,158 @@ export class Player<
     );
   }
 
+  // Pure TypedArray full-note bake for simple notes (no in-interval
+  // automation) when modulation wheel is unused. Mirrors createAdsrRenderedBuffer
+  // (resample + loop + time-varying lowpass + ADSR gains) and optionally
+  // bakes channel volume/pan into stereo for mix modes. Avoids OfflineAudioContext,
+  // offline Player construction, node graph build, and startRendering.
+  // Limitations (intentionally deferred): LFO vibrato (modDepth > 0) and
+  // time-varying pitch from modEnvToPitch still need the OAC path.
+  private async renderSimpleNoteTypedArray(
+    entry: BakeNoteEntry,
+    bakeChannelMix: boolean,
+  ): Promise<AudioBuffer> {
+    const voiceParams = entry.voiceParams;
+    const releaseEndDuration = entry.noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const noteOffTime = Math.max(0, entry.noteDuration);
+    const totalDuration = Math.max(0.001, noteOffTime + releaseEndDuration);
+    const sampleRate = this.audioContext.sampleRate;
+    const length = Math.ceil(totalDuration * sampleRate);
+
+    let audioBuffer: AudioBuffer;
+    if (entry.audioBufferId !== undefined) {
+      audioBuffer = await this.getRawAudioBuffer(
+        entry.audioBufferId,
+        voiceParams,
+      );
+    } else {
+      audioBuffer = await this.createAudioBuffer(voiceParams);
+    }
+
+    const isLoop = entry.isDrum
+      ? (this.isLoopDrum(
+        { programNumber: entry.programNumber } as TChannel,
+        entry.noteNumber,
+      ) && voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
+    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
+    const loopDuration = isLoop
+      ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
+      : 0;
+
+    // Match offline setDetune: fold channel + voice cents into playbackRate.
+    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate *
+      Math.pow(2, detune / 1200);
+
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
+    if (filterAudible) {
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
+    }
+
+    // Channel volume/expression (GM/FluidSynth x²) when baking mix.
+    let channelGain = 1;
+    let panLeft = 1;
+    let panRight = 1;
+    if (bakeChannelMix) {
+      const state = entry.channelStateArray;
+      const vol = state[128 + 7] ?? (100 / 127);
+      const pan = state[128 + 10] ?? (64 / 127);
+      const expr = state[128 + 11] ?? 1;
+      channelGain = vol * vol * expr * expr;
+      const { gainLeft, gainRight } = this.panToGain(pan);
+      panLeft = gainLeft;
+      panRight = gainRight;
+    }
+
+    const gains = this.computeAdsrVolumeGains(
+      voiceParams,
+      noteOffTime,
+      length,
+      sampleRate,
+      filterDcGain * channelGain,
+    );
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length,
+      sampleRate,
+      noteOffTime,
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed"
+      ? voiceParams.start / audioBuffer.sampleRate
+      : 0;
+
+    // Match OAC: dry = 1ch destination, mix = stereo after pan expand.
+    // Render body as mono then expand when bakeChannelMix.
+    const body = this.createEmptyBuffer(1, length, sampleRate);
+    this.renderSampleTypedArray(
+      audioBuffer,
+      body,
+      playbackRate,
+      isLoop,
+      loopStartTime,
+      loopStartTime + loopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ,
+    );
+
+    if (!bakeChannelMix) {
+      return body;
+    }
+
+    const stereo = this.createEmptyBuffer(2, length, sampleRate);
+    const src = body.getChannelData(0);
+    const left = stereo.getChannelData(0);
+    const right = stereo.getChannelData(1);
+    for (let i = 0; i < length; i++) {
+      const s = src[i];
+      left[i] = s * panLeft;
+      right[i] = s * panRight;
+    }
+    return stereo;
+  }
+
   // Per-note OAC bake with no gate. Callers that already hold a slot
   // (segment / audio-chunk mix) must use this (via fromOuterSlot) so
   // maxConcurrentOfflineRenders === 1 does not deadlock. Everyone else
   // goes through renderEntryAudioBuffer.
+  // Simple notes with modulationDepthMSB === 0 take the TypedArray fast path.
   private async renderEntryAudioBufferUngated(
     entry: BakeNoteEntry,
     bakeChannelMix: boolean,
   ): Promise<AudioBuffer> {
+    // Fast path: simple note (no waveform automation) + modulation wheel
+    // unused → pure TypedArray bake (no OAC / offline Player / startRendering).
+    const noteEvent = entry.noteEvent;
+    const isSimple = !!noteEvent &&
+      noteEvent.duration > 0 &&
+      noteEvent.durationTicks !== Infinity &&
+      !this.hasWaveformAutomation(noteEvent);
+    // ControllerState index: modulationDepthMSB = 128 + 1
+    const modDepth = entry.channelStateArray[128 + 1] ?? 0;
+    if (
+      this.useTypedArraySimpleNoteBake &&
+      isSimple &&
+      modDepth === 0
+    ) {
+      return await this.renderSimpleNoteTypedArray(
+        entry,
+        bakeChannelMix,
+      );
+    }
+
     const { startTime: noteStartTime = 0, events: noteEvents = [] } =
       entry.noteEvent ?? {};
     // All Sound Off (CC120): mute instantly — no volEnv release tail.
