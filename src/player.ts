@@ -160,6 +160,13 @@ export class Player<
   //         scheduleSimpleNotesDirect on a shared OfflineAudioContext.
   useTypedArrayChunkSimpleMiss: boolean = true;
 
+  // Switch for chunk complex-note handling.
+  // true  → bake each complex note via getComplexNoteBuffer, then TypedArray-mix
+  //         into the chunk (same pattern as segment). Eliminates tile-level
+  //         OfflineAudioContext when combined with useTypedArrayChunkSimpleMiss.
+  // false → legacy: scheduleComplexNotesDirect on a shared OfflineAudioContext.
+  useTypedArrayChunkComplexBake: boolean = true;
+
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
   // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
@@ -2555,20 +2562,59 @@ export class Player<
         }
       }
 
+      // Complex: optional per-note bake → TypedArray mix (segment-style).
+      // When bakeChunkComplex is on, every complex note becomes a buffer via
+      // getComplexNoteBuffer (still OAC internally for automation) and is
+      // mixed with TA — no tile-level OfflineAudioContext.
+      const bakeChunkComplex = this.useTypedArrayChunkComplexBake;
+      const complexBufs: { buffer: AudioBuffer; offset: number }[] = [];
+      if (bakeChunkComplex && complexCount > 0) {
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry: BakeNoteEntry = {
+            channelNumber: n.channelNumber,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice,
+          };
+          let buf = await this.lookupComplexNoteBuffer(entry, true);
+          if (!buf) {
+            buf = await this.getComplexNoteBuffer(entry, true, true);
+          }
+          complexBufs.push({ buffer: buf, offset: n.offset });
+        }
+      }
+
       // With bakeChunkMiss, simple misses are already in simpleHits → missCount
-      // stays 0. OAC only when mix is legacy, residual simple misses, or complex.
-      const needsOAC = !useTA || missCount > 0 || complexCount > 0;
-      // Pure simple-hits TypedArray path: skip OfflineAudioContext entirely.
+      // stays 0. With bakeChunkComplex, complex notes are in complexBufs.
+      // OAC only when mix is legacy, residual simple misses, or legacy complex.
+      const needsOAC = !useTA || missCount > 0 ||
+        (complexCount > 0 && !bakeChunkComplex);
+
+      // Pure TypedArray path: skip OfflineAudioContext entirely.
       if (useTA && !needsOAC) {
         const buffer = this.createEmptyBuffer(2, bufferLength, sampleRate);
-        this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+        }
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer, complexBufs, sampleRate, 1);
+        }
         if (!forAudioOffline) {
           this.softClampBuffer(buffer);
         }
         return buffer;
       }
 
-      // OAC path (legacy full mix, or hybrid: complex/misses via OAC + simple hits via TA)
+      // OAC path (legacy full mix, or hybrid: complex/misses via OAC + TA hits)
       const offlineContext = new OfflineAudioContext(
         2,
         bufferLength,
@@ -2579,6 +2625,15 @@ export class Player<
         // Legacy: schedule all simple hits as BufferSources
         for (let i = 0; i < simpleHits.length; i++) {
           const h = simpleHits[i];
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: h.buffer,
+          });
+          src.connect(offlineContext.destination);
+          src.start(h.offset);
+        }
+        // Complex buffers already baked (bakeChunkComplex) → BufferSource
+        for (let i = 0; i < complexBufs.length; i++) {
+          const h = complexBufs[i];
           const src = new AudioBufferSourceNode(offlineContext, {
             buffer: h.buffer,
           });
@@ -2645,53 +2700,60 @@ export class Player<
         );
       }
 
-      // --- complex: cache hits use a BufferSource. Cache misses are scheduled
-      // directly into this mix context, grouped by MIDI channel (one Player /
-      // Channel + one deduped CC/pitch-bend column per channel).
-      const directComplexNotes = new Array<
-        BakeNoteEntry & { offset: number }
-      >();
-      const complexLen = complexNotes.length;
-      for (let i = 0; i < complexLen; i++) {
-        const n = complexNotes[i];
-        const entry: BakeNoteEntry = {
-          channelNumber: n.channelNumber,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          voiceParams: n.voiceParams,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum: n.isDrum,
-          audioBufferId: n.audioBufferId,
-          voice: n.voice,
-        };
-        const buf = await this.lookupComplexNoteBuffer(entry, true);
-        if (!buf) {
-          directComplexNotes.push({ ...entry, offset: n.offset });
-          continue;
+      // Legacy complex: cache hits → BufferSource; misses → shared OAC schedule.
+      // Skipped when bakeChunkComplex already filled complexBufs for TA mix.
+      if (!bakeChunkComplex && complexCount > 0) {
+        const directComplexNotes = new Array<
+          BakeNoteEntry & { offset: number }
+        >();
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry: BakeNoteEntry = {
+            channelNumber: n.channelNumber,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice,
+          };
+          const buf = await this.lookupComplexNoteBuffer(entry, true);
+          if (!buf) {
+            directComplexNotes.push({ ...entry, offset: n.offset });
+            continue;
+          }
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: buf,
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
         }
-        const src = new AudioBufferSourceNode(offlineContext, { buffer: buf });
-        src.connect(offlineContext.destination);
-        src.start(n.offset);
-      }
-      if (directComplexNotes.length > 0) {
-        await this.scheduleComplexNotesDirect(
-          offlineContext,
-          directComplexNotes,
-          true,
-        );
+        if (directComplexNotes.length > 0) {
+          await this.scheduleComplexNotesDirect(
+            offlineContext,
+            directComplexNotes,
+            true,
+          );
+        }
       }
 
       const rendered = await offlineContext.startRendering();
 
       let buffer = this.detachAudioBuffer(rendered);
 
-      // Hybrid: add simple hits on top of OAC result via TypedArray
-      if (useTA && simpleHits.length > 0) {
-        this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+      // Hybrid: add pre-baked simple/complex buffers on top of OAC result
+      if (useTA) {
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
+        }
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer, complexBufs, sampleRate, 1);
+        }
       }
 
       // Realtime chunk: never peak-normalize per window (dense chunks would
