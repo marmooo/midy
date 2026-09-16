@@ -152,6 +152,14 @@ export class Player<
   // false → always use the OfflineAudioContext path
   useTypedArraySimpleNoteBake: boolean = true;
 
+  // Switch for chunk simple-cache-miss handling.
+  // true  → bake miss via getSimpleNoteBuffer (TypedArray path when enabled)
+  //         and TypedArray-mix into the chunk; avoids scheduleSimpleNotesDirect
+  //         OAC for pure-simple chunks.
+  // false → legacy: realtime misses / one-shot offline misses go through
+  //         scheduleSimpleNotesDirect on a shared OfflineAudioContext.
+  useTypedArrayChunkSimpleMiss: boolean = true;
+
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
   // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
@@ -2468,26 +2476,52 @@ export class Player<
       const useTA = this.useTypedArraySimpleMix;
 
       // Collect simple hits for TypedArray mix (or schedule into OAC if !useTA).
+      // useTypedArrayChunkSimpleMiss: bake cache misses into buffers (via
+      // getSimpleNoteBuffer / TypedArray note bake) and mix with TA, instead of
+      // scheduleSimpleNotesDirect on a shared OAC. Pure-simple chunks then skip
+      // OfflineAudioContext entirely.
       const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
       const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
       let missCount = 0;
       const simpleCounts = this.simpleNoteCounts;
+      const bakeChunkMiss = this.useTypedArrayChunkSimpleMiss;
 
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
           const cached = await this.lookupSimpleNoteBuffer(n, true);
           if (cached) {
-            if (useTA) {
-              simpleHits.push({ buffer: cached, offset: n.offset });
-            } else {
-              // legacy path filled below once offlineContext exists
-              simpleHits.push({ buffer: cached, offset: n.offset });
-            }
+            simpleHits.push({ buffer: cached, offset: n.offset });
             continue;
           }
 
-          // Realtime: never nest a per-note OAC on the critical path.
+          // New path: always bake the miss into a buffer (TypedArray when
+          // useTypedArraySimpleNoteBake), then TA-mix. Avoids shared-OAC
+          // scheduleSimpleNotesDirect for simple notes.
+          if (bakeChunkMiss) {
+            const noteBuf = await this.getSimpleNoteBuffer(
+              {
+                channelNumber: n.channelNumber,
+                audioBufferId: n.audioBufferId,
+                noteNumber: n.noteNumber,
+                velocity: n.velocity,
+                noteDuration: n.noteDuration,
+                noteEvent: n.noteEvent,
+                channelDetune: n.channelDetune,
+                channelStateArray: n.channelStateArray,
+                programNumber: n.programNumber,
+                isDrum: n.isDrum,
+                voiceParams: n.voiceParams,
+                voice: n.voice,
+              },
+              true,
+              true, // already in renderChunkBuffer's gate slot
+            );
+            simpleHits.push({ buffer: noteBuf, offset: n.offset });
+            continue;
+          }
+
+          // Legacy: realtime never nests a per-note OAC on the critical path.
           if (!forAudioOffline) {
             simpleMisses[missCount++] = n;
             continue;
@@ -2514,17 +2548,15 @@ export class Player<
               true,
               true, // already in renderChunkBuffer's gate slot
             );
-            if (useTA) {
-              simpleHits.push({ buffer: noteBuf, offset: n.offset });
-            } else {
-              simpleHits.push({ buffer: noteBuf, offset: n.offset });
-            }
+            simpleHits.push({ buffer: noteBuf, offset: n.offset });
           } else {
             simpleMisses[missCount++] = n;
           }
         }
       }
 
+      // With bakeChunkMiss, simple misses are already in simpleHits → missCount
+      // stays 0. OAC only when mix is legacy, residual simple misses, or complex.
       const needsOAC = !useTA || missCount > 0 || complexCount > 0;
       // Pure simple-hits TypedArray path: skip OfflineAudioContext entirely.
       if (useTA && !needsOAC) {
