@@ -3114,6 +3114,164 @@ export class Player<
     }
   }
 
+  // Precompute ADS volume envelope gains (no release; holds at sustain).
+  // Matches setVolumeEnvelope + filterDcGain=1 for non-audible filter path.
+  protected computeAdsVolumeGains(
+    voiceParams: VoiceParams,
+    length: number,
+    sampleRate: number,
+  ): Float32Array {
+    const gains = new Float32Array(length);
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
+    const sustainVolume = attackVolume *
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const delay = voiceParams.delayVolEnv;
+    const attackEnd = delay + voiceParams.attackVolEnv;
+    const holdEnd = attackEnd + voiceParams.holdVolEnv;
+    const decayEnd = holdEnd + voiceParams.decayVolEnv;
+    const attackDur = voiceParams.attackVolEnv;
+    const decayDur = voiceParams.decayVolEnv;
+    const invSr = 1 / sampleRate;
+    for (let i = 0; i < length; i++) {
+      const t = i * invSr;
+      if (t < delay) {
+        gains[i] = 0;
+      } else if (t < attackEnd) {
+        const frac = attackDur > 0 ? (t - delay) / attackDur : 1;
+        const start = 1e-6;
+        gains[i] = start * Math.pow(attackVolume / start, frac);
+      } else if (t < holdEnd) {
+        gains[i] = attackVolume;
+      } else if (t < decayEnd) {
+        const frac = decayDur > 0 ? (t - holdEnd) / decayDur : 1;
+        gains[i] = attackVolume *
+          Math.pow(sustainVolume / attackVolume, frac);
+      } else {
+        gains[i] = sustainVolume;
+      }
+    }
+    return gains;
+  }
+
+  // Precompute full ADSR volume envelope gains including release.
+  // Matches createAdsrRenderedBuffer manual note-off ramp (setTargetAtTime).
+  protected computeAdsrVolumeGains(
+    voiceParams: VoiceParams,
+    noteOffTime: number,
+    length: number,
+    sampleRate: number,
+  ): Float32Array {
+    const gains = new Float32Array(length);
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation);
+    const sustainVolume = attackVolume *
+      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const delay = voiceParams.delayVolEnv;
+    const attackEnd = delay + voiceParams.attackVolEnv;
+    const holdEnd = attackEnd + voiceParams.holdVolEnv;
+    const decayEnd = holdEnd + voiceParams.decayVolEnv;
+    const attackDur = voiceParams.attackVolEnv;
+    const decayDur = voiceParams.decayVolEnv;
+    const releaseDur = voiceParams.releaseVolEnv;
+    const invSr = 1 / sampleRate;
+    let gainAtNoteOff: number;
+    if (noteOffTime <= delay) {
+      gainAtNoteOff = 0;
+    } else if (noteOffTime <= attackEnd) {
+      gainAtNoteOff = 1e-6 + (attackVolume - 1e-6) *
+          (noteOffTime - delay) / Math.max(attackDur, 1e-12);
+    } else if (noteOffTime <= holdEnd) {
+      gainAtNoteOff = attackVolume;
+    } else if (noteOffTime <= decayEnd) {
+      const decayFraction = (noteOffTime - holdEnd) / Math.max(decayDur, 1e-12);
+      gainAtNoteOff = attackVolume *
+        Math.pow(sustainVolume / attackVolume, decayFraction);
+    } else {
+      gainAtNoteOff = sustainVolume;
+    }
+    const timeConstant = releaseDur * envelopeCurve;
+    for (let i = 0; i < length; i++) {
+      const t = i * invSr;
+      if (t < noteOffTime) {
+        if (t < delay) {
+          gains[i] = 0;
+        } else if (t < attackEnd) {
+          const frac = attackDur > 0 ? (t - delay) / attackDur : 1;
+          const start = 1e-6;
+          gains[i] = start * Math.pow(attackVolume / start, frac);
+        } else if (t < holdEnd) {
+          gains[i] = attackVolume;
+        } else if (t < decayEnd) {
+          const frac = decayDur > 0 ? (t - holdEnd) / decayDur : 1;
+          gains[i] = attackVolume *
+            Math.pow(sustainVolume / attackVolume, frac);
+        } else {
+          gains[i] = sustainVolume;
+        }
+      } else {
+        if (timeConstant <= 0 || gainAtNoteOff === 0) {
+          gains[i] = 0;
+        } else {
+          gains[i] = gainAtNoteOff *
+            Math.exp(-(t - noteOffTime) / timeConstant);
+        }
+      }
+    }
+    return gains;
+  }
+
+  // Render pitched + looped sample into dest channels via linear interpolation,
+  // then multiply by precomputed volume gains. No OfflineAudioContext.
+  // Used only for the filter-non-audible path of ADS / ADSR bake.
+  protected renderSampleTypedArray(
+    srcBuffer: AudioBuffer,
+    dest: AudioBuffer,
+    playbackRate: number,
+    isLoop: boolean,
+    loopStartSrc: number,
+    loopEndSrc: number,
+    startOffsetSrc: number,
+    gains: Float32Array,
+  ): void {
+    const srcRate = srcBuffer.sampleRate;
+    const destRate = dest.sampleRate;
+    const destLen = dest.length;
+    const srcChCount = srcBuffer.numberOfChannels;
+    const destChCount = dest.numberOfChannels;
+    const srcChannels: Float32Array[] = new Array(srcChCount);
+    for (let c = 0; c < srcChCount; c++) {
+      srcChannels[c] = srcBuffer.getChannelData(c);
+    }
+    const srcLen = srcBuffer.length;
+    const loopStartSample = loopStartSrc * srcRate;
+    const loopEndSample = loopEndSrc * srcRate;
+    const loopLenSample = loopEndSample - loopStartSample;
+    const startSample = startOffsetSrc * srcRate;
+    const step = playbackRate * (srcRate / destRate);
+    for (let c = 0; c < destChCount; c++) {
+      const dst = dest.getChannelData(c);
+      const srcData = srcChannels[Math.min(c, srcChCount - 1)];
+      let srcPos = startSample;
+      for (let i = 0; i < destLen; i++) {
+        let pos = srcPos;
+        if (isLoop && loopLenSample > 0 && pos >= loopEndSample) {
+          const over = pos - loopStartSample;
+          pos = loopStartSample + (over % loopLenSample);
+          if (pos < loopStartSample) pos += loopLenSample;
+        }
+        if (pos < 0 || pos >= srcLen - 1) {
+          dst[i] = 0;
+        } else {
+          const i0 = Math.floor(pos);
+          const frac = pos - i0;
+          const s0 = srcData[i0];
+          const s1 = srcData[i0 + 1];
+          dst[i] = (s0 + (s1 - s0) * frac) * gains[i];
+        }
+        srcPos += step;
+      }
+    }
+  }
+
   // Create an empty AudioBuffer on the live context (for TypedArray mix dest).
   protected createEmptyBuffer(
     numberOfChannels: number,
@@ -3199,6 +3357,44 @@ export class Player<
       ? alignedLoopStart + outputLoopDuration
       : audioBuffer.duration / playbackRate;
     const sampleRate = this.audioContext.sampleRate;
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+
+    // Fast path: filter non-audible → TypedArray resample + volume multiply
+    // (avoids OfflineAudioContext entirely). High-frequency / low-cost win.
+    if (!filterAudible) {
+      const length = Math.ceil(renderDuration * sampleRate);
+      const buffer = this.createEmptyBuffer(
+        audioBuffer.numberOfChannels,
+        length,
+        sampleRate,
+      );
+      const gains = this.computeAdsVolumeGains(voiceParams, length, sampleRate);
+      const startOffsetSrc = voiceParams.sample.type === "compressed"
+        ? voiceParams.start / audioBuffer.sampleRate
+        : 0;
+      this.renderSampleTypedArray(
+        audioBuffer,
+        buffer,
+        playbackRate,
+        isLoop,
+        sampleLoopStart,
+        sampleLoopStart + sampleLoopDuration,
+        startOffsetSrc,
+        gains,
+      );
+      return new RenderedBuffer(buffer, {
+        isLoop,
+        adsDuration,
+        loopStart: alignedLoopStart,
+        loopDuration: outputLoopDuration,
+      });
+    }
+
+    // Slow path: filter audible → keep OfflineAudioContext + Biquad
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
       Math.ceil(renderDuration * sampleRate),
@@ -3215,22 +3411,13 @@ export class Player<
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterAudible = isFilterAudible(
-      voiceParams.initialFilterFc,
-      voiceParams.initialFilterQ,
-      voiceParams.modEnvToFilterFc,
-    );
-    let filterEnvelopeNode: BiquadFilterNode | null = null;
-    let filterDcGain = 1;
-    if (filterAudible) {
-      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
-      filterDcGain = dcGain;
-      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-        type: "lowpass",
-        Q: q,
-        frequency: initialFreq,
-      });
-    }
+    const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+    const filterDcGain = dcGain;
+    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
+      type: "lowpass",
+      Q: q,
+      frequency: initialFreq,
+    });
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -3243,13 +3430,9 @@ export class Player<
       },
     ) as unknown as TNote;
     this.setVolumeEnvelope(channel, offlineNote, 0);
-    if (filterEnvelopeNode) {
-      this.setFilterEnvelope(channel, offlineNote, 0);
-      bufferSource.connect(filterEnvelopeNode);
-      filterEnvelopeNode.connect(volumeEnvelopeNode);
-    } else {
-      bufferSource.connect(volumeEnvelopeNode);
-    }
+    this.setFilterEnvelope(channel, offlineNote, 0);
+    bufferSource.connect(filterEnvelopeNode);
+    filterEnvelopeNode.connect(volumeEnvelopeNode);
     volumeEnvelopeNode.connect(offlineContext.destination);
     if (voiceParams.sample.type === "compressed") {
       bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
@@ -3295,6 +3478,49 @@ export class Player<
     const noteOffTime = alignedNoteEnd;
     const totalDuration = noteOffTime + releaseDuration;
     const sampleRate = this.audioContext.sampleRate;
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+
+    // Fast path: filter non-audible → TypedArray resample + volume multiply
+    if (!filterAudible) {
+      const length = Math.ceil(totalDuration * sampleRate);
+      const buffer = this.createEmptyBuffer(
+        audioBuffer.numberOfChannels,
+        length,
+        sampleRate,
+      );
+      const gains = this.computeAdsrVolumeGains(
+        voiceParams,
+        noteOffTime,
+        length,
+        sampleRate,
+      );
+      const startOffsetSrc = voiceParams.sample.type === "compressed"
+        ? voiceParams.start / audioBuffer.sampleRate
+        : 0;
+      this.renderSampleTypedArray(
+        audioBuffer,
+        buffer,
+        voiceParams.playbackRate,
+        isLoop,
+        loopStartTime,
+        loopStartTime + loopDuration,
+        startOffsetSrc,
+        gains,
+      );
+      return new RenderedBuffer(buffer, {
+        isLoop: false,
+        isFull: false,
+        adsDuration,
+        noteDuration: noteOffTime,
+        releaseDuration,
+      });
+    }
+
+    // Slow path: filter audible → OfflineAudioContext + Biquad
     const offlineContext = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
       Math.ceil(totalDuration * sampleRate),
@@ -3311,22 +3537,13 @@ export class Player<
     const initialFreq = this.clampCutoffFrequency(
       this.centToHz(voiceParams.initialFilterFc),
     );
-    const filterAudible = isFilterAudible(
-      voiceParams.initialFilterFc,
-      voiceParams.initialFilterQ,
-      voiceParams.modEnvToFilterFc,
-    );
-    let filterEnvelopeNode: BiquadFilterNode | null = null;
-    let filterDcGain = 1;
-    if (filterAudible) {
-      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
-      filterDcGain = dcGain;
-      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-        type: "lowpass",
-        Q: q,
-        frequency: initialFreq,
-      });
-    }
+    const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+    const filterDcGain = dcGain;
+    const filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
+      type: "lowpass",
+      Q: q,
+      frequency: initialFreq,
+    });
     const volumeEnvelopeNode = new GainNode(offlineContext);
     const offlineNote = Object.assign(
       new Note(note.noteNumber, note.velocity, 0),
@@ -3339,7 +3556,7 @@ export class Player<
       },
     ) as unknown as TNote;
     this.setVolumeEnvelope(channel, offlineNote, 0);
-    if (filterEnvelopeNode) this.setFilterEnvelope(channel, offlineNote, 0);
+    this.setFilterEnvelope(channel, offlineNote, 0);
 
     // Same DC compensation as setVolumeEnvelope (manual note-off ramp below).
     const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
@@ -3408,12 +3625,8 @@ export class Player<
         );
     }
 
-    if (filterEnvelopeNode) {
-      bufferSource.connect(filterEnvelopeNode);
-      filterEnvelopeNode.connect(volumeEnvelopeNode);
-    } else {
-      bufferSource.connect(volumeEnvelopeNode);
-    }
+    bufferSource.connect(filterEnvelopeNode);
+    filterEnvelopeNode.connect(volumeEnvelopeNode);
     volumeEnvelopeNode.connect(offlineContext.destination);
     // Match createAdsRenderedBuffer: compressed samples keep the full
     // decoded buffer, so the SF2 start offset must be applied here. PCM
