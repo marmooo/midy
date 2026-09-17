@@ -2744,7 +2744,7 @@ export class Player<
 
       const rendered = await offlineContext.startRendering();
 
-      let buffer = this.detachAudioBuffer(rendered);
+      const buffer = this.detachAudioBuffer(rendered);
 
       // Hybrid: add pre-baked simple/complex buffers on top of OAC result
       if (useTA) {
@@ -3568,13 +3568,13 @@ export class Player<
     await Promise.all(tasks);
   }
 
-  async createAdsRenderedBuffer(
+  createAdsRenderedBuffer(
     channel: TChannel,
     note: TNote,
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     isDrum = false,
-  ): Promise<RenderedBuffer> {
+  ): RenderedBuffer {
     const isLoop = isDrum
       ? (this.isLoopDrum(channel, note.noteNumber) &&
         voiceParams.sampleModes % 2 !== 0)
@@ -3653,14 +3653,14 @@ export class Player<
     });
   }
 
-  async createAdsrRenderedBuffer(
+  createAdsrRenderedBuffer(
     channel: TChannel,
     note: TNote,
     voiceParams: VoiceParams,
     audioBuffer: AudioBuffer,
     noteDuration: number,
     isDrum = false,
-  ): Promise<RenderedBuffer> {
+  ): RenderedBuffer {
     const isLoop = isDrum
       ? (this.isLoopDrum(channel, note.noteNumber) &&
         voiceParams.sampleModes % 2 !== 0)
@@ -4653,12 +4653,9 @@ export class Player<
     noteDuration: number,
     noteEvent: NoteOnEventEntry | undefined = undefined,
   ): Promise<RenderedBuffer> {
-    // releaseEndDuration is unused for allocation (renderEntry handles it);
-    // keep local only for any future callers that need the span.
-    const _releaseEndDuration = noteEvent?.soundOff
+    const releaseEndDuration = noteEvent?.soundOff
       ? 0
       : voiceParams.releaseVolEnv * envelopeCurve * 5;
-    void _releaseEndDuration;
     const buffer = await this.renderEntryAudioBuffer({
       channelNumber: channel.channelNumber,
       noteNumber: note.noteNumber,

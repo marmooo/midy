@@ -39,10 +39,6 @@ const ENV_CORR_MIN = 0.85;
 
 // Release windows measured from note-off (hold ends at HOLD_SEC).
 const HOLD_SEC = 0.5;
-const REL_EARLY_START = HOLD_SEC + 0.05;
-const REL_EARLY_END = HOLD_SEC + 0.25;
-const REL_LATE_START = HOLD_SEC + 0.4;
-const REL_LATE_END = HOLD_SEC + 0.7;
 const RELEASE_ERR_MAX_DB = 4;
 // Late window must be quieter than early (decay progressing).
 const RELEASE_DROP_MIN_DB = 1;

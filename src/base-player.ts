@@ -2149,18 +2149,21 @@ export class BasePlayer<
     if (soundFontIndex === undefined) return [];
     const sf = this.soundFonts[soundFontIndex];
     // Prefer getVoices (all layers) when available; fall back to getVoice.
-    const raw: Voice[] =
-      typeof (sf as { getVoices?: typeof sf.getVoice }).getVoices === "function"
-        ? (sf as unknown as { getVoices: typeof sf.getVoices }).getVoices(
-          bank,
-          programNumber,
-          noteNumber,
-          velocity,
-        )
-        : (() => {
-          const v = sf.getVoice(bank, programNumber, noteNumber, velocity);
-          return v ? [v] : [];
-        })();
+    const raw: Voice[] = typeof (sf as {
+        getVoices?: (b: number, i: number, k: number, v: number) => Voice[];
+      }).getVoices === "function"
+      ? (sf as {
+        getVoices: (b: number, i: number, k: number, v: number) => Voice[];
+      }).getVoices(
+        bank,
+        programNumber,
+        noteNumber,
+        velocity,
+      )
+      : (() => {
+        const v = sf.getVoice(bank, programNumber, noteNumber, velocity);
+        return v ? [v] : [];
+      })();
     return raw.map((voice) => ({
       voice,
       soundFontIndex,
