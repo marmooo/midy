@@ -641,7 +641,7 @@ var import_midi_file2 = __toESM(require_midi_file());
 // src/base-player.ts
 var import_midi_file = __toESM(require_midi_file());
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Constants.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Constants.js
 var GeneratorKeys = [
   "startAddrsOffset",
   "endAddrsOffset",
@@ -709,7 +709,7 @@ var GeneratorKeys = [
   "overridingRootKey"
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Modulator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Modulator.js
 var ModulatorSource = class _ModulatorSource {
   constructor(type, polarity, direction, cc, index) {
     Object.defineProperty(this, "type", {
@@ -770,12 +770,29 @@ var ModulatorSource = class _ModulatorSource {
     switch (this.type) {
       case 0:
         break;
-      case 1:
-        v = Math.sign(v) * Math.log(Math.abs(v));
+      case 1: {
+        const absV = Math.abs(v);
+        if (absV <= 0) {
+          v = 0;
+        } else if (absV >= 1) {
+          v = Math.sign(v) * 1;
+        } else {
+          const concave = -(20 / 96) * Math.log10(1 - absV);
+          v = Math.sign(v) * concave;
+        }
         break;
-      case 2:
-        v = Math.sign(v) * Math.exp(-Math.abs(v));
+      }
+      case 2: {
+        const absV = Math.abs(v);
+        if (absV <= 0) {
+          v = 0;
+        } else if (absV >= 1) {
+          v = Math.sign(v) * 1;
+        } else {
+          v = Math.sign(v) * (1 + 20 / 96 * Math.log10(absV));
+        }
         break;
+      }
       case 3:
         v = v >= 0.5 ? 1 : 0;
         break;
@@ -787,7 +804,7 @@ var ModulatorSource = class _ModulatorSource {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Stream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Stream.js
 var Stream = class {
   constructor(data3, offset) {
     Object.defineProperty(this, "data", {
@@ -855,7 +872,7 @@ var Stream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/WriteStream.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/WriteStream.js
 var WriteStream = class {
   constructor(initialSize = 1024) {
     Object.defineProperty(this, "data", {
@@ -951,7 +968,7 @@ var WriteStream = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/RiffWriter.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/RiffWriter.js
 function writeChunk(type, data3) {
   const padded = (data3.length & 1) === 1;
   const result = new Uint8Array(8 + data3.length + (padded ? 1 : 0));
@@ -966,7 +983,7 @@ function writeChunk(type, data3) {
   return result;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Structs.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Structs.js
 var VersionTag = class _VersionTag {
   constructor(major, minor) {
     Object.defineProperty(this, "major", {
@@ -1562,7 +1579,7 @@ var BoundedValue = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Generator.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Generator.js
 var RangeGeneratorKeys = [
   "keyRange",
   "velRange"
@@ -1857,7 +1874,7 @@ function createDefaultInstrumentGeneratorStore() {
   return store;
 }
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/AudioData.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/AudioData.js
 var AudioDataTypes = ["pcm16", "pcm24", "compressed"];
 var AudioTypesSet = new Set(AudioDataTypes);
 var AudioData = class {
@@ -1914,7 +1931,7 @@ var AudioData = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Voice.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Voice.js
 function buildModulatorIndexes(modulators) {
   const controllerToDestinations = /* @__PURE__ */ new Map();
   const destinationToModulators = /* @__PURE__ */ new Map();
@@ -2029,7 +2046,7 @@ var Voice = class {
   }
   // applies every modulator whose source controller is present in
   // `controllerState` on top of this voice's static (zone-merged)
-  // generators, and clamps the result to each generator's legal range —
+  // generators, and clamps the result to each generator's legal range --
   // both are spec-mandated (SF2 §8, §9.5), not implementation choices.
   //
   // Fast path: when no controller is active, returns the voice's already
@@ -2113,8 +2130,8 @@ var Voice = class {
     }
     return params;
   }
-  // the full set of spec-defined generator values for this voice — see
-  // transformAllParams() — plus the resolved absolute sample playback
+  // the full set of spec-defined generator values for this voice -- see
+  // transformAllParams() -- plus the resolved absolute sample playback
   // range (SF2 §7.9).
   getAllParams(controllerValues) {
     const generators = this.transformAllParams(controllerValues);
@@ -2134,14 +2151,14 @@ var Voice = class {
     };
   }
   // just the generators affected by a single controller change (e.g. mod
-  // wheel) — see transformParams(). Same raw spec units as
+  // wheel) -- see transformParams(). Same raw spec units as
   // getAllParams().generators.
   getParams(controllerType, controllerState) {
     return this.transformParams(controllerType, controllerState);
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/RiffParser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/RiffParser.js
 function parseChunk(input, offset, bigEndian) {
   const stream2 = new Stream(input, offset);
   const type = stream2.readString(4);
@@ -2185,7 +2202,7 @@ var Chunk = class {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/DefaultModulators.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/DefaultModulators.js
 var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(1282), 48, 960, ModulatorSource.parse(0), 0),
   new ModulatorList(ModulatorSource.parse(258), 8, -2400, ModulatorSource.parse(0), 0),
@@ -2200,7 +2217,7 @@ var DefaultModulators = [
   new ModulatorList(ModulatorSource.parse(526), 51, 127, ModulatorSource.parse(16), 0)
 ];
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/SoundFont.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/SoundFont.js
 var CachedInstrumentZone = class {
   constructor(generators, modulators, keyRange, velRange) {
     Object.defineProperty(this, "generators", {
@@ -2548,6 +2565,21 @@ var SoundFont = class _SoundFont {
     }
     return;
   }
+  findInstrumentZones(instrumentID, key, velocity) {
+    const zones = this.cachedInstrumentZones[instrumentID];
+    if (!zones)
+      return [];
+    const out = [];
+    for (let i = 0; i < zones.length; i++) {
+      const zone = zones[i];
+      if (zone.keyRange && !zone.keyRange.in(key))
+        continue;
+      if (zone.velRange && !zone.velRange.in(velocity))
+        continue;
+      out.push(zone);
+    }
+    return out;
+  }
   findInstrument(presetHeaderIndex, key, velocity) {
     const zones = this.cachedPresetZones[presetHeaderIndex];
     if (!zones)
@@ -2564,6 +2596,24 @@ var SoundFont = class _SoundFont {
       }
     }
     return null;
+  }
+  findInstruments(presetHeaderIndex, key, velocity) {
+    const zones = this.cachedPresetZones[presetHeaderIndex];
+    if (!zones)
+      return [];
+    const voices = [];
+    for (let i = 0; i < zones.length; i++) {
+      const zone = zones[i];
+      if (zone.keyRange && !zone.keyRange.in(key))
+        continue;
+      if (zone.velRange && !zone.velRange.in(velocity))
+        continue;
+      const instrumentZones = this.findInstrumentZones(zone.instrumentID, key, velocity);
+      for (let j = 0; j < instrumentZones.length; j++) {
+        voices.push(this.createVoice(key, zone, instrumentZones[j]));
+      }
+    }
+    return voices;
   }
   createVoice(key, presetZone, instrumentZone) {
     const zoneMods = this.getZonePairMods(presetZone, instrumentZone);
@@ -2586,6 +2636,14 @@ var SoundFont = class _SoundFont {
     }
     return instrument;
   }
+  getVoices(bankNumber, instrumentNumber, key, velocity) {
+    const presetHeaderIndex = this.presetIndex.get(_SoundFont.presetKey(bankNumber, instrumentNumber));
+    if (presetHeaderIndex === void 0) {
+      console.warn("preset not found: bank=%s instrument=%s", bankNumber, instrumentNumber);
+      return [];
+    }
+    return this.findInstruments(presetHeaderIndex, key, velocity);
+  }
   // presetNames[bankNumber][presetNumber] = presetName
   getPresetNames() {
     const bank = {};
@@ -2601,7 +2659,7 @@ var SoundFont = class _SoundFont {
   }
 };
 
-// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.3/node_modules/@marmooo/soundfont/esm/Parser.js
+// ../../../.cache/deno/deno_esbuild/registry.npmjs.org/@marmooo/soundfont@0.3.4/node_modules/@marmooo/soundfont/esm/Parser.js
 function parseData(input, option = {}) {
   const chunkList = parseRiff(input, 0, input.length, option);
   if (chunkList.length !== 1) {
@@ -5869,6 +5927,12 @@ function getVoiceParams(voice, controllerState) {
     exclusiveClass: staticGenerators.get("exclusiveClass")
   };
   const generators = voice.transformAllParams(controllerState);
+  {
+    const staticAtten = staticGenerators.get("initialAttenuation");
+    const afterMod = generators.get("initialAttenuation");
+    const modDelta = afterMod - staticAtten;
+    generators.set("initialAttenuation", staticAtten * 0.4 + modDelta);
+  }
   for (let i = 0; i < ValueGeneratorKeys.length; i++) {
     const generatorKey = ValueGeneratorKeys[i];
     voiceParamsHandlerFns[generatorKey](
@@ -5890,6 +5954,14 @@ function getVoiceParamsForController(voice, controllerType, controllerState) {
   for (let i = 0; i < updatedKeys.length; i++) {
     const generatorKey = updatedKeys[i];
     generators.set(generatorKey, updatedParams[generatorKey]);
+  }
+  if (Object.prototype.hasOwnProperty.call(updatedParams, "initialAttenuation")) {
+    const staticAtten = voice.generators.get("initialAttenuation");
+    const afterMod = updatedParams.initialAttenuation;
+    const modDelta = afterMod - staticAtten;
+    const scaled = staticAtten * 0.4 + modDelta;
+    updatedParams.initialAttenuation = scaled;
+    generators.set("initialAttenuation", scaled);
   }
   const key = voice.key;
   const sampleHeader = voice.sampleHeader;
@@ -6646,16 +6718,10 @@ var BasePlayer = class _BasePlayer extends EventTarget {
         throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
       }
       const arrayBuffer = await response.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      if (bytes.byteLength < 12 || bytes[0] !== 82 || // R
-      bytes[1] !== 73 || // I
-      bytes[2] !== 70 || // F
-      bytes[3] !== 70) {
-        throw new Error(
-          `Failed to fetch ${url}: not a SoundFont (missing RIFF header)`
-        );
+      if (arrayBuffer.byteLength < 8) {
+        throw new Error(`Failed to fetch ${url}: response too short`);
       }
-      return bytes;
+      return new Uint8Array(arrayBuffer);
     };
     try {
       return await tryFetch(input);
@@ -7298,18 +7364,30 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     return Promise.all(residualPromises);
   }
   tryGetVoice(bank, programNumber, noteNumber, velocity) {
+    const voices = this.tryGetVoices(bank, programNumber, noteNumber, velocity);
+    return voices[0] ?? null;
+  }
+  tryGetVoices(bank, programNumber, noteNumber, velocity) {
     const bankTable = this.soundFontTable[programNumber];
-    if (!bankTable) return null;
+    if (!bankTable) return [];
     const soundFontIndex = bankTable[bank];
-    if (soundFontIndex === void 0) return null;
-    const voice = this.soundFonts[soundFontIndex].getVoice(
+    if (soundFontIndex === void 0) return [];
+    const sf = this.soundFonts[soundFontIndex];
+    const raw = typeof sf.getVoices === "function" ? sf.getVoices(
       bank,
       programNumber,
       noteNumber,
       velocity
-    );
-    if (!voice) return null;
-    return { voice, soundFontIndex, bank, programNumber };
+    ) : (() => {
+      const v = sf.getVoice(bank, programNumber, noteNumber, velocity);
+      return v ? [v] : [];
+    })();
+    return raw.map((voice) => ({
+      voice,
+      soundFontIndex,
+      bank,
+      programNumber
+    }));
   }
   // GM instrument families are groups of 8 (0–7 Piano, 8–15 Chromatic, …).
   // Returns other programs in the same family, closest to `program` first.
@@ -7365,28 +7443,33 @@ var BasePlayer = class _BasePlayer extends EventTarget {
   //   3. first drum preset (bank 128) found across loaded soundfonts
   //   4. null (silence)
   resolveVoiceResult(channel2, noteNumber, velocity) {
+    return this.resolveVoices(channel2, noteNumber, velocity)[0] ?? null;
+  }
+  resolveVoices(channel2, noteNumber, velocity) {
     const programNumber = channel2.programNumber;
     if (channel2.isDrum) {
-      let result2 = this.tryGetVoice(128, programNumber, noteNumber, velocity);
-      if (result2) return result2;
+      let result2 = this.tryGetVoices(128, programNumber, noteNumber, velocity);
+      if (result2.length) return result2;
       if (programNumber !== 0) {
-        result2 = this.tryGetVoice(128, 0, noteNumber, velocity);
-        if (result2) return result2;
+        result2 = this.tryGetVoices(128, 0, noteNumber, velocity);
+        if (result2.length) return result2;
       }
-      return this.findFirstPresetVoice(noteNumber, velocity, true);
+      const fb2 = this.findFirstPresetVoice(noteNumber, velocity, true);
+      return fb2 ? [fb2] : [];
     }
-    let result = this.tryGetVoice(0, programNumber, noteNumber, velocity);
-    if (result) return result;
+    let result = this.tryGetVoices(0, programNumber, noteNumber, velocity);
+    if (result.length) return result;
     const family = _BasePlayer.gmFamilyCandidates(programNumber);
     for (let i = 0; i < family.length; i++) {
-      result = this.tryGetVoice(0, family[i], noteNumber, velocity);
-      if (result) return result;
+      result = this.tryGetVoices(0, family[i], noteNumber, velocity);
+      if (result.length) return result;
     }
     if (programNumber !== 0) {
-      result = this.tryGetVoice(0, 0, noteNumber, velocity);
-      if (result) return result;
+      result = this.tryGetVoices(0, 0, noteNumber, velocity);
+      if (result.length) return result;
     }
-    return this.findFirstPresetVoice(noteNumber, velocity, false);
+    const fb = this.findFirstPresetVoice(noteNumber, velocity, false);
+    return fb ? [fb] : [];
   }
   resolveVoice(channel2, noteNumber, velocity) {
     return this.resolveVoiceResult(channel2, noteNumber, velocity)?.voice ?? null;
@@ -7521,7 +7604,8 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     if (!src) return;
     const detune = this.calcNoteDetune(channel2, note);
     if (this.audioContext instanceof OfflineAudioContext) {
-      const baseRate = note.voiceParams?.playbackRate ?? 1;
+      const pitchAlreadyBaked = note.renderedBuffer != null && !note.renderedBuffer.isFull;
+      const baseRate = pitchAlreadyBaked ? 1 : note.voiceParams?.playbackRate ?? 1;
       const rate = baseRate * Math.pow(2, detune / 1200);
       src.detune.cancelScheduledValues(scheduleTime).setValueAtTime(
         0,
@@ -7816,32 +7900,37 @@ var BasePlayer = class _BasePlayer extends EventTarget {
   async noteOnChannel(channel2, noteNumber, velocity, startTime, note) {
     const t2 = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === void 0;
-    if (!note) note = this.createNoteInstance(noteNumber, velocity, t2);
-    if (!note.voice) {
-      note.voice = this.resolveVoice(channel2, noteNumber, velocity);
-    }
-    if (!note.voice) return;
-    if (!note.isTiledGhost) {
-      this.enforceMaxVoices(t2, 1);
-    }
+    const layers = note?.voice ? [{ voice: note.voice }] : this.resolveVoices(channel2, noteNumber, velocity);
+    if (!layers.length) return;
     if (!channel2.activeNotes[noteNumber]) {
       channel2.activeNotes[noteNumber] = [];
     }
-    channel2.activeNotes[noteNumber].push(note);
-    try {
-      await this.setNoteAudioNode(channel2, note, realtime);
-      if (note.ending) {
-        if (note.bufferSource || note.volumeNode) {
-          await this.soundOffNote(note, this.audioContext.currentTime);
-        }
-        return note;
+    let primary = note;
+    for (let i = 0; i < layers.length; i++) {
+      const layerNote = i === 0 && primary ? primary : this.createNoteInstance(noteNumber, velocity, t2);
+      layerNote.voice = layers[i].voice;
+      if (!layerNote.isTiledGhost) {
+        this.enforceMaxVoices(t2, 1);
       }
-      this.setNoteRouting(channel2, note, t2);
-    } finally {
-      note.resolveReady();
+      channel2.activeNotes[noteNumber].push(layerNote);
+      try {
+        await this.setNoteAudioNode(channel2, layerNote, realtime);
+        if (layerNote.ending) {
+          if (layerNote.bufferSource || layerNote.volumeNode) {
+            await this.soundOffNote(layerNote, this.audioContext.currentTime);
+          }
+        } else {
+          this.setNoteRouting(channel2, layerNote, t2);
+        }
+      } finally {
+        layerNote.resolveReady();
+      }
+      if (0.5 <= channel2.state.sustainPedal) {
+        channel2.sustainNotes.push(layerNote);
+      }
+      if (i === 0) primary = layerNote;
     }
-    if (0.5 <= channel2.state.sustainPedal) channel2.sustainNotes.push(note);
-    return note;
+    return primary;
   }
   // iOS Safari often retains AudioBuffer memory while it is still attached to
   // an AudioBufferSourceNode. Replacing .buffer with a 1-sample scratch buffer
@@ -8494,7 +8583,7 @@ var Player = class _Player extends BasePlayer {
   // Notes with no pitch-bend / CC automation during their interval can be
   // fully baked once and reused (keyed by voice params + duration + channel
   // mix snapshot) instead of re-running the full noteOn path for every
-  // identical onset — including "note" mode playback and offline segment/
+  // identical onset -- including "note" mode playback and offline segment/
   // chunk/audio mixes.
   simpleNoteCache = true;
   simpleNoteSet = /* @__PURE__ */ new Set();
@@ -8540,28 +8629,79 @@ var Player = class _Player extends BasePlayer {
   // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
   // AudioBuffer memory aggressively; Promise.all over many complex notes in
   // one chunk was creating dozens of OACs at once and crashing the tab.
-  // Logic (what gets baked) is unchanged — only peak concurrency.
+  // Logic (what gets baked) is unchanged -- only peak concurrency.
   maxConcurrentOfflineRenders = 1;
   offlineRenderActive = 0;
-  offlineRenderDepth = 0;
   offlineRenderWaiters = [];
+  // Debug / experiment: mix cached simple-note AudioBuffers by direct
+  // TypedArray addition instead of scheduling AudioBufferSourceNodes into
+  // OfflineAudioContext + startRendering. Complex notes and uncached
+  // simple misses still go through OAC. Set false to force the legacy OAC
+  // mix path for A/B comparison.
+  useTypedArraySimpleMix = true;
+  // Switch for simple-note full bake path.
+  // true  → TypedArray (no Offline OAC) when simple + modulationDepthMSB === 0
+  // false → always use the OfflineAudioContext path
+  useTypedArraySimpleNoteBake = true;
+  // Switch for chunk simple-cache-miss handling.
+  // true  → bake miss via getSimpleNoteBuffer (TypedArray path when enabled)
+  //         and TypedArray-mix into the chunk; avoids scheduleSimpleNotesDirect
+  //         OAC for pure-simple chunks.
+  // false → legacy: realtime misses / one-shot offline misses go through
+  //         scheduleSimpleNotesDirect on a shared OfflineAudioContext.
+  useTypedArrayChunkSimpleMiss = true;
+  // Switch for chunk complex-note handling.
+  // true  → bake each complex note via getComplexNoteBuffer, then TypedArray-mix
+  //         into the chunk (same pattern as segment). Eliminates tile-level
+  //         OfflineAudioContext when combined with useTypedArrayChunkSimpleMiss.
+  // false → legacy: scheduleComplexNotesDirect on a shared OfflineAudioContext.
+  useTypedArrayChunkComplexBake = true;
+  // Simple-note prewarm budget (start() before playNotes).
+  // Phase 1: keys whose earliest onset falls in the song-head window
+  // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
+  // Head keys use prewarmSimpleHeadMinCount (default 1 = include one-shots).
+  // Phase 2: remaining multi-use keys (prewarmSimpleMinCount) if budget left.
+  // Within each phase: earliest onset first, then frequency desc.
+  // Stops when wall time exceeds prewarmSimpleMaxMs (0 = no limit).
+  // Wall-clock budget for prewarm (ms). 0 = bake all candidates.
+  prewarmSimpleMaxMs = 3e3;
+  // Min appearances for post-head (phase 2) keys. Default: multi-use only.
+  prewarmSimpleMinCount = 2;
+  // Song-time window (seconds) for phase-1 priority. 0 = auto
+  // (lookAhead + maxTiledNoteDuration).
+  prewarmSimpleHeadSec = 0;
+  // Min appearances inside the head window (1 = include one-shot keys).
+  prewarmSimpleHeadMinCount = 1;
+  // Song-time window (seconds) to fully bake before arming the playback clock.
+  // Only applies to segment/chunk modes. 0 = disable preroll.
+  // Light songs finish early; heavy songs wait up to prerollMaxMs.
+  prerollSec = 6;
+  // Wall-clock cap for preroll bake (ms). 0 = no cap.
+  prerollMaxMs = 0;
+  // Song time up to which tiled notes were already queued/baked in preroll.
+  // scheduleTimelineEvents skips appendTo*Queue for tiled notes with t < this
+  // so preroll tiles are not duplicated. Reset on stop / non-tiled play.
+  prerollUntilSongTime = 0;
   constructor(audioContext, options) {
     super(audioContext, options);
     this.cacheMode = DEFAULT_CACHE_MODE;
     this.offlineRenderOnly = options?.offlineRenderOnly ?? false;
   }
-  // Serialize / limit OfflineAudioContext work across the whole Player.
-  // Re-entrant: a gated chunk/segment bake may call renderEntryAudioBuffer
-  // (also gated) without deadlocking when maxConcurrentOfflineRenders === 1.
+  // Serialize OfflineAudioContext work across the whole Player.
+  //
+  // Always waits for a slot. Sibling bakers (chunk / segment / prewarm /
+  // note-mode) therefore cannot pile up N OfflineAudioContexts after the
+  // first one yields on await — the previous depth>0 early-return did that
+  // because depth stayed raised while scheduleTimelineEvents closed the
+  // next tiles.
+  //
+  // Nested per-note bakes from inside an already-held slot MUST NOT call
+  // this method (deadlock at maxConcurrentOfflineRenders === 1). They go
+  // through renderEntryAudioBufferUngated via fromOuterSlot on
+  // getSimpleNoteBuffer / getComplexNoteBuffer. A global "in slot" flag
+  // would look held to sibling note-mode bakes too; the opt-in argument
+  // is scoped to the call, not to the Player instance.
   async runWithOfflineRenderGate(fn) {
-    if (this.offlineRenderDepth > 0) {
-      this.offlineRenderDepth++;
-      try {
-        return await fn();
-      } finally {
-        this.offlineRenderDepth--;
-      }
-    }
     const max = Math.max(1, this.maxConcurrentOfflineRenders | 0);
     while (this.offlineRenderActive >= max) {
       await new Promise((resolve) => {
@@ -8569,11 +8709,9 @@ var Player = class _Player extends BasePlayer {
       });
     }
     this.offlineRenderActive++;
-    this.offlineRenderDepth++;
     try {
       return await fn();
     } finally {
-      this.offlineRenderDepth--;
       this.offlineRenderActive--;
       const next = this.offlineRenderWaiters.shift();
       if (next) next();
@@ -8652,7 +8790,7 @@ var Player = class _Player extends BasePlayer {
     const sustainPedal = new Uint8Array(numChannels);
     const activeNotes = /* @__PURE__ */ new Map();
     const pendingOff = /* @__PURE__ */ new Map();
-    const finalizeEntry = (entry, endTime, endTicks) => {
+    const finalizeEntry = (entry, endTime, endTicks, soundOff = false) => {
       const duration2 = Math.max(0, endTime - entry.startTime);
       const durationTicks = endTicks == null || endTicks === Infinity ? Infinity : Math.max(0, endTicks - entry.startTicks);
       noteOnDurations[entry.idx] = duration2;
@@ -8661,7 +8799,8 @@ var Player = class _Player extends BasePlayer {
         durationTicks,
         startTime: entry.startTime,
         startTicks: entry.startTicks,
-        events: entry.events
+        events: entry.events,
+        soundOff: soundOff || void 0
       };
     };
     for (let i = 0; i < timeline.length; i++) {
@@ -8722,9 +8861,9 @@ var Player = class _Player extends BasePlayer {
                   const offItems = pairs[pi][1];
                   const activeStack = activeNotes.get(key);
                   for (let oi = 0; oi < offItems.length; oi++) {
-                    const item = offItems[oi];
                     if (activeStack && activeStack.length > 0) {
-                      finalizeEntry(activeStack.shift(), item.t, item.ticks);
+                      const off2 = offItems[oi];
+                      finalizeEntry(activeStack.shift(), off2.t, off2.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -8737,15 +8876,16 @@ var Player = class _Player extends BasePlayer {
               sustainPedal[ch] = 0;
               break;
             case 120:
-            // All Sound Off
+            // All Sound Off — instant mute, no release tail
             case 123: {
+              const soundOff = event.controllerType === 120;
               const pairs = Array.from(activeNotes);
               for (let pi = 0; pi < pairs.length; pi++) {
                 const key = pairs[pi][0];
                 if (key % numChannels !== ch) continue;
                 const stack = pairs[pi][1];
                 for (let ei = 0; ei < stack.length; ei++) {
-                  finalizeEntry(stack[ei], t2, event.ticks);
+                  finalizeEntry(stack[ei], t2, event.ticks, soundOff);
                 }
                 activeNotes.delete(key);
               }
@@ -8944,32 +9084,54 @@ var Player = class _Player extends BasePlayer {
   // that loop) to decide which notes are safe to bake into a segment/chunk.
   // Notes that ring too long, or that participate in an exclusive class
   // (hi-hat choke groups etc.), are left out so they keep going through
-  // normal per-note real-time ("ads"-style) scheduling instead — that
+  // normal per-note real-time ("ads"-style) scheduling instead -- that
   // path is the only way to cut a note off early once it has started.
   // Cheap (no voice resolution), so tempoChange() can call this again
   // after buildNoteOnDurations() without redoing the full classification.
   finalizeSegmentClassification() {
-    const { noteOnDurations, tiledVoiceParams, maxTiledNoteDuration } = this;
+    const {
+      noteOnDurations,
+      tiledVoiceParams,
+      noteOnEvents,
+      maxTiledNoteDuration
+    } = this;
     const bakedSet = /* @__PURE__ */ new Set();
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration2 = noteOnDurations[i] ?? 0;
-      const releaseTail = voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const releaseTail = noteOnEvents[i]?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
       if (maxTiledNoteDuration < duration2 + releaseTail) continue;
       bakedSet.add(i);
     }
     this.tiledBakedSet = bakedSet;
   }
-  // Treat notes with no in-interval automation as simple.
+  // Sustain (CC#64) and note-stop controllers only determine the duration,
+  // which buildNoteOnDurations has already resolved. They do not alter a
+  // baked waveform, so they must not force an expensive complex-note bake.
+  hasWaveformAutomation(noteEvent) {
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend" || event.type === "sysEx") return true;
+      if (event.type !== "controller") continue;
+      const controller = event.controllerType ?? -1;
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+  // Treat notes with no waveform-changing in-interval automation as simple.
   // noteEvent.events is filled by buildNoteOnDurations with every
   // controller / pitchBend / sysEx / programChange that occurs while the
-  // note is active — so pitch bend IS part of the simple/complex test,
+  // note is active -- so pitch bend IS part of the simple/complex test,
   // not only CC. Notes that start after a pitch bend but have no further
   // automation remain simple; their onset detune is taken from the
   // per-note channelDetune snapshot instead.
-  // (Conservative approximation — events in the release gap after noteOff
+  // (Conservative approximation -- events in the release gap after noteOff
   // are not captured.)
   finalizeSimpleNoteClassification() {
     const simple = /* @__PURE__ */ new Set();
@@ -8983,7 +9145,7 @@ var Player = class _Player extends BasePlayer {
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
     } else {
@@ -8992,7 +9154,7 @@ var Player = class _Player extends BasePlayer {
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
         if (noteEvent.durationTicks === Infinity) continue;
-        if (noteEvent.events.length > 0) continue;
+        if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
     }
@@ -9094,7 +9256,7 @@ var Player = class _Player extends BasePlayer {
     const noteEvent = n.noteEvent;
     if (!noteEvent || noteEvent.duration <= 0) return false;
     if (noteEvent.durationTicks === Infinity) return false;
-    return noteEvent.events.length === 0;
+    return !this.hasWaveformAutomation(noteEvent);
   }
   // bakeChannelMix flag (keys, getSimple/ComplexNoteBuffer, renderEntryAudioBuffer):
   //   true  → "mix": stereo offline graph keeps the channel bus (vol/pan/
@@ -9113,7 +9275,7 @@ var Player = class _Player extends BasePlayer {
   }
   // Controllers that change the offline-baked waveform when replayed inside
   // renderEntryAudioBuffer. Sustain (64), all-notes-off, etc. affect note
-  // lifetime which is already captured by durationTicks — including them in
+  // lifetime which is already captured by durationTicks -- including them in
   // the key would split otherwise-identical bakes.
   // Subclasses extend via isComplexKeyController (do not replace this set).
   static COMPLEX_KEY_CONTROLLER_TYPES = /* @__PURE__ */ new Set([
@@ -9141,7 +9303,7 @@ var Player = class _Player extends BasePlayer {
   }
   // Append channel-state fields that affect the offline bake to a note
   // cache key. Base: volumeMSB / panMSB / expressionMSB when bakeChannelMix
-  // (zeros when dry so field positions stay stable — dry leaves the channel
+  // (zeros when dry so field positions stay stable -- dry leaves the channel
   // bus live). Subclasses push note-body slots always and mix-level slots
   // (LSB, delay send, …) only when bakeChannelMix is true.
   appendNoteKeyStateParts(parts, channelStateArray, bakeChannelMix) {
@@ -9175,7 +9337,11 @@ var Player = class _Player extends BasePlayer {
       n.programNumber,
       n.isDrum ? 1 : 0,
       Math.round(n.voiceParams.releaseVolEnv * 1e6),
-      Math.round(n.voiceParams.playbackRate * 1e6)
+      Math.round(n.voiceParams.playbackRate * 1e6),
+      // Distinguish All Sound Off (zero release) from normal note-off of the
+      // same duration so the shared simple-note cache never reuses a buffer
+      // that still has a release tail.
+      n.noteEvent?.soundOff ? 1 : 0
     );
     if (complex) {
       parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
@@ -9264,7 +9430,7 @@ var Player = class _Player extends BasePlayer {
       const noteOnEvent = noteOnEvents[i];
       if (!noteOnEvent || noteOnEvent.duration <= 0) return false;
       if (noteOnEvent.durationTicks === Infinity) return false;
-      if (noteOnEvent.events.length === 0) return false;
+      if (!this.hasWaveformAutomation(noteOnEvent)) return false;
       return true;
     };
     for (let i = 0; i < timeline.length; i++) {
@@ -9360,7 +9526,8 @@ var Player = class _Player extends BasePlayer {
             startTime2,
             note
           );
-          if (isSegmentNote) {
+          const alreadyPrerolled = t2 < this.prerollUntilSongTime;
+          if (isSegmentNote && !alreadyPrerolled) {
             this.appendToSegmentQueue(
               channel2.channelNumber,
               t2,
@@ -9369,7 +9536,7 @@ var Player = class _Player extends BasePlayer {
               event2.velocity
             );
           }
-          if (isChunkNote) {
+          if (isChunkNote && !alreadyPrerolled) {
             this.appendToChunkQueue(
               channel2,
               t2,
@@ -9405,10 +9572,11 @@ var Player = class _Player extends BasePlayer {
   }
   // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
   // in-flight OfflineAudioContext results are discarded on completion.
-  // Does not change bake logic — only releases references for GC / iOS.
+  // Does not change bake logic -- only releases references for GC / iOS.
   releaseTiledPlaybackResources() {
     this.segmentGeneration++;
     this.chunkGeneration++;
+    this.prerollUntilSongTime = 0;
     const states = this.segmentChannelStates;
     for (let ch = 0; ch < states.length; ch++) {
       const state = states[ch];
@@ -9525,14 +9693,22 @@ var Player = class _Player extends BasePlayer {
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
+    this.prerollUntilSongTime = 0;
+    if (isTiledCacheMode(this.cacheMode)) {
+      await this.prerollTiledPipeline();
+    } else {
+      this.initTiledPipeline();
+    }
     this.startTime = audioContext.currentTime;
+    if (isTiledCacheMode(this.cacheMode)) {
+      this.startReadyTiledSources();
+    }
     if (paused) {
       this.dispatchEvent(new Event("resumed"));
     } else {
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    this.initTiledPipeline();
     let exitReason;
     this.notePromises = [];
     while (true) {
@@ -9546,10 +9722,17 @@ var Player = class _Player extends BasePlayer {
         if (result === "completed") {
           if (this.loop) {
             this.resetAllStates();
-            this.startTime = audioContext.currentTime;
             this.resumeTime = 0;
             queueIndex = 0;
+            this.prerollUntilSongTime = 0;
             this.resetTiledPipeline();
+            if (isTiledCacheMode(this.cacheMode)) {
+              await this.prerollTiledPipeline();
+            }
+            this.startTime = audioContext.currentTime;
+            if (isTiledCacheMode(this.cacheMode)) {
+              this.startReadyTiledSources();
+            }
             this.dispatchEvent(new Event("looped"));
             continue;
           } else {
@@ -9580,11 +9763,19 @@ var Player = class _Player extends BasePlayer {
         this.cancelScheduledTasks();
         await this.stopNotes(now);
         this.stopTiledSources();
-        this.startTime = audioContext.currentTime;
+        this.prerollUntilSongTime = 0;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        this.initTiledPipeline();
+        if (isTiledCacheMode(this.cacheMode)) {
+          await this.prerollTiledPipeline();
+        } else {
+          this.initTiledPipeline();
+        }
+        this.startTime = audioContext.currentTime;
+        if (isTiledCacheMode(this.cacheMode)) {
+          this.startReadyTiledSources();
+        }
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;
@@ -9621,8 +9812,145 @@ var Player = class _Player extends BasePlayer {
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
+    if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
+      await this.prewarmSimpleNoteCache();
+    }
     this.playPromise = this.playNotes();
     await this.playPromise;
+  }
+  // Bake simple-note cache keys before playNotes, prioritizing the song head.
+  // Phase 1 fills keys whose earliest onset is inside prewarmSimpleHeadSec
+  // (including one-shots when headMinCount=1). Phase 2 spends any remaining
+  // wall budget on later multi-use keys. Logging is intentional for bake
+  // diagnosis (share console output when tuning budgets).
+  async prewarmSimpleNoteCache() {
+    if (!this.simpleNoteCache) return;
+    if (this.simpleNoteCounts.size === 0) return;
+    const cacheMode = this.cacheMode;
+    if (!usesSimpleComplexNoteCache(cacheMode)) return;
+    const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
+    const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
+    const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
+    const headSec = this.prewarmSimpleHeadSec > 0 ? this.prewarmSimpleHeadSec : Math.max(1e-3, this.lookAhead + this.maxTiledNoteDuration);
+    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
+    const settings = this.constructor.channelSettings;
+    const numChannels = this.numChannels;
+    const channels2 = new Array(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
+      const channel2 = this.createChannelInstance(ch, settings);
+      channel2.player = this;
+      channels2[ch] = channel2;
+    }
+    if (channels2[9]) channels2[9].isDrum = true;
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const needsSegmentVoice = isTiledCacheMode(cacheMode);
+    const simpleNoteSet = this.simpleNoteSet;
+    const noteOnEvents = this.noteOnEvents;
+    const tiledVoiceParams = this.tiledVoiceParams;
+    const tiledVoices = this.tiledVoices;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+    const simpleNoteCounts = this.simpleNoteCounts;
+    const allKeys = /* @__PURE__ */ new Map();
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo;
+      this.processTimelineEvent(event, offset, {
+        channels: channels2,
+        onNoteOn: (renderChannel, noteEvent) => {
+          if (!simpleNoteSet.has(i)) return;
+          const noteOnEvent = noteOnEvents[i];
+          if (!noteOnEvent || noteOnEvent.duration <= 0) return;
+          let voiceParams = null;
+          let voice = null;
+          if (needsSegmentVoice) {
+            voiceParams = tiledVoiceParams[i];
+            voice = tiledVoices[i];
+          }
+          if (!voiceParams) {
+            voice = this.resolveVoice(
+              renderChannel,
+              noteEvent.noteNumber,
+              noteEvent.velocity
+            );
+            if (!voice) return;
+            voiceParams = getVoiceParams(
+              voice,
+              this.getControllerState(
+                renderChannel,
+                noteEvent.noteNumber,
+                noteEvent.velocity,
+                0
+              )
+            );
+          }
+          if (!voiceParams) return;
+          const entry = {
+            channelNumber: renderChannel.channelNumber,
+            audioBufferId: noteAudioBufferIds[i],
+            noteNumber: noteEvent.noteNumber,
+            velocity: noteEvent.velocity,
+            noteDuration: noteOnEvent.duration,
+            noteEvent: noteOnEvent,
+            channelDetune: renderChannel.detune,
+            channelStateArray: renderChannel.state.array.slice(),
+            programNumber: renderChannel.programNumber,
+            isDrum: renderChannel.isDrum,
+            voiceParams,
+            voice: voice ?? void 0
+          };
+          const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+          const count = simpleNoteCounts.get(key) ?? 0;
+          const prev = allKeys.get(key);
+          if (prev) {
+            if (offset < prev.earliest) {
+              prev.earliest = offset;
+              prev.entry = entry;
+            }
+            return;
+          }
+          allKeys.set(key, { key, entry, count, earliest: offset });
+        }
+      });
+    }
+    if (allKeys.size === 0) return;
+    const head = [];
+    const rest = [];
+    {
+      const values = Array.from(allKeys.values());
+      for (let i = 0; i < values.length; i++) {
+        const c = values[i];
+        if (c.earliest < headSec && c.count >= headMinCount) {
+          head.push(c);
+        } else if (c.count >= restMinCount) {
+          if (c.earliest >= headSec) rest.push(c);
+        }
+      }
+    }
+    const byEarliestThenCount = (a, b) => {
+      if (a.earliest !== b.earliest) return a.earliest - b.earliest;
+      return b.count - a.count;
+    };
+    head.sort(byEarliestThenCount);
+    rest.sort(byEarliestThenCount);
+    const t0 = performance.now();
+    let stoppedEarly = false;
+    const bakeList = async (list) => {
+      for (let i = 0; i < list.length; i++) {
+        if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+          stoppedEarly = true;
+          break;
+        }
+        try {
+          await this.getSimpleNoteBuffer(list[i].entry, bakeChannelMix);
+        } catch {
+        }
+      }
+    };
+    await bakeList(head);
+    if (!stoppedEarly && rest.length > 0) {
+      await bakeList(rest);
+    }
   }
   async stop() {
     if (this.isPlaying) {
@@ -9683,6 +10011,143 @@ var Player = class _Player extends BasePlayer {
       return this.resumeTime + (now - this.startTime) * this.tempo;
     }
     return now + this.resumeTime - this.startTime;
+  }
+  // Bake tiled tiles covering [resumeTime, resumeTime + prerollSec] before the
+  // playback clock is armed. Uses a shadow channel walk so this.channels is
+  // left untouched for the live scheduleTimelineEvents pass.
+  // Pending buffers stay in chunkState / segmentChannelStates; sources are
+  // started later via startReadyTiledSources() once startTime is set.
+  async prerollTiledPipeline() {
+    const cacheMode = this.cacheMode;
+    if (!isTiledCacheMode(cacheMode)) {
+      this.initTiledPipeline();
+      return;
+    }
+    const prerollSec = Math.max(0, this.prerollSec);
+    this.initTiledPipeline();
+    if (prerollSec <= 0) {
+      this.prerollUntilSongTime = 0;
+      return;
+    }
+    const t0 = performance.now();
+    const maxMs = Math.max(0, this.prerollMaxMs | 0);
+    const songStart = this.resumeTime;
+    const songEnd = Math.min(this.totalTime, songStart + prerollSec);
+    if (songEnd <= songStart) {
+      this.prerollUntilSongTime = songStart;
+      return;
+    }
+    const isSegmentMode = isSegmentCacheMode(cacheMode);
+    const isChunkMode = isChunkCacheMode(cacheMode);
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const tiledBakedSet = this.tiledBakedSet;
+    let queueIndex = this.getQueueIndex(songStart);
+    let stoppedEarly = false;
+    while (queueIndex < timeline.length) {
+      if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+        stoppedEarly = true;
+        break;
+      }
+      const event = timeline[queueIndex];
+      const t2 = event.startTime * inverseTempo;
+      if (t2 >= songEnd) break;
+      this.processTimelineEvent(event, t2, {
+        onNoteOn: (channel2, noteEvent) => {
+          const isSegmentNote = isSegmentMode && tiledBakedSet.has(queueIndex);
+          const isChunkNote = isChunkMode && tiledBakedSet.has(queueIndex);
+          if (!isSegmentNote && !isChunkNote) return;
+          if (isSegmentNote) {
+            this.appendToSegmentQueue(
+              channel2.channelNumber,
+              t2,
+              queueIndex,
+              noteEvent.noteNumber,
+              noteEvent.velocity
+            );
+          }
+          if (isChunkNote) {
+            this.appendToChunkQueue(
+              channel2,
+              t2,
+              queueIndex,
+              noteEvent.noteNumber,
+              noteEvent.velocity
+            );
+          }
+        }
+      });
+      queueIndex++;
+    }
+    if (isChunkMode && this.chunkState.openChunk) {
+      this.closeChunk(this.chunkState);
+    }
+    if (isSegmentMode) {
+      const states = this.segmentChannelStates;
+      const liveChannels = this.channels;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (state?.openSegment) {
+          this.closeSegment(state, liveChannels[ch]);
+        }
+      }
+    }
+    const bufferPromises = [];
+    if (isChunkMode) {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        bufferPromises.push(pending[i].bufferPromise);
+      }
+    }
+    if (isSegmentMode) {
+      const states = this.segmentChannelStates;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          bufferPromises.push(pending[i].bufferPromise);
+        }
+      }
+    }
+    if (bufferPromises.length > 0) {
+      await Promise.allSettled(bufferPromises);
+    }
+    let coveredEnd = songEnd;
+    if (stoppedEarly && queueIndex > 0 && queueIndex <= timeline.length) {
+      const lastIdx = Math.min(queueIndex, timeline.length) - 1;
+      if (lastIdx >= 0) {
+        const lastT = timeline[lastIdx].startTime * inverseTempo;
+        coveredEnd = Math.min(songEnd, lastT + 1e-6);
+      }
+    }
+    this.prerollUntilSongTime = coveredEnd;
+  }
+  // Start preroll-baked tiles now that startTime is set.
+  startReadyTiledSources() {
+    if (this.cacheMode === "chunk") {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        if (!p.source && p.bufferReady) {
+          this.startPendingChunk(p);
+        }
+      }
+    } else if (this.cacheMode === "segment") {
+      const states = this.segmentChannelStates;
+      const channels2 = this.channels;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          const p = pending[i];
+          if (!p.source && p.bufferReady) {
+            this.startPendingSegment(channels2[ch], p);
+          }
+        }
+      }
+    }
   }
   initSegmentPipeline() {
     const numChannels = this.numChannels;
@@ -9826,7 +10291,7 @@ var Player = class _Player extends BasePlayer {
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
       voice: this.tiledVoices[timelineIndex] ?? void 0,
-      // Per-note onset snapshot — simple-note bakes need the detune/state
+      // Per-note onset snapshot -- simple-note bakes need the detune/state
       // at this note's start, not the segment-open values (pitch bend may
       // have moved them in the meantime).
       channelDetune: channel2.detune,
@@ -9996,7 +10461,7 @@ var Player = class _Player extends BasePlayer {
       noteEvent: this.noteOnEvents[timelineIndex],
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
       voice: this.tiledVoices[timelineIndex] ?? void 0,
-      // Snapshot per-channel state now — channel volume/pan/expression
+      // Snapshot per-channel state now -- channel volume/pan/expression
       // are baked into the buffer so they must be captured at note-append
       // time before subsequent events on the same channel change them.
       channelDetune: channel2.detune,
@@ -10104,12 +10569,12 @@ var Player = class _Player extends BasePlayer {
   // Both paths use simpleNote when the note has no in-interval automation
   // (pitch bend / CC are already excluded by isSimpleNote). Onset detune /
   // volume come from the per-note channelDetune / channelStateArray
-  // snapshot taken at append (or offline walk) time — same as segment.
+  // snapshot taken at append (or offline walk) time -- same as segment.
   //
   // Simple-note optimization: cache hits are placed as BufferSources; cache
   // misses are scheduled directly into this offline context (no per-note
-  // OfflineAudioContext / startRendering). Complex notes still use one OAC
-  // each so in-note pitch-bend / CC cannot cross-talk on a shared channel.
+  // OfflineAudioContext / startRendering). Complex notes share one mix OAC
+  // and are grouped by MIDI channel (see scheduleComplexNotesDirect).
   async renderChunkBuffer(chunk, forAudioOffline = false) {
     const notes = chunk.notes;
     if (notes.length === 0) return null;
@@ -10117,7 +10582,7 @@ var Player = class _Player extends BasePlayer {
     const notesLen = notes.length;
     for (let i = 0; i < notesLen; i++) {
       const n = notes[i];
-      const releaseEnd = n.voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const releaseEnd = n.noteEvent?.soundOff ? 0 : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > totalDuration2) totalDuration2 = end;
     }
@@ -10135,24 +10600,46 @@ var Player = class _Player extends BasePlayer {
     complexNotes.length = complexCount;
     return await this.runWithOfflineRenderGate(async () => {
       const sampleRate2 = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        2,
-        Math.ceil(totalDuration2 * sampleRate2),
-        sampleRate2
-      );
+      const bufferLength = Math.ceil(totalDuration2 * sampleRate2);
+      const useTA = this.useTypedArraySimpleMix;
+      const simpleHits = [];
       const simpleMisses = new Array(simpleCount);
       let missCount = 0;
       const simpleCounts = this.simpleNoteCounts;
+      const bakeChunkMiss = this.useTypedArrayChunkSimpleMiss;
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
           const cached = await this.lookupSimpleNoteBuffer(n, true);
           if (cached) {
-            const src = new AudioBufferSourceNode(offlineContext, {
-              buffer: cached
-            });
-            src.connect(offlineContext.destination);
-            src.start(n.offset);
+            simpleHits.push({ buffer: cached, offset: n.offset });
+            continue;
+          }
+          if (bakeChunkMiss) {
+            const noteBuf = await this.getSimpleNoteBuffer(
+              {
+                channelNumber: n.channelNumber,
+                audioBufferId: n.audioBufferId,
+                noteNumber: n.noteNumber,
+                velocity: n.velocity,
+                noteDuration: n.noteDuration,
+                noteEvent: n.noteEvent,
+                channelDetune: n.channelDetune,
+                channelStateArray: n.channelStateArray,
+                programNumber: n.programNumber,
+                isDrum: n.isDrum,
+                voiceParams: n.voiceParams,
+                voice: n.voice
+              },
+              true,
+              true
+              // already in renderChunkBuffer's gate slot
+            );
+            simpleHits.push({ buffer: noteBuf, offset: n.offset });
+            continue;
+          }
+          if (!forAudioOffline) {
+            simpleMisses[missCount++] = n;
             continue;
           }
           const key = this.makeSimpleNoteKey(n, true);
@@ -10173,90 +10660,169 @@ var Player = class _Player extends BasePlayer {
                 voiceParams: n.voiceParams,
                 voice: n.voice
               },
+              true,
               true
+              // already in renderChunkBuffer's gate slot
             );
-            const src = new AudioBufferSourceNode(offlineContext, {
-              buffer: noteBuf
-            });
-            src.connect(offlineContext.destination);
-            src.start(n.offset);
+            simpleHits.push({ buffer: noteBuf, offset: n.offset });
           } else {
             simpleMisses[missCount++] = n;
           }
         }
-        if (missCount > 0) {
-          const seenCh = new Uint8Array(16);
-          const channelNumbers = new Array(16);
-          let chCount = 0;
-          for (let i = 0; i < missCount; i++) {
-            const chn = simpleMisses[i].channelNumber;
-            if (!seenCh[chn]) {
-              seenCh[chn] = 1;
-              channelNumbers[chCount++] = chn;
-            }
+      }
+      const bakeChunkComplex = this.useTypedArrayChunkComplexBake;
+      const complexBufs = [];
+      if (bakeChunkComplex && complexCount > 0) {
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry = {
+            channelNumber: n.channelNumber,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice
+          };
+          let buf = await this.lookupComplexNoteBuffer(entry, true);
+          if (!buf) {
+            buf = await this.getComplexNoteBuffer(entry, true, true);
           }
-          channelNumbers.length = chCount;
-          const offlinePlayer = this.createOfflineRenderPlayer(
-            offlineContext,
-            channelNumbers,
-            true
-          );
-          const directNotes = new Array(missCount);
-          for (let i = 0; i < missCount; i++) {
-            const n = simpleMisses[i];
-            directNotes[i] = {
-              channelNumber: n.channelNumber,
-              audioBufferId: n.audioBufferId,
-              noteNumber: n.noteNumber,
-              velocity: n.velocity,
-              noteDuration: n.noteDuration,
-              noteEvent: n.noteEvent,
-              channelDetune: n.channelDetune,
-              channelStateArray: n.channelStateArray,
-              programNumber: n.programNumber,
-              isDrum: n.isDrum,
-              voiceParams: n.voiceParams,
-              voice: n.voice,
-              offset: n.offset
-            };
-          }
-          await this.scheduleSimpleNotesDirect(
-            offlineContext,
-            offlinePlayer,
-            directNotes,
-            true
-          );
+          complexBufs.push({ buffer: buf, offset: n.offset });
         }
       }
-      const complexLen = complexNotes.length;
-      for (let i = 0; i < complexLen; i++) {
-        const n = complexNotes[i];
-        const entry = {
-          channelNumber: n.channelNumber,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          voiceParams: n.voiceParams,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum: n.isDrum,
-          audioBufferId: n.audioBufferId,
-          voice: n.voice
-        };
-        let buf = await this.lookupComplexNoteBuffer(entry, true);
-        if (!buf) {
-          buf = await this.getComplexNoteBuffer(entry, true);
+      const needsOAC = !useTA || missCount > 0 || complexCount > 0 && !bakeChunkComplex;
+      if (useTA && !needsOAC) {
+        const buffer3 = this.createEmptyBuffer(2, bufferLength, sampleRate2);
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer3, simpleHits, sampleRate2, 1);
         }
-        const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: buf
-        });
-        src.connect(offlineContext.destination);
-        src.start(n.offset);
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer3, complexBufs, sampleRate2, 1);
+        }
+        if (!forAudioOffline) {
+          this.softClampBuffer(buffer3);
+        }
+        return buffer3;
+      }
+      const offlineContext = new OfflineAudioContext(
+        2,
+        bufferLength,
+        sampleRate2
+      );
+      if (!useTA) {
+        for (let i = 0; i < simpleHits.length; i++) {
+          const h = simpleHits[i];
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: h.buffer
+          });
+          src.connect(offlineContext.destination);
+          src.start(h.offset);
+        }
+        for (let i = 0; i < complexBufs.length; i++) {
+          const h = complexBufs[i];
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: h.buffer
+          });
+          src.connect(offlineContext.destination);
+          src.start(h.offset);
+        }
+      }
+      if (missCount > 0) {
+        const seenCh = new Uint8Array(16);
+        const channelNumbers = new Array(16);
+        let chCount = 0;
+        for (let i = 0; i < missCount; i++) {
+          const chn = simpleMisses[i].channelNumber;
+          if (!seenCh[chn]) {
+            seenCh[chn] = 1;
+            channelNumbers[chCount++] = chn;
+          }
+        }
+        channelNumbers.length = chCount;
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          channelNumbers,
+          true
+        );
+        const directNotes = new Array(missCount);
+        for (let i = 0; i < missCount; i++) {
+          const n = simpleMisses[i];
+          directNotes[i] = {
+            channelNumber: n.channelNumber,
+            audioBufferId: n.audioBufferId,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            voiceParams: n.voiceParams,
+            voice: n.voice,
+            offset: n.offset
+          };
+        }
+        await this.scheduleSimpleNotesDirect(
+          offlineContext,
+          offlinePlayer,
+          directNotes,
+          true
+        );
+      }
+      if (!bakeChunkComplex && complexCount > 0) {
+        const directComplexNotes = new Array();
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry = {
+            channelNumber: n.channelNumber,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum: n.isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice
+          };
+          const buf = await this.lookupComplexNoteBuffer(entry, true);
+          if (!buf) {
+            directComplexNotes.push({ ...entry, offset: n.offset });
+            continue;
+          }
+          const src = new AudioBufferSourceNode(offlineContext, {
+            buffer: buf
+          });
+          src.connect(offlineContext.destination);
+          src.start(n.offset);
+        }
+        if (directComplexNotes.length > 0) {
+          await this.scheduleComplexNotesDirect(
+            offlineContext,
+            directComplexNotes,
+            true
+          );
+        }
       }
       const rendered = await offlineContext.startRendering();
       const buffer2 = this.detachAudioBuffer(rendered);
+      if (useTA) {
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer2, simpleHits, sampleRate2, 1);
+        }
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(buffer2, complexBufs, sampleRate2, 1);
+        }
+      }
       if (!forAudioOffline) {
         this.softClampBuffer(buffer2);
       }
@@ -10267,7 +10833,7 @@ var Player = class _Player extends BasePlayer {
   // exported audio matches what that mode actually sounds like during real
   // playback (useful for e.g. diffing against a reference synth per mode).
   //
-  // - "audio" (and anything unrecognized): renderFastMode() — belongs to no
+  // - "audio" (and anything unrecognized): renderFastMode() -- belongs to no
   //   real playback pipeline; it's a cheap windowed offline mix used both as
   //   the "audio" cache mode's own definition (its whole point is "entire
   //   song pre-rendered to one buffer") and as the fallback/"fast" render.
@@ -10370,7 +10936,7 @@ var Player = class _Player extends BasePlayer {
     let maxEnd = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEnd = (n.voiceParams.releaseVolEnv ?? 0) * envelopeCurve * 5;
+      const releaseEnd = n.noteEvent?.soundOff ? 0 : (n.voiceParams.releaseVolEnv ?? 0) * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEnd;
       if (end > maxEnd) maxEnd = end;
     }
@@ -10422,7 +10988,7 @@ var Player = class _Player extends BasePlayer {
   //
   // Builds a fresh, non-lightweight Player of the same subclass bound to
   // that OfflineAudioContext, with its own cacheMode set to the requested
-  // mode — note classification (tiledBakedSet / simpleNoteSet /
+  // mode -- note classification (tiledBakedSet / simpleNoteSet /
   // noteOnDurations) depends on cacheMode, so it must be (re)computed for
   // the mode being rendered rather than reused from `this`.
   //
@@ -10435,7 +11001,7 @@ var Player = class _Player extends BasePlayer {
   //
   // Deliberately does NOT reuse waitForPendingSources()/drainChunkPipeline():
   // those poll AudioBufferSourceNode.onended, which only fires once
-  // offlineContext.startRendering() actually runs — polling for it before
+  // offlineContext.startRendering() actually runs -- polling for it before
   // that call would hang. Instead this awaits each pending tile's
   // bufferPromise directly, then starts its source without waiting for it
   // to finish playing.
@@ -10586,11 +11152,294 @@ var Player = class _Player extends BasePlayer {
       }
     }
   }
+  // Sum pre-baked simple-note buffers into a destination AudioBuffer by
+  // direct Float32Array addition (no OfflineAudioContext). Used when
+  // useTypedArraySimpleMix is true. gain scales the mix (segment polyphony
+  // headroom). mono dest + stereo src takes channel 0 of src.
+  mixSimpleBuffersTypedArray(dest, entries, sampleRate2, gain = 1) {
+    const destChCount = dest.numberOfChannels;
+    const destLen = dest.length;
+    const destChannels = new Array(destChCount);
+    for (let c = 0; c < destChCount; c++) {
+      destChannels[c] = dest.getChannelData(c);
+    }
+    const g = gain;
+    for (let ei = 0; ei < entries.length; ei++) {
+      const { buffer: src, offset } = entries[ei];
+      const startSample = Math.round(offset * sampleRate2);
+      if (startSample >= destLen) continue;
+      const srcChCount = src.numberOfChannels;
+      const srcLen = src.length;
+      const copyLen = Math.min(srcLen, destLen - startSample);
+      if (copyLen <= 0) continue;
+      if (destChCount === 1) {
+        const srcData = src.getChannelData(0);
+        const dst = destChannels[0];
+        for (let i = 0; i < copyLen; i++) {
+          dst[startSample + i] += srcData[i] * g;
+        }
+      } else {
+        for (let c = 0; c < destChCount; c++) {
+          const srcData = src.getChannelData(Math.min(c, srcChCount - 1));
+          const dst = destChannels[c];
+          for (let i = 0; i < copyLen; i++) {
+            dst[startSample + i] += srcData[i] * g;
+          }
+        }
+      }
+    }
+  }
+  // Precompute ADS volume envelope gains (no release; holds at sustain).
+  // Matches setVolumeEnvelope; pass attenuationScale = filterDcGain when filter is on.
+  computeAdsVolumeGains(voiceParams, length2, sampleRate2, attenuationScale = 1) {
+    const gains = new Float32Array(length2);
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * attenuationScale;
+    const sustainVolume = attackVolume * cbToRatio(-1e3 * voiceParams.sustainVolEnv);
+    const delay = voiceParams.delayVolEnv;
+    const attackEnd = delay + voiceParams.attackVolEnv;
+    const holdEnd = attackEnd + voiceParams.holdVolEnv;
+    const decayEnd = holdEnd + voiceParams.decayVolEnv;
+    const attackDur = voiceParams.attackVolEnv;
+    const decayDur = voiceParams.decayVolEnv;
+    const invSr = 1 / sampleRate2;
+    for (let i = 0; i < length2; i++) {
+      const t2 = i * invSr;
+      if (t2 < delay) {
+        gains[i] = 0;
+      } else if (t2 < attackEnd) {
+        const frac = attackDur > 0 ? (t2 - delay) / attackDur : 1;
+        const startG = 1e-6;
+        gains[i] = startG * Math.pow(attackVolume / startG, frac);
+      } else if (t2 < holdEnd) {
+        gains[i] = attackVolume;
+      } else if (t2 < decayEnd) {
+        const frac = decayDur > 0 ? (t2 - holdEnd) / decayDur : 1;
+        gains[i] = attackVolume * Math.pow(sustainVolume / attackVolume, frac);
+      } else {
+        gains[i] = sustainVolume;
+      }
+    }
+    return gains;
+  }
+  // Precompute full ADSR volume envelope gains including release.
+  // Matches createAdsrRenderedBuffer manual note-off ramp (setTargetAtTime).
+  computeAdsrVolumeGains(voiceParams, noteOffTime, length2, sampleRate2, attenuationScale = 1) {
+    const gains = new Float32Array(length2);
+    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * attenuationScale;
+    const sustainVolume = attackVolume * cbToRatio(-1e3 * voiceParams.sustainVolEnv);
+    const delay = voiceParams.delayVolEnv;
+    const attackEnd = delay + voiceParams.attackVolEnv;
+    const holdEnd = attackEnd + voiceParams.holdVolEnv;
+    const decayEnd = holdEnd + voiceParams.decayVolEnv;
+    const attackDur = voiceParams.attackVolEnv;
+    const decayDur = voiceParams.decayVolEnv;
+    const releaseDur = voiceParams.releaseVolEnv;
+    const invSr = 1 / sampleRate2;
+    let gainAtNoteOff;
+    if (noteOffTime <= delay) {
+      gainAtNoteOff = 0;
+    } else if (noteOffTime <= attackEnd) {
+      gainAtNoteOff = 1e-6 + (attackVolume - 1e-6) * (noteOffTime - delay) / Math.max(attackDur, 1e-12);
+    } else if (noteOffTime <= holdEnd) {
+      gainAtNoteOff = attackVolume;
+    } else if (noteOffTime <= decayEnd) {
+      const decayFraction = (noteOffTime - holdEnd) / Math.max(decayDur, 1e-12);
+      gainAtNoteOff = attackVolume * Math.pow(sustainVolume / attackVolume, decayFraction);
+    } else {
+      gainAtNoteOff = sustainVolume;
+    }
+    const timeConstant = releaseDur * envelopeCurve;
+    for (let i = 0; i < length2; i++) {
+      const t2 = i * invSr;
+      if (t2 < noteOffTime) {
+        if (t2 < delay) {
+          gains[i] = 0;
+        } else if (t2 < attackEnd) {
+          const frac = attackDur > 0 ? (t2 - delay) / attackDur : 1;
+          const startG = 1e-6;
+          gains[i] = startG * Math.pow(attackVolume / startG, frac);
+        } else if (t2 < holdEnd) {
+          gains[i] = attackVolume;
+        } else if (t2 < decayEnd) {
+          const frac = decayDur > 0 ? (t2 - holdEnd) / decayDur : 1;
+          gains[i] = attackVolume * Math.pow(sustainVolume / attackVolume, frac);
+        } else {
+          gains[i] = sustainVolume;
+        }
+      } else {
+        if (timeConstant <= 0 || gainAtNoteOff === 0) {
+          gains[i] = 0;
+        } else {
+          gains[i] = gainAtNoteOff * Math.exp(-(t2 - noteOffTime) / timeConstant);
+        }
+      }
+    }
+    return gains;
+  }
+  // Filter cutoff Hz curve matching setFilterEnvelope (+ ADSR release ramp).
+  // Returns null when filter is not audible (caller skips biquad).
+  computeFilterFreqCurve(voiceParams, length2, sampleRate2, noteOffTime) {
+    if (!isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc
+    )) {
+      return null;
+    }
+    const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
+    const baseCent = voiceParams.initialFilterFc;
+    const peekCent = baseCent + modEnvToFilterFc;
+    const sustainCent = baseCent + modEnvToFilterFc * (1 - voiceParams.sustainModEnv);
+    const baseFreq = this.clampCutoffFrequency(this.centToHz(baseCent));
+    const peekFreq = this.clampCutoffFrequency(this.centToHz(peekCent));
+    const sustainFreq = this.clampCutoffFrequency(this.centToHz(sustainCent));
+    const delay = voiceParams.delayModEnv;
+    const attackEnd = delay + voiceParams.attackModEnv;
+    const holdEnd = attackEnd + voiceParams.holdModEnv;
+    const decayEnd = holdEnd + voiceParams.decayModEnv;
+    const attackDur = voiceParams.attackModEnv;
+    const decayDur = voiceParams.decayModEnv;
+    const releaseDur = voiceParams.releaseModEnv;
+    const invSr = 1 / sampleRate2;
+    const freqs = new Float32Array(length2);
+    const freqAt = (t2) => {
+      if (t2 < delay) return baseFreq;
+      if (t2 < attackEnd) {
+        const frac = attackDur > 0 ? (t2 - delay) / attackDur : 1;
+        if (baseFreq <= 0) return peekFreq;
+        return baseFreq * Math.pow(peekFreq / baseFreq, frac);
+      }
+      if (t2 < holdEnd) return peekFreq;
+      if (t2 < decayEnd) {
+        const frac = decayDur > 0 ? (t2 - holdEnd) / decayDur : 1;
+        if (peekFreq <= 0) return sustainFreq;
+        return peekFreq * Math.pow(sustainFreq / peekFreq, frac);
+      }
+      return sustainFreq;
+    };
+    let freqAtNoteOff = 0;
+    if (noteOffTime != null) {
+      freqAtNoteOff = freqAt(noteOffTime);
+    }
+    for (let i = 0; i < length2; i++) {
+      const t2 = i * invSr;
+      if (noteOffTime != null && t2 >= noteOffTime) {
+        if (releaseDur <= 0) {
+          freqs[i] = baseFreq;
+        } else {
+          const frac = Math.min(1, (t2 - noteOffTime) / releaseDur);
+          if (freqAtNoteOff <= 0) {
+            freqs[i] = baseFreq;
+          } else {
+            freqs[i] = freqAtNoteOff * Math.pow(baseFreq / freqAtNoteOff, frac);
+          }
+        }
+      } else {
+        freqs[i] = freqAt(t2);
+      }
+    }
+    return freqs;
+  }
+  // RBJ cookbook lowpass coefficients (normalized a0=1).
+  biquadLowpassCoeffs(freq, q, sampleRate2) {
+    const nyquist = sampleRate2 * 0.5;
+    let f = freq;
+    if (f < 1) f = 1;
+    if (f > nyquist - 1) f = nyquist - 1;
+    const w0 = 2 * Math.PI * f / sampleRate2;
+    const cosw0 = Math.cos(w0);
+    const sinw0 = Math.sin(w0);
+    const alpha = sinw0 / (2 * Math.max(q, 1e-3));
+    const b0n = (1 - cosw0) * 0.5;
+    const b1n = 1 - cosw0;
+    const b2n = (1 - cosw0) * 0.5;
+    const a0 = 1 + alpha;
+    const a1n = -2 * cosw0;
+    const a2n = 1 - alpha;
+    const invA0 = 1 / a0;
+    return {
+      b0: b0n * invA0,
+      b1: b1n * invA0,
+      b2: b2n * invA0,
+      a1: a1n * invA0,
+      a2: a2n * invA0
+    };
+  }
+  // Render pitched + looped sample, optional time-varying lowpass, then volume.
+  // Graph order matches WebAudio: source -> biquad -> gain.
+  renderSampleTypedArray(srcBuffer, dest, playbackRate, isLoop, loopStartSrc, loopEndSrc, startOffsetSrc, gains, filterFreqs, filterQ) {
+    const srcRate = srcBuffer.sampleRate;
+    const destRate = dest.sampleRate;
+    const destLen = dest.length;
+    const srcChCount = srcBuffer.numberOfChannels;
+    const destChCount = dest.numberOfChannels;
+    const srcChannels = new Array(srcChCount);
+    for (let c = 0; c < srcChCount; c++) {
+      srcChannels[c] = srcBuffer.getChannelData(c);
+    }
+    const srcLen = srcBuffer.length;
+    const loopStartSample = loopStartSrc * srcRate;
+    const loopEndSample = loopEndSrc * srcRate;
+    const loopLenSample = loopEndSample - loopStartSample;
+    const startSample = startOffsetSrc * srcRate;
+    const step = playbackRate * (srcRate / destRate);
+    const useFilter = filterFreqs != null;
+    for (let c = 0; c < destChCount; c++) {
+      const dst = dest.getChannelData(c);
+      const srcData = srcChannels[Math.min(c, srcChCount - 1)];
+      let srcPos = startSample;
+      let z1 = 0;
+      let z2 = 0;
+      let b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+      let lastFreq = -1;
+      for (let i = 0; i < destLen; i++) {
+        let pos = srcPos;
+        if (isLoop && loopLenSample > 0 && pos >= loopEndSample) {
+          const over = pos - loopStartSample;
+          pos = loopStartSample + over % loopLenSample;
+          if (pos < loopStartSample) pos += loopLenSample;
+        }
+        let x = 0;
+        if (pos >= 0 && pos < srcLen - 1) {
+          const i0 = Math.floor(pos);
+          const frac = pos - i0;
+          const s0 = srcData[i0];
+          const s1 = srcData[i0 + 1];
+          x = s0 + (s1 - s0) * frac;
+        } else if (pos >= 0 && pos < srcLen) {
+          x = srcData[Math.floor(pos)];
+        }
+        if (useFilter) {
+          const freq = filterFreqs[i];
+          if (lastFreq < 0 || Math.abs(freq - lastFreq) > lastFreq * 0.01) {
+            const coef = this.biquadLowpassCoeffs(freq, filterQ, destRate);
+            b0 = coef.b0;
+            b1 = coef.b1;
+            b2 = coef.b2;
+            a1 = coef.a1;
+            a2 = coef.a2;
+            lastFreq = freq;
+          }
+          const y = b0 * x + z1;
+          z1 = b1 * x - a1 * y + z2;
+          z2 = b2 * x - a2 * y;
+          dst[i] = y * gains[i];
+        } else {
+          dst[i] = x * gains[i];
+        }
+        srcPos += step;
+      }
+    }
+  }
+  // Create an empty AudioBuffer on the live context (for TypedArray mix dest).
+  createEmptyBuffer(numberOfChannels, length2, sampleRate2) {
+    return this.audioContext.createBuffer(numberOfChannels, length2, sampleRate2);
+  }
   // Peak-normalize an AudioBuffer in place so the absolute peak is at most
   // PEAK_TARGET (0.95). Used by audio (final mix) offline renders.
-  // Linear gain only scales *down* when needed — quiet material is unchanged.
+  // Linear gain only scales *down* when needed -- quiet material is unchanged.
   // Not used for realtime chunk windows (softClamp) or segment tiles
-  // (polyphony pre-gain + softClamp) — independent per-tile peakNormalize
+  // (polyphony pre-gain + softClamp) -- independent per-tile peakNormalize
   // would silence dense glissandi / chords.
   peakNormalizeBuffer(buffer2, peakTarget = 0.95) {
     const channels2 = buffer2.numberOfChannels;
@@ -10630,7 +11479,7 @@ var Player = class _Player extends BasePlayer {
     tasks.length = taskCount;
     await Promise.all(tasks);
   }
-  async createAdsRenderedBuffer(channel2, note, voiceParams, audioBuffer, isDrum = false) {
+  createAdsRenderedBuffer(channel2, note, voiceParams, audioBuffer, isDrum = false) {
     const isLoop = isDrum ? this.isLoopDrum(channel2, note.noteNumber) && voiceParams.sampleModes % 2 !== 0 : voiceParams.sampleModes % 2 !== 0;
     const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
@@ -10645,64 +11494,49 @@ var Player = class _Player extends BasePlayer {
     const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
     const renderDuration = isLoop ? alignedLoopStart + outputLoopDuration : audioBuffer.duration / playbackRate;
     const sampleRate2 = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
+    const length2 = Math.ceil(renderDuration * sampleRate2);
+    const buffer2 = this.createEmptyBuffer(
       audioBuffer.numberOfChannels,
-      Math.ceil(renderDuration * sampleRate2),
+      length2,
       sampleRate2
-    );
-    const bufferSource = new AudioBufferSourceNode(offlineContext);
-    bufferSource.buffer = audioBuffer;
-    bufferSource.playbackRate.value = playbackRate;
-    bufferSource.loop = isLoop;
-    if (isLoop) {
-      bufferSource.loopStart = sampleLoopStart;
-      bufferSource.loopEnd = sampleLoopStart + sampleLoopDuration;
-    }
-    const initialFreq = this.clampCutoffFrequency(
-      this.centToHz(voiceParams.initialFilterFc)
     );
     const filterAudible = isFilterAudible(
       voiceParams.initialFilterFc,
       voiceParams.initialFilterQ,
       voiceParams.modEnvToFilterFc
     );
-    let filterEnvelopeNode = null;
     let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
     if (filterAudible) {
-      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
-      filterDcGain = dcGain;
-      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-        type: "lowpass",
-        Q: q,
-        frequency: initialFreq
-      });
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
     }
-    const volumeEnvelopeNode = new GainNode(offlineContext);
-    const offlineNote = Object.assign(
-      new Note(note.noteNumber, note.velocity, 0),
-      {
-        voiceParams: note.voiceParams,
-        filterEnvelopeNode,
-        volumeEnvelopeNode,
-        adjustedBaseFreq: note.adjustedBaseFreq,
-        filterDcGain
-      }
+    const gains = this.computeAdsVolumeGains(
+      voiceParams,
+      length2,
+      sampleRate2,
+      filterDcGain
     );
-    this.setVolumeEnvelope(channel2, offlineNote, 0);
-    if (filterEnvelopeNode) {
-      this.setFilterEnvelope(channel2, offlineNote, 0);
-      bufferSource.connect(filterEnvelopeNode);
-      filterEnvelopeNode.connect(volumeEnvelopeNode);
-    } else {
-      bufferSource.connect(volumeEnvelopeNode);
-    }
-    volumeEnvelopeNode.connect(offlineContext.destination);
-    if (voiceParams.sample.type === "compressed") {
-      bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
-    } else {
-      bufferSource.start(0);
-    }
-    const buffer2 = await offlineContext.startRendering();
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length2,
+      sampleRate2,
+      null
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed" ? voiceParams.start / audioBuffer.sampleRate : 0;
+    this.renderSampleTypedArray(
+      audioBuffer,
+      buffer2,
+      playbackRate,
+      isLoop,
+      sampleLoopStart,
+      sampleLoopStart + sampleLoopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ
+    );
     return new RenderedBuffer(buffer2, {
       isLoop,
       adsDuration,
@@ -10710,7 +11544,7 @@ var Player = class _Player extends BasePlayer {
       loopDuration: outputLoopDuration
     });
   }
-  async createAdsrRenderedBuffer(channel2, note, voiceParams, audioBuffer, noteDuration, isDrum = false) {
+  createAdsrRenderedBuffer(channel2, note, voiceParams, audioBuffer, noteDuration, isDrum = false) {
     const isLoop = isDrum ? this.isLoopDrum(channel2, note.noteNumber) && voiceParams.sampleModes % 2 !== 0 : voiceParams.sampleModes % 2 !== 0;
     const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
@@ -10724,114 +11558,50 @@ var Player = class _Player extends BasePlayer {
     const noteOffTime = alignedNoteEnd;
     const totalDuration2 = noteOffTime + releaseDuration;
     const sampleRate2 = this.audioContext.sampleRate;
-    const offlineContext = new OfflineAudioContext(
+    const length2 = Math.ceil(totalDuration2 * sampleRate2);
+    const buffer2 = this.createEmptyBuffer(
       audioBuffer.numberOfChannels,
-      Math.ceil(totalDuration2 * sampleRate2),
+      length2,
       sampleRate2
-    );
-    const bufferSource = new AudioBufferSourceNode(offlineContext);
-    bufferSource.buffer = audioBuffer;
-    bufferSource.playbackRate.value = voiceParams.playbackRate;
-    bufferSource.loop = isLoop;
-    if (isLoop) {
-      bufferSource.loopStart = loopStartTime;
-      bufferSource.loopEnd = loopStartTime + loopDuration;
-    }
-    const initialFreq = this.clampCutoffFrequency(
-      this.centToHz(voiceParams.initialFilterFc)
     );
     const filterAudible = isFilterAudible(
       voiceParams.initialFilterFc,
       voiceParams.initialFilterQ,
       voiceParams.modEnvToFilterFc
     );
-    let filterEnvelopeNode = null;
     let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
     if (filterAudible) {
-      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
-      filterDcGain = dcGain;
-      filterEnvelopeNode = new BiquadFilterNode(offlineContext, {
-        type: "lowpass",
-        Q: q,
-        frequency: initialFreq
-      });
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
     }
-    const volumeEnvelopeNode = new GainNode(offlineContext);
-    const offlineNote = Object.assign(
-      new Note(note.noteNumber, note.velocity, 0),
-      {
-        voiceParams: note.voiceParams,
-        filterEnvelopeNode,
-        volumeEnvelopeNode,
-        adjustedBaseFreq: note.adjustedBaseFreq,
-        filterDcGain
-      }
+    const gains = this.computeAdsrVolumeGains(
+      voiceParams,
+      noteOffTime,
+      length2,
+      sampleRate2,
+      filterDcGain
     );
-    this.setVolumeEnvelope(channel2, offlineNote, 0);
-    if (filterEnvelopeNode) this.setFilterEnvelope(channel2, offlineNote, 0);
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * filterDcGain;
-    const sustainVolume = attackVolume * cbToRatio(-1e3 * voiceParams.sustainVolEnv);
-    const volDelayTime = voiceParams.delayVolEnv;
-    const volAttackTime = volDelayTime + voiceParams.attackVolEnv;
-    const volHoldTime = volAttackTime + voiceParams.holdVolEnv;
-    let gainAtNoteOff;
-    if (noteOffTime <= volDelayTime) {
-      gainAtNoteOff = 0;
-    } else if (noteOffTime <= volAttackTime) {
-      gainAtNoteOff = 1e-6 + (attackVolume - 1e-6) * (noteOffTime - volDelayTime) / voiceParams.attackVolEnv;
-    } else if (noteOffTime <= volHoldTime) {
-      gainAtNoteOff = attackVolume;
-    } else if (noteOffTime <= volHoldTime + voiceParams.decayVolEnv) {
-      const decayFraction = (noteOffTime - volHoldTime) / voiceParams.decayVolEnv;
-      gainAtNoteOff = attackVolume * Math.pow(sustainVolume / attackVolume, decayFraction);
-    } else {
-      gainAtNoteOff = sustainVolume;
-    }
-    volumeEnvelopeNode.gain.cancelScheduledValues(noteOffTime).setValueAtTime(gainAtNoteOff, noteOffTime).setTargetAtTime(0, noteOffTime, releaseDuration * envelopeCurve);
-    if (filterEnvelopeNode) {
-      const modEnvToFilterFc = voiceParams.modEnvToFilterFc;
-      const peekFreq = this.clampCutoffFrequency(
-        this.centToHz(voiceParams.initialFilterFc + modEnvToFilterFc)
-      );
-      const sustainFreq = this.clampCutoffFrequency(
-        this.centToHz(
-          voiceParams.initialFilterFc + modEnvToFilterFc * (1 - voiceParams.sustainModEnv)
-        )
-      );
-      const modDelayTime = voiceParams.delayModEnv;
-      const modAttackTime = modDelayTime + voiceParams.attackModEnv;
-      const modHoldTime = modAttackTime + voiceParams.holdModEnv;
-      let freqAtNoteOff;
-      if (noteOffTime <= modDelayTime) {
-        freqAtNoteOff = initialFreq;
-      } else if (noteOffTime <= modAttackTime) {
-        freqAtNoteOff = initialFreq + (peekFreq - initialFreq) * (noteOffTime - modDelayTime) / voiceParams.attackModEnv;
-      } else if (noteOffTime <= modHoldTime) {
-        freqAtNoteOff = peekFreq;
-      } else if (noteOffTime <= modHoldTime + voiceParams.decayModEnv) {
-        const decayFraction = (noteOffTime - modHoldTime) / voiceParams.decayModEnv;
-        freqAtNoteOff = peekFreq * Math.pow(sustainFreq / peekFreq, decayFraction);
-      } else {
-        freqAtNoteOff = sustainFreq;
-      }
-      filterEnvelopeNode.frequency.cancelScheduledValues(noteOffTime).setValueAtTime(freqAtNoteOff, noteOffTime).exponentialRampToValueAtTime(
-        initialFreq,
-        noteOffTime + voiceParams.releaseModEnv
-      );
-    }
-    if (filterEnvelopeNode) {
-      bufferSource.connect(filterEnvelopeNode);
-      filterEnvelopeNode.connect(volumeEnvelopeNode);
-    } else {
-      bufferSource.connect(volumeEnvelopeNode);
-    }
-    volumeEnvelopeNode.connect(offlineContext.destination);
-    if (voiceParams.sample.type === "compressed") {
-      bufferSource.start(0, voiceParams.start / audioBuffer.sampleRate);
-    } else {
-      bufferSource.start(0);
-    }
-    const buffer2 = await offlineContext.startRendering();
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length2,
+      sampleRate2,
+      noteOffTime
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed" ? voiceParams.start / audioBuffer.sampleRate : 0;
+    this.renderSampleTypedArray(
+      audioBuffer,
+      buffer2,
+      voiceParams.playbackRate,
+      isLoop,
+      loopStartTime,
+      loopStartTime + loopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ
+    );
     return new RenderedBuffer(buffer2, {
       isLoop: false,
       isFull: false,
@@ -10861,18 +11631,19 @@ var Player = class _Player extends BasePlayer {
   // Bake a complex note (with in-interval automation) and cache it when the
   // key appears more than once. Single-use keys call renderEntryAudioBuffer
   // without touching complexNoteBufferCache.
-  async getComplexNoteBuffer(entry, bakeChannelMix) {
+  async getComplexNoteBuffer(entry, bakeChannelMix, fromOuterSlot = false) {
     const key = this.makeComplexNoteKey(entry, bakeChannelMix);
     const count = this.complexNoteCounts.get(key) ?? 0;
+    const bake = () => fromOuterSlot ? this.renderEntryAudioBufferUngated(entry, bakeChannelMix) : this.renderEntryAudioBuffer(entry, bakeChannelMix);
     if (count <= 1) {
-      return await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+      return await bake();
     }
     const cached = this.complexNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) return cached;
     if (cached instanceof Promise) return await cached;
     const renderPromise = (async () => {
       try {
-        const buffer2 = await this.renderEntryAudioBuffer(entry, bakeChannelMix);
+        const buffer2 = await bake();
         this.complexNoteBufferCache.set(key, buffer2);
         return buffer2;
       } catch (err) {
@@ -10918,7 +11689,7 @@ var Player = class _Player extends BasePlayer {
   }
   // noteOn into an offline player: preload sample, attach voiceParams.
   // bakeChannelMix=false (dry): after noteOn, disconnect volumeNode from the
-  // channel bus (and any mix-level sends hung off it — delay, etc.) and
+  // channel bus (and any mix-level sends hung off it -- delay, etc.) and
   // connect it straight to the offline destination. That keeps the baked
   // buffer free of channel vol/pan and effect sends so segment mode can
   // apply them live.
@@ -10954,7 +11725,7 @@ var Player = class _Player extends BasePlayer {
     return offlineNote;
   }
   // Schedule simple notes (no in-interval automation) into an existing
-  // OfflineAudioContext via a lightweight offline Player — used on cache
+  // OfflineAudioContext via a lightweight offline Player -- used on cache
   // miss so segment/chunk/audio mix pays one startRendering instead of
   // one per note + one mix. Does not populate simpleNoteBufferCache
   // (approach: critical path first; cache remains for note mode / hits
@@ -10978,29 +11749,156 @@ var Player = class _Player extends BasePlayer {
         n.offset,
         bakeChannelMix
       );
-      offlinePlayer.noteOffChannel(
-        dstChannel,
-        n.noteNumber,
-        0,
-        n.offset + n.noteDuration,
+      const offTime = n.offset + n.noteDuration;
+      if (n.noteEvent?.soundOff) {
+        const note = offlinePlayer.findNoteForOff(dstChannel, n.noteNumber);
+        if (note) {
+          offlinePlayer.removeFromActiveNotes(dstChannel, n.noteNumber);
+          void offlinePlayer.soundOffNote(note, offTime);
+        }
+      } else {
+        offlinePlayer.noteOffChannel(
+          dstChannel,
+          n.noteNumber,
+          0,
+          offTime,
+          true
+        );
+      }
+    }
+  }
+  // Schedule automated notes directly into the chunk's OfflineAudioContext.
+  //
+  // Complex notes are grouped by MIDI channel: one offline Player / Channel
+  // per channel, with CC / pitch-bend applied once in absolute time order.
+  // Overlapping notes on the same channel (common dense passages) used to
+  // rebuild an isolated graph + replay the same expression/bend column for
+  // every note; channel-level bake matches MIDI semantics and cuts duplicate
+  // work dramatically.
+  async scheduleComplexNotesDirect(offlineContext, notes, bakeChannelMix) {
+    if (notes.length === 0) return;
+    const byChannel = /* @__PURE__ */ new Map();
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      let list = byChannel.get(n.channelNumber);
+      if (!list) {
+        list = [];
+        byChannel.set(n.channelNumber, list);
+      }
+      list.push(n);
+    }
+    for (const [channelNumber, channelNotes] of byChannel) {
+      channelNotes.sort((a, b) => a.offset - b.offset);
+      const offlinePlayer = this.createOfflineRenderPlayer(
+        offlineContext,
+        [channelNumber],
         true
       );
+      const seed = channelNotes[0];
+      const channel2 = this.prepareOfflineChannel(
+        offlinePlayer,
+        seed,
+        bakeChannelMix,
+        seed.offset
+      );
+      if (!channel2) continue;
+      const actions = [];
+      const seenKeys = /* @__PURE__ */ new Set();
+      for (let ni = 0; ni < channelNotes.length; ni++) {
+        const entry = channelNotes[ni];
+        actions.push({ kind: "on", t: entry.offset, entry });
+        actions.push({
+          kind: "off",
+          t: entry.offset + entry.noteDuration,
+          noteNumber: entry.noteNumber,
+          entry
+        });
+        const noteEvents = entry.noteEvent?.events ?? [];
+        const noteStartTime = entry.noteEvent?.startTime ?? 0;
+        const releaseEnd = entry.noteEvent?.soundOff ? 0 : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+        const tMax = entry.noteDuration + releaseEnd;
+        for (let ei = 0; ei < noteEvents.length; ei++) {
+          const event = noteEvents[ei];
+          if (event.type === "programChange") continue;
+          let rel = this.relativeTimeInNote(
+            event,
+            entry.noteEvent,
+            noteStartTime
+          );
+          if (rel < -1e-4 || rel > tMax) continue;
+          if (rel < 0) rel = 0;
+          const absT = entry.offset + rel;
+          const key = event.ticks != null ? `${event.ticks}|${event.type}|${event.controllerType ?? ""}|${event.value ?? ""}|${event.programNumber ?? ""}` : `${absT.toFixed(5)}|${event.type}|${event.controllerType ?? ""}|${event.value ?? ""}|${event.programNumber ?? ""}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          actions.push({ kind: "ev", t: absT, event, key });
+        }
+      }
+      const kindOrder = { ev: 0, on: 1, off: 2 };
+      actions.sort((a, b) => {
+        if (a.t !== b.t) return a.t - b.t;
+        return kindOrder[a.kind] - kindOrder[b.kind];
+      });
+      for (let ai = 0; ai < actions.length; ai++) {
+        const action = actions[ai];
+        if (action.kind === "ev") {
+          offlinePlayer.processTimelineEvent(action.event, action.t, {
+            channels: offlinePlayer.channels
+          });
+        } else if (action.kind === "on") {
+          const entry = action.entry;
+          if (channel2.programNumber !== entry.programNumber) {
+            channel2.programNumber = entry.programNumber;
+          }
+          await this.scheduleOfflineNoteOn(
+            offlinePlayer,
+            offlineContext,
+            channel2,
+            entry,
+            entry.offset,
+            bakeChannelMix
+          );
+        } else {
+          if (action.entry.noteEvent?.soundOff) {
+            const note = offlinePlayer.findNoteForOff(
+              channel2,
+              action.noteNumber
+            );
+            if (note) {
+              offlinePlayer.removeFromActiveNotes(channel2, action.noteNumber);
+              void offlinePlayer.soundOffNote(note, action.t);
+            }
+          } else {
+            offlinePlayer.noteOffChannel(
+              channel2,
+              action.noteNumber,
+              0,
+              action.t,
+              true
+            );
+          }
+        }
+      }
     }
   }
   // Bake a simple note and cache it.
   // bakeChannelMix=true: stereo with channel vol/pan (chunk/audio).
   // bakeChannelMix=false: mono dry signal (segment; vol/pan live).
+  // fromOuterSlot=true: already inside runWithOfflineRenderGate (segment /
+  //   audio-chunk mix). Skip the gate and bake ungated so maxConcurrent=1
+  //   does not deadlock. Never pass true from a sibling / fire-and-forget
+  //   caller — that is the closeChunk storm the gate exists to serialize.
   // Still used by "note" mode. Segment/chunk/audio prefer lookup + direct
   // schedule on miss so the mix OAC does not wait on a second startRendering.
   // Implementation is renderEntryAudioBuffer + cache (simple notes have no
   // in-interval automation, so the event replay loop is a no-op).
-  async getSimpleNoteBuffer(n, bakeChannelMix = true) {
+  async getSimpleNoteBuffer(n, bakeChannelMix = true, fromOuterSlot = false) {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) return cached;
     if (cached instanceof Promise) return await cached;
     const renderPromise = (async () => {
-      const buffer2 = await this.renderEntryAudioBuffer(n, bakeChannelMix);
+      const buffer2 = fromOuterSlot ? await this.renderEntryAudioBufferUngated(n, bakeChannelMix) : await this.renderEntryAudioBuffer(n, bakeChannelMix);
       this.simpleNoteBufferCache.set(key, buffer2);
       return buffer2;
     })();
@@ -11018,7 +11916,7 @@ var Player = class _Player extends BasePlayer {
   // context per note followed by a manual JS mixdown. Each note still gets
   // its own full envelope/pitch-bend/LFO/CC#1 bake (same fidelity as
   // "note" mode), but all notes share one offline render graph and are
-  // simply scheduled at their respective offsets within it — the audio
+  // simply scheduled at their respective offsets within it -- the audio
   // graph itself does the mixing instead of a JS sample-accumulation loop.
   // TChannel volume/pan/expression are intentionally NOT baked in (same as
   // before): each note's volumeNode is rewired to bypass the channel bus
@@ -11034,7 +11932,7 @@ var Player = class _Player extends BasePlayer {
     let totalDuration2 = 0;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const releaseEndDuration = n.voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const releaseEndDuration = n.noteEvent?.soundOff ? 0 : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
       const end = n.offset + n.noteDuration + releaseEndDuration;
       if (end > totalDuration2) totalDuration2 = end;
     }
@@ -11054,17 +11952,12 @@ var Player = class _Player extends BasePlayer {
     const ch = channel2.channelNumber;
     return await this.runWithOfflineRenderGate(async () => {
       const sampleRate2 = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        1,
-        Math.ceil(totalDuration2 * sampleRate2),
-        sampleRate2
-      );
+      const bufferLength = Math.ceil(totalDuration2 * sampleRate2);
+      const useTA = this.useTypedArraySimpleMix;
       const maxConcurrent = this.estimateMaxConcurrentNotes(notes);
-      const mixGain = new GainNode(offlineContext, {
-        gain: maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1
-      });
-      mixGain.connect(offlineContext.destination);
+      const mixGainValue = maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1;
       const isDrum = channel2.isDrum;
+      const simpleHits = [];
       if (simpleCount > 0) {
         for (let i = 0; i < simpleCount; i++) {
           const n = simpleNotes[i];
@@ -11084,40 +11977,81 @@ var Player = class _Player extends BasePlayer {
           };
           let buf = await this.lookupSimpleNoteBuffer(bakeInput, false);
           if (!buf) {
-            buf = await this.getSimpleNoteBuffer(bakeInput, false);
+            buf = await this.getSimpleNoteBuffer(bakeInput, false, true);
           }
-          const src = new AudioBufferSourceNode(offlineContext, {
-            buffer: buf
-          });
-          src.connect(mixGain);
-          src.start(n.offset);
+          simpleHits.push({ buffer: buf, offset: n.offset });
         }
       }
-      for (let i = 0; i < complexCount; i++) {
-        const n = complexNotes[i];
-        const entry = {
-          channelNumber: ch,
-          noteNumber: n.noteNumber,
-          velocity: n.velocity,
-          voiceParams: n.voiceParams,
-          noteDuration: n.noteDuration,
-          noteEvent: n.noteEvent,
-          channelDetune: n.channelDetune,
-          channelStateArray: n.channelStateArray,
-          programNumber: n.programNumber,
-          isDrum,
-          audioBufferId: n.audioBufferId,
-          voice: n.voice
-        };
-        let buf = await this.lookupComplexNoteBuffer(entry, false);
-        if (!buf) {
-          buf = await this.getComplexNoteBuffer(entry, false);
+      const complexBufs = [];
+      if (complexCount > 0) {
+        for (let i = 0; i < complexCount; i++) {
+          const n = complexNotes[i];
+          const entry = {
+            channelNumber: ch,
+            noteNumber: n.noteNumber,
+            velocity: n.velocity,
+            voiceParams: n.voiceParams,
+            noteDuration: n.noteDuration,
+            noteEvent: n.noteEvent,
+            channelDetune: n.channelDetune,
+            channelStateArray: n.channelStateArray,
+            programNumber: n.programNumber,
+            isDrum,
+            audioBufferId: n.audioBufferId,
+            voice: n.voice
+          };
+          let buf = await this.lookupComplexNoteBuffer(entry, false);
+          if (!buf) {
+            buf = await this.getComplexNoteBuffer(entry, false, true);
+          }
+          complexBufs.push({ buffer: buf, offset: n.offset });
         }
+      }
+      if (useTA) {
+        const buffer3 = this.createEmptyBuffer(1, bufferLength, sampleRate2);
+        if (simpleHits.length > 0) {
+          this.mixSimpleBuffersTypedArray(
+            buffer3,
+            simpleHits,
+            sampleRate2,
+            mixGainValue
+          );
+        }
+        if (complexBufs.length > 0) {
+          this.mixSimpleBuffersTypedArray(
+            buffer3,
+            complexBufs,
+            sampleRate2,
+            mixGainValue
+          );
+        }
+        this.softClampBuffer(buffer3);
+        return buffer3;
+      }
+      const offlineContext = new OfflineAudioContext(
+        1,
+        bufferLength,
+        sampleRate2
+      );
+      const mixGain = new GainNode(offlineContext, {
+        gain: mixGainValue
+      });
+      mixGain.connect(offlineContext.destination);
+      for (let i = 0; i < simpleHits.length; i++) {
+        const h = simpleHits[i];
         const src = new AudioBufferSourceNode(offlineContext, {
-          buffer: buf
+          buffer: h.buffer
         });
         src.connect(mixGain);
-        src.start(n.offset);
+        src.start(h.offset);
+      }
+      for (let i = 0; i < complexBufs.length; i++) {
+        const h = complexBufs[i];
+        const src = new AudioBufferSourceNode(offlineContext, {
+          buffer: h.buffer
+        });
+        src.connect(mixGain);
+        src.start(h.offset);
       }
       const rendered = await offlineContext.startRendering();
       const buffer2 = this.detachAudioBuffer(rendered);
@@ -11173,59 +12107,181 @@ var Player = class _Player extends BasePlayer {
   // bakeChannelMix=false → mono dry bake (volumeNode rewired to destination;
   //                       segment keeps gainL/gainR and delay live)
   // Complex notes in segment/chunk/audio all go through this path so pitch
-  // bend is applied exactly like "note" mode's createFullRenderedBuffer —
+  // bend is applied exactly like "note" mode's createFullRenderedBuffer --
   // one offline graph per note, no shared-channel event replay.
   // Simple-note caches (getSimpleNoteBuffer) also land here: with no
   // in-interval automation the event loop is a no-op.
   async renderEntryAudioBuffer(entry, bakeChannelMix) {
-    return await this.runWithOfflineRenderGate(async () => {
-      const { startTime: noteStartTime = 0, events: noteEvents = [] } = entry.noteEvent ?? {};
-      const releaseEndDuration = entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
-      const totalDuration2 = Math.max(
-        1e-3,
-        entry.noteDuration + releaseEndDuration
+    return await this.runWithOfflineRenderGate(
+      () => this.renderEntryAudioBufferUngated(entry, bakeChannelMix)
+    );
+  }
+  // Pure TypedArray full-note bake for simple notes (no in-interval
+  // automation) when modulation wheel is unused. Mirrors createAdsrRenderedBuffer
+  // (resample + loop + time-varying lowpass + ADSR gains) and optionally
+  // bakes channel volume/pan into stereo for mix modes. Avoids OfflineAudioContext,
+  // offline Player construction, node graph build, and startRendering.
+  // Limitations (intentionally deferred): LFO vibrato (modDepth > 0) and
+  // time-varying pitch from modEnvToPitch still need the OAC path.
+  async renderSimpleNoteTypedArray(entry, bakeChannelMix) {
+    const voiceParams = entry.voiceParams;
+    const releaseEndDuration = entry.noteEvent?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const noteOffTime = Math.max(0, entry.noteDuration);
+    const totalDuration2 = Math.max(1e-3, noteOffTime + releaseEndDuration);
+    const sampleRate2 = this.audioContext.sampleRate;
+    const length2 = Math.ceil(totalDuration2 * sampleRate2);
+    let audioBuffer;
+    if (entry.audioBufferId !== void 0) {
+      audioBuffer = await this.getRawAudioBuffer(
+        entry.audioBufferId,
+        voiceParams
       );
-      const sampleRate2 = this.audioContext.sampleRate;
-      const offlineContext = new OfflineAudioContext(
-        bakeChannelMix ? 2 : 1,
-        Math.ceil(totalDuration2 * sampleRate2),
-        sampleRate2
-      );
-      const offlinePlayer = this.createOfflineRenderPlayer(
-        offlineContext,
-        [entry.channelNumber],
-        true
-      );
-      const dstChannel = this.prepareOfflineChannel(
-        offlinePlayer,
+    } else {
+      audioBuffer = await this.createAudioBuffer(voiceParams);
+    }
+    const isLoop = entry.isDrum ? this.isLoopDrum(
+      { programNumber: entry.programNumber },
+      entry.noteNumber
+    ) && voiceParams.sampleModes % 2 !== 0 : voiceParams.sampleModes % 2 !== 0;
+    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
+    const loopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
+    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate * Math.pow(2, detune / 1200);
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc
+    );
+    let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
+    if (filterAudible) {
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
+    }
+    let channelGain = 1;
+    let panLeft = 1;
+    let panRight = 1;
+    if (bakeChannelMix) {
+      const state = entry.channelStateArray;
+      const vol = state[128 + 7] ?? 100 / 127;
+      const pan = state[128 + 10] ?? 64 / 127;
+      const expr = state[128 + 11] ?? 1;
+      channelGain = vol * vol * expr * expr;
+      const { gainLeft, gainRight } = this.panToGain(pan);
+      panLeft = gainLeft;
+      panRight = gainRight;
+    }
+    const gains = this.computeAdsrVolumeGains(
+      voiceParams,
+      noteOffTime,
+      length2,
+      sampleRate2,
+      filterDcGain * channelGain
+    );
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length2,
+      sampleRate2,
+      noteOffTime
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed" ? voiceParams.start / audioBuffer.sampleRate : 0;
+    const body = this.createEmptyBuffer(1, length2, sampleRate2);
+    this.renderSampleTypedArray(
+      audioBuffer,
+      body,
+      playbackRate,
+      isLoop,
+      loopStartTime,
+      loopStartTime + loopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ
+    );
+    if (!bakeChannelMix) {
+      return body;
+    }
+    const stereo2 = this.createEmptyBuffer(2, length2, sampleRate2);
+    const src = body.getChannelData(0);
+    const left = stereo2.getChannelData(0);
+    const right = stereo2.getChannelData(1);
+    for (let i = 0; i < length2; i++) {
+      const s = src[i];
+      left[i] = s * panLeft;
+      right[i] = s * panRight;
+    }
+    return stereo2;
+  }
+  // Per-note OAC bake with no gate. Callers that already hold a slot
+  // (segment / audio-chunk mix) must use this (via fromOuterSlot) so
+  // maxConcurrentOfflineRenders === 1 does not deadlock. Everyone else
+  // goes through renderEntryAudioBuffer.
+  // Simple notes with modulationDepthMSB === 0 take the TypedArray fast path.
+  async renderEntryAudioBufferUngated(entry, bakeChannelMix) {
+    const noteEvent = entry.noteEvent;
+    const isSimple = !!noteEvent && noteEvent.duration > 0 && noteEvent.durationTicks !== Infinity && !this.hasWaveformAutomation(noteEvent);
+    const modDepth = entry.channelStateArray[128 + 1] ?? 0;
+    if (this.useTypedArraySimpleNoteBake && isSimple && modDepth === 0) {
+      return await this.renderSimpleNoteTypedArray(
         entry,
-        bakeChannelMix,
-        0
-      );
-      if (!dstChannel) {
-        const empty = await offlineContext.startRendering();
-        return this.detachAudioBuffer(empty);
-      }
-      await this.scheduleOfflineNoteOn(
-        offlinePlayer,
-        offlineContext,
-        dstChannel,
-        entry,
-        0,
         bakeChannelMix
       );
-      const tMax = entry.noteDuration + releaseEndDuration;
-      const noteOnEvent = entry.noteEvent;
-      for (let i = 0; i < noteEvents.length; i++) {
-        const event = noteEvents[i];
-        if (event.type === "programChange") continue;
-        let t2 = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
-        if (t2 < -1e-4 || t2 > tMax) continue;
-        if (t2 < 0) t2 = 0;
-        offlinePlayer.processTimelineEvent(event, t2, {
-          channels: offlinePlayer.channels
-        });
+    }
+    const { startTime: noteStartTime = 0, events: noteEvents = [] } = entry.noteEvent ?? {};
+    const releaseEndDuration = entry.noteEvent?.soundOff ? 0 : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const totalDuration2 = Math.max(
+      1e-3,
+      entry.noteDuration + releaseEndDuration
+    );
+    const sampleRate2 = this.audioContext.sampleRate;
+    const offlineContext = new OfflineAudioContext(
+      bakeChannelMix ? 2 : 1,
+      Math.ceil(totalDuration2 * sampleRate2),
+      sampleRate2
+    );
+    const offlinePlayer = this.createOfflineRenderPlayer(
+      offlineContext,
+      [entry.channelNumber],
+      true
+    );
+    const dstChannel = this.prepareOfflineChannel(
+      offlinePlayer,
+      entry,
+      bakeChannelMix,
+      0
+    );
+    if (!dstChannel) {
+      const empty = await offlineContext.startRendering();
+      return this.detachAudioBuffer(empty);
+    }
+    await this.scheduleOfflineNoteOn(
+      offlinePlayer,
+      offlineContext,
+      dstChannel,
+      entry,
+      0,
+      bakeChannelMix
+    );
+    const tMax = entry.noteDuration + releaseEndDuration;
+    const noteOnEvent = entry.noteEvent;
+    for (let i = 0; i < noteEvents.length; i++) {
+      const event = noteEvents[i];
+      if (event.type === "programChange") continue;
+      let t2 = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
+      if (t2 < -1e-4 || t2 > tMax) continue;
+      if (t2 < 0) t2 = 0;
+      offlinePlayer.processTimelineEvent(event, t2, {
+        channels: offlinePlayer.channels
+      });
+    }
+    if (entry.noteEvent?.soundOff) {
+      const note = offlinePlayer.findNoteForOff(dstChannel, entry.noteNumber);
+      if (note) {
+        offlinePlayer.removeFromActiveNotes(dstChannel, entry.noteNumber);
+        await offlinePlayer.soundOffNote(note, entry.noteDuration);
       }
+    } else {
       offlinePlayer.noteOffChannel(
         dstChannel,
         entry.noteNumber,
@@ -11233,13 +12289,13 @@ var Player = class _Player extends BasePlayer {
         entry.noteDuration,
         true
       );
-      await Promise.resolve();
-      const rendered = await offlineContext.startRendering();
-      return this.detachAudioBuffer(rendered);
-    });
+    }
+    await Promise.resolve();
+    const rendered = await offlineContext.startRendering();
+    return this.detachAudioBuffer(rendered);
   }
   async createFullRenderedBuffer(channel2, note, voiceParams, noteDuration, noteEvent = void 0) {
-    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const releaseEndDuration = noteEvent?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
     const buffer2 = await this.renderEntryAudioBuffer({
       channelNumber: channel2.channelNumber,
       noteNumber: note.noteNumber,
@@ -11288,7 +12344,7 @@ var Player = class _Player extends BasePlayer {
   }
   async getAdsCachedBuffer(channel2, note, audioBufferId, realtime) {
     if (!audioBufferId) return void 0;
-    const cacheKey = audioBufferId + (note.noteNumber << 1) + 1;
+    const cacheKey = (audioBufferId * 128 + note.velocity) * 128 + note.noteNumber;
     const voiceParams = note.voiceParams;
     if (!voiceParams) return void 0;
     if (realtime) {
@@ -11385,14 +12441,14 @@ var Player = class _Player extends BasePlayer {
   }
   // "note" mode buffer: simple notes share simpleNoteBufferCache; complex
   // notes (in-note automation) are fully baked once per onset with no
-  // secondary cache — the old per-timelineIndex fullVoiceCache rarely hit.
+  // secondary cache -- the old per-timelineIndex fullVoiceCache rarely hit.
   async getNoteModeBuffer(channel2, note, audioBufferId) {
     const voiceParams = note.voiceParams;
     if (!voiceParams) return void 0;
     const timelineIndex = note.timelineIndex;
     const noteEvent = timelineIndex != null ? this.noteOnEvents[timelineIndex] : void 0;
     const noteDuration = noteEvent?.duration ?? 0;
-    const releaseEndDuration = voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const releaseEndDuration = noteEvent?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
     if (this.isSimpleNote({
       timelineIndex: timelineIndex ?? void 0,
       noteEvent
