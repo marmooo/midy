@@ -109,6 +109,25 @@ export class Player<
   complexNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
   complexNoteCounts: Map<string, number> = new Map();
+  // Runtime hit/miss counters for simpleNoteBufferCache / complexNoteBufferCache.
+  // Reset at the start of each start() (before prewarm). Survives map.clear()
+  // at end-of-song so post-playback logs still show rates even when
+  // simpleCache size is 0. prewarm fills count as misses (first bake);
+  // subsequent lookups/gets during play count as hits.
+  simpleNoteCacheHits: number = 0;
+  simpleNoteCacheMisses: number = 0;
+  complexNoteCacheHits: number = 0;
+  // Multi-use key, first bake (eligible for cache, not present yet).
+  complexNoteCacheMisses: number = 0;
+  // count <= 1: intentionally not cached (not a "miss" for hit-rate).
+  complexNoteCacheUniqueBakes: number = 0;
+  // Peak Map size observed while entries were inserted (post-play size may
+  // be 0 after clearPlaybackCaches / resetAllStates).
+  simpleNoteCachePeakSize: number = 0;
+  complexNoteCachePeakSize: number = 0;
+  // True while prewarmSimpleNoteCache is running (stats only).
+  private noteCacheStatsInPrewarm: boolean = false;
+  simpleNoteCachePrewarmMisses: number = 0;
   // True for offline mix bakers (segment/chunk/audio simple path).
   // setNoteAudioNode uses a leaner node graph (shared envelope gain,
   // no smoothing ramps, skip silent LFO/filter/pitch-env).
@@ -132,6 +151,19 @@ export class Player<
   // chunk mode
   chunkState: ChunkState = { openChunk: null, pending: [] };
   chunkGeneration: number = 0;
+  // --- Chunk pipeline A/B stats (reset each start(); realtime only) ---
+  chunkBakeCount: number = 0;
+  chunkBakeSumMs: number = 0;
+  chunkBakeMaxMs: number = 0;
+  private chunkBakeSamplesMs: number[] = [];
+  private static readonly CHUNK_BAKE_SAMPLE_CAP = 512;
+  chunkPureTaTiles: number = 0;
+  chunkOacTiles: number = 0;
+  chunkStarts: number = 0;
+  chunkLateStarts: number = 0;
+  chunkLateSumMs: number = 0;
+  chunkLateMaxMs: number = 0;
+  chunkDroppedLate: number = 0;
   // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
   // AudioBuffer memory aggressively; Promise.all over many complex notes in
   // one chunk was creating dozens of OACs at once and crashing the tab.
@@ -166,6 +198,11 @@ export class Player<
   //         OfflineAudioContext when combined with useTypedArrayChunkSimpleMiss.
   // false → legacy: scheduleComplexNotesDirect on a shared OfflineAudioContext.
   useTypedArrayChunkComplexBake: boolean = true;
+
+  // Almost-simple pan (CC10-only in-interval automation) on the TypedArray
+  // simple path. Set false to force pan notes through the legacy complex OAC
+  // path.
+  useAlmostSimplePan: boolean = true;
 
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
@@ -406,10 +443,8 @@ export class Player<
                   const activeStack = activeNotes.get(key);
                   for (let oi = 0; oi < offItems.length; oi++) {
                     if (activeStack && activeStack.length > 0) {
-                      // Duration uses the original noteOff time (stored in
-                      // pendingOff), not the sustain/sostenuto pedal-up time.
-                      const off = offItems[oi];
-                      finalizeEntry(activeStack.shift()!, off.t, off.ticks);
+                      // Release at pedal-up time, not the deferred note-off time.
+                      finalizeEntry(activeStack.shift()!, t, event.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }
@@ -702,9 +737,26 @@ export class Player<
     this.tiledBakedSet = bakedSet;
   }
 
+  // Controllers that only scale amplitude (GM/FluidSynth x² curve) and do not
+  // change the pitched sample body. Notes whose in-interval automation is
+  // exclusively these can stay on the simple TypedArray path: the gain curve
+  // is applied sample-by-sample when baking the note buffer.
+  static readonly GAIN_ONLY_CONTROLLER_TYPES: ReadonlySet<number> = new Set([
+    7, // volume
+    11, // expression
+  ]);
+
+  // CC10 pan: stereo balance only. Handled on the simple TypedArray path via
+  // a per-sample L/R curve (computePanCurve).
+  static readonly PAN_CONTROLLER_TYPE = 10;
+
   // Sustain (CC#64) and note-stop controllers only determine the duration,
   // which buildNoteOnDurations has already resolved. They do not alter a
   // baked waveform, so they must not force an expensive complex-note bake.
+  // Volume (7) / expression (11) also no longer force complex: they are
+  // handled as a per-sample gain curve on the simple TypedArray bake path
+  // ("almost simple"). Pitch bend, SysEx, pan, modulation, etc. still force
+  // the full complex Offline path.
   protected hasWaveformAutomation(noteEvent: NoteOnEventEntry): boolean {
     const events = noteEvent.events;
     for (let i = 0; i < events.length; i++) {
@@ -715,9 +767,81 @@ export class Player<
       if (controller === 64 || controller === 120 || controller === 123) {
         continue;
       }
+      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
+        continue;
+      }
+      if (
+        this.useAlmostSimplePan &&
+        controller === Player.PAN_CONTROLLER_TYPE
+      ) {
+        continue;
+      }
       return true;
     }
     return false;
+  }
+
+  // True when the note has in-interval automation, but only volume/expression
+  // (plus duration-only CCs already ignored by hasWaveformAutomation).
+  // Used for stats and for including a gain-curve fingerprint in the simple
+  // cache key so different expression trajectories do not collide.
+  protected hasGainOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
+    const events = noteEvent.events;
+    if (events.length === 0) return false;
+    let sawGain = false;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend" || event.type === "sysEx") return false;
+      if (event.type === "programChange") continue;
+      if (event.type !== "controller") return false;
+      const controller = event.controllerType ?? -1;
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
+        sawGain = true;
+        continue;
+      }
+      if (controller === Player.PAN_CONTROLLER_TYPE) {
+        continue;
+      }
+      return false;
+    }
+    return sawGain;
+  }
+
+  // True when in-interval automation includes CC10 pan and nothing that
+  // forces complex (pitch bend / mod / other CC / SysEx). Gain may coexist.
+  protected hasPanOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
+    if (!this.useAlmostSimplePan) return false;
+    const events = noteEvent.events;
+    if (events.length === 0) return false;
+    let sawPan = false;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend" || event.type === "sysEx") return false;
+      if (event.type === "programChange") continue;
+      if (event.type !== "controller") return false;
+      const controller = event.controllerType ?? -1;
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
+        continue;
+      }
+      if (controller === Player.PAN_CONTROLLER_TYPE) {
+        sawPan = true;
+        continue;
+      }
+      return false;
+    }
+    return sawPan;
+  }
+
+  // Gain and/or pan only — the extended "almost simple" set for mix bake.
+  protected hasPanOrGainOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
+    return this.hasGainOnlyAutomation(noteEvent) ||
+      this.hasPanOnlyAutomation(noteEvent);
   }
 
   // Treat notes with no waveform-changing in-interval automation as simple.
@@ -727,6 +851,9 @@ export class Player<
   // not only CC. Notes that start after a pitch bend but have no further
   // automation remain simple; their onset detune is taken from the
   // per-note channelDetune snapshot instead.
+  // Volume/expression-only automation ("almost simple") is also classified
+  // as simple: the gain curve is baked via TypedArray (see
+  // computeGainOnlyChannelCurve / renderSimpleNoteTypedArray).
   // (Conservative approximation -- events in the release gap after noteOff
   // are not captured.)
   finalizeSimpleNoteClassification(): void {
@@ -757,6 +884,171 @@ export class Player<
       }
     }
     this.simpleNoteSet = simple;
+  }
+
+  // Flags present on a complex note's in-interval automation.
+  // Multi-label (a note can set several flags). Used to decide which
+  // TypedArray path to implement next.
+  protected inspectComplexAutomation(noteEvent: NoteOnEventEntry): {
+    pitchBend: boolean;
+    pan: boolean;
+    mod: boolean;
+    gain: boolean;
+    otherCc: boolean;
+    sysEx: boolean;
+    programChange: boolean;
+  } {
+    let pitchBend = false;
+    let pan = false;
+    let mod = false;
+    let gain = false;
+    let otherCc = false;
+    let sysEx = false;
+    let programChange = false;
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend") {
+        pitchBend = true;
+        continue;
+      }
+      if (event.type === "sysEx") {
+        sysEx = true;
+        continue;
+      }
+      if (event.type === "programChange") {
+        programChange = true;
+        continue;
+      }
+      if (event.type !== "controller") continue;
+      const controller = event.controllerType ?? -1;
+      // Duration-only; ignored by hasWaveformAutomation too.
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
+        gain = true;
+        continue;
+      }
+      if (controller === 10) {
+        pan = true;
+        continue;
+      }
+      if (controller === 1) {
+        mod = true;
+        continue;
+      }
+      otherCc = true;
+    }
+    return { pitchBend, pan, mod, gain, sysEx, programChange, otherCc };
+  }
+
+  // Breakdown of complex notes for post-start() logging.
+  // - with*: multi-label counts (sum can exceed complex)
+  // - only* / bendGain / panGain / mixed: exclusive buckets for prioritization
+  protected countComplexBreakdown(): {
+    complex: number;
+    withPitchBend: number;
+    withPan: number;
+    withMod: number;
+    withGain: number;
+    withOtherCc: number;
+    withSysEx: number;
+    withProgramChange: number;
+    onlyPitchBend: number;
+    onlyPan: number;
+    onlyMod: number;
+    onlyOtherCc: number;
+    onlySysEx: number;
+    bendGain: number;
+    panGain: number;
+    mixed: number;
+  } {
+    const noteOnEvents = this.noteOnEvents;
+    const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
+    let complex = 0;
+    let withPitchBend = 0;
+    let withPan = 0;
+    let withMod = 0;
+    let withGain = 0;
+    let withOtherCc = 0;
+    let withSysEx = 0;
+    let withProgramChange = 0;
+    let onlyPitchBend = 0;
+    let onlyPan = 0;
+    let onlyMod = 0;
+    let onlyOtherCc = 0;
+    let onlySysEx = 0;
+    let bendGain = 0;
+    let panGain = 0;
+    let mixed = 0;
+
+    const consider = (i: number) => {
+      const noteEvent = noteOnEvents[i];
+      if (!noteEvent) return;
+      if (noteEvent.duration <= 0) return;
+      if (noteEvent.durationTicks === Infinity) return;
+      if (!this.hasWaveformAutomation(noteEvent)) return;
+      complex++;
+      const f = this.inspectComplexAutomation(noteEvent);
+      if (f.pitchBend) withPitchBend++;
+      if (f.pan) withPan++;
+      if (f.mod) withMod++;
+      if (f.gain) withGain++;
+      if (f.otherCc) withOtherCc++;
+      if (f.sysEx) withSysEx++;
+      if (f.programChange) withProgramChange++;
+
+      // Exclusive buckets: waveform kinds only (gain is optional companion).
+      const kinds: string[] = [];
+      if (f.pitchBend) kinds.push("bend");
+      if (f.pan) kinds.push("pan");
+      if (f.mod) kinds.push("mod");
+      if (f.otherCc) kinds.push("otherCc");
+      if (f.sysEx) kinds.push("sysEx");
+      if (f.programChange) kinds.push("pc");
+
+      if (kinds.length === 1 && kinds[0] === "bend") {
+        if (f.gain) bendGain++;
+        else onlyPitchBend++;
+      } else if (kinds.length === 1 && kinds[0] === "pan") {
+        if (f.gain) panGain++;
+        else onlyPan++;
+      } else if (kinds.length === 1 && kinds[0] === "mod") {
+        onlyMod++;
+      } else if (kinds.length === 1 && kinds[0] === "otherCc") {
+        onlyOtherCc++;
+      } else if (kinds.length === 1 && kinds[0] === "sysEx") {
+        onlySysEx++;
+      } else {
+        mixed++;
+      }
+    };
+
+    if (candidates) {
+      for (const i of candidates) consider(i);
+    } else {
+      for (let i = 0; i < noteOnEvents.length; i++) consider(i);
+    }
+
+    return {
+      complex,
+      withPitchBend,
+      withPan,
+      withMod,
+      withGain,
+      withOtherCc,
+      withSysEx,
+      withProgramChange,
+      onlyPitchBend,
+      onlyPan,
+      onlyMod,
+      onlyOtherCc,
+      onlySysEx,
+      bendGain,
+      panGain,
+      mixed,
+    };
   }
 
   // Walk the timeline once (same event application as audio-mode render())
@@ -993,8 +1285,53 @@ export class Player<
     );
     if (complex) {
       parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
+    } else if (n.noteEvent && this.hasPanOrGainOnlyAutomation(n.noteEvent)) {
+      // Almost-simple: gain and/or pan curves are baked into the TypedArray
+      // buffer, so the simple key must distinguish different trajectories.
+      parts.push(this.serializeGainOnlyAutomationEvents(n.noteEvent));
+      parts.push(this.serializePanAutomationEvents(n.noteEvent));
     }
     return parts;
+  }
+
+  // Fingerprint of volume/expression events only (relative ticks). Used as a
+  // suffix on simple-note cache keys for almost-simple notes.
+  serializeGainOnlyAutomationEvents(
+    noteEvent: NoteOnEventEntry | undefined,
+  ): string {
+    if (!noteEvent || noteEvent.events.length === 0) return "";
+    const startTicks = noteEvent.startTicks ?? 0;
+    const parts: string[] = [];
+    for (let i = 0; i < noteEvent.events.length; i++) {
+      const event = noteEvent.events[i];
+      if (event.type !== "controller") continue;
+      const ct = event.controllerType ?? -1;
+      if (!Player.GAIN_ONLY_CONTROLLER_TYPES.has(ct)) continue;
+      const absTick = event.ticks ?? event.startTime ?? 0;
+      const rel = absTick - startTicks;
+      parts.push(`g:${rel}:${ct}:${event.value}`);
+    }
+    return parts.join(";");
+  }
+
+  // Fingerprint of pan (CC10) events only (relative ticks). Used as a suffix
+  // on simple-note cache keys for pan almost-simple notes.
+  serializePanAutomationEvents(
+    noteEvent: NoteOnEventEntry | undefined,
+  ): string {
+    if (!noteEvent || noteEvent.events.length === 0) return "";
+    const startTicks = noteEvent.startTicks ?? 0;
+    const parts: string[] = [];
+    for (let i = 0; i < noteEvent.events.length; i++) {
+      const event = noteEvent.events[i];
+      if (event.type !== "controller") continue;
+      const ct = event.controllerType ?? -1;
+      if (ct !== Player.PAN_CONTROLLER_TYPE) continue;
+      const absTick = event.ticks ?? event.startTime ?? 0;
+      const rel = absTick - startTicks;
+      parts.push(`p:${rel}:${event.value}`);
+    }
+    return parts.join(";");
   }
 
   // Serialize in-note automation as a tempo-independent relative-tick string.
@@ -1537,6 +1874,9 @@ export class Player<
     this.resumeTime = 0;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     if (preload) await this.preloadSamples();
+    // Hit/miss rates for this play (including prewarm). Counters survive
+    // end-of-song map clears so the post-play log remains meaningful.
+    this.resetNoteCacheHitStats();
     // Chunk/segment/note/audio: fill multi-use simple buffers before the
     // realtime pipeline so early tiles are mostly BufferSource hits instead
     // of blocking per-note OACs (or a heavy all-direct mix graph).
@@ -1545,6 +1885,82 @@ export class Player<
     }
     this.playPromise = this.playNotes();
     await this.playPromise;
+    // Post-playback cache / complex-breakdown stats.
+    try {
+      const cx = this.countComplexBreakdown();
+      const cxPct = (n: number) =>
+        cx.complex > 0 ? ((100 * n) / cx.complex).toFixed(1) : "0.0";
+      const sHit = this.simpleNoteCacheHits;
+      const sMiss = this.simpleNoteCacheMisses;
+      const sTotal = sHit + sMiss;
+      const sRate = sTotal > 0 ? ((100 * sHit) / sTotal).toFixed(1) : "n/a";
+      const cHit = this.complexNoteCacheHits;
+      const cMiss = this.complexNoteCacheMisses;
+      const cUnique = this.complexNoteCacheUniqueBakes;
+      const cEligible = cHit + cMiss;
+      const cRate = cEligible > 0
+        ? ((100 * cHit) / cEligible).toFixed(1)
+        : "n/a";
+      // hit = served from Map (buffer or in-flight Promise).
+      // miss = first bake for that key. unique = complex count<=1 (never cached).
+      // prewarmMiss = misses that occurred inside prewarmSimpleNoteCache.
+      // rate = hit/(hit+miss); unique excluded from complex rate denominator.
+      console.log(
+        `[midy] note-cache | simple: hit=${sHit} miss=${sMiss} ` +
+          `rate=${sRate}% peak=${this.simpleNoteCachePeakSize} ` +
+          `prewarmMiss=${this.simpleNoteCachePrewarmMisses} | ` +
+          `complex: hit=${cHit} miss=${cMiss} unique=${cUnique} ` +
+          `rate=${cRate}% peak=${this.complexNoteCachePeakSize}`,
+      );
+      // Multi-label (with*) can sum > complex. Exclusive buckets sum to complex.
+      console.log(
+        `[midy] complex breakdown | total=${cx.complex} | ` +
+          `with: bend=${cx.withPitchBend}(${cxPct(cx.withPitchBend)}%) ` +
+          `pan=${cx.withPan}(${cxPct(cx.withPan)}%) ` +
+          `mod=${cx.withMod}(${cxPct(cx.withMod)}%) ` +
+          `gain=${cx.withGain}(${cxPct(cx.withGain)}%) ` +
+          `otherCc=${cx.withOtherCc}(${cxPct(cx.withOtherCc)}%) ` +
+          `sysEx=${cx.withSysEx}(${cxPct(cx.withSysEx)}%) ` +
+          `pc=${cx.withProgramChange}(${cxPct(cx.withProgramChange)}%) | ` +
+          `exclusive: onlyBend=${cx.onlyPitchBend}(${
+            cxPct(cx.onlyPitchBend)
+          }%) ` +
+          `bend+gain=${cx.bendGain}(${cxPct(cx.bendGain)}%) ` +
+          `onlyPan=${cx.onlyPan}(${cxPct(cx.onlyPan)}%) ` +
+          `pan+gain=${cx.panGain}(${cxPct(cx.panGain)}%) ` +
+          `onlyMod=${cx.onlyMod}(${cxPct(cx.onlyMod)}%) ` +
+          `onlyOtherCc=${cx.onlyOtherCc}(${cxPct(cx.onlyOtherCc)}%) ` +
+          `onlySysEx=${cx.onlySysEx}(${cxPct(cx.onlySysEx)}%) ` +
+          `mixed=${cx.mixed}(${cxPct(cx.mixed)}%)`,
+      );
+      // Chunk pipeline stability (realtime only; excludes renderFastMode).
+      const cb = this.chunkBakeCount;
+      const bakeAvg = cb > 0 ? this.chunkBakeSumMs / cb : 0;
+      const bakeP50 = this.chunkBakePercentile(50);
+      const bakeP95 = this.chunkBakePercentile(95);
+      const lateN = this.chunkLateStarts;
+      const lateAvg = lateN > 0 ? this.chunkLateSumMs / lateN : 0;
+      const purePct = cb > 0
+        ? ((100 * this.chunkPureTaTiles) / cb).toFixed(1)
+        : "0.0";
+      console.log(
+        `[midy] chunk-pipeline | tiles=${cb} ` +
+          `bakeAvg=${bakeAvg.toFixed(1)}ms bakeP50=${bakeP50.toFixed(1)}ms ` +
+          `bakeP95=${bakeP95.toFixed(1)}ms bakeMax=${
+            this.chunkBakeMaxMs.toFixed(1)
+          }ms | ` +
+          `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} | ` +
+          `starts=${this.chunkStarts} late=${lateN} ` +
+          `lateAvg=${lateAvg.toFixed(1)}ms lateMax=${
+            this.chunkLateMaxMs.toFixed(1)
+          }ms ` +
+          `dropped=${this.chunkDroppedLate} | ` +
+          `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s ` +
+          `prerollSec=${this.prerollSec}`,
+      );
+    } catch (e) {
+      console.warn("[midy] stats log failed", e);
+    }
   }
 
   // Bake simple-note cache keys before playNotes, prioritizing the song head.
@@ -1558,6 +1974,16 @@ export class Player<
     const cacheMode = this.cacheMode;
     if (!usesSimpleComplexNoteCache(cacheMode)) return;
 
+    this.noteCacheStatsInPrewarm = true;
+    try {
+      await this.prewarmSimpleNoteCacheBody();
+    } finally {
+      this.noteCacheStatsInPrewarm = false;
+    }
+  }
+
+  private async prewarmSimpleNoteCacheBody(): Promise<void> {
+    const cacheMode = this.cacheMode;
     const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
     const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
     const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
@@ -2374,6 +2800,13 @@ export class Player<
     const nominalStart = pending.chunkStart + schedulingOffset;
     const now = this.audioContext.currentTime;
     this.warnIfStartTimeMissed("chunk", nominalStart);
+    this.chunkStarts++;
+    if (nominalStart <= now) {
+      const lateMs = (now - nominalStart) * 1000;
+      this.chunkLateStarts++;
+      this.chunkLateSumMs += lateMs;
+      if (lateMs > this.chunkLateMaxMs) this.chunkLateMaxMs = lateMs;
+    }
     const source = new AudioBufferSourceNode(this.audioContext, {
       buffer: pending.buffer,
     });
@@ -2391,6 +2824,7 @@ export class Player<
     if (nominalStart <= now) {
       const offsetSec = now - nominalStart;
       if (offsetSec >= pending.buffer.duration) {
+        this.chunkDroppedLate++;
         pending.done = true;
         this.neuterBufferSource(source);
         pending.buffer = null;
@@ -2477,9 +2911,16 @@ export class Player<
     simpleNotes.length = simpleCount;
     complexNotes.length = complexCount;
 
+    // Realtime A/B: wall time + pure-TA vs tile-level OAC path.
+    // forAudioOffline (renderFastMode windows) is excluded so song-export
+    // does not pollute playback stability numbers.
+    const trackStats = !forAudioOffline;
+    const bakeT0 = trackStats ? performance.now() : 0;
+    let pureTaPath = false;
+
     // Entire mix OAC + nested note bakes share one offline slot so multiple
     // pending chunks cannot each allocate a large OfflineAudioContext at once.
-    return await this.runWithOfflineRenderGate(async () => {
+    const result = await this.runWithOfflineRenderGate(async () => {
       const sampleRate = this.audioContext.sampleRate;
       const bufferLength = Math.ceil(totalDuration * sampleRate);
       const useTA = this.useTypedArraySimpleMix;
@@ -2603,6 +3044,7 @@ export class Player<
 
       // Pure TypedArray path: skip OfflineAudioContext entirely.
       if (useTA && !needsOAC) {
+        pureTaPath = true;
         const buffer = this.createEmptyBuffer(2, bufferLength, sampleRate);
         if (simpleHits.length > 0) {
           this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
@@ -2767,6 +3209,11 @@ export class Player<
 
       return buffer;
     });
+
+    if (trackStats) {
+      this.recordChunkBake(performance.now() - bakeT0, pureTaPath);
+    }
+    return result;
   }
 
   // Offline "render to one WAV" entry point, dispatched by cacheMode so the
@@ -3213,6 +3660,103 @@ export class Player<
         }
       }
     }
+  }
+
+  // Build a per-sample channel gain curve (vol² × expr²) for almost-simple
+  // notes. Starts from onset vol/expr, then steps to each in-interval CC7/CC11
+  // event. Matches updateChannelVolume's GM/FluidSynth x² convention without
+  // perceptual smoothing (offline bake uses instantaneous values, same as the
+  // complex OAC path's processTimelineEvent → setVolume/setExpression).
+  protected computeGainOnlyChannelCurve(
+    noteEvent: NoteOnEventEntry,
+    vol0: number,
+    expr0: number,
+    length: number,
+    sampleRate: number,
+    tMax: number,
+  ): Float32Array {
+    const curve = new Float32Array(length);
+    type Step = { t: number; vol: number; expr: number };
+    const steps: Step[] = [{ t: 0, vol: vol0, expr: expr0 }];
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type !== "controller") continue;
+      const ct = event.controllerType ?? -1;
+      if (!Player.GAIN_ONLY_CONTROLLER_TYPES.has(ct)) continue;
+      let t = this.relativeTimeInNote(event, noteEvent, noteEvent.startTime);
+      if (t < -1e-4 || t > tMax) continue;
+      if (t < 0) t = 0;
+      const prev = steps[steps.length - 1];
+      let vol = prev.vol;
+      let expr = prev.expr;
+      const raw = (event.value ?? 0) / 127;
+      if (ct === 7) vol = raw;
+      else if (ct === 11) expr = raw;
+      steps.push({ t, vol, expr });
+    }
+    // Sort by time (events should already be chronological, but be safe).
+    steps.sort((a, b) => a.t - b.t);
+    const invSr = 1 / sampleRate;
+    let si = 0;
+    let curVol = steps[0].vol;
+    let curExpr = steps[0].expr;
+    let curGain = curVol * curVol * curExpr * curExpr;
+    for (let i = 0; i < length; i++) {
+      const t = i * invSr;
+      while (si + 1 < steps.length && steps[si + 1].t <= t + 1e-9) {
+        si++;
+        curVol = steps[si].vol;
+        curExpr = steps[si].expr;
+        curGain = curVol * curVol * curExpr * curExpr;
+      }
+      curve[i] = curGain;
+    }
+    return curve;
+  }
+
+  // Build per-sample pan L/R gains for almost-simple pan notes.
+  // Starts from onset pan (0..1), then steps to each in-interval CC10 event.
+  // Uses the same panToGain mapping as updateChannelVolume / mix bake.
+  protected computePanCurve(
+    noteEvent: NoteOnEventEntry,
+    pan0: number,
+    length: number,
+    sampleRate: number,
+    tMax: number,
+  ): { left: Float32Array; right: Float32Array } {
+    const left = new Float32Array(length);
+    const right = new Float32Array(length);
+    type Step = { t: number; pan: number };
+    const steps: Step[] = [{ t: 0, pan: pan0 }];
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type !== "controller") continue;
+      const ct = event.controllerType ?? -1;
+      if (ct !== Player.PAN_CONTROLLER_TYPE) continue;
+      let t = this.relativeTimeInNote(event, noteEvent, noteEvent.startTime);
+      if (t < -1e-4 || t > tMax) continue;
+      if (t < 0) t = 0;
+      const raw = (event.value ?? 64) / 127;
+      steps.push({ t, pan: raw });
+    }
+    steps.sort((a, b) => a.t - b.t);
+    const invSr = 1 / sampleRate;
+    let si = 0;
+    let curPan = steps[0].pan;
+    let cur = this.panToGain(curPan);
+    for (let i = 0; i < length; i++) {
+      const t = i * invSr;
+      while (si + 1 < steps.length && steps[si + 1].t <= t + 1e-9) {
+        si++;
+        curPan = steps[si].pan;
+        cur = this.panToGain(curPan);
+      }
+      left[i] = cur.gainLeft;
+      right[i] = cur.gainRight;
+    }
+    return { left, right };
   }
 
   // Precompute ADS volume envelope gains (no release; holds at sustain).
@@ -3745,6 +4289,89 @@ export class Player<
   // Offline note buffers (simple / complex) & entry bake
   // -------------------------------------------------------------------------
 
+  // Reset hit/miss / peak counters. Called at the beginning of start() so
+  // each play reports rates for that run only (including prewarm).
+  resetNoteCacheHitStats(): void {
+    this.simpleNoteCacheHits = 0;
+    this.simpleNoteCacheMisses = 0;
+    this.complexNoteCacheHits = 0;
+    this.complexNoteCacheMisses = 0;
+    this.complexNoteCacheUniqueBakes = 0;
+    this.simpleNoteCachePeakSize = this.simpleNoteBufferCache.size;
+    this.complexNoteCachePeakSize = this.complexNoteBufferCache.size;
+    this.simpleNoteCachePrewarmMisses = 0;
+    this.noteCacheStatsInPrewarm = false;
+    this.resetChunkPipelineStats();
+  }
+
+  protected resetChunkPipelineStats(): void {
+    this.chunkBakeCount = 0;
+    this.chunkBakeSumMs = 0;
+    this.chunkBakeMaxMs = 0;
+    this.chunkBakeSamplesMs = [];
+    this.chunkPureTaTiles = 0;
+    this.chunkOacTiles = 0;
+    this.chunkStarts = 0;
+    this.chunkLateStarts = 0;
+    this.chunkLateSumMs = 0;
+    this.chunkLateMaxMs = 0;
+    this.chunkDroppedLate = 0;
+  }
+
+  protected recordChunkBake(ms: number, pureTa: boolean): void {
+    this.chunkBakeCount++;
+    this.chunkBakeSumMs += ms;
+    if (ms > this.chunkBakeMaxMs) this.chunkBakeMaxMs = ms;
+    if (pureTa) this.chunkPureTaTiles++;
+    else this.chunkOacTiles++;
+    const samples = this.chunkBakeSamplesMs;
+    if (samples.length < Player.CHUNK_BAKE_SAMPLE_CAP) {
+      samples.push(ms);
+    } else {
+      const j = (Math.random() * this.chunkBakeCount) | 0;
+      if (j < samples.length) samples[j] = ms;
+    }
+  }
+
+  protected chunkBakePercentile(p: number): number {
+    const samples = this.chunkBakeSamplesMs;
+    if (samples.length === 0) return 0;
+    const sorted = samples.slice().sort((a, b) => a - b);
+    const idx = Math.min(
+      sorted.length - 1,
+      Math.max(0, Math.ceil((p / 100) * sorted.length) - 1),
+    );
+    return sorted[idx];
+  }
+
+  protected noteCacheRecordSimpleHit(): void {
+    this.simpleNoteCacheHits++;
+  }
+
+  protected noteCacheRecordSimpleMiss(): void {
+    this.simpleNoteCacheMisses++;
+    if (this.noteCacheStatsInPrewarm) this.simpleNoteCachePrewarmMisses++;
+  }
+
+  protected noteCacheRecordComplexHit(): void {
+    this.complexNoteCacheHits++;
+  }
+
+  protected noteCacheRecordComplexMiss(): void {
+    this.complexNoteCacheMisses++;
+  }
+
+  protected noteCacheRecordComplexUnique(): void {
+    this.complexNoteCacheUniqueBakes++;
+  }
+
+  protected noteCacheTouchPeakSizes(): void {
+    const s = this.simpleNoteBufferCache.size;
+    if (s > this.simpleNoteCachePeakSize) this.simpleNoteCachePeakSize = s;
+    const c = this.complexNoteBufferCache.size;
+    if (c > this.complexNoteCachePeakSize) this.complexNoteCachePeakSize = c;
+  }
+
   async lookupComplexNoteBuffer(
     n: {
       audioBufferId?: number;
@@ -3765,10 +4392,15 @@ export class Player<
     // Only multi-use keys participate in the cache.
     if ((this.complexNoteCounts.get(key) ?? 0) <= 1) return null;
     const cached = this.complexNoteBufferCache.get(key);
-    if (cached instanceof AudioBuffer) return cached;
+    if (cached instanceof AudioBuffer) {
+      this.noteCacheRecordComplexHit();
+      return cached;
+    }
     if (cached instanceof Promise) {
       try {
-        return await cached;
+        const buf = await cached;
+        this.noteCacheRecordComplexHit();
+        return buf;
       } catch {
         return null;
       }
@@ -3791,16 +4423,25 @@ export class Player<
         ? this.renderEntryAudioBufferUngated(entry, bakeChannelMix)
         : this.renderEntryAudioBuffer(entry, bakeChannelMix);
     if (count <= 1) {
+      this.noteCacheRecordComplexUnique();
       return await bake();
     }
     const cached = this.complexNoteBufferCache.get(key);
-    if (cached instanceof AudioBuffer) return cached;
-    if (cached instanceof Promise) return await cached;
+    if (cached instanceof AudioBuffer) {
+      this.noteCacheRecordComplexHit();
+      return cached;
+    }
+    if (cached instanceof Promise) {
+      this.noteCacheRecordComplexHit();
+      return await cached;
+    }
 
+    this.noteCacheRecordComplexMiss();
     const renderPromise = (async () => {
       try {
         const buffer = await bake();
         this.complexNoteBufferCache.set(key, buffer);
+        this.noteCacheTouchPeakSizes();
         return buffer;
       } catch (err) {
         this.complexNoteBufferCache.delete(key);
@@ -3808,12 +4449,15 @@ export class Player<
       }
     })();
     this.complexNoteBufferCache.set(key, renderPromise);
+    this.noteCacheTouchPeakSizes();
     return await renderPromise;
   }
 
   // Resolve a cached simple-note buffer without starting a new bake.
   // Returns null on miss (caller should schedule into the shared mix OAC).
   // In-flight Promise from note-mode / other paths is awaited.
+  // Counts a hit when a buffer (or in-flight Promise) is returned; does not
+  // count a miss (caller may bake via getSimpleNoteBuffer or direct OAC).
   async lookupSimpleNoteBuffer(
     n: BakeNoteEntry,
     bakeChannelMix: boolean,
@@ -3821,10 +4465,15 @@ export class Player<
     if (!this.simpleNoteCache) return null;
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
-    if (cached instanceof AudioBuffer) return cached;
+    if (cached instanceof AudioBuffer) {
+      this.noteCacheRecordSimpleHit();
+      return cached;
+    }
     if (cached instanceof Promise) {
       try {
-        return await cached;
+        const buf = await cached;
+        this.noteCacheRecordSimpleHit();
+        return buf;
       } catch {
         return null;
       }
@@ -4130,18 +4779,27 @@ export class Player<
   ): Promise<AudioBuffer> {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
-    if (cached instanceof AudioBuffer) return cached;
-    if (cached instanceof Promise) return await cached;
+    if (cached instanceof AudioBuffer) {
+      this.noteCacheRecordSimpleHit();
+      return cached;
+    }
+    if (cached instanceof Promise) {
+      this.noteCacheRecordSimpleHit();
+      return await cached;
+    }
 
+    this.noteCacheRecordSimpleMiss();
     const renderPromise = (async () => {
       const buffer = fromOuterSlot
         ? await this.renderEntryAudioBufferUngated(n, bakeChannelMix)
         : await this.renderEntryAudioBuffer(n, bakeChannelMix);
       this.simpleNoteBufferCache.set(key, buffer);
+      this.noteCacheTouchPeakSizes();
       return buffer;
     })();
 
     this.simpleNoteBufferCache.set(key, renderPromise);
+    this.noteCacheTouchPeakSizes();
     try {
       return await renderPromise;
     } catch (err) {
@@ -4414,8 +5072,11 @@ export class Player<
     );
   }
 
-  // Pure TypedArray full-note bake for simple notes (no in-interval
-  // automation) when modulation wheel is unused. Mirrors createAdsrRenderedBuffer
+  // Pure TypedArray full-note bake for simple notes (no waveform-changing
+  // in-interval automation) when modulation wheel is unused. Also covers
+  // "almost simple" notes whose only automation is volume/expression and/or
+  // pan: gain curves (computeGainOnlyChannelCurve) multiply into ADSR gains;
+  // pan curves (computePanCurve) scale L/R on stereo expand. Mirrors createAdsrRenderedBuffer
   // (resample + loop + time-varying lowpass + ADSR gains) and optionally
   // bakes channel volume/pan into stereo for mix modes. Avoids OfflineAudioContext,
   // offline Player construction, node graph build, and startRendering.
@@ -4473,19 +5134,46 @@ export class Player<
       filterDcGain = qDc.dcGain;
     }
 
-    // Channel volume/expression (GM/FluidSynth x²) when baking mix.
+    // Channel volume/expression (GM/FluidSynth x²) and pan when baking mix.
+    // Almost-simple notes (in-interval volume/expression and/or pan only) get
+    // time-varying curves so the full note stays on the TypedArray path with
+    // no OfflineAudioContext.
     let channelGain = 1;
     let panLeft = 1;
     let panRight = 1;
+    let channelGainCurve: Float32Array | null = null;
+    let panCurveLeft: Float32Array | null = null;
+    let panCurveRight: Float32Array | null = null;
     if (bakeChannelMix) {
       const state = entry.channelStateArray;
-      const vol = state[128 + 7] ?? (100 / 127);
-      const pan = state[128 + 10] ?? (64 / 127);
-      const expr = state[128 + 11] ?? 1;
-      channelGain = vol * vol * expr * expr;
-      const { gainLeft, gainRight } = this.panToGain(pan);
+      const vol0 = state[128 + 7] ?? (100 / 127);
+      const pan0 = state[128 + 10] ?? (64 / 127);
+      const expr0 = state[128 + 11] ?? 1;
+      channelGain = vol0 * vol0 * expr0 * expr0;
+      const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
+      if (entry.noteEvent && this.hasGainOnlyAutomation(entry.noteEvent)) {
+        channelGainCurve = this.computeGainOnlyChannelCurve(
+          entry.noteEvent,
+          vol0,
+          expr0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+      }
+      if (entry.noteEvent && this.hasPanOnlyAutomation(entry.noteEvent)) {
+        const pc = this.computePanCurve(
+          entry.noteEvent,
+          pan0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+        panCurveLeft = pc.left;
+        panCurveRight = pc.right;
+      }
     }
 
     const gains = this.computeAdsrVolumeGains(
@@ -4493,8 +5181,13 @@ export class Player<
       noteOffTime,
       length,
       sampleRate,
-      filterDcGain * channelGain,
+      filterDcGain * (channelGainCurve ? 1 : channelGain),
     );
+    if (channelGainCurve) {
+      for (let i = 0; i < length; i++) {
+        gains[i] *= channelGainCurve[i];
+      }
+    }
     const filterFreqs = this.computeFilterFreqCurve(
       voiceParams,
       length,
@@ -4529,10 +5222,18 @@ export class Player<
     const src = body.getChannelData(0);
     const left = stereo.getChannelData(0);
     const right = stereo.getChannelData(1);
-    for (let i = 0; i < length; i++) {
-      const s = src[i];
-      left[i] = s * panLeft;
-      right[i] = s * panRight;
+    if (panCurveLeft && panCurveRight) {
+      for (let i = 0; i < length; i++) {
+        const s = src[i];
+        left[i] = s * panCurveLeft[i];
+        right[i] = s * panCurveRight[i];
+      }
+    } else {
+      for (let i = 0; i < length; i++) {
+        const s = src[i];
+        left[i] = s * panLeft;
+        right[i] = s * panRight;
+      }
     }
     return stereo;
   }
@@ -4655,6 +5356,8 @@ export class Player<
     noteDuration: number,
     noteEvent: NoteOnEventEntry | undefined = undefined,
   ): Promise<RenderedBuffer> {
+    // releaseEndDuration is unused for allocation (renderEntry handles it);
+    // keep local only for any future callers that need the span.
     const releaseEndDuration = noteEvent?.soundOff
       ? 0
       : voiceParams.releaseVolEnv * envelopeCurve * 5;

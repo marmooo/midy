@@ -544,6 +544,105 @@ export function buildExpressionCcMidi(options?: {
 }
 
 /**
+ * Multi-step CC11 expression ramp during a single note (almost-simple path).
+ * Three expression levels so a step-wise gain curve is exercised, not just
+ * a single high→low drop.
+ *
+ * Timeline (defaults):
+ *   0.0  CC7=100, CC11=127, note on
+ *   0.35 CC11=80
+ *   0.70 CC11=20
+ *   1.2  note off
+ */
+export function buildExpressionMultiStepMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  volume?: number;
+  levels?: number[];
+  stepTimes?: number[];
+  noteDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const noteDuration = options?.noteDuration ?? 1.2;
+  const volume = options?.volume ?? 100;
+  const levels = options?.levels ?? [127, 80, 20];
+  const stepTimes = options?.stepTimes ?? [0, 0.35, 0.7];
+  const controllers: {
+    time: number;
+    channel: number;
+    controllerType: number;
+    value: number;
+  }[] = [
+    { time: 0, channel, controllerType: 7, value: volume },
+  ];
+  for (let i = 0; i < levels.length; i++) {
+    controllers.push({
+      time: stepTimes[i] ?? 0,
+      channel,
+      controllerType: 11,
+      value: levels[i],
+    });
+  }
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers,
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Combined CC7 + CC11 motion on one note (still almost-simple: gain only).
+ *
+ * Timeline (defaults):
+ *   0.0  CC7=100, CC11=100, note on
+ *   0.4  CC7=40
+ *   0.7  CC11=30
+ *   1.2  note off
+ */
+export function buildVolumeAndExpressionMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  noteDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const noteDuration = options?.noteDuration ?? 1.2;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: 0,
+        channel,
+        noteNumber: options?.noteNumber ?? 60,
+        velocity: options?.velocity ?? 100,
+        duration: noteDuration,
+      },
+    ],
+    controllers: [
+      { time: 0, channel, controllerType: 7, value: 100 },
+      { time: 0, channel, controllerType: 11, value: 100 },
+      { time: 0.4, channel, controllerType: 7, value: 40 },
+      { time: 0.7, channel, controllerType: 11, value: 30 },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
  * CC10 pan scenario: note starts hard-left, then pans hard-right.
  *
  * Timeline:
