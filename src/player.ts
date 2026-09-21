@@ -45,6 +45,12 @@ import {
   usesSimpleComplexNoteCache,
 } from "./cache-strategy.ts";
 
+import {
+  BakeWorkerPool,
+  getSharedBakeWorkerPool,
+  type MixSourceEntry,
+} from "./bake-worker-pool.ts";
+
 // Re-export cache strategy API (backward compatible with previous player.ts exports).
 export {
   bakeChannelMixForMode,
@@ -164,6 +170,11 @@ export class Player<
   chunkLateSumMs: number = 0;
   chunkLateMaxMs: number = 0;
   chunkDroppedLate: number = 0;
+  // Bake-phase breakdown (sums over all tiles; realtime only).
+  chunkBakeSimpleSumMs: number = 0;
+  chunkBakeComplexSumMs: number = 0;
+  chunkBakeMixSumMs: number = 0;
+  chunkBakeOacSumMs: number = 0;
   // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
   // AudioBuffer memory aggressively; Promise.all over many complex notes in
   // one chunk was creating dozens of OACs at once and crashing the tab.
@@ -203,6 +214,36 @@ export class Player<
   // simple path. Set false to force pan notes through the legacy complex OAC
   // path.
   useAlmostSimplePan: boolean = true;
+
+  // Offload tile-level TypedArray mix (simpleHits + complexBufs → dest) to a
+  // Web Worker pool. This is the primary worker path for segment / chunk:
+  // one (or a few parallel) postMessage(s) per tile, not per note.
+  // Restores multi-core utilisation lost when moving from OfflineAudioContext
+  // to single-threaded TypedArray loops.
+  // false → always mix on the main thread (A/B / debugging).
+  useWorkerTypedArrayMix: boolean = true;
+
+  // Worker pool size. 0 = auto (min(4, hardwareConcurrency)).
+  workerPoolSize: number = 0;
+
+  // Prefer Transferable ArrayBuffers when posting mix / sample-render jobs
+  // (zero-copy). Default false (structured clone) for safer ownership; set
+  // true once call sites no longer need the source Float32Arrays after post.
+  useWorkerTransferable: boolean = false;
+
+  // Min number of mix entries before a worker is used (below this the
+  // postMessage overhead dominates). Applies to tile-level mix only.
+  workerMixMinEntries: number = 4;
+
+  // Offload pure TypedArray simple-note sample render (resample + loop +
+  // optional lowpass + gains) to the worker pool — note / ads / adsr modes
+  // only. Segment / chunk intentionally ignore this flag: per-note
+  // postMessage overhead dominated wall time in practice, so those modes
+  // bake note bodies on the main thread and only offload the tile mix
+  // (useWorkerTypedArrayMix). Curve computation always stays on main.
+  useWorkerSimpleNoteBake: boolean = true;
+
+  private bakeWorkerPool: BakeWorkerPool | null = null;
 
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
@@ -1943,6 +1984,30 @@ export class Player<
       const purePct = cb > 0
         ? ((100 * this.chunkPureTaTiles) / cb).toFixed(1)
         : "0.0";
+      const poolSize = this.bakeWorkerPool
+        ? this.bakeWorkerPool.poolSize
+        : (this.workerPoolSize > 0 ? this.workerPoolSize : Math.max(
+          1,
+          Math.min(
+            4,
+            typeof navigator !== "undefined"
+              ? (navigator.hardwareConcurrency || 2)
+              : 2,
+          ),
+        ));
+      console.log(
+        `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} ` +
+          `noteBake=${this.useWorkerSimpleNoteBake} ` +
+          `(noteBake active only for note/ads/adsr; tiled uses tileMix) ` +
+          `transferable=${this.useWorkerTransferable} ` +
+          `poolSize=${poolSize} ` +
+          `mixMinEntries=${this.workerMixMinEntries} ` +
+          `poolStarted=${!!this.bakeWorkerPool}`,
+      );
+      const simpleAvg = cb > 0 ? this.chunkBakeSimpleSumMs / cb : 0;
+      const complexAvg = cb > 0 ? this.chunkBakeComplexSumMs / cb : 0;
+      const mixAvg = cb > 0 ? this.chunkBakeMixSumMs / cb : 0;
+      const oacAvg = cb > 0 ? this.chunkBakeOacSumMs / cb : 0;
       console.log(
         `[midy] chunk-pipeline | tiles=${cb} ` +
           `bakeAvg=${bakeAvg.toFixed(1)}ms bakeP50=${bakeP50.toFixed(1)}ms ` +
@@ -1957,6 +2022,17 @@ export class Player<
           `dropped=${this.chunkDroppedLate} | ` +
           `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s ` +
           `prerollSec=${this.prerollSec}`,
+      );
+      console.log(
+        `[midy] chunk-bake-parts | ` +
+          `simpleAvg=${simpleAvg.toFixed(1)}ms ` +
+          `complexAvg=${complexAvg.toFixed(1)}ms ` +
+          `mixAvg=${mixAvg.toFixed(1)}ms ` +
+          `oacAvg=${oacAvg.toFixed(1)}ms ` +
+          `| simpleSum=${this.chunkBakeSimpleSumMs.toFixed(0)}ms ` +
+          `complexSum=${this.chunkBakeComplexSumMs.toFixed(0)}ms ` +
+          `mixSum=${this.chunkBakeMixSumMs.toFixed(0)}ms ` +
+          `oacSum=${this.chunkBakeOacSumMs.toFixed(0)}ms`,
       );
     } catch (e) {
       console.warn("[midy] stats log failed", e);
@@ -2917,37 +2993,39 @@ export class Player<
     const trackStats = !forAudioOffline;
     const bakeT0 = trackStats ? performance.now() : 0;
     let pureTaPath = false;
+    let simpleMs = 0;
+    let complexMs = 0;
+    let mixMs = 0;
+    let oacMs = 0;
 
-    // Entire mix OAC + nested note bakes share one offline slot so multiple
-    // pending chunks cannot each allocate a large OfflineAudioContext at once.
-    const result = await this.runWithOfflineRenderGate(async () => {
-      const sampleRate = this.audioContext.sampleRate;
-      const bufferLength = Math.ceil(totalDuration * sampleRate);
-      const useTA = this.useTypedArraySimpleMix;
+    const sampleRate = this.audioContext.sampleRate;
+    const bufferLength = Math.ceil(totalDuration * sampleRate);
+    const useTA = this.useTypedArraySimpleMix;
 
-      // Collect simple hits for TypedArray mix (or schedule into OAC if !useTA).
-      // useTypedArrayChunkSimpleMiss: bake cache misses into buffers (via
-      // getSimpleNoteBuffer / TypedArray note bake) and mix with TA, instead of
-      // scheduleSimpleNotesDirect on a shared OAC. Pure-simple chunks then skip
-      // OfflineAudioContext entirely.
-      const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
-      const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
-      let missCount = 0;
-      const simpleCounts = this.simpleNoteCounts;
-      const bakeChunkMiss = this.useTypedArrayChunkSimpleMiss;
+    // Collect simple hits for TypedArray mix (or schedule into OAC if !useTA).
+    // useTypedArrayChunkSimpleMiss: bake cache misses into buffers (via
+    // getSimpleNoteBuffer / TypedArray note bake) and mix with TA, instead of
+    // scheduleSimpleNotesDirect on a shared OAC. Pure-simple chunks then skip
+    // OfflineAudioContext entirely.
+    //
+    // Simple/complex resolution runs OUTSIDE the offline gate so pure-TA
+    // tiles from different chunks can progress in parallel. Nested OAC work
+    // inside getSimpleNoteBuffer / getComplexNoteBuffer still takes its own
+    // gate slot (fromOuterSlot=false).
+    const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
+    const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
+    let missCount = 0;
+    const simpleCounts = this.simpleNoteCounts;
+    const bakeChunkMiss = this.useTypedArrayChunkSimpleMiss;
 
-      if (simpleCount > 0) {
-        for (let i = 0; i < simpleCount; i++) {
-          const n = simpleNotes[i];
+    const tSimple0 = performance.now();
+    if (simpleCount > 0) {
+      const simpleResults = await Promise.all(
+        simpleNotes.map(async (n) => {
           const cached = await this.lookupSimpleNoteBuffer(n, true);
           if (cached) {
-            simpleHits.push({ buffer: cached, offset: n.offset });
-            continue;
+            return { kind: "hit" as const, buffer: cached, offset: n.offset };
           }
-
-          // New path: always bake the miss into a buffer (TypedArray when
-          // useTypedArraySimpleNoteBake), then TA-mix. Avoids shared-OAC
-          // scheduleSimpleNotesDirect for simple notes.
           if (bakeChunkMiss) {
             const noteBuf = await this.getSimpleNoteBuffer(
               {
@@ -2965,18 +3043,17 @@ export class Player<
                 voice: n.voice,
               },
               true,
-              true, // already in renderChunkBuffer's gate slot
+              false, // not holding an outer gate slot
             );
-            simpleHits.push({ buffer: noteBuf, offset: n.offset });
-            continue;
+            return {
+              kind: "hit" as const,
+              buffer: noteBuf,
+              offset: n.offset,
+            };
           }
-
-          // Legacy: realtime never nests a per-note OAC on the critical path.
           if (!forAudioOffline) {
-            simpleMisses[missCount++] = n;
-            continue;
+            return { kind: "miss" as const, note: n };
           }
-
           const key = this.makeSimpleNoteKey(n, true);
           const count = simpleCounts.get(key) ?? 0;
           if (count > 1) {
@@ -2996,24 +3073,38 @@ export class Player<
                 voice: n.voice,
               },
               true,
-              true, // already in renderChunkBuffer's gate slot
+              false,
             );
-            simpleHits.push({ buffer: noteBuf, offset: n.offset });
-          } else {
-            simpleMisses[missCount++] = n;
+            return {
+              kind: "hit" as const,
+              buffer: noteBuf,
+              offset: n.offset,
+            };
           }
+          return { kind: "miss" as const, note: n };
+        }),
+      );
+      for (let i = 0; i < simpleResults.length; i++) {
+        const r = simpleResults[i];
+        if (r.kind === "hit") {
+          simpleHits.push({ buffer: r.buffer, offset: r.offset });
+        } else {
+          simpleMisses[missCount++] = r.note;
         }
       }
+      simpleMisses.length = missCount;
+    }
+    simpleMs = performance.now() - tSimple0;
 
-      // Complex: optional per-note bake → TypedArray mix (segment-style).
-      // When bakeChunkComplex is on, every complex note becomes a buffer via
-      // getComplexNoteBuffer (still OAC internally for automation) and is
-      // mixed with TA — no tile-level OfflineAudioContext.
-      const bakeChunkComplex = this.useTypedArrayChunkComplexBake;
-      const complexBufs: { buffer: AudioBuffer; offset: number }[] = [];
-      if (bakeChunkComplex && complexCount > 0) {
-        for (let i = 0; i < complexCount; i++) {
-          const n = complexNotes[i];
+    // Complex: optional per-note bake → TypedArray mix (segment-style).
+    // fromOuterSlot=false so each complex OAC bake contends for the gate
+    // independently (maxConcurrentOfflineRenders still limits peak OACs).
+    const bakeChunkComplex = this.useTypedArrayChunkComplexBake;
+    const complexBufs: { buffer: AudioBuffer; offset: number }[] = [];
+    const tComplex0 = performance.now();
+    if (bakeChunkComplex && complexCount > 0) {
+      const complexResults = await Promise.all(
+        complexNotes.map(async (n) => {
           const entry: BakeNoteEntry = {
             channelNumber: n.channelNumber,
             noteNumber: n.noteNumber,
@@ -3030,35 +3121,59 @@ export class Player<
           };
           let buf = await this.lookupComplexNoteBuffer(entry, true);
           if (!buf) {
-            buf = await this.getComplexNoteBuffer(entry, true, true);
+            buf = await this.getComplexNoteBuffer(entry, true, false);
           }
-          complexBufs.push({ buffer: buf, offset: n.offset });
-        }
+          return { buffer: buf, offset: n.offset };
+        }),
+      );
+      for (let i = 0; i < complexResults.length; i++) {
+        complexBufs.push(complexResults[i]);
       }
+    }
+    complexMs = performance.now() - tComplex0;
 
-      // With bakeChunkMiss, simple misses are already in simpleHits → missCount
-      // stays 0. With bakeChunkComplex, complex notes are in complexBufs.
-      // OAC only when mix is legacy, residual simple misses, or legacy complex.
-      const needsOAC = !useTA || missCount > 0 ||
-        (complexCount > 0 && !bakeChunkComplex);
+    // With bakeChunkMiss, simple misses are already in simpleHits → missCount
+    // stays 0. With bakeChunkComplex, complex notes are in complexBufs.
+    // OAC only when mix is legacy, residual simple misses, or legacy complex.
+    const needsOAC = !useTA || missCount > 0 ||
+      (complexCount > 0 && !bakeChunkComplex);
 
-      // Pure TypedArray path: skip OfflineAudioContext entirely.
-      if (useTA && !needsOAC) {
-        pureTaPath = true;
-        const buffer = this.createEmptyBuffer(2, bufferLength, sampleRate);
-        if (simpleHits.length > 0) {
-          this.mixSimpleBuffersTypedArray(buffer, simpleHits, sampleRate, 1);
-        }
-        if (complexBufs.length > 0) {
-          this.mixSimpleBuffersTypedArray(buffer, complexBufs, sampleRate, 1);
-        }
-        if (!forAudioOffline) {
-          this.softClampBuffer(buffer);
-        }
-        return buffer;
+    // Pure TypedArray path: no Offline gate — multiple tiles can bake in
+    // parallel. Worker pool (useWorkerTypedArrayMix) handles the mix.
+    if (useTA && !needsOAC) {
+      pureTaPath = true;
+      const allEntries = simpleHits.length > 0 && complexBufs.length > 0
+        ? simpleHits.concat(complexBufs)
+        : simpleHits.length > 0
+        ? simpleHits
+        : complexBufs;
+      const tMix0 = performance.now();
+      const buffer = await this.mixEntriesToBuffer(
+        allEntries,
+        2,
+        bufferLength,
+        sampleRate,
+        1,
+      );
+      mixMs = performance.now() - tMix0;
+      if (!forAudioOffline) {
+        this.softClampBuffer(buffer);
       }
+      if (trackStats) {
+        this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
+          simpleMs,
+          complexMs,
+          mixMs,
+          oacMs: 0,
+        });
+      }
+      return buffer;
+    }
 
-      // OAC path (legacy full mix, or hybrid: complex/misses via OAC + TA hits)
+    // OAC path (legacy full mix, or hybrid: complex/misses via OAC + TA hits).
+    // Gate serialises large OfflineAudioContext allocations (iOS memory).
+    const tOac0 = performance.now();
+    const result = await this.runWithOfflineRenderGate(async () => {
       const offlineContext = new OfflineAudioContext(
         2,
         bufferLength,
@@ -3086,70 +3201,18 @@ export class Player<
         }
       }
 
+      // Residual simple misses → shared offline schedule
       if (missCount > 0) {
-        const seenCh = new Uint8Array(16);
-        const channelNumbers = new Array<number>(16);
-        let chCount = 0;
-        for (let i = 0; i < missCount; i++) {
-          const chn = simpleMisses[i].channelNumber;
-          if (!seenCh[chn]) {
-            seenCh[chn] = 1;
-            channelNumbers[chCount++] = chn;
-          }
-        }
-        channelNumbers.length = chCount;
-        const offlinePlayer = this.createOfflineRenderPlayer(
-          offlineContext,
-          channelNumbers,
-          true,
-        );
-        const directNotes = new Array<{
-          channelNumber: number;
-          audioBufferId?: number;
-          noteNumber: number;
-          velocity: number;
-          noteDuration: number;
-          noteEvent?: NoteOnEventEntry;
-          channelDetune: number;
-          channelStateArray: Float32Array;
-          programNumber: number;
-          isDrum: boolean;
-          voiceParams: VoiceParams;
-          voice?: Voice;
-          offset: number;
-        }>(missCount);
-        for (let i = 0; i < missCount; i++) {
-          const n = simpleMisses[i];
-          directNotes[i] = {
-            channelNumber: n.channelNumber,
-            audioBufferId: n.audioBufferId,
-            noteNumber: n.noteNumber,
-            velocity: n.velocity,
-            noteDuration: n.noteDuration,
-            noteEvent: n.noteEvent,
-            channelDetune: n.channelDetune,
-            channelStateArray: n.channelStateArray,
-            programNumber: n.programNumber,
-            isDrum: n.isDrum,
-            voiceParams: n.voiceParams,
-            voice: n.voice,
-            offset: n.offset,
-          };
-        }
         await this.scheduleSimpleNotesDirect(
           offlineContext,
-          offlinePlayer,
-          directNotes,
+          simpleMisses,
           true,
         );
       }
 
-      // Legacy complex: cache hits → BufferSource; misses → shared OAC schedule.
       // Skipped when bakeChunkComplex already filled complexBufs for TA mix.
       if (!bakeChunkComplex && complexCount > 0) {
-        const directComplexNotes = new Array<
-          BakeNoteEntry & { offset: number }
-        >();
+        const directComplexNotes: (BakeNoteEntry & { offset: number })[] = [];
         for (let i = 0; i < complexCount; i++) {
           const n = complexNotes[i];
           const entry: BakeNoteEntry = {
@@ -3209,28 +3272,19 @@ export class Player<
 
       return buffer;
     });
+    oacMs = performance.now() - tOac0;
 
     if (trackStats) {
-      this.recordChunkBake(performance.now() - bakeT0, pureTaPath);
+      this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
+        simpleMs,
+        complexMs,
+        mixMs,
+        oacMs,
+      });
     }
     return result;
   }
 
-  // Offline "render to one WAV" entry point, dispatched by cacheMode so the
-  // exported audio matches what that mode actually sounds like during real
-  // playback (useful for e.g. diffing against a reference synth per mode).
-  //
-  // - "audio" (and anything unrecognized): renderFastMode() -- belongs to no
-  //   real playback pipeline; it's a cheap windowed offline mix used both as
-  //   the "audio" cache mode's own definition (its whole point is "entire
-  //   song pre-rendered to one buffer") and as the fallback/"fast" render.
-  // - "note" / "segment" / "chunk" / "adsr" / "ads" / "none": renderWholeSongLive()
-  //   drives the exact same scheduling code real playback uses
-  //   (scheduleTimelineEvents' building blocks: appendToSegmentQueue /
-  //   appendToChunkQueue / closeSegment / closeChunk / noteOnChannel), just
-  //   against one OfflineAudioContext sized for the whole song instead of
-  //   the real-time AudioContext, so the exported buffer is what that mode
-  //   would actually play.
   async render(): Promise<AudioBuffer | undefined> {
     if (this.isRendering) return;
     if (this.timeline.length === 0) return;
@@ -3662,6 +3716,103 @@ export class Player<
     }
   }
 
+  /** Lazy shared / instance worker pool for TypedArray mix. */
+  protected getBakeWorkerPool(): BakeWorkerPool {
+    if (!this.bakeWorkerPool) {
+      this.bakeWorkerPool = getSharedBakeWorkerPool(this.workerPoolSize);
+    }
+    return this.bakeWorkerPool;
+  }
+
+  /**
+   * Build an AudioBuffer by mixing pre-baked note buffers (tile-level).
+   *
+   * Primary worker path for segment / chunk: one job (or a few parallel
+   * partial mixes via mixParallel) per tile. Per-note sample bake is not
+   * involved here — callers already hold AudioBuffers.
+   *
+   * Uses a Web Worker pool when useWorkerTypedArrayMix is enabled and the
+   * entry count is large enough; otherwise falls back to the main-thread
+   * mixSimpleBuffersTypedArray path.
+   */
+  protected async mixEntriesToBuffer(
+    entries: { buffer: AudioBuffer; offset: number }[],
+    destChCount: 1 | 2,
+    bufferLength: number,
+    sampleRate: number,
+    gain = 1,
+  ): Promise<AudioBuffer> {
+    const buffer = this.createEmptyBuffer(
+      destChCount,
+      bufferLength,
+      sampleRate,
+    );
+    if (entries.length === 0) return buffer;
+
+    const useWorker = this.useWorkerTypedArrayMix &&
+      entries.length >= this.workerMixMinEntries &&
+      typeof Worker !== "undefined";
+
+    if (!useWorker) {
+      this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
+      return buffer;
+    }
+
+    try {
+      const transferable = this.useWorkerTransferable;
+      const mixEntries: MixSourceEntry[] = new Array(entries.length);
+      for (let i = 0; i < entries.length; i++) {
+        const { buffer: src, offset } = entries[i];
+        const startSample = Math.round(offset * sampleRate);
+        const left = src.getChannelData(0);
+        const right = src.numberOfChannels > 1
+          ? src.getChannelData(1)
+          : undefined;
+        // Transferable detaches the underlying ArrayBuffer — must slice so
+        // live AudioBuffers stay usable. Structured-clone path can pass the
+        // channel views directly (clone copies; no need for an extra slice
+        // on the main thread before postMessage).
+        if (transferable) {
+          mixEntries[i] = {
+            left: left.slice(),
+            right: right ? right.slice() : undefined,
+            startSample,
+            gain,
+          };
+        } else {
+          mixEntries[i] = {
+            left,
+            right,
+            startSample,
+            gain,
+          };
+        }
+      }
+
+      const pool = this.getBakeWorkerPool();
+      const result = await pool.mixParallel(
+        mixEntries,
+        bufferLength,
+        destChCount,
+        transferable,
+      );
+
+      buffer.copyToChannel(result.left, 0);
+      if (destChCount > 1 && result.right) {
+        buffer.copyToChannel(result.right, 1);
+      }
+      return buffer;
+    } catch (err) {
+      // Worker failure → fall back to main-thread mix so playback continues.
+      console.warn(
+        "[midy] worker mix failed, falling back to main thread",
+        err,
+      );
+      this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
+      return buffer;
+    }
+  }
+
   // Build a per-sample channel gain curve (vol² × expr²) for almost-simple
   // notes. Starts from onset vol/expr, then steps to each in-interval CC7/CC11
   // event. Matches updateChannelVolume's GM/FluidSynth x² convention without
@@ -4059,6 +4210,110 @@ export class Player<
     }
   }
 
+  /**
+   * Same as renderSampleTypedArray, but optionally offloads the per-sample
+   * loop to the worker pool when useWorkerSimpleNoteBake is enabled and the
+   * destination is long enough that postMessage overhead is amortized.
+   *
+   * Intentionally disabled for segment / chunk (tiled) modes: those bake
+   * many notes per tile and the per-note postMessage cost outweighed the
+   * parallel gain. Tiled modes keep note bodies on the main thread and only
+   * offload the tile-level mix via mixEntriesToBuffer / useWorkerTypedArrayMix.
+   * note / ads / adsr still benefit — a single long note onset should not
+   * monopolise the main thread even if total CPU is a bit higher.
+   */
+  protected async renderSampleTypedArrayMaybeWorker(
+    srcBuffer: AudioBuffer,
+    dest: AudioBuffer,
+    playbackRate: number,
+    isLoop: boolean,
+    loopStartSrc: number,
+    loopEndSrc: number,
+    startOffsetSrc: number,
+    gains: Float32Array,
+    filterFreqs: Float32Array | null,
+    filterQ: number,
+  ): Promise<void> {
+    const useWorker = this.useWorkerSimpleNoteBake &&
+      !isTiledCacheMode(this.cacheMode) &&
+      dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
+      typeof Worker !== "undefined";
+
+    if (!useWorker) {
+      this.renderSampleTypedArray(
+        srcBuffer,
+        dest,
+        playbackRate,
+        isLoop,
+        loopStartSrc,
+        loopEndSrc,
+        startOffsetSrc,
+        gains,
+        filterFreqs,
+        filterQ,
+      );
+      return;
+    }
+
+    try {
+      const srcChCount = srcBuffer.numberOfChannels;
+      const srcChannels: Float32Array[] = new Array(srcChCount);
+      for (let c = 0; c < srcChCount; c++) {
+        // slice so transferable path does not detach live AudioBuffer channels
+        // unless useWorkerTransferable is explicitly true *and* we accept that
+        // the source AudioBuffer becomes unusable (we always slice here for
+        // safety — sample tables are shared across many notes).
+        srcChannels[c] = srcBuffer.getChannelData(c).slice();
+      }
+      // gains / filterFreqs are single-use curves; transferable is safe.
+      const gainsCopy = this.useWorkerTransferable ? gains : gains.slice();
+      const filterCopy = filterFreqs
+        ? (this.useWorkerTransferable ? filterFreqs : filterFreqs.slice())
+        : null;
+
+      const pool = this.getBakeWorkerPool();
+      const result = await pool.renderSample(
+        {
+          srcChannels,
+          srcRate: srcBuffer.sampleRate,
+          destRate: dest.sampleRate,
+          destLen: dest.length,
+          destChCount: dest.numberOfChannels as 1 | 2,
+          playbackRate,
+          isLoop,
+          loopStartSrc,
+          loopEndSrc,
+          startOffsetSrc,
+          gains: gainsCopy,
+          filterFreqs: filterCopy,
+          filterQ,
+        },
+        this.useWorkerTransferable,
+      );
+
+      for (let c = 0; c < dest.numberOfChannels; c++) {
+        dest.copyToChannel(result.channels[c], c);
+      }
+    } catch (err) {
+      console.warn(
+        "[midy] worker simple-note render failed, falling back to main",
+        err,
+      );
+      this.renderSampleTypedArray(
+        srcBuffer,
+        dest,
+        playbackRate,
+        isLoop,
+        loopStartSrc,
+        loopEndSrc,
+        startOffsetSrc,
+        gains,
+        filterFreqs,
+        filterQ,
+      );
+    }
+  }
+
   // Create an empty AudioBuffer on the live context (for TypedArray mix dest).
   protected createEmptyBuffer(
     numberOfChannels: number,
@@ -4316,14 +4571,33 @@ export class Player<
     this.chunkLateSumMs = 0;
     this.chunkLateMaxMs = 0;
     this.chunkDroppedLate = 0;
+    this.chunkBakeSimpleSumMs = 0;
+    this.chunkBakeComplexSumMs = 0;
+    this.chunkBakeMixSumMs = 0;
+    this.chunkBakeOacSumMs = 0;
   }
 
-  protected recordChunkBake(ms: number, pureTa: boolean): void {
+  protected recordChunkBake(
+    ms: number,
+    pureTa: boolean,
+    parts?: {
+      simpleMs?: number;
+      complexMs?: number;
+      mixMs?: number;
+      oacMs?: number;
+    },
+  ): void {
     this.chunkBakeCount++;
     this.chunkBakeSumMs += ms;
     if (ms > this.chunkBakeMaxMs) this.chunkBakeMaxMs = ms;
     if (pureTa) this.chunkPureTaTiles++;
     else this.chunkOacTiles++;
+    if (parts) {
+      this.chunkBakeSimpleSumMs += parts.simpleMs ?? 0;
+      this.chunkBakeComplexSumMs += parts.complexMs ?? 0;
+      this.chunkBakeMixSumMs += parts.mixMs ?? 0;
+      this.chunkBakeOacSumMs += parts.oacMs ?? 0;
+    }
     const samples = this.chunkBakeSamplesMs;
     if (samples.length < Player.CHUNK_BAKE_SAMPLE_CAP) {
       samples.push(ms);
@@ -4937,23 +5211,19 @@ export class Player<
 
       if (useTA) {
         // Pure TypedArray mix: no OfflineAudioContext for the tile mix.
-        const buffer = this.createEmptyBuffer(1, bufferLength, sampleRate);
-        if (simpleHits.length > 0) {
-          this.mixSimpleBuffersTypedArray(
-            buffer,
-            simpleHits,
-            sampleRate,
-            mixGainValue,
-          );
-        }
-        if (complexBufs.length > 0) {
-          this.mixSimpleBuffersTypedArray(
-            buffer,
-            complexBufs,
-            sampleRate,
-            mixGainValue,
-          );
-        }
+        // Worker pool when entry count is high enough.
+        const allEntries = simpleHits.length > 0 && complexBufs.length > 0
+          ? simpleHits.concat(complexBufs)
+          : simpleHits.length > 0
+          ? simpleHits
+          : complexBufs;
+        const buffer = await this.mixEntriesToBuffer(
+          allEntries,
+          1,
+          bufferLength,
+          sampleRate,
+          mixGainValue,
+        );
         this.softClampBuffer(buffer);
         return buffer;
       }
@@ -5200,8 +5470,10 @@ export class Player<
 
     // Match OAC: dry = 1ch destination, mix = stereo after pan expand.
     // Render body as mono then expand when bakeChannelMix.
+    // When useWorkerSimpleNoteBake is on and the note is long enough, the
+    // per-sample resample/filter loop runs on a worker; curves stay here.
     const body = this.createEmptyBuffer(1, length, sampleRate);
-    this.renderSampleTypedArray(
+    await this.renderSampleTypedArrayMaybeWorker(
       audioBuffer,
       body,
       playbackRate,
