@@ -16,7 +16,8 @@
 //                tools/compare-pitch.test.ts \
 //                tools/compare-controllers.test.ts \
 //                tools/compare-dynamics.test.ts \
-//                tools/compare-polyphony.test.ts
+//                tools/compare-polyphony.test.ts \
+//                tools/compare-almost-simple.test.ts
 //
 // WAV outputs land in /tmp/midy-gm2-check for manual inspection.
 //
