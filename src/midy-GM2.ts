@@ -13,6 +13,7 @@ import {
   FULLY_OPEN_FILTER_CENTS,
   getVoiceParams,
   getVoiceParamsForController,
+  isTiledCacheMode,
   type MessageHandler,
   Note as BaseNote,
   type NoteOnEntry,
@@ -1460,7 +1461,12 @@ export class MidyGM2 extends Player<Note, Channel> {
             startTime,
             note,
           );
-          if (isSegmentNote) {
+          // Match Player.scheduleTimelineEvents: notes already queued/baked in
+          // prerollTiledPipeline must not be appended again (double closeChunk
+          // → concurrent re-bake stampede → multi-second "simple/mix/complex"
+          // times that are mostly queue-wait).
+          const alreadyPrerolled = t < this.prerollUntilSongTime;
+          if (isSegmentNote && !alreadyPrerolled) {
             this.appendToSegmentQueue(
               channel.channelNumber,
               t,
@@ -1469,7 +1475,7 @@ export class MidyGM2 extends Player<Note, Channel> {
               event.velocity!,
             );
           }
-          if (isChunkNote) {
+          if (isChunkNote && !alreadyPrerolled) {
             this.appendToChunkQueue(
               channel,
               t,
@@ -1523,15 +1529,25 @@ export class MidyGM2 extends Player<Note, Channel> {
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
+    // Preroll tiled tiles BEFORE arming startTime (same as Player.playNotes).
+    // Without this, chunk/segment head tiles bake during playback → late starts.
+    this.prerollUntilSongTime = 0;
+    this.prerollUntilPeak = 0;
+    if (isTiledCacheMode(this.cacheMode)) {
+      await this.prerollTiledPipeline();
+    } else {
+      this.initTiledPipeline();
+    }
     this.startTime = audioContext.currentTime;
+    if (isTiledCacheMode(this.cacheMode)) {
+      this.startReadyTiledSources();
+    }
     if (paused) {
       this.dispatchEvent(new Event("resumed"));
     } else {
       this.dispatchEvent(new Event("started"));
     }
     let queueIndex = this.getQueueIndex(this.resumeTime);
-    if (this.cacheMode === "segment") this.initSegmentPipeline();
-    if (this.cacheMode === "chunk") this.initChunkPipeline();
     let exitReason: string | undefined;
     this.notePromises = [];
     while (true) {
@@ -1560,16 +1576,16 @@ export class MidyGM2 extends Player<Note, Channel> {
         if (result === "completed") {
           if (this.loop) {
             this.resetAllStates();
-            this.startTime = audioContext.currentTime;
             this.resumeTime = 0;
             queueIndex = 0;
-            if (this.cacheMode === "segment") {
-              this.segmentGeneration++;
-              this.initSegmentPipeline();
+            this.prerollUntilSongTime = 0;
+            this.resetTiledPipeline();
+            if (isTiledCacheMode(this.cacheMode)) {
+              await this.prerollTiledPipeline();
             }
-            if (this.cacheMode === "chunk") {
-              this.chunkGeneration++;
-              this.initChunkPipeline();
+            this.startTime = audioContext.currentTime;
+            if (isTiledCacheMode(this.cacheMode)) {
+              this.startReadyTiledSources();
             }
             this.dispatchEvent(new Event("looped"));
             continue;
@@ -1605,14 +1621,20 @@ export class MidyGM2 extends Player<Note, Channel> {
       } else if (this.isSeeking) {
         this.cancelScheduledTasks();
         await this.stopNotes(now);
-        if (this.cacheMode === "segment") this.stopSegmentSources();
-        if (this.cacheMode === "chunk") this.stopChunkSources();
-        this.startTime = audioContext.currentTime;
+        this.stopTiledSources();
+        this.prerollUntilSongTime = 0;
         const nextQueueIndex = this.getQueueIndex(this.resumeTime);
         this.updateStates(queueIndex, nextQueueIndex);
         queueIndex = nextQueueIndex;
-        if (this.cacheMode === "segment") this.initSegmentPipeline();
-        if (this.cacheMode === "chunk") this.initChunkPipeline();
+        if (isTiledCacheMode(this.cacheMode)) {
+          await this.prerollTiledPipeline();
+        } else {
+          this.initTiledPipeline();
+        }
+        this.startTime = audioContext.currentTime;
+        if (isTiledCacheMode(this.cacheMode)) {
+          this.startReadyTiledSources();
+        }
         this.isSeeking = false;
         this.dispatchEvent(new Event("seeked"));
         continue;

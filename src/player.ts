@@ -147,6 +147,17 @@ export class Player<
   audioWindowDuration: number = 4;
   // tiled modes (segment / chunk): shared window + classification
   tileDuration: number = 1;
+  // Soft budget for chunk-tile bake cost (Σ noteDuration+releaseTail, complex weighted).
+  // When a *new onset group* would push cumulative cost over budget, the open
+  // chunk is closed and a new tile starts at that onset. Same-timestamp notes
+  // (chords) always stay in one tile. Time-based tileDuration remains the hard
+  // upper bound (default 1s). 0 disables cost-based split.
+  // Typical single-note cost is often ~1–2 (duration + release tail). Dense
+  // 1s windows can sum to 50+. Budget ~12–24 splits outliers without
+  // one-note tiles. Tune from [midy] chunk-tile-shape costAvg / notesAvg.
+  chunkCostBudget: number = 16;
+  // Extra weight for complex (automation) notes in the cost estimate.
+  chunkComplexCostWeight: number = 1.75;
   maxTiledNoteDuration: number = 8;
   tiledBakedSet: Set<number> = new Set();
   tiledVoiceParams: (VoiceParams | null)[] = [];
@@ -175,6 +186,11 @@ export class Player<
   chunkBakeComplexSumMs: number = 0;
   chunkBakeMixSumMs: number = 0;
   chunkBakeOacSumMs: number = 0;
+  // Per-tile composition stats (sums over tiles; realtime only).
+  chunkBakeNoteCountSum: number = 0;
+  chunkBakeComplexCountSum: number = 0;
+  chunkBakeSumNoteDuration: number = 0;
+  chunkBakeSumCost: number = 0;
   // Cap concurrent OfflineAudioContext work. iOS Safari retains OAC / rendered
   // AudioBuffer memory aggressively; Promise.all over many complex notes in
   // one chunk was creating dozens of OACs at once and crashing the tab.
@@ -182,6 +198,13 @@ export class Player<
   maxConcurrentOfflineRenders: number = 1;
   private offlineRenderActive: number = 0;
   private offlineRenderWaiters: Array<() => void> = [];
+  // Cap concurrent realtime chunk tile bakes (pure-TA + OAC). Without this,
+  // hundreds of renderChunkBuffer() calls race the worker pool / OAC gate and
+  // wall-clock "bake" times become mostly queue-wait → late/dropped starts.
+  // 0 = unlimited (legacy). Default matches a small worker pool.
+  maxConcurrentChunkBakes: number = 4;
+  private chunkBakeActive: number = 0;
+  private chunkBakeWaiters: Array<() => void> = [];
 
   // Debug / experiment: mix cached simple-note AudioBuffers by direct
   // TypedArray addition instead of scheduling AudioBufferSourceNodes into
@@ -272,6 +295,15 @@ export class Player<
   // scheduleTimelineEvents skips appendTo*Queue for tiled notes with t < this
   // so preroll tiles are not duplicated. Reset on stop / non-tiled play.
   prerollUntilSongTime: number = 0;
+  // Peak prerollUntilSongTime this play (survives end-of-song reset for stats).
+  prerollUntilPeak: number = 0;
+  // Soft cap on notes per chunk tile. When adding a *new onset group* would
+  // exceed this, close and start a new tile (same-timestamp chords stay).
+  // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
+  maxChunkNotes: number = 48;
+  // Log a detailed breakdown when a single tile bake exceeds this (ms).
+  // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
+  chunkBakeHeavyThresholdMs: number = 1500;
 
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
@@ -313,6 +345,29 @@ export class Player<
     } finally {
       this.offlineRenderActive--;
       const next = this.offlineRenderWaiters.shift();
+      if (next) next();
+    }
+  }
+
+  // Serializes/limits concurrent realtime chunk tile bakes so pure-TA tiles
+  // cannot stampede the worker mix pool. forAudioOffline (song export) skips
+  // this gate. maxConcurrentChunkBakes <= 0 → pass-through (unlimited).
+  protected async runWithChunkBakeGate<T>(
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const max = this.maxConcurrentChunkBakes | 0;
+    if (max <= 0) return await fn();
+    while (this.chunkBakeActive >= max) {
+      await new Promise<void>((resolve) => {
+        this.chunkBakeWaiters.push(resolve);
+      });
+    }
+    this.chunkBakeActive++;
+    try {
+      return await fn();
+    } finally {
+      this.chunkBakeActive--;
+      const next = this.chunkBakeWaiters.shift();
       if (next) next();
     }
   }
@@ -1786,6 +1841,7 @@ export class Player<
     // Preroll tiled tiles BEFORE arming startTime so bake time does not
     // eat into the lookAhead window (late chunk/note starts at song head).
     this.prerollUntilSongTime = 0;
+    this.prerollUntilPeak = 0;
     if (isTiledCacheMode(this.cacheMode)) {
       await this.prerollTiledPipeline();
     } else {
@@ -2021,8 +2077,13 @@ export class Player<
           }ms ` +
           `dropped=${this.chunkDroppedLate} | ` +
           `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s ` +
+          `prerollPeak=${this.prerollUntilPeak.toFixed(2)}s ` +
           `prerollSec=${this.prerollSec}`,
       );
+      const notesAvg = cb > 0 ? this.chunkBakeNoteCountSum / cb : 0;
+      const complexNotesAvg = cb > 0 ? this.chunkBakeComplexCountSum / cb : 0;
+      const sumDurAvg = cb > 0 ? this.chunkBakeSumNoteDuration / cb : 0;
+      const costAvg = cb > 0 ? this.chunkBakeSumCost / cb : 0;
       console.log(
         `[midy] chunk-bake-parts | ` +
           `simpleAvg=${simpleAvg.toFixed(1)}ms ` +
@@ -2033,6 +2094,18 @@ export class Player<
           `complexSum=${this.chunkBakeComplexSumMs.toFixed(0)}ms ` +
           `mixSum=${this.chunkBakeMixSumMs.toFixed(0)}ms ` +
           `oacSum=${this.chunkBakeOacSumMs.toFixed(0)}ms`,
+      );
+      console.log(
+        `[midy] chunk-tile-shape | ` +
+          `notesAvg=${notesAvg.toFixed(1)} ` +
+          `complexNotesAvg=${complexNotesAvg.toFixed(1)} ` +
+          `sumDurAvg=${sumDurAvg.toFixed(3)}s ` +
+          `costAvg=${costAvg.toFixed(3)} ` +
+          `budget=${this.chunkCostBudget} ` +
+          `complexWeight=${this.chunkComplexCostWeight} ` +
+          `tileDuration=${this.tileDuration} ` +
+          `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
+          `maxChunkNotes=${this.maxChunkNotes}`,
       );
     } catch (e) {
       console.warn("[midy] stats log failed", e);
@@ -2295,14 +2368,41 @@ export class Player<
       return;
     }
 
+    // Ensure tiled note classification exists (needed for append gating).
+    if (this.tiledBakedSet.size === 0 && isTiledCacheMode(cacheMode)) {
+      this.finalizeSegmentClassification();
+    }
+
     const t0 = performance.now();
     const maxMs = Math.max(0, this.prerollMaxMs | 0);
     const songStart = this.resumeTime;
-    const songEnd = Math.min(this.totalTime, songStart + prerollSec);
+    // totalTime can be 0 if calcTotalTime saw no noteOffs yet; fall back to
+    // last timeline event so preroll still covers the head window.
+    let total = this.totalTime;
+    if (!(total > 0) && this.timeline.length > 0) {
+      const inv = 1 / this.tempo;
+      total = this.timeline[this.timeline.length - 1].startTime * inv;
+    }
+    const songEnd = Math.min(
+      total > 0 ? total : songStart + prerollSec,
+      songStart + prerollSec,
+    );
     if (songEnd <= songStart) {
       this.prerollUntilSongTime = songStart;
+      console.warn(
+        `[midy] preroll skipped: songEnd(${songEnd.toFixed(3)}) <= songStart(${
+          songStart.toFixed(3)
+        }) ` +
+          `totalTime=${this.totalTime} timeline=${this.timeline.length} prerollSec=${prerollSec}`,
+      );
       return;
     }
+    console.log(
+      `[midy] preroll start | mode=${cacheMode} window=[${
+        songStart.toFixed(2)
+      }, ${songEnd.toFixed(2)}] ` +
+        `tiledNotes=${this.tiledBakedSet.size} maxChunkBakes=${this.maxConcurrentChunkBakes}`,
+    );
 
     const isSegmentMode = isSegmentCacheMode(cacheMode);
     const isChunkMode = isChunkCacheMode(cacheMode);
@@ -2408,6 +2508,15 @@ export class Player<
       }
     }
     this.prerollUntilSongTime = coveredEnd;
+    if (coveredEnd > this.prerollUntilPeak) {
+      this.prerollUntilPeak = coveredEnd;
+    }
+    const pendingCount = isChunkMode ? this.chunkState.pending.length : 0;
+    console.log(
+      `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s ` +
+        `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+        `pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`,
+    );
   }
 
   // Start preroll-baked tiles now that startTime is set.
@@ -2789,6 +2898,20 @@ export class Player<
     state.openChunk = null;
   }
 
+  /** Estimate bake cost for one note (seconds of note body + release tail). */
+  private estimateChunkNoteCost(
+    noteDuration: number,
+    voiceParams: VoiceParams,
+    noteEvent: NoteOnEventEntry | undefined,
+    isComplex: boolean,
+  ): number {
+    const releaseTail = noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const base = noteDuration + releaseTail;
+    return isComplex ? base * this.chunkComplexCostWeight : base;
+  }
+
   appendToChunkQueue(
     channel: TChannel,
     t: number,
@@ -2800,14 +2923,53 @@ export class Player<
     const voiceParams = this.tiledVoiceParams[timelineIndex];
     if (!voiceParams) return;
 
+    const noteDuration = this.noteOnDurations[timelineIndex] ?? 0;
+    const noteEvent = this.noteOnEvents[timelineIndex];
+    const isComplex = !this.isSimpleNote({
+      timelineIndex,
+      noteEvent,
+    });
+    const noteCost = this.estimateChunkNoteCost(
+      noteDuration,
+      voiceParams,
+      noteEvent,
+      isComplex,
+    );
+
+    // Close by wall-time upper bound first (max tileDuration).
     if (
       state.openChunk &&
       this.tileDuration <= t - state.openChunk.chunkStart
     ) {
       this.closeChunk(state);
     }
+    // Split at onset-group boundaries only (never mid-chord).
+    // Same song-time onsets always stay together even if over budget / max notes.
+    // Triggers: cost budget, or maxChunkNotes soft cap.
+    const budget = this.chunkCostBudget;
+    const maxNotes = this.maxChunkNotes | 0;
+    if (
+      state.openChunk &&
+      state.openChunk.notes.length > 0 &&
+      t > state.openChunk.lastOnsetTime
+    ) {
+      const overCost = budget > 0 &&
+        state.openChunk.cost + noteCost > budget;
+      const overNotes = maxNotes > 0 &&
+        state.openChunk.notes.length >= maxNotes;
+      if (overCost || overNotes) {
+        this.closeChunk(state);
+      }
+    }
     if (!state.openChunk) {
-      state.openChunk = { chunkStart: t, notes: [] };
+      state.openChunk = {
+        chunkStart: t,
+        notes: [],
+        cost: 0,
+        complexCount: 0,
+        sumNoteDuration: 0,
+        lastOnsetTime: t,
+      };
     }
     state.openChunk.notes.push({
       channelNumber: channel.channelNumber,
@@ -2815,8 +2977,8 @@ export class Player<
       noteNumber,
       velocity,
       voiceParams,
-      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
-      noteEvent: this.noteOnEvents[timelineIndex],
+      noteDuration,
+      noteEvent,
       audioBufferId: this.noteAudioBufferIds[timelineIndex],
       voice: this.tiledVoices[timelineIndex] ?? undefined,
       // Snapshot per-channel state now -- channel volume/pan/expression
@@ -2828,6 +2990,10 @@ export class Player<
       isDrum: channel.isDrum,
       timelineIndex,
     });
+    state.openChunk.cost += noteCost;
+    state.openChunk.sumNoteDuration += noteDuration;
+    state.openChunk.lastOnsetTime = t;
+    if (isComplex) state.openChunk.complexCount++;
   }
 
   closeChunk(state: ChunkState): void {
@@ -2844,7 +3010,9 @@ export class Player<
       bufferPromise: Promise.resolve(null),
       generation,
     };
-    pending.bufferPromise = this.renderChunkBuffer(chunk)
+    pending.bufferPromise = this.runWithChunkBakeGate(() =>
+      this.renderChunkBuffer(chunk)
+    )
       .then((buffer) => {
         if (this.chunkGeneration !== generation) {
           const idx = state.pending.indexOf(pending);
@@ -3015,6 +3183,8 @@ export class Player<
     const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
     const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
     let missCount = 0;
+    let simpleCacheHits = 0;
+    let simpleMissesBaked = 0;
     const simpleCounts = this.simpleNoteCounts;
     const bakeChunkMiss = this.useTypedArrayChunkSimpleMiss;
 
@@ -3024,7 +3194,12 @@ export class Player<
         simpleNotes.map(async (n) => {
           const cached = await this.lookupSimpleNoteBuffer(n, true);
           if (cached) {
-            return { kind: "hit" as const, buffer: cached, offset: n.offset };
+            return {
+              kind: "hit" as const,
+              buffer: cached,
+              offset: n.offset,
+              baked: false,
+            };
           }
           if (bakeChunkMiss) {
             const noteBuf = await this.getSimpleNoteBuffer(
@@ -3049,6 +3224,7 @@ export class Player<
               kind: "hit" as const,
               buffer: noteBuf,
               offset: n.offset,
+              baked: true,
             };
           }
           if (!forAudioOffline) {
@@ -3079,6 +3255,7 @@ export class Player<
               kind: "hit" as const,
               buffer: noteBuf,
               offset: n.offset,
+              baked: true,
             };
           }
           return { kind: "miss" as const, note: n };
@@ -3088,6 +3265,8 @@ export class Player<
         const r = simpleResults[i];
         if (r.kind === "hit") {
           simpleHits.push({ buffer: r.buffer, offset: r.offset });
+          if ("baked" in r && r.baked) simpleMissesBaked++;
+          else simpleCacheHits++;
         } else {
           simpleMisses[missCount++] = r.note;
         }
@@ -3160,11 +3339,33 @@ export class Player<
         this.softClampBuffer(buffer);
       }
       if (trackStats) {
+        let topNoteDuration = 0;
+        let topReleaseTail = 0;
+        for (let i = 0; i < notesLen; i++) {
+          const n = notes[i];
+          const rel = n.noteEvent?.soundOff
+            ? 0
+            : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
+          if (n.noteDuration > topNoteDuration) {
+            topNoteDuration = n.noteDuration;
+          }
+          if (rel > topReleaseTail) topReleaseTail = rel;
+        }
         this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
           simpleMs,
           complexMs,
           mixMs,
           oacMs: 0,
+          noteCount: notesLen,
+          complexCount,
+          sumNoteDuration: chunk.sumNoteDuration,
+          cost: chunk.cost,
+          chunkStart: chunk.chunkStart,
+          bufferDuration: bufferLength / sampleRate,
+          simpleHits: simpleCacheHits,
+          simpleMissesBaked,
+          topNoteDuration,
+          topReleaseTail,
         });
       }
       return buffer;
@@ -3275,11 +3476,31 @@ export class Player<
     oacMs = performance.now() - tOac0;
 
     if (trackStats) {
+      let topNoteDuration = 0;
+      let topReleaseTail = 0;
+      for (let i = 0; i < notesLen; i++) {
+        const n = notes[i];
+        const rel = n.noteEvent?.soundOff
+          ? 0
+          : n.voiceParams.releaseVolEnv * envelopeCurve * 5;
+        if (n.noteDuration > topNoteDuration) topNoteDuration = n.noteDuration;
+        if (rel > topReleaseTail) topReleaseTail = rel;
+      }
       this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
         simpleMs,
         complexMs,
         mixMs,
         oacMs,
+        noteCount: notesLen,
+        complexCount,
+        sumNoteDuration: chunk.sumNoteDuration,
+        cost: chunk.cost,
+        chunkStart: chunk.chunkStart,
+        bufferDuration: bufferLength / sampleRate,
+        simpleHits: simpleCacheHits,
+        simpleMissesBaked,
+        topNoteDuration,
+        topReleaseTail,
       });
     }
     return result;
@@ -3434,7 +3655,14 @@ export class Player<
       if (localCount === 0) continue;
       localNotes.length = localCount;
 
-      const chunk: OpenChunk = { chunkStart: winStart, notes: localNotes };
+      const chunk: OpenChunk = {
+        chunkStart: winStart,
+        notes: localNotes,
+        cost: 0,
+        complexCount: 0,
+        sumNoteDuration: 0,
+        lastOnsetTime: winStart,
+      };
       // forAudioOffline=true: allow simpleNote cache; no per-window clamp
       // (final peakNormalize on the mixed buffer preserves dynamics).
       const buf = await this.renderChunkBuffer(chunk, true);
@@ -3527,6 +3755,10 @@ export class Player<
     offlinePlayer.tempo = this.tempo;
     offlinePlayer.totalTime = this.totalTime;
     offlinePlayer.tileDuration = this.tileDuration;
+    offlinePlayer.chunkCostBudget = this.chunkCostBudget;
+    offlinePlayer.chunkComplexCostWeight = this.chunkComplexCostWeight;
+    offlinePlayer.maxConcurrentChunkBakes = this.maxConcurrentChunkBakes;
+    offlinePlayer.maxChunkNotes = this.maxChunkNotes;
     offlinePlayer.maxTiledNoteDuration = this.maxTiledNoteDuration;
     offlinePlayer.lookAhead = this.lookAhead;
     offlinePlayer.cacheMode = cacheMode;
@@ -4575,6 +4807,10 @@ export class Player<
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
     this.chunkBakeOacSumMs = 0;
+    this.chunkBakeNoteCountSum = 0;
+    this.chunkBakeComplexCountSum = 0;
+    this.chunkBakeSumNoteDuration = 0;
+    this.chunkBakeSumCost = 0;
   }
 
   protected recordChunkBake(
@@ -4585,6 +4821,16 @@ export class Player<
       complexMs?: number;
       mixMs?: number;
       oacMs?: number;
+      noteCount?: number;
+      complexCount?: number;
+      sumNoteDuration?: number;
+      cost?: number;
+      chunkStart?: number;
+      bufferDuration?: number;
+      simpleHits?: number;
+      simpleMissesBaked?: number;
+      topNoteDuration?: number;
+      topReleaseTail?: number;
     },
   ): void {
     this.chunkBakeCount++;
@@ -4597,6 +4843,10 @@ export class Player<
       this.chunkBakeComplexSumMs += parts.complexMs ?? 0;
       this.chunkBakeMixSumMs += parts.mixMs ?? 0;
       this.chunkBakeOacSumMs += parts.oacMs ?? 0;
+      this.chunkBakeNoteCountSum += parts.noteCount ?? 0;
+      this.chunkBakeComplexCountSum += parts.complexCount ?? 0;
+      this.chunkBakeSumNoteDuration += parts.sumNoteDuration ?? 0;
+      this.chunkBakeSumCost += parts.cost ?? 0;
     }
     const samples = this.chunkBakeSamplesMs;
     if (samples.length < Player.CHUNK_BAKE_SAMPLE_CAP) {
@@ -4604,6 +4854,46 @@ export class Player<
     } else {
       const j = (Math.random() * this.chunkBakeCount) | 0;
       if (j < samples.length) samples[j] = ms;
+    }
+
+    const thr = this.chunkBakeHeavyThresholdMs;
+    if (thr > 0 && ms >= thr) {
+      const p = parts ?? {};
+      const simpleMs = p.simpleMs ?? 0;
+      const complexMs = p.complexMs ?? 0;
+      const mixMs = p.mixMs ?? 0;
+      const oacMs = p.oacMs ?? 0;
+      // Dominant phase for a quick read of the log line.
+      let dominant = "other";
+      let domMs = 0;
+      const phases: [string, number][] = [
+        ["simple", simpleMs],
+        ["complex", complexMs],
+        ["mix", mixMs],
+        ["oac", oacMs],
+      ];
+      for (let i = 0; i < phases.length; i++) {
+        if (phases[i][1] > domMs) {
+          domMs = phases[i][1];
+          dominant = phases[i][0];
+        }
+      }
+      console.warn(
+        `[midy] chunk-heavy | ${ms.toFixed(0)}ms dominant=${dominant} ` +
+          `path=${pureTa ? "pureTA" : "oac"} ` +
+          `start=${(p.chunkStart ?? 0).toFixed(2)}s ` +
+          `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} ` +
+          `hits=${p.simpleHits ?? "?"} missBake=${
+            p.simpleMissesBaked ?? "?"
+          } ` +
+          `sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s ` +
+          `bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s ` +
+          `cost=${(p.cost ?? 0).toFixed(2)} ` +
+          `topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s ` +
+          `topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | ` +
+          `simple=${simpleMs.toFixed(0)}ms complex=${complexMs.toFixed(0)}ms ` +
+          `mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms`,
+      );
     }
   }
 

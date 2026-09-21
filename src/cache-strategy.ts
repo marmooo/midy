@@ -220,6 +220,14 @@ export interface ChunkNoteEntry {
 export interface OpenChunk {
   chunkStart: number;
   notes: ChunkNoteEntry[];
+  /** Accumulated bake-cost estimate: Σ (noteDuration + releaseTail) * complexWeight. */
+  cost: number;
+  /** Number of complex (automation) notes in this open tile. */
+  complexCount: number;
+  /** Σ noteDuration (seconds) for stats. */
+  sumNoteDuration: number;
+  /** Song time of the most recently appended note onset (for onset-group splits). */
+  lastOnsetTime: number;
 }
 
 export interface PendingChunk {
