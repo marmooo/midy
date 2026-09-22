@@ -195,6 +195,15 @@ export class Player<
   chunkMixPrepareSumMs: number = 0;
   chunkMixAwaitSumMs: number = 0;
   chunkMixWorkerSumMs: number = 0;
+  /** Pool queue wait before postMessage (from MixResult.queueMs). */
+  chunkMixQueueSumMs: number = 0;
+  /** Main-thread postMessage call duration (from MixResult.postMs). */
+  chunkMixPostSumMs: number = 0;
+  /**
+   * await - queue - post - worker. Covers reply transfer, event-loop delay,
+   * and any main-thread busy time before the mix promise resolves.
+   */
+  chunkMixResidualSumMs: number = 0;
   chunkMixCopyBackSumMs: number = 0;
   chunkMixMainSumMs: number = 0;
   chunkMixWorkerTiles: number = 0;
@@ -273,11 +282,9 @@ export class Player<
   workerMixMinEntries: number = 4;
 
   // Offload pure TypedArray simple-note sample render (resample + loop +
-  // optional lowpass + gains) to the worker pool — note / ads / adsr modes
-  // only. Segment / chunk intentionally ignore this flag: per-note
-  // postMessage overhead dominated wall time in practice, so those modes
-  // bake note bodies on the main thread and only offload the tile mix
-  // (useWorkerTypedArrayMix). Curve computation always stays on main.
+  // optional lowpass + gains) to the worker pool. Curve computation stays
+  // on main. Enabled for segment/chunk as well: mix residual was dominated
+  // by main-thread note bake blocking the event loop (queue≈0, post≈0).
   useWorkerSimpleNoteBake: boolean = true;
 
   private bakeWorkerPool: BakeWorkerPool | null = null;
@@ -2068,7 +2075,7 @@ export class Player<
       console.log(
         `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} ` +
           `noteBake=${this.useWorkerSimpleNoteBake} ` +
-          `(noteBake active only for note/ads/adsr; tiled uses tileMix) ` +
+          `(noteBake also used in segment/chunk when dest is long enough) ` +
           `transferable=${this.useWorkerTransferable} ` +
           `poolSize=${poolSize} ` +
           `mixMinEntries=${this.workerMixMinEntries} ` +
@@ -2116,12 +2123,12 @@ export class Player<
         const prepAvg = mw > 0 ? this.chunkMixPrepareSumMs / mw : 0;
         const awaitAvg = mw > 0 ? this.chunkMixAwaitSumMs / mw : 0;
         const workerAvg = mw > 0 ? this.chunkMixWorkerSumMs / mw : 0;
+        const queueAvg = mw > 0 ? this.chunkMixQueueSumMs / mw : 0;
+        const postAvg = mw > 0 ? this.chunkMixPostSumMs / mw : 0;
+        const residualAvg = mw > 0 ? this.chunkMixResidualSumMs / mw : 0;
         const copyAvg = mw > 0 ? this.chunkMixCopyBackSumMs / mw : 0;
         const mainAvg = mm > 0 ? this.chunkMixMainSumMs / mm : 0;
         const entriesAvg = mt > 0 ? this.chunkMixEntriesSum / mt : 0;
-        // await includes postMessage clone + queue wait + worker loop.
-        // overhead ≈ await - worker (clone + queue + reply transfer).
-        const overheadAvg = Math.max(0, awaitAvg - workerAvg);
         console.log(
           `[midy] chunk-mix-parts | ` +
             `workerTiles=${mw} mainTiles=${mm} entriesAvg=${
@@ -2129,13 +2136,18 @@ export class Player<
             } | ` +
             `prepareAvg=${prepAvg.toFixed(1)}ms ` +
             `awaitAvg=${awaitAvg.toFixed(1)}ms ` +
+            `queueAvg=${queueAvg.toFixed(1)}ms ` +
+            `postAvg=${postAvg.toFixed(1)}ms ` +
             `workerAvg=${workerAvg.toFixed(1)}ms ` +
-            `overheadAvg=${overheadAvg.toFixed(1)}ms ` +
+            `residualAvg=${residualAvg.toFixed(1)}ms ` +
             `copyBackAvg=${copyAvg.toFixed(1)}ms ` +
             `mainAvg=${mainAvg.toFixed(1)}ms | ` +
             `prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms ` +
             `awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms ` +
+            `queueSum=${this.chunkMixQueueSumMs.toFixed(0)}ms ` +
+            `postSum=${this.chunkMixPostSumMs.toFixed(0)}ms ` +
             `workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms ` +
+            `residualSum=${this.chunkMixResidualSumMs.toFixed(0)}ms ` +
             `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
             `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
         );
@@ -4085,10 +4097,21 @@ export class Player<
         destChCount,
         transferable,
       );
-      this.chunkMixAwaitSumMs += performance.now() - tAwait0;
-      if (typeof result.workerMs === "number") {
-        this.chunkMixWorkerSumMs += result.workerMs;
-      }
+      const awaitMs = performance.now() - tAwait0;
+      this.chunkMixAwaitSumMs += awaitMs;
+      const workerMs = typeof result.workerMs === "number"
+        ? result.workerMs
+        : 0;
+      const queueMs = typeof result.queueMs === "number" ? result.queueMs : 0;
+      const postMs = typeof result.postMs === "number" ? result.postMs : 0;
+      this.chunkMixWorkerSumMs += workerMs;
+      this.chunkMixQueueSumMs += queueMs;
+      this.chunkMixPostSumMs += postMs;
+      // Residual = reply path + event-loop lag (not explained by queue/post/worker).
+      this.chunkMixResidualSumMs += Math.max(
+        0,
+        awaitMs - queueMs - postMs - workerMs,
+      );
 
       const tCopy0 = performance.now();
       buffer.copyToChannel(result.left, 0);
@@ -4514,12 +4537,12 @@ export class Player<
    * loop to the worker pool when useWorkerSimpleNoteBake is enabled and the
    * destination is long enough that postMessage overhead is amortized.
    *
-   * Intentionally disabled for segment / chunk (tiled) modes: those bake
-   * many notes per tile and the per-note postMessage cost outweighed the
-   * parallel gain. Tiled modes keep note bodies on the main thread and only
-   * offload the tile-level mix via mixEntriesToBuffer / useWorkerTypedArrayMix.
-   * note / ads / adsr still benefit — a single long note onset should not
-   * monopolise the main thread even if total CPU is a bit higher.
+   * Enabled for all modes including segment/chunk: instrumentation showed
+   * main-thread note bake (not postMessage) was starving the mix path
+   * (residual ≫ worker). Worker note bake frees the main event loop so mix
+   * onmessage can complete promptly; miss bakes also parallelise across the
+   * pool. Curve computation stays on main. Short notes below
+   * MIN_SAMPLES_FOR_RENDER stay on main to avoid message overhead.
    */
   protected async renderSampleTypedArrayMaybeWorker(
     srcBuffer: AudioBuffer,
@@ -4534,7 +4557,6 @@ export class Player<
     filterQ: number,
   ): Promise<void> {
     const useWorker = this.useWorkerSimpleNoteBake &&
-      !isTiledCacheMode(this.cacheMode) &&
       dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
       typeof Worker !== "undefined";
 
@@ -4877,6 +4899,9 @@ export class Player<
     this.chunkMixPrepareSumMs = 0;
     this.chunkMixAwaitSumMs = 0;
     this.chunkMixWorkerSumMs = 0;
+    this.chunkMixQueueSumMs = 0;
+    this.chunkMixPostSumMs = 0;
+    this.chunkMixResidualSumMs = 0;
     this.chunkMixCopyBackSumMs = 0;
     this.chunkMixMainSumMs = 0;
     this.chunkMixWorkerTiles = 0;

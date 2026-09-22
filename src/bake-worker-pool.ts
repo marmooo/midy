@@ -32,6 +32,10 @@ export type MixResult = {
   right?: Float32Array;
   /** Wall time spent inside the worker mix loop (ms). Sum when parallel. */
   workerMs?: number;
+  /** Time from enqueue until postMessage is called (pool queue wait, ms). */
+  queueMs?: number;
+  /** Duration of the main-thread postMessage call itself (clone/transfer, ms). */
+  postMs?: number;
 };
 
 export type RenderSampleParams = {
@@ -61,6 +65,12 @@ type AnyResult = MixResult | RenderSampleResult;
 type Pending = {
   resolve: (r: AnyResult) => void;
   reject: (e: Error) => void;
+  /** performance.now() when the job entered enqueue. */
+  enqueuedAt: number;
+  /** Set when postMessage is about to run: queue wait so far. */
+  queueMs?: number;
+  /** Set after postMessage returns: duration of that call. */
+  postMs?: number;
 };
 
 type QueuedJob = {
@@ -301,6 +311,8 @@ self.onmessage = function(ev) {
         left: data.left!,
         right: data.right,
         workerMs: data.workerMs,
+        queueMs: pending.queueMs,
+        postMs: pending.postMs,
       });
     } else if (data.type === "render-result") {
       pending.resolve({ channels: data.channels! });
@@ -310,11 +322,25 @@ self.onmessage = function(ev) {
     this.releaseWorker(worker);
   }
 
+  /** Post a job to a free worker and record queue/post timings on pending. */
+  private postToWorker(
+    worker: Worker,
+    // deno-lint-ignore no-explicit-any
+    request: any,
+    transfer: Transferable[],
+    pending: Pending,
+  ): void {
+    const t0 = performance.now();
+    pending.queueMs = t0 - pending.enqueuedAt;
+    worker.postMessage(request, transfer);
+    pending.postMs = performance.now() - t0;
+  }
+
   private releaseWorker(worker: Worker): void {
     const next = this.queue.shift();
     if (next) {
       next.worker = worker;
-      worker.postMessage(next.request, next.transfer);
+      this.postToWorker(worker, next.request, next.transfer, next.pending);
     } else {
       this.free.push(worker);
     }
@@ -325,11 +351,15 @@ self.onmessage = function(ev) {
     this.ensureStarted();
     const id = request.id as number;
     return new Promise<AnyResult>((resolve, reject) => {
-      const pending: Pending = { resolve, reject };
+      const pending: Pending = {
+        resolve,
+        reject,
+        enqueuedAt: performance.now(),
+      };
       this.pendingById.set(id, pending);
       const free = this.free.pop();
       if (free) {
-        free.postMessage(request, transfer);
+        this.postToWorker(free, request, transfer, pending);
       } else {
         this.queue.push({ request, transfer, pending });
       }
