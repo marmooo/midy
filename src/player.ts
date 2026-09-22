@@ -186,6 +186,20 @@ export class Player<
   chunkBakeComplexSumMs: number = 0;
   chunkBakeMixSumMs: number = 0;
   chunkBakeOacSumMs: number = 0;
+  // Mix-phase breakdown inside mixEntriesToBuffer (sums over tiles that used it).
+  // prepare: getChannelData + optional slice + MixSourceEntry assembly
+  // await:   postMessage round-trip + worker queue wait + structured clone
+  // worker:  pure mix loop inside the worker (reported via MixResult.workerMs)
+  // copyBack: result → AudioBuffer via copyToChannel
+  // main:    main-thread mixSimpleBuffersTypedArray path (no worker)
+  chunkMixPrepareSumMs: number = 0;
+  chunkMixAwaitSumMs: number = 0;
+  chunkMixWorkerSumMs: number = 0;
+  chunkMixCopyBackSumMs: number = 0;
+  chunkMixMainSumMs: number = 0;
+  chunkMixWorkerTiles: number = 0;
+  chunkMixMainTiles: number = 0;
+  chunkMixEntriesSum: number = 0;
   // Per-tile composition stats (sums over tiles; realtime only).
   chunkBakeNoteCountSum: number = 0;
   chunkBakeComplexCountSum: number = 0;
@@ -2095,6 +2109,37 @@ export class Player<
           `mixSum=${this.chunkBakeMixSumMs.toFixed(0)}ms ` +
           `oacSum=${this.chunkBakeOacSumMs.toFixed(0)}ms`,
       );
+      {
+        const mw = this.chunkMixWorkerTiles;
+        const mm = this.chunkMixMainTiles;
+        const mt = mw + mm;
+        const prepAvg = mw > 0 ? this.chunkMixPrepareSumMs / mw : 0;
+        const awaitAvg = mw > 0 ? this.chunkMixAwaitSumMs / mw : 0;
+        const workerAvg = mw > 0 ? this.chunkMixWorkerSumMs / mw : 0;
+        const copyAvg = mw > 0 ? this.chunkMixCopyBackSumMs / mw : 0;
+        const mainAvg = mm > 0 ? this.chunkMixMainSumMs / mm : 0;
+        const entriesAvg = mt > 0 ? this.chunkMixEntriesSum / mt : 0;
+        // await includes postMessage clone + queue wait + worker loop.
+        // overhead ≈ await - worker (clone + queue + reply transfer).
+        const overheadAvg = Math.max(0, awaitAvg - workerAvg);
+        console.log(
+          `[midy] chunk-mix-parts | ` +
+            `workerTiles=${mw} mainTiles=${mm} entriesAvg=${
+              entriesAvg.toFixed(1)
+            } | ` +
+            `prepareAvg=${prepAvg.toFixed(1)}ms ` +
+            `awaitAvg=${awaitAvg.toFixed(1)}ms ` +
+            `workerAvg=${workerAvg.toFixed(1)}ms ` +
+            `overheadAvg=${overheadAvg.toFixed(1)}ms ` +
+            `copyBackAvg=${copyAvg.toFixed(1)}ms ` +
+            `mainAvg=${mainAvg.toFixed(1)}ms | ` +
+            `prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms ` +
+            `awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms ` +
+            `workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms ` +
+            `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
+            `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
+        );
+      }
       console.log(
         `[midy] chunk-tile-shape | ` +
           `notesAvg=${notesAvg.toFixed(1)} ` +
@@ -3959,8 +4004,10 @@ export class Player<
   /**
    * Build an AudioBuffer by mixing pre-baked note buffers (tile-level).
    *
-   * Primary worker path for segment / chunk: one job (or a few parallel
-   * partial mixes via mixParallel) per tile. Per-note sample bake is not
+   * Primary worker path for segment / chunk: one serial mix job per tile
+   * (pool.mix, not mixParallel). Parallel partial mixes were measured to
+   * monopolise the whole worker pool and inflate queue wait; worker loop
+   * itself is ~20ms/tile so serial is enough. Per-note sample bake is not
    * involved here — callers already hold AudioBuffers.
    *
    * Uses a Web Worker pool when useWorkerTypedArrayMix is enabled and the
@@ -3981,17 +4028,23 @@ export class Player<
     );
     if (entries.length === 0) return buffer;
 
+    this.chunkMixEntriesSum += entries.length;
+
     const useWorker = this.useWorkerTypedArrayMix &&
       entries.length >= this.workerMixMinEntries &&
       typeof Worker !== "undefined";
 
     if (!useWorker) {
+      const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
+      this.chunkMixMainSumMs += performance.now() - tMain0;
+      this.chunkMixMainTiles++;
       return buffer;
     }
 
     try {
       const transferable = this.useWorkerTransferable;
+      const tPrep0 = performance.now();
       const mixEntries: MixSourceEntry[] = new Array(entries.length);
       for (let i = 0; i < entries.length; i++) {
         const { buffer: src, offset } = entries[i];
@@ -4020,19 +4073,30 @@ export class Player<
           };
         }
       }
+      this.chunkMixPrepareSumMs += performance.now() - tPrep0;
 
       const pool = this.getBakeWorkerPool();
-      const result = await pool.mixParallel(
+      const tAwait0 = performance.now();
+      // Serial mix only: mixParallel was monopolising all pool workers per
+      // tile and turning await into queue-wait (overheadAvg ≫ workerAvg).
+      const result = await pool.mix(
         mixEntries,
         bufferLength,
         destChCount,
         transferable,
       );
+      this.chunkMixAwaitSumMs += performance.now() - tAwait0;
+      if (typeof result.workerMs === "number") {
+        this.chunkMixWorkerSumMs += result.workerMs;
+      }
 
+      const tCopy0 = performance.now();
       buffer.copyToChannel(result.left, 0);
       if (destChCount > 1 && result.right) {
         buffer.copyToChannel(result.right, 1);
       }
+      this.chunkMixCopyBackSumMs += performance.now() - tCopy0;
+      this.chunkMixWorkerTiles++;
       return buffer;
     } catch (err) {
       // Worker failure → fall back to main-thread mix so playback continues.
@@ -4040,7 +4104,10 @@ export class Player<
         "[midy] worker mix failed, falling back to main thread",
         err,
       );
+      const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
+      this.chunkMixMainSumMs += performance.now() - tMain0;
+      this.chunkMixMainTiles++;
       return buffer;
     }
   }
@@ -4807,6 +4874,14 @@ export class Player<
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
     this.chunkBakeOacSumMs = 0;
+    this.chunkMixPrepareSumMs = 0;
+    this.chunkMixAwaitSumMs = 0;
+    this.chunkMixWorkerSumMs = 0;
+    this.chunkMixCopyBackSumMs = 0;
+    this.chunkMixMainSumMs = 0;
+    this.chunkMixWorkerTiles = 0;
+    this.chunkMixMainTiles = 0;
+    this.chunkMixEntriesSum = 0;
     this.chunkBakeNoteCountSum = 0;
     this.chunkBakeComplexCountSum = 0;
     this.chunkBakeSumNoteDuration = 0;

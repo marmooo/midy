@@ -30,6 +30,8 @@ export type MixSourceEntry = {
 export type MixResult = {
   left: Float32Array;
   right?: Float32Array;
+  /** Wall time spent inside the worker mix loop (ms). Sum when parallel. */
+  workerMs?: number;
 };
 
 export type RenderSampleParams = {
@@ -139,6 +141,7 @@ function biquadLowpassCoeffs(freq, q, sampleRate) {
 }
 
 function handleMix(msg) {
+  var t0 = performance.now();
   var destLen = msg.destLen;
   var destLeft = new Float32Array(destLen);
   var destRight = msg.destChCount > 1 ? new Float32Array(destLen) : null;
@@ -164,10 +167,11 @@ function handleMix(msg) {
       }
     }
   }
+  var workerMs = performance.now() - t0;
   var transfer = [destLeft.buffer];
   if (destRight) transfer.push(destRight.buffer);
   self.postMessage(
-    { type: "mix-result", id: msg.id, left: destLeft, right: destRight || undefined },
+    { type: "mix-result", id: msg.id, left: destLeft, right: destRight || undefined, workerMs: workerMs },
     transfer
   );
 }
@@ -280,6 +284,7 @@ self.onmessage = function(ev) {
       left?: Float32Array;
       right?: Float32Array;
       channels?: Float32Array[];
+      workerMs?: number;
       message?: string;
     };
     const pending = this.pendingById.get(data.id);
@@ -295,6 +300,7 @@ self.onmessage = function(ev) {
       pending.resolve({
         left: data.left!,
         right: data.right,
+        workerMs: data.workerMs,
       });
     } else if (data.type === "render-result") {
       pending.resolve({ channels: data.channels! });
@@ -414,10 +420,14 @@ self.onmessage = function(ev) {
     const partials = await Promise.all(tasks);
     const left = new Float32Array(destLen);
     const right = destChCount > 1 ? new Float32Array(destLen) : null;
+    let workerMs = 0;
 
     for (let p = 0; p < partials.length; p++) {
       const pl = partials[p].left;
       const pr = partials[p].right;
+      if (typeof partials[p].workerMs === "number") {
+        workerMs += partials[p].workerMs!;
+      }
       for (let i = 0; i < destLen; i++) {
         left[i] += pl[i];
       }
@@ -428,7 +438,7 @@ self.onmessage = function(ev) {
       }
     }
 
-    return { left, right: right ?? undefined };
+    return { left, right: right ?? undefined, workerMs };
   }
 
   /**
