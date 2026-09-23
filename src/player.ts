@@ -182,6 +182,10 @@ export class Player<
   chunkLateSumMs: number = 0;
   chunkLateMaxMs: number = 0;
   chunkDroppedLate: number = 0;
+  // Gate wait vs work for realtime chunk bakes (sums over tiles).
+  chunkGateWaitSumMs: number = 0;
+  chunkGateWaitMaxMs: number = 0;
+  chunkWorkSumMs: number = 0;
   // Bake-phase breakdown (sums over all tiles; realtime only).
   chunkBakeSimpleSumMs: number = 0;
   chunkBakeComplexSumMs: number = 0;
@@ -226,9 +230,29 @@ export class Player<
   // hundreds of renderChunkBuffer() calls race the worker pool / OAC gate and
   // wall-clock "bake" times become mostly queue-wait → late/dropped starts.
   // 0 = unlimited (legacy). Default matches a small worker pool.
-  maxConcurrentChunkBakes: number = 4;
+  maxConcurrentChunkBakes: number = 1;
   private chunkBakeActive: number = 0;
-  private chunkBakeWaiters: Array<() => void> = [];
+  // Waiters woken in chunkStart ascending order (near playhead first).
+  private chunkBakeWaiters: Array<{ chunkStart: number; resolve: () => void }> =
+    [];
+  // Only start baking a closed tile when
+  //   chunkStart <= currentTime() + chunkBakeHorizonSec
+  // (realtime playback). 0 = bake immediately on close (legacy).
+  // Preroll / offline always bake immediately.
+  chunkBakeHorizonSec: number = 6;
+  // Prefer earlier chunkStart when multiple tiles wait on the bake gate.
+  chunkBakePriorityByStart: boolean = true;
+  // True while prerollTiledPipeline is running (horizon bypass).
+  private chunkPrerollActive: boolean = false;
+  // Tiles closed beyond the horizon; promoted by pumpDeferredChunkBakes().
+  private deferredChunkBakes: Array<{
+    chunkStart: number;
+    chunk: OpenChunk;
+    pending: PendingChunk;
+    state: ChunkState;
+    resolve: (buffer: AudioBuffer | null) => void;
+    reject: (err: unknown) => void;
+  }> = [];
 
   // Debug / experiment: mix cached simple-note AudioBuffers by direct
   // TypedArray addition instead of scheduling AudioBufferSourceNodes into
@@ -375,14 +399,17 @@ export class Player<
   // Serializes/limits concurrent realtime chunk tile bakes so pure-TA tiles
   // cannot stampede the worker mix pool. forAudioOffline (song export) skips
   // this gate. maxConcurrentChunkBakes <= 0 → pass-through (unlimited).
+  // When chunkBakePriorityByStart is true, waiters are released in ascending
+  // chunkStart order so tiles nearer the playhead run before distant ones.
   protected async runWithChunkBakeGate<T>(
     fn: () => Promise<T>,
+    chunkStart = 0,
   ): Promise<T> {
     const max = this.maxConcurrentChunkBakes | 0;
     if (max <= 0) return await fn();
     while (this.chunkBakeActive >= max) {
       await new Promise<void>((resolve) => {
-        this.chunkBakeWaiters.push(resolve);
+        this.chunkBakeWaiters.push({ chunkStart, resolve });
       });
     }
     this.chunkBakeActive++;
@@ -390,9 +417,92 @@ export class Player<
       return await fn();
     } finally {
       this.chunkBakeActive--;
-      const next = this.chunkBakeWaiters.shift();
-      if (next) next();
+      this.wakeNextChunkBakeWaiter();
     }
+  }
+
+  /** Wake the waiting bake with the earliest chunkStart (FIFO if priority off). */
+  protected wakeNextChunkBakeWaiter(): void {
+    const waiters = this.chunkBakeWaiters;
+    if (waiters.length === 0) return;
+    let best = 0;
+    if (this.chunkBakePriorityByStart) {
+      for (let i = 1; i < waiters.length; i++) {
+        if (waiters[i].chunkStart < waiters[best].chunkStart) best = i;
+      }
+    }
+    const [w] = waiters.splice(best, 1);
+    w.resolve();
+  }
+
+  /** Whether a closed tile at chunkStart may enter the bake gate now. */
+  protected shouldBakeChunkNow(chunkStart: number): boolean {
+    if (this.chunkBakeHorizonSec <= 0) return true;
+    if (this.chunkPrerollActive) return true;
+    if (!this.isPlaying) return true;
+    return chunkStart <= this.currentTime() + this.chunkBakeHorizonSec;
+  }
+
+  /**
+   * Promote deferred tiles whose chunkStart is inside the bake horizon.
+   * Called from the realtime schedule loop so far tiles do not stampede the
+   * gate at preroll boundaries.
+   */
+  protected pumpDeferredChunkBakes(): void {
+    const deferred = this.deferredChunkBakes;
+    if (deferred.length === 0) return;
+    // Stable: process earliest chunkStart first.
+    deferred.sort((a, b) => a.chunkStart - b.chunkStart);
+    const still: typeof deferred = [];
+    for (let i = 0; i < deferred.length; i++) {
+      const d = deferred[i];
+      if (this.chunkGeneration !== d.pending.generation) {
+        d.resolve(null);
+        continue;
+      }
+      if (!this.shouldBakeChunkNow(d.chunkStart)) {
+        still.push(d);
+        continue;
+      }
+      this.startDeferredChunkBake(d);
+    }
+    this.deferredChunkBakes = still;
+  }
+
+  protected startDeferredChunkBake(d: {
+    chunkStart: number;
+    chunk: OpenChunk;
+    pending: PendingChunk;
+    state: ChunkState;
+    resolve: (buffer: AudioBuffer | null) => void;
+    reject: (err: unknown) => void;
+  }): void {
+    const { chunk, pending, state, resolve, reject } = d;
+    const generation = pending.generation;
+    const tEnqueue = performance.now();
+    this.runWithChunkBakeGate(async () => {
+      const gateWaitMs = performance.now() - tEnqueue;
+      return this.renderChunkBuffer(chunk, false, gateWaitMs);
+    }, chunk.chunkStart)
+      .then((buffer) => {
+        if (this.chunkGeneration !== generation) {
+          const idx = state.pending.indexOf(pending);
+          if (idx !== -1) state.pending.splice(idx, 1);
+          pending.buffer = null;
+          pending.done = true;
+          resolve(null);
+          return;
+        }
+        pending.buffer = buffer;
+        pending.bufferReady = true;
+        resolve(buffer);
+      })
+      .catch((err) => {
+        console.warn("chunk render failed", err);
+        pending.buffer = null;
+        pending.bufferReady = true;
+        resolve(null);
+      });
   }
 
   // Copy PCM into a fresh AudioBuffer allocated against the live context so
@@ -1708,6 +1818,8 @@ export class Player<
       });
       queueIndex++;
     }
+    // Promote deferred chunk bakes that are now inside the horizon.
+    if (isChunkMode) this.pumpDeferredChunkBakes();
     return queueIndex;
   }
 
@@ -1741,6 +1853,14 @@ export class Player<
     this.segmentGeneration++;
     this.chunkGeneration++;
     this.prerollUntilSongTime = 0;
+    // Drop deferred bakes (their promises resolve null via generation mismatch
+    // if already mid-flight; clear the queue so pump does not restart them).
+    const deferred = this.deferredChunkBakes;
+    this.deferredChunkBakes = [];
+    for (let i = 0; i < deferred.length; i++) {
+      deferred[i].resolve(null);
+    }
+    this.chunkBakeWaiters = [];
 
     const states = this.segmentChannelStates;
     for (let ch = 0; ch < states.length; ch++) {
@@ -2094,6 +2214,10 @@ export class Player<
             this.chunkBakeMaxMs.toFixed(1)
           }ms | ` +
           `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} | ` +
+          `gateWaitAvg=${
+            cb > 0 ? (this.chunkGateWaitSumMs / cb).toFixed(1) : "0"
+          }ms gateWaitMax=${this.chunkGateWaitMaxMs.toFixed(1)}ms ` +
+          `workAvg=${cb > 0 ? (this.chunkWorkSumMs / cb).toFixed(1) : "0"}ms ` +
           `starts=${this.chunkStarts} late=${lateN} ` +
           `lateAvg=${lateAvg.toFixed(1)}ms lateMax=${
             this.chunkLateMaxMs.toFixed(1)
@@ -2164,6 +2288,7 @@ export class Player<
           `complexWeight=${this.chunkComplexCostWeight} ` +
           `tileDuration=${this.tileDuration} ` +
           `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
+          `horizon=${this.chunkBakeHorizonSec}s ` +
           `maxChunkNotes=${this.maxChunkNotes}`,
       );
     } catch (e) {
@@ -2415,6 +2540,15 @@ export class Player<
   // Pending buffers stay in chunkState / segmentChannelStates; sources are
   // started later via startReadyTiledSources() once startTime is set.
   async prerollTiledPipeline(): Promise<void> {
+    this.chunkPrerollActive = true;
+    try {
+      await this.prerollTiledPipelineBody();
+    } finally {
+      this.chunkPrerollActive = false;
+    }
+  }
+
+  private async prerollTiledPipelineBody(): Promise<void> {
     const cacheMode = this.cacheMode;
     if (!isTiledCacheMode(cacheMode)) {
       this.initTiledPipeline();
@@ -3069,9 +3203,33 @@ export class Player<
       bufferPromise: Promise.resolve(null),
       generation,
     };
-    pending.bufferPromise = this.runWithChunkBakeGate(() =>
-      this.renderChunkBuffer(chunk)
-    )
+    state.pending.push(pending);
+
+    // Beyond bake horizon: keep pending but do not enter the gate yet.
+    // pumpDeferredChunkBakes() promotes when the playhead approaches.
+    if (!this.shouldBakeChunkNow(chunk.chunkStart)) {
+      pending.bufferPromise = new Promise<AudioBuffer | null>(
+        (resolve, reject) => {
+          this.deferredChunkBakes.push({
+            chunkStart: chunk.chunkStart,
+            chunk,
+            pending,
+            state,
+            resolve,
+            reject,
+          });
+        },
+      );
+      return;
+    }
+
+    // tEnqueue: when this tile joined the bake queue. gateWait =
+    // (gate entry − tEnqueue); work = renderChunkBuffer wall time.
+    const tEnqueue = performance.now();
+    pending.bufferPromise = this.runWithChunkBakeGate(async () => {
+      const gateWaitMs = performance.now() - tEnqueue;
+      return this.renderChunkBuffer(chunk, false, gateWaitMs);
+    }, chunk.chunkStart)
       .then((buffer) => {
         if (this.chunkGeneration !== generation) {
           const idx = state.pending.indexOf(pending);
@@ -3090,7 +3248,6 @@ export class Player<
         pending.bufferReady = true;
         return null;
       });
-    state.pending.push(pending);
   }
 
   startPendingChunk(pending: PendingChunk): void {
@@ -3149,6 +3306,7 @@ export class Player<
     ) {
       this.closeChunk(state);
     }
+    this.pumpDeferredChunkBakes();
     const pending = state.pending;
     let write = 0;
     for (let i = 0; i < pending.length; i++) {
@@ -3184,6 +3342,8 @@ export class Player<
   async renderChunkBuffer(
     chunk: OpenChunk,
     forAudioOffline = false,
+    // Ms waiting for maxConcurrentChunkBakes (0 when unlimited / offline).
+    gateWaitMs = 0,
   ): Promise<AudioBuffer | null> {
     const notes = chunk.notes;
     if (notes.length === 0) return null;
@@ -3213,6 +3373,27 @@ export class Player<
     }
     simpleNotes.length = simpleCount;
     complexNotes.length = complexCount;
+
+    // Per-tile complex automation flags (multi-label; heavy-tile logs).
+    let cxBend = 0;
+    let cxPan = 0;
+    let cxMod = 0;
+    let cxGain = 0;
+    let cxOtherCc = 0;
+    let cxSysEx = 0;
+    let cxPc = 0;
+    for (let i = 0; i < complexCount; i++) {
+      const ne = complexNotes[i].noteEvent;
+      if (!ne) continue;
+      const f = this.inspectComplexAutomation(ne);
+      if (f.pitchBend) cxBend++;
+      if (f.pan) cxPan++;
+      if (f.mod) cxMod++;
+      if (f.gain) cxGain++;
+      if (f.otherCc) cxOtherCc++;
+      if (f.sysEx) cxSysEx++;
+      if (f.programChange) cxPc++;
+    }
 
     // Realtime A/B: wall time + pure-TA vs tile-level OAC path.
     // forAudioOffline (renderFastMode windows) is excluded so song-export
@@ -3419,6 +3600,7 @@ export class Player<
           complexMs,
           mixMs,
           oacMs: 0,
+          gateWaitMs,
           noteCount: notesLen,
           complexCount,
           sumNoteDuration: chunk.sumNoteDuration,
@@ -3427,8 +3609,16 @@ export class Player<
           bufferDuration: bufferLength / sampleRate,
           simpleHits: simpleCacheHits,
           simpleMissesBaked,
+          simpleMissesDirect: simpleMisses.length,
           topNoteDuration,
           topReleaseTail,
+          cxBend,
+          cxPan,
+          cxMod,
+          cxGain,
+          cxOtherCc,
+          cxSysEx,
+          cxPc,
         });
       }
       return buffer;
@@ -3554,6 +3744,7 @@ export class Player<
         complexMs,
         mixMs,
         oacMs,
+        gateWaitMs,
         noteCount: notesLen,
         complexCount,
         sumNoteDuration: chunk.sumNoteDuration,
@@ -3562,8 +3753,16 @@ export class Player<
         bufferDuration: bufferLength / sampleRate,
         simpleHits: simpleCacheHits,
         simpleMissesBaked,
+        simpleMissesDirect: simpleMisses.length,
         topNoteDuration,
         topReleaseTail,
+        cxBend,
+        cxPan,
+        cxMod,
+        cxGain,
+        cxOtherCc,
+        cxSysEx,
+        cxPc,
       });
     }
     return result;
@@ -4898,6 +5097,9 @@ export class Player<
     this.chunkLateSumMs = 0;
     this.chunkLateMaxMs = 0;
     this.chunkDroppedLate = 0;
+    this.chunkGateWaitSumMs = 0;
+    this.chunkGateWaitMaxMs = 0;
+    this.chunkWorkSumMs = 0;
     this.chunkBakeSimpleSumMs = 0;
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
@@ -4927,6 +5129,8 @@ export class Player<
       complexMs?: number;
       mixMs?: number;
       oacMs?: number;
+      /** Ms waiting for maxConcurrentChunkBakes before work started. */
+      gateWaitMs?: number;
       noteCount?: number;
       complexCount?: number;
       sumNoteDuration?: number;
@@ -4934,14 +5138,29 @@ export class Player<
       chunkStart?: number;
       bufferDuration?: number;
       simpleHits?: number;
+      /** Cache misses baked via getSimpleNoteBuffer (TypedArray path). */
       simpleMissesBaked?: number;
+      /** Simple notes still on the shared OAC miss path (not pre-baked). */
+      simpleMissesDirect?: number;
       topNoteDuration?: number;
       topReleaseTail?: number;
+      /** Per-tile complex automation multi-label counts. */
+      cxBend?: number;
+      cxPan?: number;
+      cxMod?: number;
+      cxGain?: number;
+      cxOtherCc?: number;
+      cxSysEx?: number;
+      cxPc?: number;
     },
   ): void {
     this.chunkBakeCount++;
     this.chunkBakeSumMs += ms;
     if (ms > this.chunkBakeMaxMs) this.chunkBakeMaxMs = ms;
+    const gw = parts?.gateWaitMs ?? 0;
+    this.chunkGateWaitSumMs += gw;
+    if (gw > this.chunkGateWaitMaxMs) this.chunkGateWaitMaxMs = gw;
+    this.chunkWorkSumMs += ms;
     if (pureTa) this.chunkPureTaTiles++;
     else this.chunkOacTiles++;
     if (parts) {
@@ -4969,7 +5188,9 @@ export class Player<
       const complexMs = p.complexMs ?? 0;
       const mixMs = p.mixMs ?? 0;
       const oacMs = p.oacMs ?? 0;
-      // Dominant phase for a quick read of the log line.
+      const gateWaitMs = p.gateWaitMs ?? 0;
+      // workMs is renderChunkBuffer wall time (excludes gate queue wait).
+      const workMs = ms;
       let dominant = "other";
       let domMs = 0;
       const phases: [string, number][] = [
@@ -4984,20 +5205,33 @@ export class Player<
           dominant = phases[i][0];
         }
       }
+      // Call out queue delay when it exceeds the heaviest work phase.
+      if (gateWaitMs > workMs && gateWaitMs > domMs) {
+        dominant = "gateWait";
+        domMs = gateWaitMs;
+      }
+      const hits = p.simpleHits ?? 0;
+      const missBake = p.simpleMissesBaked ?? 0;
+      const missDirect = p.simpleMissesDirect ?? 0;
+      const simpleTotal = hits + missBake + missDirect;
       console.warn(
-        `[midy] chunk-heavy | ${ms.toFixed(0)}ms dominant=${dominant} ` +
-          `path=${pureTa ? "pureTA" : "oac"} ` +
+        `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
+          `gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms ` +
+          `dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} ` +
           `start=${(p.chunkStart ?? 0).toFixed(2)}s ` +
-          `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} ` +
-          `hits=${p.simpleHits ?? "?"} missBake=${
-            p.simpleMissesBaked ?? "?"
-          } ` +
+          `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | ` +
+          `simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} ` +
+          `total=${simpleTotal} | ` +
+          `cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${p.cxMod ?? 0} ` +
+          `gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} ` +
+          `sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | ` +
           `sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s ` +
           `bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s ` +
           `cost=${(p.cost ?? 0).toFixed(2)} ` +
           `topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s ` +
           `topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | ` +
-          `simple=${simpleMs.toFixed(0)}ms complex=${complexMs.toFixed(0)}ms ` +
+          `parts: simple=${simpleMs.toFixed(0)}ms ` +
+          `complex=${complexMs.toFixed(0)}ms ` +
           `mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms`,
       );
     }
