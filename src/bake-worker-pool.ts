@@ -7,10 +7,13 @@
 //
 //   2) Note-level simple-note sample render (note / ads / adsr):
 //        resample + loop + optional lowpass + gains
-//      Useful to keep the main thread free during realtime onsets even when
-//      postMessage cost is non-trivial. Segment/chunk should NOT use this
-//      path (per-note overhead dominates); they bake notes on the main
-//      thread and only offload the tile mix.
+//      Useful to keep the main thread free during realtime onsets.
+//
+//   3) Batch simple-note render (segment / chunk tile misses):
+//        type:"renderSamplesBatch" — many notes in one postMessage.
+//      Preferred for chunk/segment: amortizes queue + postMessage cost
+//      vs per-note jobs while still offloading the sample loop from main
+//      (keeps residual low so mix onmessage can complete promptly).
 //
 // Uses structured clone by default; Transferable ArrayBuffers when requested
 // to minimise copy cost for large PCM payloads.
@@ -60,7 +63,12 @@ export type RenderSampleResult = {
   channels: Float32Array[];
 };
 
-type AnyResult = MixResult | RenderSampleResult;
+export type RenderSamplesBatchResult = {
+  /** One result per input params entry, same order. */
+  results: RenderSampleResult[];
+};
+
+type AnyResult = MixResult | RenderSampleResult | RenderSamplesBatchResult;
 
 type Pending = {
   resolve: (r: AnyResult) => void;
@@ -186,20 +194,20 @@ function handleMix(msg) {
   );
 }
 
-function handleRenderSample(msg) {
-  var srcChannels = msg.srcChannels;
-  var srcRate = msg.srcRate;
-  var destRate = msg.destRate;
-  var destLen = msg.destLen | 0;
-  var destChCount = msg.destChCount | 0;
-  var playbackRate = msg.playbackRate;
-  var isLoop = !!msg.isLoop;
-  var loopStartSrc = msg.loopStartSrc;
-  var loopEndSrc = msg.loopEndSrc;
-  var startOffsetSrc = msg.startOffsetSrc;
-  var gains = msg.gains;
-  var filterFreqs = msg.filterFreqs;
-  var filterQ = msg.filterQ;
+function renderOneSample(p) {
+  var srcChannels = p.srcChannels;
+  var srcRate = p.srcRate;
+  var destRate = p.destRate;
+  var destLen = p.destLen | 0;
+  var destChCount = p.destChCount | 0;
+  var playbackRate = p.playbackRate;
+  var isLoop = !!p.isLoop;
+  var loopStartSrc = p.loopStartSrc;
+  var loopEndSrc = p.loopEndSrc;
+  var startOffsetSrc = p.startOffsetSrc;
+  var gains = p.gains;
+  var filterFreqs = p.filterFreqs;
+  var filterQ = p.filterQ;
   var srcChCount = srcChannels.length;
   var srcLen = srcChannels[0].length;
   var loopStartSample = loopStartSrc * srcRate;
@@ -252,7 +260,26 @@ function handleRenderSample(msg) {
     out.push(dst);
     transfer.push(dst.buffer);
   }
-  self.postMessage({ type: "render-result", id: msg.id, channels: out }, transfer);
+  return { channels: out, transfer: transfer };
+}
+
+function handleRenderSample(msg) {
+  var r = renderOneSample(msg);
+  self.postMessage({ type: "render-result", id: msg.id, channels: r.channels }, r.transfer);
+}
+
+function handleRenderSamplesBatch(msg) {
+  var items = msg.items;
+  var results = [];
+  var transfer = [];
+  for (var n = 0; n < items.length; n++) {
+    var r = renderOneSample(items[n]);
+    results.push({ channels: r.channels });
+    for (var t = 0; t < r.transfer.length; t++) {
+      transfer.push(r.transfer[t]);
+    }
+  }
+  self.postMessage({ type: "render-batch-result", id: msg.id, results: results }, transfer);
 }
 
 self.onmessage = function(ev) {
@@ -263,6 +290,8 @@ self.onmessage = function(ev) {
       handleMix(msg);
     } else if (msg.type === "renderSample") {
       handleRenderSample(msg);
+    } else if (msg.type === "renderSamplesBatch") {
+      handleRenderSamplesBatch(msg);
     }
   } catch (err) {
     self.postMessage({
@@ -294,6 +323,7 @@ self.onmessage = function(ev) {
       left?: Float32Array;
       right?: Float32Array;
       channels?: Float32Array[];
+      results?: { channels: Float32Array[] }[];
       workerMs?: number;
       message?: string;
     };
@@ -316,6 +346,8 @@ self.onmessage = function(ev) {
       });
     } else if (data.type === "render-result") {
       pending.resolve({ channels: data.channels! });
+    } else if (data.type === "render-batch-result") {
+      pending.resolve({ results: data.results! });
     } else {
       pending.reject(new Error(`unknown worker response: ${data.type}`));
     }
@@ -527,6 +559,130 @@ self.onmessage = function(ev) {
       transfer,
     );
     return result as RenderSampleResult;
+  }
+
+  /**
+   * Soft cap on notes per single batch postMessage. Same spirit as mix's
+   * ~4 entries/worker split: large batches serialize on one worker and miss
+   * the realtime deadline. Parallel split uses this as the target chunk size.
+   */
+  static readonly MAX_NOTES_PER_BATCH = 4;
+
+  /**
+   * Batch-render many simple-note bodies in a single postMessage.
+   * Prefer {@link renderSamplesBatchParallel} for tile-sized miss lists so
+   * work fans out across the pool (same pattern as mixParallel).
+   * Returns results in the same order as paramsList.
+   */
+  async renderSamplesBatch(
+    paramsList: RenderSampleParams[],
+    useTransferable = false,
+  ): Promise<RenderSamplesBatchResult> {
+    if (paramsList.length === 0) {
+      return { results: [] };
+    }
+    if (paramsList.length === 1) {
+      const one = await this.renderSample(paramsList[0], useTransferable);
+      return { results: [one] };
+    }
+
+    const id = this.nextId++;
+    const transfer: Transferable[] = [];
+    // deno-lint-ignore no-explicit-any
+    const items: any[] = new Array(paramsList.length);
+
+    for (let n = 0; n < paramsList.length; n++) {
+      const params = paramsList[n];
+      const srcChannels = params.srcChannels.map((ch) => {
+        if (useTransferable) {
+          if (ch.buffer.byteLength > 0) transfer.push(ch.buffer);
+          return ch;
+        }
+        return ch.slice();
+      });
+      const gains = useTransferable ? params.gains : params.gains.slice();
+      if (useTransferable && params.gains.buffer.byteLength > 0) {
+        transfer.push(params.gains.buffer);
+      }
+      let filterFreqs: Float32Array | null = params.filterFreqs;
+      if (filterFreqs) {
+        if (useTransferable) {
+          if (filterFreqs.buffer.byteLength > 0) {
+            transfer.push(filterFreqs.buffer);
+          }
+        } else {
+          filterFreqs = filterFreqs.slice();
+        }
+      }
+      items[n] = {
+        srcChannels,
+        srcRate: params.srcRate,
+        destRate: params.destRate,
+        destLen: params.destLen,
+        destChCount: params.destChCount,
+        playbackRate: params.playbackRate,
+        isLoop: params.isLoop,
+        loopStartSrc: params.loopStartSrc,
+        loopEndSrc: params.loopEndSrc,
+        startOffsetSrc: params.startOffsetSrc,
+        gains,
+        filterFreqs,
+        filterQ: params.filterQ,
+      };
+    }
+
+    const result = await this.enqueue(
+      {
+        type: "renderSamplesBatch",
+        id,
+        items,
+      },
+      transfer,
+    );
+    return result as RenderSamplesBatchResult;
+  }
+
+  /**
+   * Split a large note list across pool workers (like mixParallel).
+   * Target chunk size = MAX_NOTES_PER_BATCH so no single worker holds a
+   * huge serial job that misses the chunk bake deadline.
+   */
+  async renderSamplesBatchParallel(
+    paramsList: RenderSampleParams[],
+    useTransferable = false,
+  ): Promise<RenderSamplesBatchResult> {
+    if (paramsList.length === 0) {
+      return { results: [] };
+    }
+    const maxPer = BakeWorkerPool.MAX_NOTES_PER_BATCH;
+    const workers = Math.min(
+      this.size,
+      Math.max(1, Math.ceil(paramsList.length / maxPer)),
+    );
+    if (workers <= 1 || paramsList.length <= maxPer) {
+      return this.renderSamplesBatch(paramsList, useTransferable);
+    }
+
+    const chunkSize = Math.ceil(paramsList.length / workers);
+    const tasks: Promise<RenderSamplesBatchResult>[] = [];
+    for (let w = 0; w < workers; w++) {
+      const start = w * chunkSize;
+      if (start >= paramsList.length) break;
+      const slice = paramsList.slice(start, start + chunkSize);
+      // Each note already holds its own sliced PCM/curves, so transferable
+      // is safe on every parallel sub-batch.
+      tasks.push(this.renderSamplesBatch(slice, useTransferable));
+    }
+
+    const parts = await Promise.all(tasks);
+    const results: RenderSampleResult[] = [];
+    for (let p = 0; p < parts.length; p++) {
+      const pr = parts[p].results;
+      for (let i = 0; i < pr.length; i++) {
+        results.push(pr[i]);
+      }
+    }
+    return { results };
   }
 
   /** Terminate all workers and revoke the blob URL. */

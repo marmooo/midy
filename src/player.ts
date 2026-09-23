@@ -49,6 +49,7 @@ import {
   BakeWorkerPool,
   getSharedBakeWorkerPool,
   type MixSourceEntry,
+  type RenderSampleParams,
 } from "./bake-worker-pool.ts";
 
 // Re-export cache strategy API (backward compatible with previous player.ts exports).
@@ -283,8 +284,9 @@ export class Player<
 
   // Offload pure TypedArray simple-note sample render (resample + loop +
   // optional lowpass + gains) to the worker pool. Curve computation stays
-  // on main. Enabled for segment/chunk as well: mix residual was dominated
-  // by main-thread note bake blocking the event loop (queue≈0, post≈0).
+  // on main. For segment/chunk tile misses, bakeSimpleNotesBatch packs all
+  // simple misses into one postMessage (not per-note) so residual stays low
+  // without flooding the pool queue.
   useWorkerSimpleNoteBake: boolean = true;
 
   private bakeWorkerPool: BakeWorkerPool | null = null;
@@ -3247,6 +3249,10 @@ export class Player<
 
     const tSimple0 = performance.now();
     if (simpleCount > 0) {
+      // Per-note path (Promise.all). Empirically better residual/late/dropped
+      // than tile-level batch bake: batch concentrated main-thread prepare and
+      // fought the mix path for event-loop time (residual 80→190ms).
+      // useWorkerSimpleNoteBake still offloads each long note's sample loop.
       const simpleResults = await Promise.all(
         simpleNotes.map(async (n) => {
           const cached = await this.lookupSimpleNoteBuffer(n, true);
@@ -5470,6 +5476,512 @@ export class Player<
       this.simpleNoteBufferCache.delete(key);
       throw err;
     }
+  }
+
+  /**
+   * Batch-bake simple notes for one tile.
+   *
+   * - Dedupes by cache key within the batch (and across concurrent tiles via
+   *   the shared promise map).
+   * - Never awaits a Promise we ourselves just registered (that deadlocked
+   *   the previous version when the same key appeared twice in one tile).
+   * - Worker work is serial chunks of ≤ MAX_NOTES_PER_BATCH notes (same
+   *   spirit as serial mix — parallel fan-out monopolised the pool and
+   *   drove residual/late up). Oversized one-shot batches missed deadlines.
+   */
+  async bakeSimpleNotesBatch(
+    entries: BakeNoteEntry[],
+    bakeChannelMix = true,
+  ): Promise<AudioBuffer[]> {
+    if (entries.length === 0) return [];
+    if (entries.length === 1) {
+      return [
+        await this.getSimpleNoteBuffer(entries[0], bakeChannelMix, false),
+      ];
+    }
+
+    const out: (AudioBuffer | null)[] = new Array(entries.length).fill(null);
+
+    // --- Phase 1: resolve hits + collect unique misses; await only *external* inflight ---
+    type MissSlot = { entryIdx: number; entry: BakeNoteEntry; key: string };
+    const misses: MissSlot[] = [];
+    // key → first miss index in `misses` (dedupe within this batch)
+    const missKeyToSlot = new Map<string, number>();
+    // entry indices that share a key with a miss we will bake (aliases)
+    const aliasByKey = new Map<string, number[]>();
+    const externalInflight: { idx: number; promise: Promise<AudioBuffer> }[] =
+      [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+      const cached = this.simpleNoteBufferCache.get(key);
+      if (cached instanceof AudioBuffer) {
+        this.noteCacheRecordSimpleHit();
+        out[i] = cached;
+        continue;
+      }
+      if (cached instanceof Promise) {
+        // External (or prior) in-flight — safe to await; we did not create it.
+        this.noteCacheRecordSimpleHit();
+        externalInflight.push({ idx: i, promise: cached });
+        continue;
+      }
+      this.noteCacheRecordSimpleMiss();
+      const existingSlot = missKeyToSlot.get(key);
+      if (existingSlot !== undefined) {
+        const list = aliasByKey.get(key);
+        if (list) list.push(i);
+        else aliasByKey.set(key, [i]);
+        continue;
+      }
+      missKeyToSlot.set(key, misses.length);
+      misses.push({ entryIdx: i, entry, key });
+    }
+
+    if (externalInflight.length > 0) {
+      const resolved = await Promise.all(
+        externalInflight.map((x) => x.promise),
+      );
+      for (let k = 0; k < externalInflight.length; k++) {
+        out[externalInflight[k].idx] = resolved[k];
+      }
+    }
+
+    if (misses.length === 0) {
+      return out as AudioBuffer[];
+    }
+
+    // --- Phase 2: TypedArray eligibility ---
+    const canBatch = this.useTypedArraySimpleNoteBake &&
+      misses.every((m) => {
+        const ne = m.entry.noteEvent;
+        const isSimple = !!ne &&
+          ne.duration > 0 &&
+          ne.durationTicks !== Infinity &&
+          !this.hasWaveformAutomation(ne);
+        const modDepth = m.entry.channelStateArray[128 + 1] ?? 0;
+        return isSimple && modDepth === 0;
+      });
+
+    if (!canBatch) {
+      for (const m of misses) {
+        const buf = await this.getSimpleNoteBuffer(
+          m.entry,
+          bakeChannelMix,
+          false,
+        );
+        out[m.entryIdx] = buf;
+        const aliases = aliasByKey.get(m.key);
+        if (aliases) {
+          for (let a = 0; a < aliases.length; a++) out[aliases[a]] = buf;
+        }
+      }
+      return out as AudioBuffer[];
+    }
+
+    // --- Phase 3: interleaved prepare → bake in chunks of ≤ MAX_NOTES_PER_BATCH ---
+    // Critical for residual: do NOT prepare all misses first. Concentrated
+    // curve/PCM prep on main delayed mix onmessage (residual 180ms+ with
+    // queue≈0). Pipeline: prepare up to 4 → post one batch → finish → yield
+    // so concurrent tiles' mix replies can run on main.
+    type Job = {
+      miss: MissSlot;
+      length: number;
+      sampleRate: number;
+      params: RenderSampleParams;
+      panLeft: number;
+      panRight: number;
+      panCurveLeft: Float32Array | null;
+      panCurveRight: Float32Array | null;
+    };
+    const sampleRate = this.audioContext.sampleRate;
+    const maxPer = BakeWorkerPool.MAX_NOTES_PER_BATCH;
+    const useWorker = this.useWorkerSimpleNoteBake &&
+      typeof Worker !== "undefined";
+    const resolveMap = new Map<string, {
+      resolve: (b: AudioBuffer) => void;
+      reject: (e: unknown) => void;
+    }>();
+
+    const assignOut = (key: string, entryIdx: number, buffer: AudioBuffer) => {
+      out[entryIdx] = buffer;
+      const aliases = aliasByKey.get(key);
+      if (aliases) {
+        for (let a = 0; a < aliases.length; a++) out[aliases[a]] = buffer;
+      }
+    };
+
+    const finishJob = (job: Job, buffer: AudioBuffer) => {
+      this.simpleNoteBufferCache.set(job.miss.key, buffer);
+      this.noteCacheTouchPeakSizes();
+      const waiters = resolveMap.get(job.miss.key);
+      if (waiters) waiters.resolve(buffer);
+      assignOut(job.miss.key, job.miss.entryIdx, buffer);
+    };
+
+    const failJob = (job: Job, err: unknown) => {
+      this.simpleNoteBufferCache.delete(job.miss.key);
+      const waiters = resolveMap.get(job.miss.key);
+      if (waiters) waiters.reject(err);
+    };
+
+    const expandToBuffer = (job: Job, mono: Float32Array): AudioBuffer => {
+      if (!bakeChannelMix) {
+        const buffer = this.createEmptyBuffer(1, job.length, job.sampleRate);
+        buffer.copyToChannel(mono, 0);
+        return buffer;
+      }
+      const buffer = this.createEmptyBuffer(2, job.length, job.sampleRate);
+      const left = buffer.getChannelData(0);
+      const right = buffer.getChannelData(1);
+      if (job.panCurveLeft && job.panCurveRight) {
+        for (let i = 0; i < job.length; i++) {
+          const s = mono[i];
+          left[i] = s * job.panCurveLeft[i];
+          right[i] = s * job.panCurveRight[i];
+        }
+      } else {
+        const pl = job.panLeft;
+        const pr = job.panRight;
+        for (let i = 0; i < job.length; i++) {
+          const s = mono[i];
+          left[i] = s * pl;
+          right[i] = s * pr;
+        }
+      }
+      return buffer;
+    };
+
+    const renderChunkOnMain = (chunk: Job[]): Float32Array[] => {
+      const monos: Float32Array[] = new Array(chunk.length);
+      for (let k = 0; k < chunk.length; k++) {
+        const job = chunk[k];
+        const body = this.createEmptyBuffer(1, job.length, job.sampleRate);
+        const srcCh = job.params.srcChannels;
+        const fakeSrc = this.createEmptyBuffer(
+          srcCh.length,
+          srcCh[0].length,
+          job.params.srcRate,
+        );
+        for (let c = 0; c < srcCh.length; c++) {
+          fakeSrc.copyToChannel(srcCh[c], c);
+        }
+        this.renderSampleTypedArray(
+          fakeSrc,
+          body,
+          job.params.playbackRate,
+          job.params.isLoop,
+          job.params.loopStartSrc,
+          job.params.loopEndSrc,
+          job.params.startOffsetSrc,
+          job.params.gains,
+          job.params.filterFreqs,
+          job.params.filterQ,
+        );
+        monos[k] = body.getChannelData(0).slice();
+      }
+      return monos;
+    };
+
+    // Process misses in serial chunks. Each iteration:
+    //   1) prepare ≤4 notes (yield after each so mix onmessage can run)
+    //   2) register in-flight promises for owned keys
+    //   3) one worker batch (or main TypedArray)
+    //   4) finish immediately
+    for (let mi = 0; mi < misses.length;) {
+      const chunk: Job[] = [];
+      while (mi < misses.length && chunk.length < maxPer) {
+        const m = misses[mi++];
+        if (out[m.entryIdx] !== null) continue;
+
+        const existing = this.simpleNoteBufferCache.get(m.key);
+        if (existing instanceof AudioBuffer) {
+          assignOut(m.key, m.entryIdx, existing);
+          continue;
+        }
+        if (existing instanceof Promise) {
+          // External owner — await without registering our own promise.
+          try {
+            const buf = await existing;
+            assignOut(m.key, m.entryIdx, buf);
+          } catch {
+            // fall through to local bake below
+          }
+          if (out[m.entryIdx] !== null) continue;
+        }
+
+        const prepared = await this.prepareSimpleNoteRenderParams(
+          m.entry,
+          bakeChannelMix,
+        );
+        // Yield: let pending mix onmessage / other tile work run.
+        await Promise.resolve();
+
+        const after = this.simpleNoteBufferCache.get(m.key);
+        if (after instanceof AudioBuffer) {
+          assignOut(m.key, m.entryIdx, after);
+          continue;
+        }
+        if (after instanceof Promise) {
+          try {
+            const buf = await after;
+            assignOut(m.key, m.entryIdx, buf);
+          } catch {
+            /* bake locally */
+          }
+          if (out[m.entryIdx] !== null) continue;
+        }
+
+        chunk.push({
+          miss: m,
+          length: prepared.length,
+          sampleRate,
+          params: prepared.params,
+          panLeft: prepared.panLeft,
+          panRight: prepared.panRight,
+          panCurveLeft: prepared.panCurveLeft,
+          panCurveRight: prepared.panCurveRight,
+        });
+      }
+
+      if (chunk.length === 0) continue;
+
+      // Register in-flight for keys we own (no self-await on these).
+      const owned: Job[] = [];
+      for (const job of chunk) {
+        const key = job.miss.key;
+        const existing = this.simpleNoteBufferCache.get(key);
+        if (existing instanceof AudioBuffer) {
+          assignOut(key, job.miss.entryIdx, existing);
+          continue;
+        }
+        if (existing instanceof Promise) {
+          try {
+            const buf = await existing;
+            assignOut(key, job.miss.entryIdx, buf);
+          } catch {
+            /* bake */
+          }
+          if (out[job.miss.entryIdx] !== null) continue;
+        }
+        if (!this.simpleNoteBufferCache.has(key)) {
+          const p = new Promise<AudioBuffer>((resolve, reject) => {
+            resolveMap.set(key, { resolve, reject });
+          });
+          this.simpleNoteBufferCache.set(key, p);
+          this.noteCacheTouchPeakSizes();
+        }
+        owned.push(job);
+      }
+
+      if (owned.length === 0) continue;
+
+      try {
+        let monos: Float32Array[];
+        if (useWorker) {
+          const pool = this.getBakeWorkerPool();
+          const batch = await pool.renderSamplesBatch(
+            owned.map((j) => j.params),
+            this.useWorkerTransferable,
+          );
+          monos = batch.results.map((r) => r.channels[0]);
+        } else {
+          monos = renderChunkOnMain(owned);
+        }
+        for (let k = 0; k < owned.length; k++) {
+          finishJob(owned[k], expandToBuffer(owned[k], monos[k]));
+        }
+      } catch (err) {
+        for (const job of owned) {
+          failJob(job, err);
+        }
+        // Sequential fallback for this chunk only.
+        for (const job of owned) {
+          if (out[job.miss.entryIdx] !== null) continue;
+          try {
+            const buf = await this.getSimpleNoteBuffer(
+              job.miss.entry,
+              bakeChannelMix,
+              false,
+            );
+            assignOut(job.miss.key, job.miss.entryIdx, buf);
+          } catch {
+            /* leave null */
+          }
+        }
+      }
+
+      // Yield between chunks so concurrent mix replies land promptly.
+      await Promise.resolve();
+    }
+
+    // Safety: never return unresolved slots (would hang downstream).
+    for (let i = 0; i < out.length; i++) {
+      if (out[i] === null) {
+        out[i] = await this.getSimpleNoteBuffer(
+          entries[i],
+          bakeChannelMix,
+          false,
+        );
+      }
+    }
+    return out as AudioBuffer[];
+  }
+
+  /**
+   * Build RenderSampleParams + pan expand metadata for a simple note.
+   * Curves stay on main; only the resample/filter loop is worker-eligible.
+   */
+  private async prepareSimpleNoteRenderParams(
+    entry: BakeNoteEntry,
+    bakeChannelMix: boolean,
+  ): Promise<{
+    length: number;
+    params: RenderSampleParams;
+    panLeft: number;
+    panRight: number;
+    panCurveLeft: Float32Array | null;
+    panCurveRight: Float32Array | null;
+  }> {
+    const voiceParams = entry.voiceParams;
+    const releaseEndDuration = entry.noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const noteOffTime = Math.max(0, entry.noteDuration);
+    const totalDuration = Math.max(0.001, noteOffTime + releaseEndDuration);
+    const sampleRate = this.audioContext.sampleRate;
+    const length = Math.ceil(totalDuration * sampleRate);
+
+    let audioBuffer: AudioBuffer;
+    if (entry.audioBufferId !== undefined) {
+      audioBuffer = await this.getRawAudioBuffer(
+        entry.audioBufferId,
+        voiceParams,
+      );
+    } else {
+      audioBuffer = await this.createAudioBuffer(voiceParams);
+    }
+
+    const isLoop = entry.isDrum
+      ? (this.isLoopDrum(
+        { programNumber: entry.programNumber } as TChannel,
+        entry.noteNumber,
+      ) && voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
+    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
+    const loopDuration = isLoop
+      ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
+      : 0;
+
+    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate *
+      Math.pow(2, detune / 1200);
+
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
+    if (filterAudible) {
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
+    }
+
+    let channelGain = 1;
+    let panLeft = 1;
+    let panRight = 1;
+    let channelGainCurve: Float32Array | null = null;
+    let panCurveLeft: Float32Array | null = null;
+    let panCurveRight: Float32Array | null = null;
+    if (bakeChannelMix) {
+      const state = entry.channelStateArray;
+      const vol0 = state[128 + 7] ?? (100 / 127);
+      const pan0 = state[128 + 10] ?? (64 / 127);
+      const expr0 = state[128 + 11] ?? 1;
+      channelGain = vol0 * vol0 * expr0 * expr0;
+      const { gainLeft, gainRight } = this.panToGain(pan0);
+      panLeft = gainLeft;
+      panRight = gainRight;
+      if (entry.noteEvent && this.hasGainOnlyAutomation(entry.noteEvent)) {
+        channelGainCurve = this.computeGainOnlyChannelCurve(
+          entry.noteEvent,
+          vol0,
+          expr0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+      }
+      if (entry.noteEvent && this.hasPanOnlyAutomation(entry.noteEvent)) {
+        const pc = this.computePanCurve(
+          entry.noteEvent,
+          pan0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+        panCurveLeft = pc.left;
+        panCurveRight = pc.right;
+      }
+    }
+
+    const gains = this.computeAdsrVolumeGains(
+      voiceParams,
+      noteOffTime,
+      length,
+      sampleRate,
+      filterDcGain * (channelGainCurve ? 1 : channelGain),
+    );
+    if (channelGainCurve) {
+      for (let i = 0; i < length; i++) {
+        gains[i] *= channelGainCurve[i];
+      }
+    }
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length,
+      sampleRate,
+      noteOffTime,
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed"
+      ? voiceParams.start / audioBuffer.sampleRate
+      : 0;
+
+    const srcChCount = audioBuffer.numberOfChannels;
+    const srcChannels: Float32Array[] = new Array(srcChCount);
+    for (let c = 0; c < srcChCount; c++) {
+      // Always slice: sample tables are shared across notes.
+      srcChannels[c] = audioBuffer.getChannelData(c).slice();
+    }
+
+    const params: RenderSampleParams = {
+      srcChannels,
+      srcRate: audioBuffer.sampleRate,
+      destRate: sampleRate,
+      destLen: length,
+      destChCount: 1,
+      playbackRate,
+      isLoop,
+      loopStartSrc: loopStartTime,
+      loopEndSrc: loopStartTime + loopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ,
+    };
+
+    return {
+      length,
+      params,
+      panLeft,
+      panRight,
+      panCurveLeft,
+      panCurveRight,
+    };
   }
 
   // Bakes an entire segment (all notes queued for one channel within
