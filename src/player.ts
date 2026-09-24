@@ -124,6 +124,14 @@ export class Player<
   simpleNoteSet: Set<number> = new Set();
   simpleNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
+  /**
+   * Cap on simpleNoteBufferCache entries. Dense songs can fill 1000+ full
+   * note AudioBuffers; peak RSS then triggers multi-second main-thread GC
+   * pauses at the preroll boundary (observed: mix main=7ms but wall≈9s with
+   * setTimeout0 lag matching wall). 0 = unlimited (legacy). 256–512 is a
+   * good default for realtime chunk.
+   */
+  simpleNoteCacheMaxSize: number = 384;
   // Pre-playback occurrence counts for simple-note cache keys (same key as
   // makeSimpleNoteKey). Keys that appear more than once are worth a separate
   // OfflineAudioContext bake + cache fill on first miss; unique keys stay on
@@ -253,8 +261,9 @@ export class Player<
   // Cap concurrent realtime chunk tile bakes (pure-TA + OAC). Without this,
   // hundreds of renderChunkBuffer() calls race the worker pool / OAC gate and
   // wall-clock "bake" times become mostly queue-wait → late/dropped starts.
-  // 0 = unlimited (legacy). Default matches a small worker pool.
-  maxConcurrentChunkBakes: number = 1;
+  // 0 = unlimited (legacy). 2 overlaps ~30–70ms pureTA tiles so deferred
+  // drains faster than the playhead after dense schedule passes.
+  maxConcurrentChunkBakes: number = 2;
   private chunkBakeActive: number = 0;
   // Waiters woken in chunkStart ascending order (near playhead first).
   private chunkBakeWaiters: Array<{ chunkStart: number; resolve: () => void }> =
@@ -278,9 +287,13 @@ export class Player<
   // scheduleTimelineEvents / updateChunkPipeline pass. Prevents a single
   // tight loop from starting dozens of bakes at the preroll boundary.
   // Primary anti-stampede control when near is 0. 0 = unlimited (legacy).
-  maxChunkBakeStartsPerPass: number = 1;
+  // 3: one schedule/update tick can promote several deferred tiles (was 1 →
+  // deferredN climbed to 60+ while playhead advanced → late/dropped).
+  maxChunkBakeStartsPerPass: number = 3;
   // Counter for the current pass; reset by beginChunkBakePass().
   private chunkBakeStartsThisPass: number = 0;
+  // Throttle close-chunk console.warn (DevTools stack traces are expensive).
+  private closeChunkLogCount: number = 0;
   // Prefer earlier chunkStart when multiple tiles wait on the bake gate.
   chunkBakePriorityByStart: boolean = true;
   // True while prerollTiledPipeline is running (horizon bypass).
@@ -628,6 +641,18 @@ export class Player<
         break;
       }
       this.recordChunkBakeStartThisPass();
+      if (
+        d.chunkStart >= this.diagSongTimeLo &&
+        d.chunkStart <= this.diagSongTimeHi
+      ) {
+        console.warn(
+          `[midy] bake-start | chunkStart=${d.chunkStart.toFixed(2)}s ` +
+            `notes=${d.chunk.notes.length} cost=${d.chunk.cost.toFixed(1)} ` +
+            `via=pump chunkBake=${this.chunkBakeActive} ` +
+            `deferredLeft=${deferred.length - i - 1} ` +
+            `passStarts=${this.chunkBakeStartsThisPass}`,
+        );
+      }
       this.startDeferredChunkBake(d);
     }
     this.deferredChunkBakes = still;
@@ -1935,10 +1960,24 @@ export class Player<
     let noteOnCount = 0;
     let chunkAppendCount = 0;
     let skippedPreroll = 0;
+    // Soft wall budget for one schedule pass (ms). Dense MIDI can otherwise
+    // spend seconds in this sync loop, starving worker onmessage (mix residual)
+    // and audio callbacks. 0 = unlimited. Remaining events stay queued for the
+    // next play-loop tick (queueIndex is preserved).
+    const scheduleBudgetMs = isChunkMode ? 6 : 0;
+    let budgetHit = false;
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
       const t = event.startTime * inverseTempo;
       if (lookAheadCheckTime < t) break;
+      if (
+        scheduleBudgetMs > 0 &&
+        queueIndex > qi0 &&
+        performance.now() - tSched0 >= scheduleBudgetMs
+      ) {
+        budgetHit = true;
+        break;
+      }
       if (firstSongT < 0) firstSongT = t;
       lastSongT = t;
       const startTime = t + schedulingOffset;
@@ -1998,6 +2037,7 @@ export class Player<
       queueIndex++;
     }
     // Promote deferred chunk bakes that are now inside the horizon.
+    // Runs after the sync pass so worker onmessage can interleave.
     if (isChunkMode) this.pumpDeferredChunkBakes();
     const schedMs = performance.now() - tSched0;
     const inWindow = (firstSongT >= this.diagSongTimeLo &&
@@ -2005,11 +2045,12 @@ export class Player<
       (lastSongT >= this.diagSongTimeLo && lastSongT <= this.diagSongTimeHi) ||
       (firstSongT >= 0 && firstSongT < this.diagSongTimeLo &&
         lastSongT > this.diagSongTimeHi);
-    if (schedMs >= 20 || (inWindow && queueIndex > qi0)) {
+    if (schedMs >= 20 || budgetHit || (inWindow && queueIndex > qi0)) {
       console.warn(
         `[midy] schedule | wall=${schedMs.toFixed(0)}ms ` +
           `events=${queueIndex - qi0} noteOn=${noteOnCount} ` +
           `chunkAppend=${chunkAppendCount} skipPreroll=${skippedPreroll} ` +
+          `budgetHit=${budgetHit ? 1 : 0} ` +
           `songRange=[${firstSongT < 0 ? "-" : firstSongT.toFixed(2)}, ` +
           `${lastSongT < 0 ? "-" : lastSongT.toFixed(2)}] ` +
           `lookAheadCheck=${lookAheadCheckTime.toFixed(2)} ` +
@@ -2947,15 +2988,58 @@ export class Player<
     );
   }
 
+  /** Log first 3 close-chunks, then every 20th — avoids DevTools stall. */
+  protected shouldLogCloseChunk(): boolean {
+    const n = ++this.closeChunkLogCount;
+    return n <= 3 || n % 20 === 0;
+  }
+
+  /**
+   * Whether a ready tiled buffer should get an AudioBufferSourceNode now.
+   * Starting dozens of large preroll buffers in one sync pass (20s preroll →
+   * ~67 chunk sources) blocks the main thread for seconds and starves worker
+   * mix onmessage (residual multi-second while workerMs is ~30–100ms).
+   * Only arm sources whose song-time start is inside a short horizon; the
+   * rest stay bufferReady until updateChunkPipeline brings the playhead near.
+   */
+  protected shouldStartChunkSourceNow(chunkStart: number): boolean {
+    // Reuse bake horizon (default 6s): enough for Web Audio schedule-ahead,
+    // small enough that preroll arming is a handful of nodes not ~67.
+    const horizon = Math.max(2, this.chunkBakeHorizonSec || 6);
+    let songT = 0;
+    try {
+      songT = this.currentTime();
+    } catch {
+      return true;
+    }
+    return chunkStart <= songT + horizon;
+  }
+
   // Start preroll-baked tiles now that startTime is set.
+  // Chunk mode: only near-window tiles (see shouldStartChunkSourceNow).
   startReadyTiledSources(): void {
     if (this.cacheMode === "chunk") {
       const pending = this.chunkState.pending;
+      let started = 0;
+      let deferred = 0;
+      const t0 = performance.now();
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
         if (!p.source && p.bufferReady) {
-          this.startPendingChunk(p);
+          if (this.shouldStartChunkSourceNow(p.chunkStart)) {
+            this.startPendingChunk(p);
+            started++;
+          } else {
+            deferred++;
+          }
         }
+      }
+      if (started + deferred > 0) {
+        console.warn(
+          `[midy] start-ready | started=${started} deferred=${deferred} ` +
+            `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+            `pending=${pending.length}`,
+        );
       }
     } else if (this.cacheMode === "segment") {
       const states = this.segmentChannelStates;
@@ -3442,16 +3526,29 @@ export class Player<
 
     const inDiagWindow = chunk.chunkStart >= this.diagSongTimeLo &&
       chunk.chunkStart <= this.diagSongTimeHi;
-    // Near/horizon window first; then per-pass rate limit so a tight
-    // schedule loop cannot bake-now every in-near tile at once.
     const inNearWindow = this.shouldBakeChunkNow(chunk.chunkStart);
-    const bakeNow = inNearWindow && this.canStartChunkBakeThisPass();
 
-    // Beyond near/horizon, or rate-limited this pass: keep pending and let
-    // pumpDeferredChunkBakes promote when the playhead (and budget) allow.
+    // Never kick renderChunkBuffer from inside scheduleTimelineEvents /
+    // appendToChunkQueue except during preroll. A long synchronous schedule
+    // pass otherwise blocks main from processing worker mix onmessage →
+    // residual of several seconds while workerMs is ~30ms.
+    // Always enqueue; pumpDeferredChunkBakes at schedule/update end starts
+    // bakes after the sync pass yields to the event loop.
+    //
+    // PREROLL only: immediate bake-now so bufferPromise is in-flight before
+    // preroll's Promise.allSettled (clock not armed; residual OK there).
+    // Do NOT gate on isPlaying — it can race with the first live schedule.
+    const liveDeferAll = !this.chunkPrerollActive;
+    const bakeNow = !liveDeferAll && inNearWindow &&
+      this.canStartChunkBakeThisPass();
+
     if (!bakeNow) {
-      if (inDiagWindow) {
-        const reason = !inNearWindow
+      // Throttle: full stack traces per tile can stall DevTools for seconds
+      // (wall≈10s with mix main≈10ms and alloc <50ms — not CPU of mix itself).
+      if (inDiagWindow && this.shouldLogCloseChunk()) {
+        const reason = liveDeferAll
+          ? "live-defer"
+          : !inNearWindow
           ? (this.chunkBakeNearSec > 0 ? "near/horizon" : "horizon")
           : "rate-limit";
         console.warn(
@@ -3479,7 +3576,7 @@ export class Player<
 
     this.recordChunkBakeStartThisPass();
 
-    if (inDiagWindow) {
+    if (inDiagWindow && this.shouldLogCloseChunk()) {
       console.warn(
         `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
           `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
@@ -3575,7 +3672,6 @@ export class Player<
     ) {
       this.closeChunk(state);
     }
-    this.pumpDeferredChunkBakes();
     const pending = state.pending;
     let write = 0;
     for (let i = 0; i < pending.length; i++) {
@@ -3589,12 +3685,20 @@ export class Player<
       pending[write++] = p;
     }
     pending.length = write;
+    // Arm near-window sources FIRST (cheap when horizon-limited), then kick
+    // deferred bakes. Previously pump ran before starting ~67 preroll
+    // sources in one sync pass → worker mix finished in ~30ms but main
+    // stayed busy for seconds inside startPendingChunk → residual multi-sec.
     for (let i = 0; i < pending.length; i++) {
       const p = pending[i];
-      if (!p.source && p.bufferReady) {
+      if (
+        !p.source && p.bufferReady &&
+        this.shouldStartChunkSourceNow(p.chunkStart)
+      ) {
         this.startPendingChunk(p);
       }
     }
+    this.pumpDeferredChunkBakes();
   }
 
   // forAudioOffline=false → realtime "chunk" mode (soft-clamp only; never
@@ -3761,82 +3865,173 @@ export class Player<
       }
 
       if (needAsync.length > 0) {
-        const simpleResults = await Promise.all(
-          needAsync.map(async (item) => {
+        // LIVE: never await resolved Promises for miss bake — same residual
+        // pathology as mix (body tens of ms, await wall seconds). Prefer a
+        // fully synchronous TypedArray bake when the raw sample is already
+        // in rawAudioBufferCache as an AudioBuffer.
+        const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
+          !forAudioOffline;
+        if (liveRealtime && bakeChunkMiss) {
+          for (let ai = 0; ai < needAsync.length; ai++) {
+            const item = needAsync[ai];
             const n = item.note;
-            let awaitInflight = 0;
-            let cached: AudioBuffer | null = null;
-            // Re-check cache: another tile may have finished the bake since
-            // phase 1, or we already hold an in-flight Promise.
-            if (item.entry) {
-              const tInf0 = performance.now();
-              try {
-                cached = await item.entry;
-                this.noteCacheRecordSimpleHit();
-              } catch {
-                cached = null;
-              }
-              awaitInflight = performance.now() - tInf0;
-            } else if (this.simpleNoteCache && item.key) {
+            // Settled cache hit (skip in-flight Promises — awaiting them is the bug).
+            if (item.key) {
               const again = this.simpleNoteBufferCache.get(item.key);
               if (again instanceof AudioBuffer) {
                 this.noteCacheRecordSimpleHit();
-                cached = again;
-              } else if (again instanceof Promise) {
+                simpleHits.push({ buffer: again, offset: n.offset });
+                simpleCacheHits++;
+                simpleLookupMs += item.lookupMs;
+                continue;
+              }
+            }
+            const entry: BakeNoteEntry = {
+              channelNumber: n.channelNumber,
+              audioBufferId: n.audioBufferId,
+              noteNumber: n.noteNumber,
+              velocity: n.velocity,
+              noteDuration: n.noteDuration,
+              noteEvent: n.noteEvent,
+              channelDetune: n.channelDetune,
+              channelStateArray: n.channelStateArray,
+              programNumber: n.programNumber,
+              isDrum: n.isDrum,
+              voiceParams: n.voiceParams,
+              voice: n.voice,
+            };
+            const tBake0 = performance.now();
+            const noteBuf = this.tryBakeSimpleNoteSync(entry, true, item.key);
+            const missBakeMs = performance.now() - tBake0;
+            simpleMissBakeMs += missBakeMs;
+            simpleLookupMs += item.lookupMs;
+            if (noteBuf) {
+              simpleHits.push({ buffer: noteBuf, offset: n.offset });
+              simpleMissesBaked++;
+            } else {
+              // Raw sample not ready / not TypedArray-eligible — defer to OAC miss path.
+              simpleMisses[missCount++] = n;
+            }
+          }
+          simpleMisses.length = missCount;
+        } else {
+          const simpleResults = await Promise.all(
+            needAsync.map(async (item) => {
+              const n = item.note;
+              let awaitInflight = 0;
+              let cached: AudioBuffer | null = null;
+              // Re-check cache: another tile may have finished the bake since
+              // phase 1, or we already hold an in-flight Promise.
+              if (item.entry) {
                 const tInf0 = performance.now();
                 try {
-                  cached = await again;
+                  cached = await item.entry;
                   this.noteCacheRecordSimpleHit();
                 } catch {
                   cached = null;
                 }
                 awaitInflight = performance.now() - tInf0;
+              } else if (this.simpleNoteCache && item.key) {
+                const again = this.simpleNoteBufferCache.get(item.key);
+                if (again instanceof AudioBuffer) {
+                  this.noteCacheRecordSimpleHit();
+                  cached = again;
+                } else if (again instanceof Promise) {
+                  const tInf0 = performance.now();
+                  try {
+                    cached = await again;
+                    this.noteCacheRecordSimpleHit();
+                  } catch {
+                    cached = null;
+                  }
+                  awaitInflight = performance.now() - tInf0;
+                }
               }
-            }
-            const lookupMs = item.lookupMs + awaitInflight;
-            if (cached) {
-              return {
-                kind: "hit" as const,
-                buffer: cached,
-                offset: n.offset,
-                baked: false,
-                lookupMs,
-                awaitInflightMs: awaitInflight,
-                missBakeMs: 0,
-              };
-            }
-            if (bakeChunkMiss) {
-              const tBake0 = performance.now();
-              const noteBuf = await this.getSimpleNoteBuffer(
-                {
-                  channelNumber: n.channelNumber,
-                  audioBufferId: n.audioBufferId,
-                  noteNumber: n.noteNumber,
-                  velocity: n.velocity,
-                  noteDuration: n.noteDuration,
-                  noteEvent: n.noteEvent,
-                  channelDetune: n.channelDetune,
-                  channelStateArray: n.channelStateArray,
-                  programNumber: n.programNumber,
-                  isDrum: n.isDrum,
-                  voiceParams: n.voiceParams,
-                  voice: n.voice,
-                },
-                true,
-                false, // not holding an outer gate slot
-              );
-              const missBakeMs = performance.now() - tBake0;
-              return {
-                kind: "hit" as const,
-                buffer: noteBuf,
-                offset: n.offset,
-                baked: true,
-                lookupMs,
-                awaitInflightMs: awaitInflight,
-                missBakeMs,
-              };
-            }
-            if (!forAudioOffline) {
+              const lookupMs = item.lookupMs + awaitInflight;
+              if (cached) {
+                return {
+                  kind: "hit" as const,
+                  buffer: cached,
+                  offset: n.offset,
+                  baked: false,
+                  lookupMs,
+                  awaitInflightMs: awaitInflight,
+                  missBakeMs: 0,
+                };
+              }
+              if (bakeChunkMiss) {
+                const tBake0 = performance.now();
+                const noteBuf = await this.getSimpleNoteBuffer(
+                  {
+                    channelNumber: n.channelNumber,
+                    audioBufferId: n.audioBufferId,
+                    noteNumber: n.noteNumber,
+                    velocity: n.velocity,
+                    noteDuration: n.noteDuration,
+                    noteEvent: n.noteEvent,
+                    channelDetune: n.channelDetune,
+                    channelStateArray: n.channelStateArray,
+                    programNumber: n.programNumber,
+                    isDrum: n.isDrum,
+                    voiceParams: n.voiceParams,
+                    voice: n.voice,
+                  },
+                  true,
+                  false, // not holding an outer gate slot
+                );
+                const missBakeMs = performance.now() - tBake0;
+                return {
+                  kind: "hit" as const,
+                  buffer: noteBuf,
+                  offset: n.offset,
+                  baked: true,
+                  lookupMs,
+                  awaitInflightMs: awaitInflight,
+                  missBakeMs,
+                };
+              }
+              if (!forAudioOffline) {
+                return {
+                  kind: "miss" as const,
+                  note: n,
+                  lookupMs,
+                  awaitInflightMs: awaitInflight,
+                  missBakeMs: 0,
+                };
+              }
+              const key = item.key || this.makeSimpleNoteKey(n, true);
+              const count = simpleCounts.get(key) ?? 0;
+              if (count > 1) {
+                const tBake0 = performance.now();
+                const noteBuf = await this.getSimpleNoteBuffer(
+                  {
+                    channelNumber: n.channelNumber,
+                    audioBufferId: n.audioBufferId,
+                    noteNumber: n.noteNumber,
+                    velocity: n.velocity,
+                    noteDuration: n.noteDuration,
+                    noteEvent: n.noteEvent,
+                    channelDetune: n.channelDetune,
+                    channelStateArray: n.channelStateArray,
+                    programNumber: n.programNumber,
+                    isDrum: n.isDrum,
+                    voiceParams: n.voiceParams,
+                    voice: n.voice,
+                  },
+                  true,
+                  false,
+                );
+                const missBakeMs = performance.now() - tBake0;
+                return {
+                  kind: "hit" as const,
+                  buffer: noteBuf,
+                  offset: n.offset,
+                  baked: true,
+                  lookupMs,
+                  awaitInflightMs: awaitInflight,
+                  missBakeMs,
+                };
+              }
               return {
                 kind: "miss" as const,
                 note: n,
@@ -3844,63 +4039,23 @@ export class Player<
                 awaitInflightMs: awaitInflight,
                 missBakeMs: 0,
               };
+            }),
+          );
+          for (let i = 0; i < simpleResults.length; i++) {
+            const r = simpleResults[i];
+            simpleLookupMs += r.lookupMs;
+            simpleAwaitInflightMs += r.awaitInflightMs;
+            simpleMissBakeMs += r.missBakeMs;
+            if (r.kind === "hit") {
+              simpleHits.push({ buffer: r.buffer, offset: r.offset });
+              if ("baked" in r && r.baked) simpleMissesBaked++;
+              else simpleCacheHits++;
+            } else {
+              simpleMisses[missCount++] = r.note;
             }
-            const key = item.key || this.makeSimpleNoteKey(n, true);
-            const count = simpleCounts.get(key) ?? 0;
-            if (count > 1) {
-              const tBake0 = performance.now();
-              const noteBuf = await this.getSimpleNoteBuffer(
-                {
-                  channelNumber: n.channelNumber,
-                  audioBufferId: n.audioBufferId,
-                  noteNumber: n.noteNumber,
-                  velocity: n.velocity,
-                  noteDuration: n.noteDuration,
-                  noteEvent: n.noteEvent,
-                  channelDetune: n.channelDetune,
-                  channelStateArray: n.channelStateArray,
-                  programNumber: n.programNumber,
-                  isDrum: n.isDrum,
-                  voiceParams: n.voiceParams,
-                  voice: n.voice,
-                },
-                true,
-                false,
-              );
-              const missBakeMs = performance.now() - tBake0;
-              return {
-                kind: "hit" as const,
-                buffer: noteBuf,
-                offset: n.offset,
-                baked: true,
-                lookupMs,
-                awaitInflightMs: awaitInflight,
-                missBakeMs,
-              };
-            }
-            return {
-              kind: "miss" as const,
-              note: n,
-              lookupMs,
-              awaitInflightMs: awaitInflight,
-              missBakeMs: 0,
-            };
-          }),
-        );
-        for (let i = 0; i < simpleResults.length; i++) {
-          const r = simpleResults[i];
-          simpleLookupMs += r.lookupMs;
-          simpleAwaitInflightMs += r.awaitInflightMs;
-          simpleMissBakeMs += r.missBakeMs;
-          if (r.kind === "hit") {
-            simpleHits.push({ buffer: r.buffer, offset: r.offset });
-            if ("baked" in r && r.baked) simpleMissesBaked++;
-            else simpleCacheHits++;
-          } else {
-            simpleMisses[missCount++] = r.note;
           }
-        }
-        simpleMisses.length = missCount;
+          simpleMisses.length = missCount;
+        } // end else (non-live Promise.all path)
       }
     }
     simpleMs = performance.now() - tSimple0;
@@ -3968,36 +4123,63 @@ export class Player<
         mainMs: 0,
         usedWorker: false,
       };
-      // Concurrent setTimeout(0) probe: if mix wall >> actual work, the
-      // excess is main-thread lag between the async yield and continuation.
-      const lagProbe = this.beginAwaitLagProbe();
-      const buffer = await this.mixEntriesToBuffer(
-        allEntries,
-        2,
-        bufferLength,
-        sampleRate,
-        1,
-        mixDetail,
-      );
-      mixMs = performance.now() - tMix0;
-      const awaitLagMs = lagProbe.sample();
-      // Actual mix work (worker residual path or main TypedArray).
-      const mixWorkMs = mixDetail.usedWorker
-        ? (mixDetail.prepareMs + mixDetail.workerMs + mixDetail.copyBackMs +
-          mixDetail.postMs + mixDetail.queueMs)
-        : mixDetail.mainMs;
-      if (mixMs >= 200 && mixMs > mixWorkMs + 50) {
-        console.warn(
-          `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms ` +
-            `work=${mixWorkMs.toFixed(0)}ms ` +
-            `setTimeout0=${awaitLagMs.toFixed(0)}ms ` +
-            `usedWorker=${mixDetail.usedWorker} ` +
-            `main=${mixDetail.mainMs.toFixed(0)} ` +
-            `residual=${mixDetail.residualMs.toFixed(0)} ` +
-            `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
-            `entries=${allEntries.length} ` +
-            `chunkBake=${this.chunkBakeActive}`,
+      // LIVE: synchronous mix — no await. Observed: mixEntriesToBuffer body
+      // finishes in <100ms (no mix-body log) but `await mixEntriesToBuffer`
+      // wall was 3–10s (setTimeout0 lag matched). Something prevents the
+      // resolved-promise microtask continuation from running for seconds;
+      // sync path eliminates that gap. Preroll/offline keep async+worker.
+      const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
+        !forAudioOffline;
+      let buffer: AudioBuffer;
+      if (liveRealtime) {
+        buffer = this.mixEntriesToBufferSync(
+          allEntries,
+          2,
+          bufferLength,
+          sampleRate,
+          1,
+          mixDetail,
         );
+      } else {
+        const lagProbe = this.beginAwaitLagProbe();
+        buffer = await this.mixEntriesToBuffer(
+          allEntries,
+          2,
+          bufferLength,
+          sampleRate,
+          1,
+          mixDetail,
+        );
+        const awaitLagMs = lagProbe.sample();
+        const mixWorkMs = mixDetail.usedWorker
+          ? (mixDetail.prepareMs + mixDetail.workerMs + mixDetail.copyBackMs +
+            mixDetail.postMs + mixDetail.queueMs)
+          : mixDetail.mainMs;
+        mixMs = performance.now() - tMix0;
+        if (mixMs >= 200 && mixMs > mixWorkMs + 50) {
+          console.warn(
+            `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms ` +
+              `work=${mixWorkMs.toFixed(0)}ms ` +
+              `setTimeout0=${awaitLagMs.toFixed(0)}ms ` +
+              `usedWorker=${mixDetail.usedWorker} ` +
+              `main=${mixDetail.mainMs.toFixed(0)} ` +
+              `residual=${mixDetail.residualMs.toFixed(0)} ` +
+              `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
+              `entries=${allEntries.length} ` +
+              `chunkBake=${this.chunkBakeActive}`,
+          );
+        }
+      }
+      if (liveRealtime) {
+        mixMs = performance.now() - tMix0;
+        if (mixMs >= 200) {
+          console.warn(
+            `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
+              `main=${mixDetail.mainMs.toFixed(0)}ms ` +
+              `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
+              `entries=${allEntries.length}`,
+          );
+        }
       }
       if (!forAudioOffline) {
         this.softClampBuffer(buffer);
@@ -4676,6 +4858,203 @@ export class Player<
    * entry count is large enough; otherwise falls back to the main-thread
    * mixSimpleBuffersTypedArray path.
    */
+  /**
+   * Fully synchronous simple-note TypedArray bake for live chunk misses.
+   * Returns null if the raw sample is not yet a settled AudioBuffer in
+   * rawAudioBufferCache, or if the note needs the OAC path (mod wheel etc.).
+   * No await — avoids the multi-second resolved-Promise residual.
+   */
+  protected tryBakeSimpleNoteSync(
+    entry: BakeNoteEntry,
+    bakeChannelMix: boolean,
+    cacheKey: string,
+  ): AudioBuffer | null {
+    const voiceParams = entry.voiceParams;
+    if (!voiceParams) return null;
+    // TypedArray path only when mod wheel is idle (same gate as async path).
+    const modDepth = entry.channelStateArray?.[128 + 1] ?? 0;
+    if (modDepth > 0) return null;
+
+    let audioBuffer: AudioBuffer | null = null;
+    if (entry.audioBufferId !== undefined) {
+      const raw = this.rawAudioBufferCache.get(entry.audioBufferId);
+      if (raw instanceof AudioBuffer) audioBuffer = raw;
+      else return null; // still decoding / missing
+    } else {
+      return null; // would need createAudioBuffer (async decode)
+    }
+
+    const releaseEndDuration = entry.noteEvent?.soundOff
+      ? 0
+      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const noteOffTime = Math.max(0, entry.noteDuration);
+    const totalDuration = Math.max(0.001, noteOffTime + releaseEndDuration);
+    const sampleRate = this.audioContext.sampleRate;
+    const length = Math.ceil(totalDuration * sampleRate);
+
+    const isLoop = entry.isDrum
+      ? (this.isLoopDrum(
+        { programNumber: entry.programNumber } as TChannel,
+        entry.noteNumber,
+      ) && voiceParams.sampleModes % 2 !== 0)
+      : (voiceParams.sampleModes % 2 !== 0);
+    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
+    const loopDuration = isLoop
+      ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
+      : 0;
+    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate *
+      Math.pow(2, detune / 1200);
+
+    const filterAudible = isFilterAudible(
+      voiceParams.initialFilterFc,
+      voiceParams.initialFilterQ,
+      voiceParams.modEnvToFilterFc,
+    );
+    let filterDcGain = 1;
+    let filterQ = Math.SQRT1_2;
+    if (filterAudible) {
+      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
+      filterQ = qDc.q;
+      filterDcGain = qDc.dcGain;
+    }
+
+    let channelGain = 1;
+    let panLeft = 1;
+    let panRight = 1;
+    let channelGainCurve: Float32Array | null = null;
+    let panCurveLeft: Float32Array | null = null;
+    let panCurveRight: Float32Array | null = null;
+    if (bakeChannelMix) {
+      const state = entry.channelStateArray;
+      const vol0 = state[128 + 7] ?? (100 / 127);
+      const pan0 = state[128 + 10] ?? (64 / 127);
+      const expr0 = state[128 + 11] ?? 1;
+      channelGain = vol0 * vol0 * expr0 * expr0;
+      const { gainLeft, gainRight } = this.panToGain(pan0);
+      panLeft = gainLeft;
+      panRight = gainRight;
+      if (entry.noteEvent && this.hasGainOnlyAutomation(entry.noteEvent)) {
+        channelGainCurve = this.computeGainOnlyChannelCurve(
+          entry.noteEvent,
+          vol0,
+          expr0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+      }
+      if (entry.noteEvent && this.hasPanOnlyAutomation(entry.noteEvent)) {
+        const pc = this.computePanCurve(
+          entry.noteEvent,
+          pan0,
+          length,
+          sampleRate,
+          totalDuration,
+        );
+        panCurveLeft = pc.left;
+        panCurveRight = pc.right;
+      }
+    }
+
+    const gains = this.computeAdsrVolumeGains(
+      voiceParams,
+      noteOffTime,
+      length,
+      sampleRate,
+      filterDcGain * (channelGainCurve ? 1 : channelGain),
+    );
+    if (channelGainCurve) {
+      for (let i = 0; i < length; i++) gains[i] *= channelGainCurve[i];
+    }
+    const filterFreqs = this.computeFilterFreqCurve(
+      voiceParams,
+      length,
+      sampleRate,
+      noteOffTime,
+    );
+    const startOffsetSrc = voiceParams.sample.type === "compressed"
+      ? voiceParams.start / audioBuffer.sampleRate
+      : 0;
+
+    const body = this.createEmptyBuffer(1, length, sampleRate);
+    this.renderSampleTypedArray(
+      audioBuffer,
+      body,
+      playbackRate,
+      isLoop,
+      loopStartTime,
+      loopStartTime + loopDuration,
+      startOffsetSrc,
+      gains,
+      filterFreqs,
+      filterQ,
+    );
+
+    let out: AudioBuffer;
+    if (!bakeChannelMix) {
+      out = body;
+    } else {
+      const stereo = this.createEmptyBuffer(2, length, sampleRate);
+      const src = body.getChannelData(0);
+      const left = stereo.getChannelData(0);
+      const right = stereo.getChannelData(1);
+      if (panCurveLeft && panCurveRight) {
+        for (let i = 0; i < length; i++) {
+          const s = src[i];
+          left[i] = s * panCurveLeft[i];
+          right[i] = s * panCurveRight[i];
+        }
+      } else {
+        for (let i = 0; i < length; i++) {
+          const s = src[i];
+          left[i] = s * panLeft;
+          right[i] = s * panRight;
+        }
+      }
+      out = stereo;
+    }
+
+    if (this.simpleNoteCache && cacheKey) {
+      this.simpleNoteBufferCache.set(cacheKey, out);
+      this.noteCacheTouchPeakSizes();
+    }
+    this.noteCacheRecordSimpleMiss();
+    return out;
+  }
+
+  /**
+   * Synchronous main-thread mix (no Promise / await). Used for live chunk
+   * tiles so a resolved async microtask cannot sit for seconds before the
+   * caller's continuation runs (observed: body <100ms, await wall 3–10s).
+   */
+  protected mixEntriesToBufferSync(
+    entries: { buffer: AudioBuffer; offset: number }[],
+    destChCount: 1 | 2,
+    bufferLength: number,
+    sampleRate: number,
+    gain = 1,
+    detailOut?: MixTileDetail,
+  ): AudioBuffer {
+    const buffer = this.createEmptyBuffer(
+      destChCount,
+      bufferLength,
+      sampleRate,
+    );
+    if (entries.length === 0) return buffer;
+    this.chunkMixEntriesSum += entries.length;
+    const tMain0 = performance.now();
+    this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
+    const mainMs = performance.now() - tMain0;
+    this.chunkMixMainSumMs += mainMs;
+    this.chunkMixMainTiles++;
+    if (detailOut) {
+      detailOut.mainMs = mainMs;
+      detailOut.usedWorker = false;
+    }
+    return buffer;
+  }
+
   protected async mixEntriesToBuffer(
     entries: { buffer: AudioBuffer; offset: number }[],
     destChCount: 1 | 2,
@@ -4685,16 +5064,28 @@ export class Player<
     /** Optional out: per-tile mix phase timings (for chunk-heavy logs). */
     detailOut?: MixTileDetail,
   ): Promise<AudioBuffer> {
+    // Time whole body vs alloc vs mix loop. If mix-body total ≈ mainMs but
+    // caller's mix-await-lag wall is seconds, the stall is OUTSIDE this
+    // function (other main work / DevTools / GC between promise resolve and
+    // continuation). If mix-body total is also seconds, the stall is inside.
+    const tBody0 = performance.now();
+    const tAlloc0 = performance.now();
     const buffer = this.createEmptyBuffer(
       destChCount,
       bufferLength,
       sampleRate,
     );
+    const allocMs = performance.now() - tAlloc0;
     if (entries.length === 0) return buffer;
 
     this.chunkMixEntriesSum += entries.length;
 
-    const useWorker = this.useWorkerTypedArrayMix &&
+    // LIVE PLAYBACK: always mix on main. Worker residual was multi-second at
+    // the preroll boundary; main mix is predictable tens of ms.
+    // Workers remain useful for preroll / offline (clock not armed).
+    const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
+    const useWorker = !liveRealtime &&
+      this.useWorkerTypedArrayMix &&
       entries.length >= this.workerMixMinEntries &&
       typeof Worker !== "undefined";
 
@@ -4707,6 +5098,16 @@ export class Player<
       if (detailOut) {
         detailOut.mainMs = mainMs;
         detailOut.usedWorker = false;
+      }
+      const bodyMs = performance.now() - tBody0;
+      if (bodyMs >= 100 || allocMs >= 50) {
+        console.warn(
+          `[midy] mix-body | total=${bodyMs.toFixed(0)}ms alloc=${
+            allocMs.toFixed(0)
+          }ms main=${mainMs.toFixed(0)}ms entries=${entries.length} ` +
+            `destSamples=${bufferLength} ` +
+            `simpleCache=${this.simpleNoteBufferCache.size}`,
+        );
       }
       return buffer;
     }
@@ -4752,6 +5153,11 @@ export class Player<
         offlineRenderActive: this.offlineRenderActive,
         deferredBakes: this.deferredChunkBakes.length,
       };
+
+      // Yield so pending worker onmessage / setTimeout can run before we
+      // block again on this tile's mix round-trip (cuts residual when main
+      // was mid-schedule).
+      await Promise.resolve();
 
       const pool = this.getBakeWorkerPool();
       const tAwait0 = performance.now();
@@ -5265,7 +5671,12 @@ export class Player<
     filterFreqs: Float32Array | null,
     filterQ: number,
   ): Promise<void> {
-    const useWorker = this.useWorkerSimpleNoteBake &&
+    // Same live residual issue as tile mix: worker finishes in tens of ms but
+    // main may not process onmessage for seconds → missBake multi-second.
+    // Prefer main during live playback; keep workers for preroll/offline.
+    const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
+    const useWorker = !liveRealtime &&
+      this.useWorkerSimpleNoteBake &&
       dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
       typeof Worker !== "undefined";
 
@@ -5833,6 +6244,28 @@ export class Player<
     if (s > this.simpleNoteCachePeakSize) this.simpleNoteCachePeakSize = s;
     const c = this.complexNoteBufferCache.size;
     if (c > this.complexNoteCachePeakSize) this.complexNoteCachePeakSize = c;
+    this.evictSimpleNoteCacheIfNeeded();
+  }
+
+  /**
+   * Drop oldest simple-note cache entries (Map insertion order) when over
+   * simpleNoteCacheMaxSize. Only evicts settled AudioBuffers — in-flight
+   * Promises are skipped so concurrent bakers are not orphaned.
+   */
+  protected evictSimpleNoteCacheIfNeeded(): void {
+    const max = this.simpleNoteCacheMaxSize | 0;
+    if (max <= 0) return;
+    const cache = this.simpleNoteBufferCache;
+    while (cache.size > max) {
+      let evicted = false;
+      for (const [key, val] of cache) {
+        if (val instanceof Promise) continue;
+        cache.delete(key);
+        evicted = true;
+        break;
+      }
+      if (!evicted) break; // only in-flight promises left
+    }
   }
 
   async lookupComplexNoteBuffer(
@@ -6390,7 +6823,10 @@ export class Player<
     };
     const sampleRate = this.audioContext.sampleRate;
     const maxPer = BakeWorkerPool.MAX_NOTES_PER_BATCH;
-    const useWorker = this.useWorkerSimpleNoteBake &&
+    // Live: main-thread note bake (avoid multi-second residual on onmessage).
+    const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
+    const useWorker = !liveRealtime &&
+      this.useWorkerSimpleNoteBake &&
       typeof Worker !== "undefined";
     const resolveMap = new Map<string, {
       resolve: (b: AudioBuffer) => void;
