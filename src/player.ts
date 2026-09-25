@@ -4323,8 +4323,18 @@ export class Player<
 
       // Residual simple misses → shared offline schedule
       if (missCount > 0) {
+        const activeCh = new Set<number>();
+        for (let i = 0; i < simpleMisses.length; i++) {
+          activeCh.add(simpleMisses[i].channelNumber);
+        }
+        const offlinePlayer = this.createOfflineRenderPlayer(
+          offlineContext,
+          Array.from(activeCh),
+          true,
+        );
         await this.scheduleSimpleNotesDirect(
           offlineContext,
+          offlinePlayer,
           simpleMisses,
           true,
         );
@@ -5231,9 +5241,9 @@ export class Player<
       // Gap between promise resolve and copyBack (microtask / other main work).
       const tCopy0 = performance.now();
       const afterAwaitMs = tCopy0 - tAwaitDone;
-      buffer.copyToChannel(result.left, 0);
+      buffer.copyToChannel(result.left as Float32Array<ArrayBuffer>, 0);
       if (destChCount > 1 && result.right) {
-        buffer.copyToChannel(result.right, 1);
+        buffer.copyToChannel(result.right as Float32Array<ArrayBuffer>, 1);
       }
       const copyBackMs = performance.now() - tCopy0;
       this.chunkMixCopyBackSumMs += copyBackMs;
@@ -5781,7 +5791,7 @@ export class Player<
       );
 
       for (let c = 0; c < dest.numberOfChannels; c++) {
-        dest.copyToChannel(result.channels[c], c);
+        dest.copyToChannel(result.channels[c] as Float32Array<ArrayBuffer>, c);
       }
     } catch (err) {
       if (this.debug) {
@@ -6912,7 +6922,7 @@ export class Player<
     const expandToBuffer = (job: Job, mono: Float32Array): AudioBuffer => {
       if (!bakeChannelMix) {
         const buffer = this.createEmptyBuffer(1, job.length, job.sampleRate);
-        buffer.copyToChannel(mono, 0);
+        buffer.copyToChannel(mono as Float32Array<ArrayBuffer>, 0);
         return buffer;
       }
       const buffer = this.createEmptyBuffer(2, job.length, job.sampleRate);
@@ -6948,7 +6958,7 @@ export class Player<
           job.params.srcRate,
         );
         for (let c = 0; c < srcCh.length; c++) {
-          fakeSrc.copyToChannel(srcCh[c], c);
+          fakeSrc.copyToChannel(srcCh[c] as Float32Array<ArrayBuffer>, c);
         }
         this.renderSampleTypedArray(
           fakeSrc,
