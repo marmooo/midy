@@ -670,10 +670,10 @@ export class Player<
     resolve: (buffer: AudioBuffer | null) => void;
     reject: (err: unknown) => void;
   }): void {
-    const { chunk, pending, state, resolve, reject } = d;
+    const { chunk, pending, state, resolve } = d;
     const generation = pending.generation;
     const tEnqueue = performance.now();
-    this.runWithChunkBakeGate(async () => {
+    this.runWithChunkBakeGate(() => {
       const gateWaitMs = performance.now() - tEnqueue;
       return this.renderChunkBuffer(chunk, false, gateWaitMs);
     }, chunk.chunkStart)
@@ -3627,7 +3627,7 @@ export class Player<
     // tEnqueue: when this tile joined the bake queue. gateWait =
     // (gate entry − tEnqueue); work = renderChunkBuffer wall time.
     const tEnqueue = performance.now();
-    pending.bufferPromise = this.runWithChunkBakeGate(async () => {
+    pending.bufferPromise = this.runWithChunkBakeGate(() => {
       const gateWaitMs = performance.now() - tEnqueue;
       return this.renderChunkBuffer(chunk, false, gateWaitMs);
     }, chunk.chunkStart)
