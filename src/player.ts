@@ -865,8 +865,10 @@ export class Player<
                   const activeStack = activeNotes.get(key);
                   for (let oi = 0; oi < offItems.length; oi++) {
                     if (activeStack && activeStack.length > 0) {
-                      // Release at pedal-up time, not the deferred note-off time.
-                      finalizeEntry(activeStack.shift()!, t, event.ticks);
+                      // Duration uses the original noteOff time (stored in
+                      // pendingOff), not the sustain pedal-up time.
+                      const off = offItems[oi];
+                      finalizeEntry(activeStack.shift()!, off.t, off.ticks);
                       if (activeStack.length === 0) activeNotes.delete(key);
                     }
                   }

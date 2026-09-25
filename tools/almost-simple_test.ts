@@ -8,7 +8,7 @@
 //   deno test -A tests/almost-simple_test.ts
 //
 // Import side-effect: injects Web Audio constructors into globalThis.
-import { assertEquals, assertNotEquals } from "./mock-shared.ts";
+import { assertEquals, assertNotEquals } from "../tests/mock-shared.ts";
 import { Player } from "../src/player.ts";
 import type { NoteOnEventEntry } from "../src/cache-strategy.ts";
 import type { TimelineEvent } from "../src/base-player.ts";

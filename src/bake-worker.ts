@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 // Dedicated worker for pure TypedArray audio mix (chunk / segment bake).
 // Receives transferable Float32Array channel data, mixes in parallel, returns
 // transferable result buffers. No Web Audio API dependency.
