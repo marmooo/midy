@@ -563,15 +563,17 @@ export class Player<
           try {
             songT = this.currentTime();
           } catch { /* audio context may be closed */ }
-          console.warn(
-            `[midy] event-loop-lag | excess=${excess.toFixed(0)}ms ` +
-              `timer=${lag.toFixed(0)}ms interval=${interval}ms ` +
-              `songT=${songT.toFixed(2)}s ` +
-              `chunkBake=${this.chunkBakeActive} ` +
-              `offline=${this.offlineRenderActive} ` +
-              `deferred=${this.deferredChunkBakes.length} ` +
-              `pending=${this.chunkState.pending.length}`,
-          );
+          if (this.debug) {
+            console.warn(
+              `[midy] event-loop-lag | excess=${excess.toFixed(0)}ms ` +
+                `timer=${lag.toFixed(0)}ms interval=${interval}ms ` +
+                `songT=${songT.toFixed(2)}s ` +
+                `chunkBake=${this.chunkBakeActive} ` +
+                `offline=${this.offlineRenderActive} ` +
+                `deferred=${this.deferredChunkBakes.length} ` +
+                `pending=${this.chunkState.pending.length}`,
+            );
+          }
         }
         tick();
       }, interval) as unknown as number;
@@ -645,13 +647,15 @@ export class Player<
         d.chunkStart >= this.diagSongTimeLo &&
         d.chunkStart <= this.diagSongTimeHi
       ) {
-        console.warn(
-          `[midy] bake-start | chunkStart=${d.chunkStart.toFixed(2)}s ` +
-            `notes=${d.chunk.notes.length} cost=${d.chunk.cost.toFixed(1)} ` +
-            `via=pump chunkBake=${this.chunkBakeActive} ` +
-            `deferredLeft=${deferred.length - i - 1} ` +
-            `passStarts=${this.chunkBakeStartsThisPass}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] bake-start | chunkStart=${d.chunkStart.toFixed(2)}s ` +
+              `notes=${d.chunk.notes.length} cost=${d.chunk.cost.toFixed(1)} ` +
+              `via=pump chunkBake=${this.chunkBakeActive} ` +
+              `deferredLeft=${deferred.length - i - 1} ` +
+              `passStarts=${this.chunkBakeStartsThisPass}`,
+          );
+        }
       }
       this.startDeferredChunkBake(d);
     }
@@ -2046,23 +2050,25 @@ export class Player<
       (firstSongT >= 0 && firstSongT < this.diagSongTimeLo &&
         lastSongT > this.diagSongTimeHi);
     if (schedMs >= 20 || budgetHit || (inWindow && queueIndex > qi0)) {
-      console.warn(
-        `[midy] schedule | wall=${schedMs.toFixed(0)}ms ` +
-          `events=${queueIndex - qi0} noteOn=${noteOnCount} ` +
-          `chunkAppend=${chunkAppendCount} skipPreroll=${skippedPreroll} ` +
-          `budgetHit=${budgetHit ? 1 : 0} ` +
-          `songRange=[${firstSongT < 0 ? "-" : firstSongT.toFixed(2)}, ` +
-          `${lastSongT < 0 ? "-" : lastSongT.toFixed(2)}] ` +
-          `lookAheadCheck=${lookAheadCheckTime.toFixed(2)} ` +
-          `prerollUntil=${this.prerollUntilSongTime.toFixed(2)} ` +
-          `openChunk=${
-            this.chunkState.openChunk
-              ? this.chunkState.openChunk.chunkStart.toFixed(2)
-              : "none"
-          } ` +
-          `deferred=${this.deferredChunkBakes.length} ` +
-          `pending=${this.chunkState.pending.length}`,
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] schedule | wall=${schedMs.toFixed(0)}ms ` +
+            `events=${queueIndex - qi0} noteOn=${noteOnCount} ` +
+            `chunkAppend=${chunkAppendCount} skipPreroll=${skippedPreroll} ` +
+            `budgetHit=${budgetHit ? 1 : 0} ` +
+            `songRange=[${firstSongT < 0 ? "-" : firstSongT.toFixed(2)}, ` +
+            `${lastSongT < 0 ? "-" : lastSongT.toFixed(2)}] ` +
+            `lookAheadCheck=${lookAheadCheckTime.toFixed(2)} ` +
+            `prerollUntil=${this.prerollUntilSongTime.toFixed(2)} ` +
+            `openChunk=${
+              this.chunkState.openChunk
+                ? this.chunkState.openChunk.chunkStart.toFixed(2)
+                : "none"
+            } ` +
+            `deferred=${this.deferredChunkBakes.length} ` +
+            `pending=${this.chunkState.pending.length}`,
+        );
+      }
     }
     return queueIndex;
   }
@@ -2348,17 +2354,19 @@ export class Player<
       const inWindow = songT >= this.diagSongTimeLo &&
         songT <= this.diagSongTimeHi;
       if (inWindow || loopMs >= 50) {
-        console.warn(
-          `[midy] play-loop | n=${diagLoopN} songT=${songT.toFixed(2)}s ` +
-            `loopMs=${loopMs.toFixed(0)} ` +
-            `schedMs=${(tAfterSched - tLoop0).toFixed(0)} ` +
-            `pipeMs=${(tAfterPipe - tAfterSched).toFixed(0)} ` +
-            `qi=${qiBefore}→${queueIndex} ` +
-            `chunkBake=${this.chunkBakeActive} ` +
-            `deferred=${this.deferredChunkBakes.length} ` +
-            `pending=${this.chunkState.pending.length} ` +
-            `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] play-loop | n=${diagLoopN} songT=${songT.toFixed(2)}s ` +
+              `loopMs=${loopMs.toFixed(0)} ` +
+              `schedMs=${(tAfterSched - tLoop0).toFixed(0)} ` +
+              `pipeMs=${(tAfterPipe - tAfterSched).toFixed(0)} ` +
+              `qi=${qiBefore}→${queueIndex} ` +
+              `chunkBake=${this.chunkBakeActive} ` +
+              `deferred=${this.deferredChunkBakes.length} ` +
+              `pending=${this.chunkState.pending.length} ` +
+              `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s`,
+          );
+        }
       }
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
@@ -2419,34 +2427,38 @@ export class Player<
       // miss = first bake for that key. unique = complex count<=1 (never cached).
       // prewarmMiss = misses that occurred inside prewarmSimpleNoteCache.
       // rate = hit/(hit+miss); unique excluded from complex rate denominator.
-      console.log(
-        `[midy] note-cache | simple: hit=${sHit} miss=${sMiss} ` +
-          `rate=${sRate}% peak=${this.simpleNoteCachePeakSize} ` +
-          `prewarmMiss=${this.simpleNoteCachePrewarmMisses} | ` +
-          `complex: hit=${cHit} miss=${cMiss} unique=${cUnique} ` +
-          `rate=${cRate}% peak=${this.complexNoteCachePeakSize}`,
-      );
+      if (this.debug) {
+        console.log(
+          `[midy] note-cache | simple: hit=${sHit} miss=${sMiss} ` +
+            `rate=${sRate}% peak=${this.simpleNoteCachePeakSize} ` +
+            `prewarmMiss=${this.simpleNoteCachePrewarmMisses} | ` +
+            `complex: hit=${cHit} miss=${cMiss} unique=${cUnique} ` +
+            `rate=${cRate}% peak=${this.complexNoteCachePeakSize}`,
+        );
+      }
       // Multi-label (with*) can sum > complex. Exclusive buckets sum to complex.
-      console.log(
-        `[midy] complex breakdown | total=${cx.complex} | ` +
-          `with: bend=${cx.withPitchBend}(${cxPct(cx.withPitchBend)}%) ` +
-          `pan=${cx.withPan}(${cxPct(cx.withPan)}%) ` +
-          `mod=${cx.withMod}(${cxPct(cx.withMod)}%) ` +
-          `gain=${cx.withGain}(${cxPct(cx.withGain)}%) ` +
-          `otherCc=${cx.withOtherCc}(${cxPct(cx.withOtherCc)}%) ` +
-          `sysEx=${cx.withSysEx}(${cxPct(cx.withSysEx)}%) ` +
-          `pc=${cx.withProgramChange}(${cxPct(cx.withProgramChange)}%) | ` +
-          `exclusive: onlyBend=${cx.onlyPitchBend}(${
-            cxPct(cx.onlyPitchBend)
-          }%) ` +
-          `bend+gain=${cx.bendGain}(${cxPct(cx.bendGain)}%) ` +
-          `onlyPan=${cx.onlyPan}(${cxPct(cx.onlyPan)}%) ` +
-          `pan+gain=${cx.panGain}(${cxPct(cx.panGain)}%) ` +
-          `onlyMod=${cx.onlyMod}(${cxPct(cx.onlyMod)}%) ` +
-          `onlyOtherCc=${cx.onlyOtherCc}(${cxPct(cx.onlyOtherCc)}%) ` +
-          `onlySysEx=${cx.onlySysEx}(${cxPct(cx.onlySysEx)}%) ` +
-          `mixed=${cx.mixed}(${cxPct(cx.mixed)}%)`,
-      );
+      if (this.debug) {
+        console.log(
+          `[midy] complex breakdown | total=${cx.complex} | ` +
+            `with: bend=${cx.withPitchBend}(${cxPct(cx.withPitchBend)}%) ` +
+            `pan=${cx.withPan}(${cxPct(cx.withPan)}%) ` +
+            `mod=${cx.withMod}(${cxPct(cx.withMod)}%) ` +
+            `gain=${cx.withGain}(${cxPct(cx.withGain)}%) ` +
+            `otherCc=${cx.withOtherCc}(${cxPct(cx.withOtherCc)}%) ` +
+            `sysEx=${cx.withSysEx}(${cxPct(cx.withSysEx)}%) ` +
+            `pc=${cx.withProgramChange}(${cxPct(cx.withProgramChange)}%) | ` +
+            `exclusive: onlyBend=${cx.onlyPitchBend}(${
+              cxPct(cx.onlyPitchBend)
+            }%) ` +
+            `bend+gain=${cx.bendGain}(${cxPct(cx.bendGain)}%) ` +
+            `onlyPan=${cx.onlyPan}(${cxPct(cx.onlyPan)}%) ` +
+            `pan+gain=${cx.panGain}(${cxPct(cx.panGain)}%) ` +
+            `onlyMod=${cx.onlyMod}(${cxPct(cx.onlyMod)}%) ` +
+            `onlyOtherCc=${cx.onlyOtherCc}(${cxPct(cx.onlyOtherCc)}%) ` +
+            `onlySysEx=${cx.onlySysEx}(${cxPct(cx.onlySysEx)}%) ` +
+            `mixed=${cx.mixed}(${cxPct(cx.mixed)}%)`,
+        );
+      }
       // Chunk pipeline stability (realtime only; excludes renderFastMode).
       const cb = this.chunkBakeCount;
       const bakeAvg = cb > 0 ? this.chunkBakeSumMs / cb : 0;
@@ -2468,54 +2480,62 @@ export class Player<
               : 2,
           ),
         ));
-      console.log(
-        `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} ` +
-          `noteBake=${this.useWorkerSimpleNoteBake} ` +
-          `(noteBake also used in segment/chunk when dest is long enough) ` +
-          `transferable=${this.useWorkerTransferable} ` +
-          `poolSize=${poolSize} ` +
-          `mixMinEntries=${this.workerMixMinEntries} ` +
-          `poolStarted=${!!this.bakeWorkerPool}`,
-      );
+      if (this.debug) {
+        console.log(
+          `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} ` +
+            `noteBake=${this.useWorkerSimpleNoteBake} ` +
+            `(noteBake also used in segment/chunk when dest is long enough) ` +
+            `transferable=${this.useWorkerTransferable} ` +
+            `poolSize=${poolSize} ` +
+            `mixMinEntries=${this.workerMixMinEntries} ` +
+            `poolStarted=${!!this.bakeWorkerPool}`,
+        );
+      }
       const simpleAvg = cb > 0 ? this.chunkBakeSimpleSumMs / cb : 0;
       const complexAvg = cb > 0 ? this.chunkBakeComplexSumMs / cb : 0;
       const mixAvg = cb > 0 ? this.chunkBakeMixSumMs / cb : 0;
       const oacAvg = cb > 0 ? this.chunkBakeOacSumMs / cb : 0;
-      console.log(
-        `[midy] chunk-pipeline | tiles=${cb} ` +
-          `bakeAvg=${bakeAvg.toFixed(1)}ms bakeP50=${bakeP50.toFixed(1)}ms ` +
-          `bakeP95=${bakeP95.toFixed(1)}ms bakeMax=${
-            this.chunkBakeMaxMs.toFixed(1)
-          }ms | ` +
-          `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} | ` +
-          `gateWaitAvg=${
-            cb > 0 ? (this.chunkGateWaitSumMs / cb).toFixed(1) : "0"
-          }ms gateWaitMax=${this.chunkGateWaitMaxMs.toFixed(1)}ms ` +
-          `workAvg=${cb > 0 ? (this.chunkWorkSumMs / cb).toFixed(1) : "0"}ms ` +
-          `starts=${this.chunkStarts} late=${lateN} ` +
-          `lateAvg=${lateAvg.toFixed(1)}ms lateMax=${
-            this.chunkLateMaxMs.toFixed(1)
-          }ms ` +
-          `dropped=${this.chunkDroppedLate} | ` +
-          `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s ` +
-          `prerollPeak=${this.prerollUntilPeak.toFixed(2)}s ` +
-          `prerollSec=${this.prerollSec}`,
-      );
+      if (this.debug) {
+        console.log(
+          `[midy] chunk-pipeline | tiles=${cb} ` +
+            `bakeAvg=${bakeAvg.toFixed(1)}ms bakeP50=${bakeP50.toFixed(1)}ms ` +
+            `bakeP95=${bakeP95.toFixed(1)}ms bakeMax=${
+              this.chunkBakeMaxMs.toFixed(1)
+            }ms | ` +
+            `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} | ` +
+            `gateWaitAvg=${
+              cb > 0 ? (this.chunkGateWaitSumMs / cb).toFixed(1) : "0"
+            }ms gateWaitMax=${this.chunkGateWaitMaxMs.toFixed(1)}ms ` +
+            `workAvg=${
+              cb > 0 ? (this.chunkWorkSumMs / cb).toFixed(1) : "0"
+            }ms ` +
+            `starts=${this.chunkStarts} late=${lateN} ` +
+            `lateAvg=${lateAvg.toFixed(1)}ms lateMax=${
+              this.chunkLateMaxMs.toFixed(1)
+            }ms ` +
+            `dropped=${this.chunkDroppedLate} | ` +
+            `prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s ` +
+            `prerollPeak=${this.prerollUntilPeak.toFixed(2)}s ` +
+            `prerollSec=${this.prerollSec}`,
+        );
+      }
       const notesAvg = cb > 0 ? this.chunkBakeNoteCountSum / cb : 0;
       const complexNotesAvg = cb > 0 ? this.chunkBakeComplexCountSum / cb : 0;
       const sumDurAvg = cb > 0 ? this.chunkBakeSumNoteDuration / cb : 0;
       const costAvg = cb > 0 ? this.chunkBakeSumCost / cb : 0;
-      console.log(
-        `[midy] chunk-bake-parts | ` +
-          `simpleAvg=${simpleAvg.toFixed(1)}ms ` +
-          `complexAvg=${complexAvg.toFixed(1)}ms ` +
-          `mixAvg=${mixAvg.toFixed(1)}ms ` +
-          `oacAvg=${oacAvg.toFixed(1)}ms ` +
-          `| simpleSum=${this.chunkBakeSimpleSumMs.toFixed(0)}ms ` +
-          `complexSum=${this.chunkBakeComplexSumMs.toFixed(0)}ms ` +
-          `mixSum=${this.chunkBakeMixSumMs.toFixed(0)}ms ` +
-          `oacSum=${this.chunkBakeOacSumMs.toFixed(0)}ms`,
-      );
+      if (this.debug) {
+        console.log(
+          `[midy] chunk-bake-parts | ` +
+            `simpleAvg=${simpleAvg.toFixed(1)}ms ` +
+            `complexAvg=${complexAvg.toFixed(1)}ms ` +
+            `mixAvg=${mixAvg.toFixed(1)}ms ` +
+            `oacAvg=${oacAvg.toFixed(1)}ms ` +
+            `| simpleSum=${this.chunkBakeSimpleSumMs.toFixed(0)}ms ` +
+            `complexSum=${this.chunkBakeComplexSumMs.toFixed(0)}ms ` +
+            `mixSum=${this.chunkBakeMixSumMs.toFixed(0)}ms ` +
+            `oacSum=${this.chunkBakeOacSumMs.toFixed(0)}ms`,
+        );
+      }
       {
         const mw = this.chunkMixWorkerTiles;
         const mm = this.chunkMixMainTiles;
@@ -2529,46 +2549,52 @@ export class Player<
         const copyAvg = mw > 0 ? this.chunkMixCopyBackSumMs / mw : 0;
         const mainAvg = mm > 0 ? this.chunkMixMainSumMs / mm : 0;
         const entriesAvg = mt > 0 ? this.chunkMixEntriesSum / mt : 0;
+        if (this.debug) {
+          console.log(
+            `[midy] chunk-mix-parts | ` +
+              `workerTiles=${mw} mainTiles=${mm} entriesAvg=${
+                entriesAvg.toFixed(1)
+              } | ` +
+              `prepareAvg=${prepAvg.toFixed(1)}ms ` +
+              `awaitAvg=${awaitAvg.toFixed(1)}ms ` +
+              `queueAvg=${queueAvg.toFixed(1)}ms ` +
+              `postAvg=${postAvg.toFixed(1)}ms ` +
+              `workerAvg=${workerAvg.toFixed(1)}ms ` +
+              `residualAvg=${residualAvg.toFixed(1)}ms ` +
+              `copyBackAvg=${copyAvg.toFixed(1)}ms ` +
+              `mainAvg=${mainAvg.toFixed(1)}ms | ` +
+              `prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms ` +
+              `awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms ` +
+              `queueSum=${this.chunkMixQueueSumMs.toFixed(0)}ms ` +
+              `postSum=${this.chunkMixPostSumMs.toFixed(0)}ms ` +
+              `workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms ` +
+              `residualSum=${this.chunkMixResidualSumMs.toFixed(0)}ms ` +
+              `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
+              `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
+          );
+        }
+      }
+      if (this.debug) {
         console.log(
-          `[midy] chunk-mix-parts | ` +
-            `workerTiles=${mw} mainTiles=${mm} entriesAvg=${
-              entriesAvg.toFixed(1)
-            } | ` +
-            `prepareAvg=${prepAvg.toFixed(1)}ms ` +
-            `awaitAvg=${awaitAvg.toFixed(1)}ms ` +
-            `queueAvg=${queueAvg.toFixed(1)}ms ` +
-            `postAvg=${postAvg.toFixed(1)}ms ` +
-            `workerAvg=${workerAvg.toFixed(1)}ms ` +
-            `residualAvg=${residualAvg.toFixed(1)}ms ` +
-            `copyBackAvg=${copyAvg.toFixed(1)}ms ` +
-            `mainAvg=${mainAvg.toFixed(1)}ms | ` +
-            `prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms ` +
-            `awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms ` +
-            `queueSum=${this.chunkMixQueueSumMs.toFixed(0)}ms ` +
-            `postSum=${this.chunkMixPostSumMs.toFixed(0)}ms ` +
-            `workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms ` +
-            `residualSum=${this.chunkMixResidualSumMs.toFixed(0)}ms ` +
-            `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
-            `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
+          `[midy] chunk-tile-shape | ` +
+            `notesAvg=${notesAvg.toFixed(1)} ` +
+            `complexNotesAvg=${complexNotesAvg.toFixed(1)} ` +
+            `sumDurAvg=${sumDurAvg.toFixed(3)}s ` +
+            `costAvg=${costAvg.toFixed(3)} ` +
+            `budget=${this.chunkCostBudget} ` +
+            `complexWeight=${this.chunkComplexCostWeight} ` +
+            `tileDuration=${this.tileDuration} ` +
+            `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
+            `horizon=${this.chunkBakeHorizonSec}s ` +
+            `near=${this.chunkBakeNearSec}s ` +
+            `startsPerPass=${this.maxChunkBakeStartsPerPass} ` +
+            `maxChunkNotes=${this.maxChunkNotes}`,
         );
       }
-      console.log(
-        `[midy] chunk-tile-shape | ` +
-          `notesAvg=${notesAvg.toFixed(1)} ` +
-          `complexNotesAvg=${complexNotesAvg.toFixed(1)} ` +
-          `sumDurAvg=${sumDurAvg.toFixed(3)}s ` +
-          `costAvg=${costAvg.toFixed(3)} ` +
-          `budget=${this.chunkCostBudget} ` +
-          `complexWeight=${this.chunkComplexCostWeight} ` +
-          `tileDuration=${this.tileDuration} ` +
-          `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
-          `horizon=${this.chunkBakeHorizonSec}s ` +
-          `near=${this.chunkBakeNearSec}s ` +
-          `startsPerPass=${this.maxChunkBakeStartsPerPass} ` +
-          `maxChunkNotes=${this.maxChunkNotes}`,
-      );
     } catch (e) {
-      console.warn("[midy] stats log failed", e);
+      if (this.debug) {
+        console.warn("[midy] stats log failed", e);
+      }
     }
   }
 
@@ -2858,20 +2884,24 @@ export class Player<
     );
     if (songEnd <= songStart) {
       this.prerollUntilSongTime = songStart;
-      console.warn(
-        `[midy] preroll skipped: songEnd(${songEnd.toFixed(3)}) <= songStart(${
-          songStart.toFixed(3)
-        }) ` +
-          `totalTime=${this.totalTime} timeline=${this.timeline.length} prerollSec=${prerollSec}`,
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] preroll skipped: songEnd(${
+            songEnd.toFixed(3)
+          }) <= songStart(${songStart.toFixed(3)}) ` +
+            `totalTime=${this.totalTime} timeline=${this.timeline.length} prerollSec=${prerollSec}`,
+        );
+      }
       return;
     }
-    console.log(
-      `[midy] preroll start | mode=${cacheMode} window=[${
-        songStart.toFixed(2)
-      }, ${songEnd.toFixed(2)}] ` +
-        `tiledNotes=${this.tiledBakedSet.size} maxChunkBakes=${this.maxConcurrentChunkBakes}`,
-    );
+    if (this.debug) {
+      console.log(
+        `[midy] preroll start | mode=${cacheMode} window=[${
+          songStart.toFixed(2)
+        }, ${songEnd.toFixed(2)}] ` +
+          `tiledNotes=${this.tiledBakedSet.size} maxChunkBakes=${this.maxConcurrentChunkBakes}`,
+      );
+    }
 
     const isSegmentMode = isSegmentCacheMode(cacheMode);
     const isChunkMode = isChunkCacheMode(cacheMode);
@@ -2981,11 +3011,13 @@ export class Player<
       this.prerollUntilPeak = coveredEnd;
     }
     const pendingCount = isChunkMode ? this.chunkState.pending.length : 0;
-    console.log(
-      `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s ` +
-        `wall=${(performance.now() - t0).toFixed(0)}ms ` +
-        `pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`,
-    );
+    if (this.debug) {
+      console.log(
+        `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s ` +
+          `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+          `pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`,
+      );
+    }
   }
 
   /** Log first 3 close-chunks, then every 20th — avoids DevTools stall. */
@@ -3035,11 +3067,13 @@ export class Player<
         }
       }
       if (started + deferred > 0) {
-        console.warn(
-          `[midy] start-ready | started=${started} deferred=${deferred} ` +
-            `wall=${(performance.now() - t0).toFixed(0)}ms ` +
-            `pending=${pending.length}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] start-ready | started=${started} deferred=${deferred} ` +
+              `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+              `pending=${pending.length}`,
+          );
+        }
       }
     } else if (this.cacheMode === "segment") {
       const states = this.segmentChannelStates;
@@ -3551,13 +3585,15 @@ export class Player<
           : !inNearWindow
           ? (this.chunkBakeNearSec > 0 ? "near/horizon" : "horizon")
           : "rate-limit";
-        console.warn(
-          `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
-            `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
-            `deferred (${reason}) chunkBake=${this.chunkBakeActive} ` +
-            `deferredN=${this.deferredChunkBakes.length} ` +
-            `passStarts=${this.chunkBakeStartsThisPass}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
+              `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
+              `deferred (${reason}) chunkBake=${this.chunkBakeActive} ` +
+              `deferredN=${this.deferredChunkBakes.length} ` +
+              `passStarts=${this.chunkBakeStartsThisPass}`,
+          );
+        }
       }
       pending.bufferPromise = new Promise<AudioBuffer | null>(
         (resolve, reject) => {
@@ -3577,13 +3613,15 @@ export class Player<
     this.recordChunkBakeStartThisPass();
 
     if (inDiagWindow && this.shouldLogCloseChunk()) {
-      console.warn(
-        `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
-          `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
-          `bake-now chunkBake=${this.chunkBakeActive} ` +
-          `pending=${state.pending.length} ` +
-          `passStarts=${this.chunkBakeStartsThisPass}`,
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
+            `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
+            `bake-now chunkBake=${this.chunkBakeActive} ` +
+            `pending=${state.pending.length} ` +
+            `passStarts=${this.chunkBakeStartsThisPass}`,
+        );
+      }
     }
 
     // tEnqueue: when this tile joined the bake queue. gateWait =
@@ -4157,28 +4195,32 @@ export class Player<
           : mixDetail.mainMs;
         mixMs = performance.now() - tMix0;
         if (mixMs >= 200 && mixMs > mixWorkMs + 50) {
-          console.warn(
-            `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms ` +
-              `work=${mixWorkMs.toFixed(0)}ms ` +
-              `setTimeout0=${awaitLagMs.toFixed(0)}ms ` +
-              `usedWorker=${mixDetail.usedWorker} ` +
-              `main=${mixDetail.mainMs.toFixed(0)} ` +
-              `residual=${mixDetail.residualMs.toFixed(0)} ` +
-              `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
-              `entries=${allEntries.length} ` +
-              `chunkBake=${this.chunkBakeActive}`,
-          );
+          if (this.debug) {
+            console.warn(
+              `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms ` +
+                `work=${mixWorkMs.toFixed(0)}ms ` +
+                `setTimeout0=${awaitLagMs.toFixed(0)}ms ` +
+                `usedWorker=${mixDetail.usedWorker} ` +
+                `main=${mixDetail.mainMs.toFixed(0)} ` +
+                `residual=${mixDetail.residualMs.toFixed(0)} ` +
+                `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
+                `entries=${allEntries.length} ` +
+                `chunkBake=${this.chunkBakeActive}`,
+            );
+          }
         }
       }
       if (liveRealtime) {
         mixMs = performance.now() - tMix0;
         if (mixMs >= 200) {
-          console.warn(
-            `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
-              `main=${mixDetail.mainMs.toFixed(0)}ms ` +
-              `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
-              `entries=${allEntries.length}`,
-          );
+          if (this.debug) {
+            console.warn(
+              `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
+                `main=${mixDetail.mainMs.toFixed(0)}ms ` +
+                `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
+                `entries=${allEntries.length}`,
+            );
+          }
         }
       }
       if (!forAudioOffline) {
@@ -5101,13 +5143,15 @@ export class Player<
       }
       const bodyMs = performance.now() - tBody0;
       if (bodyMs >= 100 || allocMs >= 50) {
-        console.warn(
-          `[midy] mix-body | total=${bodyMs.toFixed(0)}ms alloc=${
-            allocMs.toFixed(0)
-          }ms main=${mainMs.toFixed(0)}ms entries=${entries.length} ` +
-            `destSamples=${bufferLength} ` +
-            `simpleCache=${this.simpleNoteBufferCache.size}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] mix-body | total=${bodyMs.toFixed(0)}ms alloc=${
+              allocMs.toFixed(0)
+            }ms main=${mainMs.toFixed(0)}ms entries=${entries.length} ` +
+              `destSamples=${bufferLength} ` +
+              `simpleCache=${this.simpleNoteBufferCache.size}`,
+          );
+        }
       }
       return buffer;
     }
@@ -5215,28 +5259,32 @@ export class Player<
       // Residual outlier log even when total tile work is below heavy threshold.
       // Helps catch "hits only, residual 10s" without needing workMs >= thr.
       if (residualMs >= 500) {
-        console.warn(
-          `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
-            `await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms ` +
-            `post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms ` +
-            `afterAwait=${afterAwaitMs.toFixed(1)}ms ` +
-            `prepare=${prepareMs.toFixed(0)}ms copyBack=${
-              copyBackMs.toFixed(0)
-            }ms | ` +
-            `entries=${entries.length} destSamples=${bufferLength} ` +
-            `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
-            `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
-            `offline=${concurrentSnap.offlineRenderActive} ` +
-            `deferred=${concurrentSnap.deferredBakes}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
+              `await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms ` +
+              `post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms ` +
+              `afterAwait=${afterAwaitMs.toFixed(1)}ms ` +
+              `prepare=${prepareMs.toFixed(0)}ms copyBack=${
+                copyBackMs.toFixed(0)
+              }ms | ` +
+              `entries=${entries.length} destSamples=${bufferLength} ` +
+              `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
+              `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
+              `offline=${concurrentSnap.offlineRenderActive} ` +
+              `deferred=${concurrentSnap.deferredBakes}`,
+          );
+        }
       }
       return buffer;
     } catch (err) {
       // Worker failure → fall back to main-thread mix so playback continues.
-      console.warn(
-        "[midy] worker mix failed, falling back to main thread",
-        err,
-      );
+      if (this.debug) {
+        console.warn(
+          "[midy] worker mix failed, falling back to main thread",
+          err,
+        );
+      }
       const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
       const mainMs = performance.now() - tMain0;
@@ -5736,10 +5784,12 @@ export class Player<
         dest.copyToChannel(result.channels[c], c);
       }
     } catch (err) {
-      console.warn(
-        "[midy] worker simple-note render failed, falling back to main",
-        err,
-      );
+      if (this.debug) {
+        console.warn(
+          "[midy] worker simple-note render failed, falling back to main",
+          err,
+        );
+      }
       this.renderSampleTypedArray(
         srcBuffer,
         dest,
@@ -6180,30 +6230,34 @@ export class Player<
         : p.mixUsedWorker === false
         ? `mixDetail: main=${(p.mixMainMs ?? 0).toFixed(0)}ms`
         : "";
-      console.warn(
-        `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
-          `gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms ` +
-          `dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} ` +
-          `start=${(p.chunkStart ?? 0).toFixed(2)}s ` +
-          `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | ` +
-          `simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} ` +
-          `total=${simpleTotal} | ` +
-          `cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${p.cxMod ?? 0} ` +
-          `gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} ` +
-          `sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | ` +
-          `sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s ` +
-          `bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s ` +
-          `cost=${(p.cost ?? 0).toFixed(2)} ` +
-          `topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s ` +
-          `topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | ` +
-          `parts: simple=${simpleMs.toFixed(0)}ms ` +
-          `complex=${complexMs.toFixed(0)}ms ` +
-          `mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms | ` +
-          `simpleDetail: lookup=${sLookup.toFixed(0)}ms ` +
-          `awaitInflight=${sAwaitInf.toFixed(0)}ms ` +
-          `missBake=${sMissBake.toFixed(0)}ms` +
-          (mixLine ? ` | ${mixLine}` : ""),
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
+            `gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms ` +
+            `dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} ` +
+            `start=${(p.chunkStart ?? 0).toFixed(2)}s ` +
+            `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | ` +
+            `simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} ` +
+            `total=${simpleTotal} | ` +
+            `cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${
+              p.cxMod ?? 0
+            } ` +
+            `gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} ` +
+            `sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | ` +
+            `sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s ` +
+            `bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s ` +
+            `cost=${(p.cost ?? 0).toFixed(2)} ` +
+            `topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s ` +
+            `topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | ` +
+            `parts: simple=${simpleMs.toFixed(0)}ms ` +
+            `complex=${complexMs.toFixed(0)}ms ` +
+            `mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms | ` +
+            `simpleDetail: lookup=${sLookup.toFixed(0)}ms ` +
+            `awaitInflight=${sAwaitInf.toFixed(0)}ms ` +
+            `missBake=${sMissBake.toFixed(0)}ms` +
+            (mixLine ? ` | ${mixLine}` : ""),
+        );
+      }
     }
   }
 

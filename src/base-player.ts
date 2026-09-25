@@ -1123,6 +1123,8 @@ export class BasePlayer<
   noteCheckInterval: number = 0.1;
   drainTimeoutMs: number = 5000;
   lookAhead: number = 1;
+  /** When true, emit diagnostic [midy] console logs (timing, cache, bake). Default false for release. */
+  debug: boolean = false;
   startDelay: number = 0.5;
   startTime: number = 0;
   resumeTime: number = 0;
@@ -2724,6 +2726,7 @@ export class BasePlayer<
   // to whatever moment preparation finished, instead of on the beat. This
   // logs that so it's visible instead of just sounding subtly wrong.
   warnIfStartTimeMissed(label: string, scheduledStart: number): void {
+    if (!this.debug) return;
     const now = this.audioContext.currentTime;
     if (scheduledStart < now) {
       console.warn(
