@@ -53,6 +53,8 @@ export interface RenderMidyModeOptions {
   /** Must match the sample rate used for the reference (fluidsynth) render,
    * or the comparison won't be apples-to-apples. Default: 48000. */
   sampleRate?: number;
+  /** Enable almost-simple pitch-bend TypedArray path for this render. */
+  useAlmostSimplePitchBend?: boolean;
   /** Show the browser window instead of headless — handy for debugging a
    * harness that silently produces nothing. Default: false. */
   headed?: boolean;
@@ -143,7 +145,8 @@ export async function renderMidyMode(
     const midiBytes = await Deno.readFile(options.midiPath);
     const sf2Bytes = await Deno.readFile(options.soundFontPath);
 
-    const wavBase64 = await page.evaluate(
+    // deno-lint-ignore no-explicit-any
+    const result = await page.evaluate(
       (params) => {
         // deno-lint-ignore no-explicit-any
         return (globalThis as any).__renderMidyMode(params);
@@ -153,10 +156,45 @@ export async function renderMidyMode(
         soundFontBytesBase64: toBase64(sf2Bytes),
         cacheMode: options.cacheMode,
         sampleRate: options.sampleRate ?? 48000,
+        useAlmostSimplePitchBend: options.useAlmostSimplePitchBend,
       },
-    );
+    ) as string | {
+      wavBase64: string;
+      useAlmostSimplePitchBend?: boolean;
+      cacheMode?: string;
+    };
 
-    return fromBase64(wavBase64 as string);
+    // New harness returns { wavBase64, useAlmostSimplePitchBend, ... }.
+    // Old harness returned a bare base64 string — still supported.
+    let wavBase64: string;
+    if (typeof result === "string") {
+      wavBase64 = result;
+      if (options.useAlmostSimplePitchBend != null) {
+        console.warn(
+          "[render-midy-headless] harness returned bare base64; " +
+            "cannot verify useAlmostSimplePitchBend was applied. " +
+            "Update tools/midy-harness.js.",
+        );
+      }
+    } else {
+      wavBase64 = result.wavBase64;
+      if (options.useAlmostSimplePitchBend != null) {
+        const actual = !!result.useAlmostSimplePitchBend;
+        const requested = !!options.useAlmostSimplePitchBend;
+        console.log(
+          `[render-midy-headless] useAlmostSimplePitchBend ` +
+            `requested=${requested} actual=${actual} mode=${options.cacheMode}`,
+        );
+        if (actual !== requested) {
+          throw new Error(
+            `useAlmostSimplePitchBend mismatch: requested=${requested} ` +
+              `actual=${actual}. Rebuild dist/midy.js and ensure harness sets the flag.`,
+          );
+        }
+      }
+    }
+
+    return fromBase64(wavBase64);
   } finally {
     await browser.close();
     close();

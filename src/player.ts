@@ -340,6 +340,14 @@ export class Player<
   // path.
   useAlmostSimplePan: boolean = true;
 
+  // Almost-simple pitch bend (in-interval pitch-bend only, optionally with
+  // gain/pan almost-simple controllers) on the TypedArray simple path.
+  // Uses a per-sample playback-rate curve during renderSampleTypedArray so
+  // the volume envelope stays in real time (SF2-compatible) while sample
+  // position advances with the bend. Set false to force bend notes through
+  // the legacy complex OAC path.
+  useAlmostSimplePitchBend: boolean = false;
+
   // Offload tile-level TypedArray mix (simpleHits + complexBufs → dest) to a
   // Web Worker pool. This is the primary worker path for segment / chunk:
   // one (or a few parallel) postMessage(s) per tile, not per note.
@@ -1183,9 +1191,15 @@ export class Player<
   // the full complex Offline path.
   protected hasWaveformAutomation(noteEvent: NoteOnEventEntry): boolean {
     const events = noteEvent.events;
+    let sawPitchBend = false;
     for (let i = 0; i < events.length; i++) {
       const event = events[i];
-      if (event.type === "pitchBend" || event.type === "sysEx") return true;
+      if (event.type === "pitchBend") {
+        if (!this.useAlmostSimplePitchBend) return true;
+        sawPitchBend = true;
+        continue;
+      }
+      if (event.type === "sysEx") return true;
       if (event.type !== "controller") continue;
       const controller = event.controllerType ?? -1;
       if (controller === 64 || controller === 120 || controller === 123) {
@@ -1202,6 +1216,8 @@ export class Player<
       }
       return true;
     }
+    // Pitch-bend-only (plus optional gain/pan almost-simple) is handled on
+    // the TypedArray path when useAlmostSimplePitchBend is enabled.
     return false;
   }
 
@@ -1215,7 +1231,12 @@ export class Player<
     let sawGain = false;
     for (let i = 0; i < events.length; i++) {
       const event = events[i];
-      if (event.type === "pitchBend" || event.type === "sysEx") return false;
+      if (event.type === "pitchBend") {
+        // Bend coexists on the TypedArray path when almost-simple bend is on.
+        if (!this.useAlmostSimplePitchBend) return false;
+        continue;
+      }
+      if (event.type === "sysEx") return false;
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
@@ -1243,7 +1264,11 @@ export class Player<
     let sawPan = false;
     for (let i = 0; i < events.length; i++) {
       const event = events[i];
-      if (event.type === "pitchBend" || event.type === "sysEx") return false;
+      if (event.type === "pitchBend") {
+        if (!this.useAlmostSimplePitchBend) return false;
+        continue;
+      }
+      if (event.type === "sysEx") return false;
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
@@ -1266,6 +1291,61 @@ export class Player<
   protected hasPanOrGainOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
     return this.hasGainOnlyAutomation(noteEvent) ||
       this.hasPanOnlyAutomation(noteEvent);
+  }
+
+  // True when in-interval automation includes pitch bend and nothing that
+  // forces complex (mod / other CC / SysEx). Gain and pan may coexist and
+  // stay on the TypedArray almost-simple curves.
+  protected hasPitchBendOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
+    if (!this.useAlmostSimplePitchBend) return false;
+    const events = noteEvent.events;
+    if (events.length === 0) return false;
+    let sawBend = false;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type === "pitchBend") {
+        sawBend = true;
+        continue;
+      }
+      if (event.type === "sysEx") return false;
+      if (event.type === "programChange") continue;
+      if (event.type !== "controller") return false;
+      const controller = event.controllerType ?? -1;
+      if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
+        continue;
+      }
+      if (
+        this.useAlmostSimplePan &&
+        controller === Player.PAN_CONTROLLER_TYPE
+      ) {
+        continue;
+      }
+      // Modulation / other CC still forces complex.
+      return false;
+    }
+    return sawBend;
+  }
+
+  // True when the note carries in-interval pitch-bend events that the
+  // TypedArray path cannot honour (modEnvToPitch ≠ 0). Such notes must
+  // fall back to the OAC complex baker so bends are not silently dropped.
+  protected pitchBendNeedsComplexPath(
+    noteEvent: NoteOnEventEntry | undefined,
+    voiceParams: VoiceParams | undefined,
+  ): boolean {
+    if (!noteEvent || !this.useAlmostSimplePitchBend) return false;
+    // Rate-curve path has no mod envelope / LFO pitch modulators.
+    const needsModPitch = (voiceParams?.modEnvToPitch ?? 0) !== 0 ||
+      (voiceParams?.modLfoToPitch ?? 0) !== 0;
+    if (!needsModPitch) return false;
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].type === "pitchBend") return true;
+    }
+    return false;
   }
 
   // Treat notes with no waveform-changing in-interval automation as simple.
@@ -1649,14 +1729,18 @@ export class Player<
     bakeChannelMix: boolean,
   ): void {
     // ControllerState indices: volumeMSB=135, panMSB=138, expressionMSB=139
+    // pitchWheelSensitivity=16 — must be in the key so range=2 vs range=12
+    // almost-simple rate curves never collide (same detune/trajectory, different cents).
     // Mix-level only: ignored for dry (segment) keys on purpose.
     const vol = bakeChannelMix ? (channelStateArray[128 + 7] ?? 0) : 0;
     const pan = bakeChannelMix ? (channelStateArray[128 + 10] ?? 0) : 0;
     const expr = bakeChannelMix ? (channelStateArray[128 + 11] ?? 0) : 0;
+    const sens = channelStateArray[16] ?? (2 / 128);
     parts.push(
       Math.round(vol * 1e4),
       Math.round(pan * 1e4),
       Math.round(expr * 1e4),
+      Math.round(sens * 1e6),
     );
   }
 
@@ -1709,11 +1793,17 @@ export class Player<
     );
     if (complex) {
       parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
-    } else if (n.noteEvent && this.hasPanOrGainOnlyAutomation(n.noteEvent)) {
-      // Almost-simple: gain and/or pan curves are baked into the TypedArray
-      // buffer, so the simple key must distinguish different trajectories.
-      parts.push(this.serializeGainOnlyAutomationEvents(n.noteEvent));
-      parts.push(this.serializePanAutomationEvents(n.noteEvent));
+    } else if (n.noteEvent) {
+      // Almost-simple: gain / pan / pitch-bend curves are baked into the
+      // TypedArray buffer, so the simple key must distinguish trajectories.
+      if (
+        this.hasPanOrGainOnlyAutomation(n.noteEvent) ||
+        this.hasPitchBendOnlyAutomation(n.noteEvent)
+      ) {
+        parts.push(this.serializeGainOnlyAutomationEvents(n.noteEvent));
+        parts.push(this.serializePanAutomationEvents(n.noteEvent));
+        parts.push(this.serializePitchBendAutomationEvents(n.noteEvent));
+      }
     }
     return parts;
   }
@@ -1754,6 +1844,26 @@ export class Player<
       const absTick = event.ticks ?? event.startTime ?? 0;
       const rel = absTick - startTicks;
       parts.push(`p:${rel}:${event.value}`);
+    }
+    return parts.join(";");
+  }
+
+  // Fingerprint of pitch-bend events only (relative ticks + signed value).
+  // Used as a suffix on simple-note cache keys for almost-simple bend notes.
+  serializePitchBendAutomationEvents(
+    noteEvent: NoteOnEventEntry | undefined,
+  ): string {
+    if (!noteEvent || noteEvent.events.length === 0) return "";
+    const startTicks = noteEvent.startTicks ?? 0;
+    const parts: string[] = [];
+    for (let i = 0; i < noteEvent.events.length; i++) {
+      const event = noteEvent.events[i];
+      if (event.type !== "pitchBend") continue;
+      const absTick = event.ticks ?? event.startTime ?? 0;
+      const rel = absTick - startTicks;
+      // midi-file signed [-8192,8191] or absolute [0,16383] — keep raw value
+      // in the key; curve builder normalizes the same way as BasePlayer.
+      parts.push(`b:${rel}:${event.value}`);
     }
     return parts.join(";");
   }
@@ -3565,16 +3675,18 @@ export class Player<
     const inNearWindow = this.shouldBakeChunkNow(chunk.chunkStart);
 
     // Never kick renderChunkBuffer from inside scheduleTimelineEvents /
-    // appendToChunkQueue except during preroll. A long synchronous schedule
-    // pass otherwise blocks main from processing worker mix onmessage →
-    // residual of several seconds while workerMs is ~30ms.
-    // Always enqueue; pumpDeferredChunkBakes at schedule/update end starts
-    // bakes after the sync pass yields to the event loop.
+    // appendToChunkQueue while LIVE playback is running (except preroll).
+    // A long synchronous schedule pass otherwise blocks main from processing
+    // worker mix onmessage → residual of several seconds while workerMs is
+    // ~30ms. Live path always enqueues; pumpDeferredChunkBakes at
+    // schedule/update end starts bakes after the sync pass yields.
     //
-    // PREROLL only: immediate bake-now so bufferPromise is in-flight before
-    // preroll's Promise.allSettled (clock not armed; residual OK there).
-    // Do NOT gate on isPlaying — it can race with the first live schedule.
-    const liveDeferAll = !this.chunkPrerollActive;
+    // Offline renderWholeSongLive and preroll both await pending.bufferPromise
+    // with no pump in between — those must bake-now or the await hangs
+    // forever (protocolTimeout under headless tests). Align with
+    // canStartChunkBakeThisPass / shouldBakeChunkNow which already treat
+    // !isPlaying and chunkPrerollActive as immediate-bake.
+    const liveDeferAll = this.isPlaying && !this.chunkPrerollActive;
     const bakeNow = !liveDeferAll && inNearWindow &&
       this.canStartChunkBakeThisPass();
 
@@ -3950,6 +4062,7 @@ export class Player<
               simpleMissesBaked++;
             } else {
               // Raw sample not ready / not TypedArray-eligible — defer to OAC miss path.
+              // scheduleSimpleNotesDirect now replays in-note pitch bend events.
               simpleMisses[missCount++] = n;
             }
           }
@@ -4928,6 +5041,10 @@ export class Player<
     // TypedArray path only when mod wheel is idle (same gate as async path).
     const modDepth = entry.channelStateArray?.[128 + 1] ?? 0;
     if (modDepth > 0) return null;
+    // Pitch bend + modEnvToPitch cannot use the rate-curve path; force OAC.
+    if (this.pitchBendNeedsComplexPath(entry.noteEvent, voiceParams)) {
+      return null;
+    }
 
     let audioBuffer: AudioBuffer | null = null;
     if (entry.audioBufferId !== undefined) {
@@ -4956,6 +5073,14 @@ export class Player<
     const loopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
       : 0;
+    // In-note pitch-wheel *changes* ride on the relative rate curve when
+    // onlyBend; onset wheel stays in channelDetune / base playbackRate so
+    // it is never double-applied or dropped. Also force complex when the
+    // instrument has modLfoToPitch (TypedArray path has no LFO → pitch drift).
+    const onlyBend = !!(entry.noteEvent &&
+      this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
+      (voiceParams.modEnvToPitch ?? 0) === 0 &&
+      (voiceParams.modLfoToPitch ?? 0) === 0);
     const detune = entry.channelDetune + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
@@ -5011,6 +5136,22 @@ export class Player<
       }
     }
 
+    let rateMultipliers: Float32Array | null = null;
+    if (onlyBend && entry.noteEvent) {
+      const state = entry.channelStateArray;
+      // ControllerState: pitchWheel=14, pitchWheelSensitivity=16
+      const onsetWheel = this.readPitchWheelAbs(state) / 16383;
+      const sensitivity = this.readPitchWheelSensitivity(state);
+      rateMultipliers = this.computePitchBendRateCurve(
+        entry.noteEvent,
+        onsetWheel,
+        sensitivity,
+        length,
+        sampleRate,
+        totalDuration,
+      );
+    }
+
     const gains = this.computeAdsrVolumeGains(
       voiceParams,
       noteOffTime,
@@ -5031,6 +5172,19 @@ export class Player<
       ? voiceParams.start / audioBuffer.sampleRate
       : 0;
 
+    // Do NOT return null when rateMultipliers is set: liveRealtime chunk
+    // never awaits the deferred async bake and would schedule the note via
+    // scheduleSimpleNotesDirect with onset detune only (wrong pitch). Always
+    // complete the rate-curve bake synchronously here.
+    if (
+      !rateMultipliers &&
+      length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
+      this.useWorkerSimpleNoteBake &&
+      typeof Worker !== "undefined"
+    ) {
+      return null;
+    }
+
     const body = this.createEmptyBuffer(1, length, sampleRate);
     this.renderSampleTypedArray(
       audioBuffer,
@@ -5043,6 +5197,7 @@ export class Player<
       gains,
       filterFreqs,
       filterQ,
+      rateMultipliers,
     );
 
     let out: AudioBuffer;
@@ -5407,6 +5562,126 @@ export class Player<
     return { left, right };
   }
 
+  // Normalize midi-file / raw pitch-bend values to absolute [0, 16383].
+  protected normalizePitchBendValue(value: number): number {
+    // midi-file uses signed [-8192, 8191]; raw MIDI uses [0, 16383].
+    if (value >= -8192 && value <= 8191) return value + 8192;
+    return value;
+  }
+
+  /** ControllerState pitchWheelSensitivity; 0/NaN → GM default (±2 semitones). */
+  protected readPitchWheelSensitivity(state: Float32Array | undefined): number {
+    const s = state?.[16];
+    if (typeof s === "number" && Number.isFinite(s) && s > 0) return s;
+    return 2 / 128;
+  }
+
+  /** Absolute pitch-wheel 0..16383 from ControllerState norm storage. */
+  protected readPitchWheelAbs(state: Float32Array | undefined): number {
+    const norm = state?.[14] ?? (8192 / 16383);
+    return Math.max(0, Math.min(16383, Math.round(norm * 16383)));
+  }
+
+  // Build a per-sample playback-rate multiplier for almost-simple pitch bend.
+  //
+  // Returns RELATIVE multipliers vs the onset pitch-wheel position
+  // (onset → 1.0). Callers keep the full channelDetune (including onset
+  // wheel) in the constant base playbackRate; this curve only applies
+  // in-note wheel *changes*. That avoids double-counting and is robust
+  // to the small signed-formula differences between setPitchBend deltas
+  // and absolute reconstruction.
+  //
+  // Signed scale matches Channel.setPitchBend:
+  //   signed = (absolute - 8192) / 8192   ∈ [-1, 1]
+  //   cents  = signed * pitchWheelSensitivity * 12800
+  // where pitchWheelSensitivity is ControllerState form (rangeCents/12800).
+  protected computePitchBendRateCurve(
+    noteEvent: NoteOnEventEntry,
+    onsetPitchWheelNorm: number, // state.pitchWheel in [0,1] at note onset
+    pitchWheelSensitivity: number, // state.pitchWheelSensitivity
+    length: number,
+    sampleRate: number,
+    tMax: number,
+  ): Float32Array {
+    const rates = new Float32Array(length);
+    type Step = { t: number; abs: number };
+    // Reconstruct absolute 0..16383 from normalized storage (value/16383).
+    const onsetAbs = Math.max(
+      0,
+      Math.min(16383, Math.round(onsetPitchWheelNorm * 16383)),
+    );
+    const steps: Step[] = [{ t: 0, abs: onsetAbs }];
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      if (event.type !== "pitchBend") continue;
+      let t = this.relativeTimeInNote(event, noteEvent, noteEvent.startTime);
+      if (t < -1e-4 || t > tMax) continue;
+      if (t < 0) t = 0;
+      const abs = this.normalizePitchBendValue(event.value ?? 8192);
+      steps.push({ t, abs });
+    }
+    steps.sort((a, b) => a.t - b.t);
+    // Collapse identical consecutive times (keep last abs).
+    const compact: Step[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (
+        compact.length > 0 &&
+        Math.abs(compact[compact.length - 1].t - s.t) < 1e-9
+      ) {
+        compact[compact.length - 1] = s;
+      } else {
+        compact.push(s);
+      }
+    }
+    const invSr = 1 / sampleRate;
+    const centsPerUnit = pitchWheelSensitivity * 12800;
+    const absRate = (abs: number): number => {
+      const signed = (abs - 8192) / 8192;
+      const cents = signed * centsPerUnit;
+      const clamped = Math.max(-4800, Math.min(4800, cents));
+      return Math.pow(2, clamped / 1200);
+    };
+    const onsetRate = absRate(onsetAbs);
+    const invOnset = onsetRate > 0 ? 1 / onsetRate : 1;
+    // Piecewise-constant (matches OfflineAudioContext setValueAtTime steps).
+    let si = 0;
+    let curAbs = compact[0].abs;
+    for (let i = 0; i < length; i++) {
+      const t = i * invSr;
+      while (si + 1 < compact.length && compact[si + 1].t <= t + 1e-9) {
+        si++;
+        curAbs = compact[si].abs;
+      }
+      rates[i] = absRate(curAbs) * invOnset;
+    }
+    return rates;
+  }
+
+  /** Pitch-wheel cents implied by a ControllerState snapshot.
+   * Matches Channel.setPitchBend: signed = (abs - 8192) / 8192.
+   */
+  protected pitchWheelCentsFromState(state: Float32Array | undefined): number {
+    if (!state) return 0;
+    const abs = this.readPitchWheelAbs(state);
+    const sensitivity = this.readPitchWheelSensitivity(state);
+    const signed = (abs - 8192) / 8192;
+    return signed * sensitivity * 12800;
+  }
+
+  /**
+   * channelDetune includes pitch-wheel cents (via setPitchBend). When the
+   * absolute rate curve carries the full wheel contribution, strip that
+   * portion so it is not applied twice.
+   */
+  protected detuneWithoutPitchWheel(
+    channelDetune: number,
+    state: Float32Array | undefined,
+  ): number {
+    return channelDetune - this.pitchWheelCentsFromState(state);
+  }
+
   // Precompute ADS volume envelope gains (no release; holds at sustain).
   // Matches setVolumeEnvelope; pass attenuationScale = filterDcGain when filter is on.
   protected computeAdsVolumeGains(
@@ -5638,6 +5913,10 @@ export class Player<
     gains: Float32Array,
     filterFreqs: Float32Array | null,
     filterQ: number,
+    // Optional per-sample rate multiplier relative to the constant
+    // playbackRate (almost-simple pitch bend). Values are relative to the
+    // onset wheel (onset → 1.0); null → constant rate (legacy simple path).
+    rateMultipliers: Float32Array | null = null,
   ): void {
     const srcRate = srcBuffer.sampleRate;
     const destRate = dest.sampleRate;
@@ -5653,8 +5932,10 @@ export class Player<
     const loopEndSample = loopEndSrc * srcRate;
     const loopLenSample = loopEndSample - loopStartSample;
     const startSample = startOffsetSrc * srcRate;
-    const step = playbackRate * (srcRate / destRate);
+    const baseStep = playbackRate * (srcRate / destRate);
     const useFilter = filterFreqs != null;
+    const useRateCurve = rateMultipliers != null &&
+      rateMultipliers.length >= destLen;
 
     for (let c = 0; c < destChCount; c++) {
       const dst = dest.getChannelData(c);
@@ -5702,6 +5983,7 @@ export class Player<
         } else {
           dst[i] = x * gains[i];
         }
+        const step = useRateCurve ? baseStep * rateMultipliers![i] : baseStep;
         srcPos += step;
       }
     }
@@ -5730,12 +6012,18 @@ export class Player<
     gains: Float32Array,
     filterFreqs: Float32Array | null,
     filterQ: number,
+    rateMultipliers: Float32Array | null = null,
   ): Promise<void> {
     // Same live residual issue as tile mix: worker finishes in tens of ms but
     // main may not process onmessage for seconds → missBake multi-second.
-    // Prefer main during live playback; keep workers for preroll/offline.
+    // Prefer main during live playback for short notes; keep workers for
+    // preroll/offline. Exception: almost-simple pitch-bend rate curves on
+    // long notes — main-thread variable-rate loops can block for 1–2s and
+    // are worse than residual, so allow worker even while live.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
-    const useWorker = !liveRealtime &&
+    const longBend = rateMultipliers != null &&
+      dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER;
+    const useWorker = (!liveRealtime || longBend) &&
       this.useWorkerSimpleNoteBake &&
       dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
       typeof Worker !== "undefined";
@@ -5752,6 +6040,7 @@ export class Player<
         gains,
         filterFreqs,
         filterQ,
+        rateMultipliers,
       );
       return;
     }
@@ -5773,6 +6062,11 @@ export class Player<
         : null;
 
       const pool = this.getBakeWorkerPool();
+      const rateCopy = rateMultipliers
+        ? (this.useWorkerTransferable
+          ? rateMultipliers
+          : rateMultipliers.slice())
+        : null;
       const result = await pool.renderSample(
         {
           srcChannels,
@@ -5788,6 +6082,7 @@ export class Player<
           gains: gainsCopy,
           filterFreqs: filterCopy,
           filterQ,
+          rateMultipliers: rateCopy,
         },
         this.useWorkerTransferable,
       );
@@ -5813,6 +6108,7 @@ export class Player<
         gains,
         filterFreqs,
         filterQ,
+        rateMultipliers,
       );
     }
   }
@@ -6556,6 +6852,33 @@ export class Player<
         n.offset,
         bakeChannelMix,
       );
+      // Replay in-note automation (pitch bend / CC). Without this, almost-
+      // simple pitch-bend notes that fall through to the OAC miss path keep
+      // only the onset detune and silently drop the bend trajectory — the
+      // main cause of wrong pitch in live chunk playback when TypedArray
+      // sync bake returns null (long notes → worker deferral).
+      const noteEvent = n.noteEvent;
+      if (noteEvent && noteEvent.events.length > 0) {
+        const releaseEnd = noteEvent.soundOff
+          ? 0
+          : (n.voiceParams.releaseVolEnv * envelopeCurve * 5);
+        const tMax = n.noteDuration + releaseEnd;
+        const events = noteEvent.events;
+        for (let ei = 0; ei < events.length; ei++) {
+          const event = events[ei];
+          if (event.type === "programChange") continue;
+          let t = this.relativeTimeInNote(
+            event,
+            noteEvent,
+            noteEvent.startTime,
+          );
+          if (t < -1e-4 || t > tMax) continue;
+          if (t < 0) t = 0;
+          offlinePlayer.processTimelineEvent(event, n.offset + t, {
+            channels: offlinePlayer.channels,
+          });
+        }
+      }
       const offTime = n.offset + n.noteDuration;
       if (n.noteEvent?.soundOff) {
         const note = offlinePlayer.findNoteForOff(dstChannel, n.noteNumber);
@@ -6853,7 +7176,11 @@ export class Player<
           ne.durationTicks !== Infinity &&
           !this.hasWaveformAutomation(ne);
         const modDepth = m.entry.channelStateArray[128 + 1] ?? 0;
-        return isSimple && modDepth === 0;
+        if (!isSimple || modDepth > 0) return false;
+        if (this.pitchBendNeedsComplexPath(ne, m.entry.voiceParams)) {
+          return false;
+        }
+        return true;
       });
 
     if (!canBatch) {
@@ -7169,6 +7496,11 @@ export class Player<
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
       : 0;
 
+    const onlyBend = !!(entry.noteEvent &&
+      this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
+      (voiceParams.modEnvToPitch ?? 0) === 0 &&
+      (voiceParams.modLfoToPitch ?? 0) === 0);
+    // Relative rate curve carries in-note wheel deltas; keep full onset detune.
     const detune = entry.channelDetune + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
@@ -7253,6 +7585,26 @@ export class Player<
       srcChannels[c] = audioBuffer.getChannelData(c).slice();
     }
 
+    let rateMultipliers: Float32Array | null = null;
+    if (onlyBend && entry.noteEvent) {
+      // Must match tryBakeSimpleNoteSync / renderSimpleNoteTypedArray:
+      //   (noteEvent, onsetWheelNorm, sensitivity, length, sampleRate, tMax)
+      // sensitivity is ControllerState form (rangeCents/12800), NOT semis.
+      const onsetWheel = this.readPitchWheelAbs(entry.channelStateArray) /
+        16383;
+      const sensitivity = this.readPitchWheelSensitivity(
+        entry.channelStateArray,
+      );
+      rateMultipliers = this.computePitchBendRateCurve(
+        entry.noteEvent,
+        onsetWheel,
+        sensitivity,
+        length,
+        sampleRate,
+        totalDuration,
+      );
+    }
+
     const params: RenderSampleParams = {
       srcChannels,
       srcRate: audioBuffer.sampleRate,
@@ -7267,6 +7619,7 @@ export class Player<
       gains,
       filterFreqs,
       filterQ,
+      rateMultipliers,
     };
 
     return {
@@ -7584,6 +7937,14 @@ export class Player<
       : 0;
 
     // Match offline setDetune: fold channel + voice cents into playbackRate.
+    // In-note pitch-wheel *changes* ride on the relative rate curve when
+    // onlyBend; onset wheel stays in channelDetune / base playbackRate so
+    // it is never double-applied or dropped. Also force complex when the
+    // instrument has modLfoToPitch (TypedArray path has no LFO → pitch drift).
+    const onlyBend = !!(entry.noteEvent &&
+      this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
+      (voiceParams.modEnvToPitch ?? 0) === 0 &&
+      (voiceParams.modLfoToPitch ?? 0) === 0);
     const detune = entry.channelDetune + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
@@ -7643,6 +8004,21 @@ export class Player<
       }
     }
 
+    let rateMultipliers: Float32Array | null = null;
+    if (onlyBend && entry.noteEvent) {
+      const state = entry.channelStateArray;
+      const onsetWheel = this.readPitchWheelAbs(state) / 16383;
+      const sensitivity = this.readPitchWheelSensitivity(state);
+      rateMultipliers = this.computePitchBendRateCurve(
+        entry.noteEvent,
+        onsetWheel,
+        sensitivity,
+        length,
+        sampleRate,
+        totalDuration,
+      );
+    }
+
     const gains = this.computeAdsrVolumeGains(
       voiceParams,
       noteOffTime,
@@ -7669,6 +8045,8 @@ export class Player<
     // Render body as mono then expand when bakeChannelMix.
     // When useWorkerSimpleNoteBake is on and the note is long enough, the
     // per-sample resample/filter loop runs on a worker; curves stay here.
+    // Rate-curve (almost-simple bend) is also worker-capable: long onlyBend
+    // notes were starving the main event loop when forced on-thread.
     const body = this.createEmptyBuffer(1, length, sampleRate);
     await this.renderSampleTypedArrayMaybeWorker(
       audioBuffer,
@@ -7681,6 +8059,7 @@ export class Player<
       gains,
       filterFreqs,
       filterQ,
+      rateMultipliers,
     );
 
     if (!bakeChannelMix) {
@@ -7725,10 +8104,16 @@ export class Player<
       !this.hasWaveformAutomation(noteEvent);
     // ControllerState index: modulationDepthMSB = 128 + 1
     const modDepth = entry.channelStateArray[128 + 1] ?? 0;
+    // Pitch bend with modEnvToPitch must use OAC (rate curve omits mod env).
+    const bendNeedsComplex = this.pitchBendNeedsComplexPath(
+      noteEvent,
+      entry.voiceParams,
+    );
     if (
       this.useTypedArraySimpleNoteBake &&
       isSimple &&
-      modDepth === 0
+      modDepth === 0 &&
+      !bendNeedsComplex
     ) {
       return await this.renderSimpleNoteTypedArray(
         entry,

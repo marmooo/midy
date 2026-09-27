@@ -547,7 +547,12 @@ export class Channel<TNote extends Note = Note> {
     const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const state = this.state;
-    const prev = state.pitchWheel * 2 - 1;
+    // Signed scale must match both prev and next:
+    //   signed = (absolute - 8192) / 8192
+    // Previously prev used (norm*2-1) while next used (abs-8192)/8192, which
+    // drifted detune vs absolute reconstruction (almost-simple rate curve).
+    const prevAbs = state.pitchWheel * 16383;
+    const prev = (prevAbs - 8192) / 8192;
     const next = (value - 8192) / 8192;
     state.pitchWheel = value / 16383;
     this.detune += (next - prev) * state.pitchWheelSensitivity * 12800;
@@ -689,7 +694,8 @@ export class Channel<TNote extends Note = Note> {
     const prev = state.pitchWheelSensitivity;
     const next = value / 12800;
     state.pitchWheelSensitivity = next;
-    this.detune += (state.pitchWheel * 2 - 1) * (next - prev) * 12800;
+    const wheelSigned = (state.pitchWheel * 16383 - 8192) / 8192;
+    this.detune += wheelSigned * (next - prev) * 12800;
     player.updateChannelDetune(this, t);
     player.applyVoiceParams(this, 16, t);
   }
@@ -2397,7 +2403,9 @@ export class BasePlayer<
   }
 
   calcChannelDetune(channel: TChannel): number {
-    const pitchWheel = channel.state.pitchWheel * 2 - 1;
+    // Match setPitchBend signed scale: (abs - 8192) / 8192
+    const abs = channel.state.pitchWheel * 16383;
+    const pitchWheel = (abs - 8192) / 8192;
     const pitchWheelSensitivity = channel.state.pitchWheelSensitivity * 12800;
     return pitchWheel * pitchWheelSensitivity;
   }

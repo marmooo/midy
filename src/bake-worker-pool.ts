@@ -56,6 +56,12 @@ export type RenderSampleParams = {
   gains: Float32Array;
   filterFreqs: Float32Array | null;
   filterQ: number;
+  /**
+   * Optional per-destination-sample rate multipliers (almost-simple pitch
+   * bend). When set, srcPos advances by baseStep * rateMultipliers[i].
+   * Same length as destLen; omitted / null → constant playbackRate.
+   */
+  rateMultipliers?: Float32Array | null;
 };
 
 export type RenderSampleResult = {
@@ -208,13 +214,15 @@ function renderOneSample(p) {
   var gains = p.gains;
   var filterFreqs = p.filterFreqs;
   var filterQ = p.filterQ;
+  var rateMultipliers = p.rateMultipliers || null;
   var srcChCount = srcChannels.length;
   var srcLen = srcChannels[0].length;
   var loopStartSample = loopStartSrc * srcRate;
   var loopEndSample = loopEndSrc * srcRate;
   var loopLenSample = loopEndSample - loopStartSample;
   var startSample = startOffsetSrc * srcRate;
-  var step = playbackRate * (srcRate / destRate);
+  var baseStep = playbackRate * (srcRate / destRate);
+  var useRateCurve = rateMultipliers != null && rateMultipliers.length >= destLen;
   var useFilter = filterFreqs != null;
   var out = [];
   var transfer = [];
@@ -255,6 +263,7 @@ function renderOneSample(p) {
       } else {
         dst[i] = x * gains[i];
       }
+      var step = useRateCurve ? baseStep * rateMultipliers[i] : baseStep;
       srcPos += step;
     }
     out.push(dst);
@@ -537,6 +546,16 @@ self.onmessage = function(ev) {
         filterFreqs = filterFreqs.slice();
       }
     }
+    let rateMultipliers: Float32Array | null = params.rateMultipliers ?? null;
+    if (rateMultipliers) {
+      if (useTransferable) {
+        if (rateMultipliers.buffer.byteLength > 0) {
+          transfer.push(rateMultipliers.buffer);
+        }
+      } else {
+        rateMultipliers = rateMultipliers.slice();
+      }
+    }
 
     const result = await this.enqueue(
       {
@@ -555,6 +574,7 @@ self.onmessage = function(ev) {
         gains,
         filterFreqs,
         filterQ: params.filterQ,
+        rateMultipliers,
       },
       transfer,
     );
@@ -614,6 +634,16 @@ self.onmessage = function(ev) {
           filterFreqs = filterFreqs.slice();
         }
       }
+      let rateMultipliers: Float32Array | null = params.rateMultipliers ?? null;
+      if (rateMultipliers) {
+        if (useTransferable) {
+          if (rateMultipliers.buffer.byteLength > 0) {
+            transfer.push(rateMultipliers.buffer);
+          }
+        } else {
+          rateMultipliers = rateMultipliers.slice();
+        }
+      }
       items[n] = {
         srcChannels,
         srcRate: params.srcRate,
@@ -628,6 +658,7 @@ self.onmessage = function(ev) {
         gains,
         filterFreqs,
         filterQ: params.filterQ,
+        rateMultipliers,
       };
     }
 

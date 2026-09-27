@@ -80,6 +80,7 @@ function bytesFromBase64(base64) {
  *   soundFontBytesBase64: string,
  *   cacheMode: "none"|"ads"|"adsr"|"note"|"segment"|"chunk"|"audio",
  *   sampleRate?: number,
+ *   useAlmostSimplePitchBend?: boolean,
  * }} params
  * @returns {Promise<string>} base64-encoded WAV bytes
  */
@@ -92,6 +93,31 @@ async function renderMidyMode(params) {
   const player = new Midy(audioContext);
   await player.loadSoundFont(bytesFromBase64(params.soundFontBytesBase64));
   player.cacheMode = params.cacheMode; // set before loadMIDI
+
+  // Optional experimental flags — must be applied BEFORE loadMIDI so
+  // classification / bake paths see them.
+  if (params.useAlmostSimplePitchBend != null) {
+    if (typeof player.useAlmostSimplePitchBend === "undefined") {
+      throw new Error(
+        "useAlmostSimplePitchBend requested but Midy build has no such property — rebuild dist/midy.js from patched player.ts",
+      );
+    }
+    player.useAlmostSimplePitchBend = !!params.useAlmostSimplePitchBend;
+  }
+  // Echo so headless tests can prove the flag took effect (see page console).
+  console.log(
+    `[midy-harness] useAlmostSimplePitchBend=${player.useAlmostSimplePitchBend} ` +
+      `(requested=${params.useAlmostSimplePitchBend}) cacheMode=${params.cacheMode}`,
+  );
+  if (
+    params.useAlmostSimplePitchBend != null &&
+    !!player.useAlmostSimplePitchBend !== !!params.useAlmostSimplePitchBend
+  ) {
+    throw new Error(
+      `useAlmostSimplePitchBend did not stick: requested=${params.useAlmostSimplePitchBend} actual=${player.useAlmostSimplePitchBend}`,
+    );
+  }
+
   await player.loadMIDI(bytesFromBase64(params.midiBytesBase64));
 
   // "audio" mode renders automatically inside loadMIDI() when cacheMode was
@@ -103,7 +129,13 @@ async function renderMidyMode(params) {
     );
   }
   const wavBytes = encodeWavFloat32(rendered);
-  return base64FromBytes(wavBytes);
+  // Structured return so Deno tests can assert the flag without relying on
+  // page console forwarding (easy to miss under `deno test` output).
+  return {
+    wavBase64: base64FromBytes(wavBytes),
+    useAlmostSimplePitchBend: !!player.useAlmostSimplePitchBend,
+    cacheMode: params.cacheMode,
+  };
 }
 
 // Exposed for Puppeteer's page.evaluate() to call by name.
