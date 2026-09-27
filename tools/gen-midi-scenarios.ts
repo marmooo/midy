@@ -696,6 +696,185 @@ export function buildPanCcMidi(options?: {
  *
  * Default rangeSemitones=12 → max bend ≈ +1 octave.
  */
+/**
+ * Static onset volume levels (no mid-note CC7 automation).
+ * Exercises dry-simple mix: channel volume is snapshotted at note onset and
+ * applied at mix time (useChunkDrySimpleMix), not baked into the note body.
+ *
+ * Timeline (defaults):
+ *   0.0  CC7=high (100), note on
+ *   0.55 note off
+ *   0.7  CC7=low (30), note on
+ *   1.25 note off
+ */
+export function buildStaticVolumeLevelsMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  highVolume?: number;
+  lowVolume?: number;
+  highStart?: number;
+  highDuration?: number;
+  lowStart?: number;
+  lowDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const high = options?.highVolume ?? 100;
+  const low = options?.lowVolume ?? 30;
+  const highStart = options?.highStart ?? 0;
+  const highDuration = options?.highDuration ?? 0.8;
+  const lowStart = options?.lowStart ?? 1.0;
+  const lowDuration = options?.lowDuration ?? 0.8;
+  const noteNumber = options?.noteNumber ?? 60;
+  const velocity = options?.velocity ?? 100;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: highStart,
+        channel,
+        noteNumber,
+        velocity,
+        duration: highDuration,
+      },
+      {
+        time: lowStart,
+        channel,
+        noteNumber,
+        velocity,
+        duration: lowDuration,
+      },
+    ],
+    controllers: [
+      { time: highStart, channel, controllerType: 7, value: high },
+      { time: lowStart, channel, controllerType: 7, value: low },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Static onset pan levels (no mid-note CC10 automation).
+ * Hard-left note then hard-right note; each note sees a fixed pan at onset
+ * (dry mix gainL/gainR path in chunk mode).
+ *
+ * Timeline (defaults):
+ *   0.0  CC10=0 (left), note on
+ *   0.55 note off
+ *   0.7  CC10=127 (right), note on
+ *   1.25 note off
+ */
+export function buildStaticPanLevelsMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  channel?: number;
+  program?: number;
+  leftPan?: number;
+  rightPan?: number;
+  leftStart?: number;
+  leftDuration?: number;
+  rightStart?: number;
+  rightDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const channel = options?.channel ?? 0;
+  const left = options?.leftPan ?? 0;
+  const right = options?.rightPan ?? 127;
+  const leftStart = options?.leftStart ?? 0;
+  const leftDuration = options?.leftDuration ?? 0.8;
+  const rightStart = options?.rightStart ?? 1.0;
+  const rightDuration = options?.rightDuration ?? 0.8;
+  const noteNumber = options?.noteNumber ?? 60;
+  const velocity = options?.velocity ?? 100;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: leftStart,
+        channel,
+        noteNumber,
+        velocity,
+        duration: leftDuration,
+      },
+      {
+        time: rightStart,
+        channel,
+        noteNumber,
+        velocity,
+        duration: rightDuration,
+      },
+    ],
+    controllers: [
+      { time: leftStart, channel, controllerType: 10, value: left },
+      { time: rightStart, channel, controllerType: 10, value: right },
+    ],
+    programs: { [channel]: options?.program ?? 0 },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
+/**
+ * Two notes on *different channels* with different onset volumes, staggered
+ * so they typically land in one chunk tile. Stresses dry-key sharing: same
+ * program/sample body, different mix-time gainL/gainR per channel onset.
+ *
+ * Uses two channels so FluidSynth (live channel volume) and midy chunk dry
+ * (per-note onset snapshot) agree: each channel keeps its own CC7.
+ *
+ * Timeline (defaults):
+ *   0.0  ch0 CC7=100, note A on (duration 0.9)
+ *   0.12 ch1 CC7=40,  note B on (duration 0.9, pitch+4)
+ */
+export function buildMultiOnsetVolumeMidi(options?: {
+  noteNumber?: number;
+  velocity?: number;
+  highChannel?: number;
+  lowChannel?: number;
+  program?: number;
+  highVolume?: number;
+  lowVolume?: number;
+  firstStart?: number;
+  secondStart?: number;
+  eachDuration?: number;
+  tailSilence?: number;
+}): Uint8Array {
+  const highCh = options?.highChannel ?? 0;
+  const lowCh = options?.lowChannel ?? 1;
+  const high = options?.highVolume ?? 100;
+  const low = options?.lowVolume ?? 40;
+  const firstStart = options?.firstStart ?? 0;
+  const secondStart = options?.secondStart ?? 0.12;
+  const eachDuration = options?.eachDuration ?? 0.9;
+  const noteNumber = options?.noteNumber ?? 60;
+  const velocity = options?.velocity ?? 100;
+  const program = options?.program ?? 0;
+  return buildScenarioMidi({
+    notes: [
+      {
+        time: firstStart,
+        channel: highCh,
+        noteNumber,
+        velocity,
+        duration: eachDuration,
+      },
+      {
+        time: secondStart,
+        channel: lowCh,
+        noteNumber: noteNumber + 4,
+        velocity,
+        duration: eachDuration,
+      },
+    ],
+    controllers: [
+      { time: firstStart, channel: highCh, controllerType: 7, value: high },
+      { time: secondStart, channel: lowCh, controllerType: 7, value: low },
+    ],
+    programs: { [highCh]: program, [lowCh]: program },
+    tailSilence: options?.tailSilence ?? 2,
+  });
+}
+
 export function buildPitchBendRangeMidi(options?: {
   noteNumber?: number;
   velocity?: number;

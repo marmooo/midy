@@ -372,7 +372,17 @@ export class Player<
 
   // Min number of mix entries before a worker is used (below this the
   // postMessage overhead dominates). Applies to tile-level mix only.
-  workerMixMinEntries: number = 4;
+  // 1 = offload almost every pureTA tile mix (entriesAvg ~10–15). Was 4,
+  // which still left most short tiles on the main thread (mainTiles ≫ workerTiles).
+  workerMixMinEntries: number = 1;
+
+  /**
+   * Chunk mode: bake simple notes dry (no channel vol/pan/expression in the
+   * buffer) and apply those at tile mix time. Shared dry keys then hit across
+   * different onset volumes/pans. Notes with in-interval gain/pan automation
+   * still bake with channel mix so their curves stay correct.
+   */
+  useChunkDrySimpleMix: boolean = true;
 
   // Offload pure TypedArray simple-note sample render (resample + loop +
   // optional lowpass + gains) to the worker pool. Curve computation stays
@@ -1650,7 +1660,7 @@ export class Player<
               isDrum: renderChannel.isDrum,
               voiceParams,
             },
-            bakeChannelMix,
+            this.simpleBakeChannelMixForNote({ noteEvent: noteOnEvent }),
           );
           simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
         },
@@ -1684,6 +1694,50 @@ export class Player<
   // Shared body is buildNoteCacheKeyParts; subclasses extend the key via
   // appendNoteKeyStateParts / isComplexKeyController instead of copying
   // these two methods.
+
+  /**
+   * Whether a simple note should be baked dry for the current cache mode.
+   * Chunk + useChunkDrySimpleMix → dry unless in-note gain/pan curves need
+   * to live inside the buffer.
+   */
+  protected simpleBakeChannelMixForNote(
+    n: { noteEvent?: NoteOnEventEntry | null },
+  ): boolean {
+    const modeMix = bakeChannelMixForMode(this.cacheMode);
+    if (!modeMix) return false;
+    if (!this.useChunkDrySimpleMix) return modeMix;
+    if (!isChunkCacheMode(this.cacheMode)) return modeMix;
+    const ne = n.noteEvent;
+    if (ne && this.hasGainOnlyAutomation(ne)) return true;
+    if (ne && this.hasPanOnlyAutomation(ne)) return true;
+    return false;
+  }
+
+  /** Onset channel vol²·expr² and pan → left/right gains for dry mix. */
+  protected channelMixGainsFromState(
+    state: ArrayLike<number>,
+  ): { gainL: number; gainR: number } {
+    const vol0 = state[128 + 7] ?? (100 / 127);
+    const pan0 = state[128 + 10] ?? (64 / 127);
+    const expr0 = state[128 + 11] ?? 1;
+    const channelGain = vol0 * vol0 * expr0 * expr0;
+    const { gainLeft, gainRight } = this.panToGain(pan0);
+    return { gainL: channelGain * gainLeft, gainR: channelGain * gainRight };
+  }
+
+  /** Mix scales for a chunk note: unity if mix-baked, else from state. */
+  protected chunkNoteMixGains(
+    n: {
+      noteEvent?: NoteOnEventEntry | null;
+      channelStateArray: ArrayLike<number>;
+    },
+  ): { gainL: number; gainR: number } {
+    if (this.simpleBakeChannelMixForNote(n)) {
+      return { gainL: 1, gainR: 1 };
+    }
+    return this.channelMixGainsFromState(n.channelStateArray);
+  }
+
   makeSimpleNoteKey(
     n: {
       audioBufferId?: number;
@@ -2824,7 +2878,10 @@ export class Player<
             voiceParams,
             voice: voice ?? undefined,
           };
-          const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+          const key = this.makeSimpleNoteKey(
+            entry,
+            this.simpleBakeChannelMixForNote(entry),
+          );
           const count = simpleNoteCounts.get(key) ?? 0;
           const prev = allKeys.get(key);
           if (prev) {
@@ -2875,7 +2932,10 @@ export class Player<
           break;
         }
         try {
-          await this.getSimpleNoteBuffer(list[i].entry, bakeChannelMix);
+          await this.getSimpleNoteBuffer(
+            list[i].entry,
+            this.simpleBakeChannelMixForNote(list[i].entry),
+          );
         } catch {
           // Skip failed keys; playback will bake on demand.
         }
@@ -3952,7 +4012,12 @@ export class Player<
     // tiles from different chunks can progress in parallel. Nested OAC work
     // inside getSimpleNoteBuffer / getComplexNoteBuffer still takes its own
     // gate slot (fromOuterSlot=false).
-    const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
+    const simpleHits: {
+      buffer: AudioBuffer;
+      offset: number;
+      gainL?: number;
+      gainR?: number;
+    }[] = [];
     const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
     let missCount = 0;
     let simpleCacheHits = 0;
@@ -3985,12 +4050,19 @@ export class Player<
         const tLookup0 = performance.now();
         let handled = false;
         if (this.simpleNoteCache) {
-          const key = this.makeSimpleNoteKey(n, true);
+          const bakeMix = this.simpleBakeChannelMixForNote(n);
+          const key = this.makeSimpleNoteKey(n, bakeMix);
           const entry = this.simpleNoteBufferCache.get(key);
           if (entry instanceof AudioBuffer) {
             this.noteCacheRecordSimpleHit();
             simpleLookupMs += performance.now() - tLookup0;
-            simpleHits.push({ buffer: entry, offset: n.offset });
+            const gains = this.chunkNoteMixGains(n);
+            simpleHits.push({
+              buffer: entry,
+              offset: n.offset,
+              gainL: gains.gainL,
+              gainR: gains.gainR,
+            });
             simpleCacheHits++;
             handled = true;
           } else if (entry instanceof Promise) {
@@ -4039,7 +4111,15 @@ export class Player<
               const again = this.simpleNoteBufferCache.get(item.key);
               if (again instanceof AudioBuffer) {
                 this.noteCacheRecordSimpleHit();
-                simpleHits.push({ buffer: again, offset: n.offset });
+                {
+                  const gains = this.chunkNoteMixGains(n);
+                  simpleHits.push({
+                    buffer: again,
+                    offset: n.offset,
+                    gainL: gains.gainL,
+                    gainR: gains.gainR,
+                  });
+                }
                 simpleCacheHits++;
                 simpleLookupMs += item.lookupMs;
                 continue;
@@ -4060,9 +4140,10 @@ export class Player<
               voice: n.voice,
             };
             const tBake0 = performance.now();
+            const bakeMixLive = this.simpleBakeChannelMixForNote(n);
             let noteBuf: AudioBuffer | null = this.tryBakeSimpleNoteSync(
               entry,
-              true,
+              bakeMixLive,
               item.key,
             );
             // Sync bake failed (raw not ready / mod / non-TA). Prefer awaiting
@@ -4073,7 +4154,11 @@ export class Player<
             // tile-level Offline rendering.
             if (!noteBuf && bakeChunkMiss) {
               try {
-                noteBuf = await this.getSimpleNoteBuffer(entry, true, false);
+                noteBuf = await this.getSimpleNoteBuffer(
+                  entry,
+                  bakeMixLive,
+                  false,
+                );
               } catch {
                 noteBuf = null;
               }
@@ -4082,7 +4167,13 @@ export class Player<
             simpleMissBakeMs += missBakeMs;
             simpleLookupMs += item.lookupMs;
             if (noteBuf) {
-              simpleHits.push({ buffer: noteBuf, offset: n.offset });
+              const gains = this.chunkNoteMixGains(n);
+              simpleHits.push({
+                buffer: noteBuf,
+                offset: n.offset,
+                gainL: gains.gainL,
+                gainR: gains.gainR,
+              });
               simpleMissesBaked++;
             } else {
               simpleMisses[missCount++] = n;
@@ -4124,10 +4215,13 @@ export class Player<
               }
               const lookupMs = item.lookupMs + awaitInflight;
               if (cached) {
+                const gains = this.chunkNoteMixGains(n);
                 return {
                   kind: "hit" as const,
                   buffer: cached,
                   offset: n.offset,
+                  gainL: gains.gainL,
+                  gainR: gains.gainR,
                   baked: false,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4136,6 +4230,7 @@ export class Player<
               }
               if (bakeChunkMiss) {
                 const tBake0 = performance.now();
+                const bakeMix = this.simpleBakeChannelMixForNote(n);
                 const noteBuf = await this.getSimpleNoteBuffer(
                   {
                     channelNumber: n.channelNumber,
@@ -4151,14 +4246,17 @@ export class Player<
                     voiceParams: n.voiceParams,
                     voice: n.voice,
                   },
-                  true,
+                  bakeMix,
                   false, // not holding an outer gate slot
                 );
                 const missBakeMs = performance.now() - tBake0;
+                const gainsMiss = this.chunkNoteMixGains(n);
                 return {
                   kind: "hit" as const,
                   buffer: noteBuf,
                   offset: n.offset,
+                  gainL: gainsMiss.gainL,
+                  gainR: gainsMiss.gainR,
                   baked: true,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4174,7 +4272,8 @@ export class Player<
                   missBakeMs: 0,
                 };
               }
-              const key = item.key || this.makeSimpleNoteKey(n, true);
+              const key = item.key ||
+                this.makeSimpleNoteKey(n, this.simpleBakeChannelMixForNote(n));
               const count = simpleCounts.get(key) ?? 0;
               if (count > 1) {
                 const tBake0 = performance.now();
@@ -4193,14 +4292,17 @@ export class Player<
                     voiceParams: n.voiceParams,
                     voice: n.voice,
                   },
-                  true,
+                  this.simpleBakeChannelMixForNote(n),
                   false,
                 );
                 const missBakeMs = performance.now() - tBake0;
+                const gainsBake = this.chunkNoteMixGains(n);
                 return {
                   kind: "hit" as const,
                   buffer: noteBuf,
                   offset: n.offset,
+                  gainL: gainsBake.gainL,
+                  gainR: gainsBake.gainR,
                   baked: true,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4222,8 +4324,20 @@ export class Player<
             simpleAwaitInflightMs += r.awaitInflightMs;
             simpleMissBakeMs += r.missBakeMs;
             if (r.kind === "hit") {
-              simpleHits.push({ buffer: r.buffer, offset: r.offset });
-              if ("baked" in r && r.baked) simpleMissesBaked++;
+              const rr = r as {
+                buffer: AudioBuffer;
+                offset: number;
+                gainL?: number;
+                gainR?: number;
+                baked?: boolean;
+              };
+              simpleHits.push({
+                buffer: rr.buffer,
+                offset: rr.offset,
+                gainL: rr.gainL,
+                gainR: rr.gainR,
+              });
+              if (rr.baked) simpleMissesBaked++;
               else simpleCacheHits++;
             } else {
               simpleMisses[missCount++] = r.note;
@@ -4307,11 +4421,10 @@ export class Player<
         mainMs: 0,
         usedWorker: false,
       };
-      // LIVE: synchronous mix — no await. Observed: mixEntriesToBuffer body
-      // finishes in <100ms (no mix-body log) but `await mixEntriesToBuffer`
-      // wall was 3–10s (setTimeout0 lag matched). Something prevents the
-      // resolved-promise microtask continuation from running for seconds;
-      // sync path eliminates that gap. Preroll/offline keep async+worker.
+      // LIVE: synchronous mix only. Worker await residual was measured at
+      // ~130ms average (work ~12ms) even with pureTA=100%, which dominated
+      // bakeAvg and late. Preroll / offline keep async+worker.
+      // Dry-simple gainL/gainR still apply via mixSimpleBuffersTypedArray.
       const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
         !forAudioOffline;
       let buffer: AudioBuffer;
@@ -4324,6 +4437,15 @@ export class Player<
           1,
           mixDetail,
         );
+        mixMs = performance.now() - tMix0;
+        if (mixMs >= 200 && this.debug) {
+          console.warn(
+            `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
+              `main=${mixDetail.mainMs.toFixed(0)}ms ` +
+              `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
+              `entries=${allEntries.length}`,
+          );
+        }
       } else {
         const lagProbe = this.beginAwaitLagProbe();
         buffer = await this.mixEntriesToBuffer(
@@ -4352,19 +4474,6 @@ export class Player<
                 `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
                 `entries=${allEntries.length} ` +
                 `chunkBake=${this.chunkBakeActive}`,
-            );
-          }
-        }
-      }
-      if (liveRealtime) {
-        mixMs = performance.now() - tMix0;
-        if (mixMs >= 200) {
-          if (this.debug) {
-            console.warn(
-              `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
-                `main=${mixDetail.mainMs.toFixed(0)}ms ` +
-                `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
-                `entries=${allEntries.length}`,
             );
           }
         }
@@ -4996,7 +5105,12 @@ export class Player<
   // headroom). mono dest + stereo src takes channel 0 of src.
   protected mixSimpleBuffersTypedArray(
     dest: AudioBuffer,
-    entries: { buffer: AudioBuffer; offset: number }[],
+    entries: {
+      buffer: AudioBuffer;
+      offset: number;
+      gainL?: number;
+      gainR?: number;
+    }[],
     sampleRate: number,
     gain = 1,
   ): void {
@@ -5006,29 +5120,47 @@ export class Player<
     for (let c = 0; c < destChCount; c++) {
       destChannels[c] = dest.getChannelData(c);
     }
-    const g = gain;
+    const gDefault = gain;
     for (let ei = 0; ei < entries.length; ei++) {
-      const { buffer: src, offset } = entries[ei];
+      const { buffer: src, offset, gainL, gainR } = entries[ei];
       const startSample = Math.round(offset * sampleRate);
       if (startSample >= destLen) continue;
       const srcChCount = src.numberOfChannels;
       const srcLen = src.length;
       const copyLen = Math.min(srcLen, destLen - startSample);
       if (copyLen <= 0) continue;
+      const gL = gainL ?? gDefault;
+      const gR = gainR ?? gDefault;
       if (destChCount === 1) {
-        // mono dest: sum L (or mono) of src
         const srcData = src.getChannelData(0);
         const dst = destChannels[0];
         for (let i = 0; i < copyLen; i++) {
-          dst[startSample + i] += srcData[i] * g;
+          dst[startSample + i] += srcData[i] * gL;
+        }
+      } else if (srcChCount === 1) {
+        // mono src → stereo dest (dry note + pan at mix)
+        const srcData = src.getChannelData(0);
+        const dstL = destChannels[0];
+        const dstR = destChannels[1];
+        for (let i = 0; i < copyLen; i++) {
+          const s = srcData[i];
+          dstL[startSample + i] += s * gL;
+          dstR[startSample + i] += s * gR;
         }
       } else {
-        // stereo dest
-        for (let c = 0; c < destChCount; c++) {
+        const srcL = src.getChannelData(0);
+        const srcR = src.getChannelData(1);
+        const dstL = destChannels[0];
+        const dstR = destChannels[1];
+        for (let i = 0; i < copyLen; i++) {
+          dstL[startSample + i] += srcL[i] * gL;
+          dstR[startSample + i] += srcR[i] * gR;
+        }
+        for (let c = 2; c < destChCount; c++) {
           const srcData = src.getChannelData(Math.min(c, srcChCount - 1));
           const dst = destChannels[c];
           for (let i = 0; i < copyLen; i++) {
-            dst[startSample + i] += srcData[i] * g;
+            dst[startSample + i] += srcData[i] * gL;
           }
         }
       }
@@ -5262,7 +5394,12 @@ export class Player<
    * caller's continuation runs (observed: body <100ms, await wall 3–10s).
    */
   protected mixEntriesToBufferSync(
-    entries: { buffer: AudioBuffer; offset: number }[],
+    entries: {
+      buffer: AudioBuffer;
+      offset: number;
+      gainL?: number;
+      gainR?: number;
+    }[],
     destChCount: 1 | 2,
     bufferLength: number,
     sampleRate: number,
@@ -5289,7 +5426,12 @@ export class Player<
   }
 
   protected async mixEntriesToBuffer(
-    entries: { buffer: AudioBuffer; offset: number }[],
+    entries: {
+      buffer: AudioBuffer;
+      offset: number;
+      gainL?: number;
+      gainR?: number;
+    }[],
     destChCount: 1 | 2,
     bufferLength: number,
     sampleRate: number,
@@ -5314,8 +5456,8 @@ export class Player<
     this.chunkMixEntriesSum += entries.length;
 
     // LIVE PLAYBACK: always mix on main. Worker residual was multi-second at
-    // the preroll boundary; main mix is predictable tens of ms.
-    // Workers remain useful for preroll / offline (clock not armed).
+    // the preroll boundary and ~130ms/tile during pureTA live (work ~12ms).
+    // Main mix is predictable tens of ms. Workers remain for preroll/offline.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
     const useWorker = !liveRealtime &&
       this.useWorkerTypedArrayMix &&
@@ -5353,13 +5495,17 @@ export class Player<
       let srcSamplesSum = 0;
       const mixEntries: MixSourceEntry[] = new Array(entries.length);
       for (let i = 0; i < entries.length; i++) {
-        const { buffer: src, offset } = entries[i];
+        const ent = entries[i];
+        const src = ent.buffer;
+        const offset = ent.offset;
         const startSample = Math.round(offset * sampleRate);
         const left = src.getChannelData(0);
         const right = src.numberOfChannels > 1
           ? src.getChannelData(1)
           : undefined;
         srcSamplesSum += left.length;
+        const gLAbs = ent.gainL != null ? ent.gainL * gain : gain;
+        const gRAbs = ent.gainR != null ? ent.gainR * gain : gLAbs;
         // Transferable detaches the underlying ArrayBuffer — must slice so
         // live AudioBuffers stay usable. Structured-clone path can pass the
         // channel views directly (clone copies; no need for an extra slice
@@ -5369,14 +5515,16 @@ export class Player<
             left: left.slice(),
             right: right ? right.slice() : undefined,
             startSample,
-            gain,
+            gain: gLAbs,
+            gainRight: gRAbs,
           };
         } else {
           mixEntries[i] = {
             left,
             right,
             startSample,
-            gain,
+            gain: gLAbs,
+            gainRight: gRAbs,
           };
         }
       }
@@ -7156,7 +7304,10 @@ export class Player<
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+      const key = this.makeSimpleNoteKey(
+        entry,
+        this.simpleBakeChannelMixForNote(entry),
+      );
       const cached = this.simpleNoteBufferCache.get(key);
       if (cached instanceof AudioBuffer) {
         this.noteCacheRecordSimpleHit();
@@ -7722,7 +7873,12 @@ export class Player<
       const mixGainValue = maxConcurrent > 1 ? 1 / Math.sqrt(maxConcurrent) : 1;
 
       const isDrum = channel.isDrum;
-      const simpleHits: { buffer: AudioBuffer; offset: number }[] = [];
+      const simpleHits: {
+        buffer: AudioBuffer;
+        offset: number;
+        gainL?: number;
+        gainR?: number;
+      }[] = [];
 
       // --- simple: resolve buffers (cache hit or bake) ---
       // Important: do NOT route segment simple-misses through

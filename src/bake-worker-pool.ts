@@ -27,7 +27,14 @@ export type MixSourceEntry = {
   right?: Float32Array;
   /** Start offset in destination samples. */
   startSample: number;
+  /** Left (or mono) scale. */
   gain: number;
+  /**
+   * Right scale. When omitted, `gain` is used for both channels.
+   * Used by chunk dry-simple path: note buffers are unity-gain; pan/vol
+   * are applied here so the same dry buffer can be reused across onsets.
+   */
+  gainRight?: number;
 };
 
 export type MixResult = {
@@ -114,7 +121,8 @@ export class BakeWorkerPool {
   private workerUrl: string | null = null;
 
   /** Minimum number of mix entries before offloading to a worker is worth it. */
-  static readonly MIN_ENTRIES_FOR_WORKER = 4;
+  /** Aligned with Player.workerMixMinEntries default (1). */
+  static readonly MIN_ENTRIES_FOR_WORKER = 1;
 
   /** Minimum dest length (samples) before simple-note render is offloaded. */
   static readonly MIN_SAMPLES_FOR_RENDER = 2048;
@@ -174,20 +182,21 @@ function handleMix(msg) {
     var e = entries[ei];
     var start = e.startSample | 0;
     if (start >= destLen) continue;
-    var g = e.gain;
+    var gL = e.gain;
+    var gR = e.gainRight != null ? e.gainRight : e.gain;
     var srcLeft = e.left;
     var srcLen = srcLeft.length;
     var copyLen = Math.min(srcLen, destLen - start);
     if (copyLen <= 0) continue;
     if (destRight === null) {
       for (var i = 0; i < copyLen; i++) {
-        destLeft[start + i] += srcLeft[i] * g;
+        destLeft[start + i] += srcLeft[i] * gL;
       }
     } else {
       var srcRight = e.right || srcLeft;
       for (var i = 0; i < copyLen; i++) {
-        destLeft[start + i] += srcLeft[i] * g;
-        destRight[start + i] += srcRight[i] * g;
+        destLeft[start + i] += srcLeft[i] * gL;
+        destRight[start + i] += srcRight[i] * gR;
       }
     }
   }
