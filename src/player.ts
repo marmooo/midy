@@ -209,6 +209,12 @@ export class Player<
   private static readonly CHUNK_BAKE_SAMPLE_CAP = 512;
   chunkPureTaTiles: number = 0;
   chunkOacTiles: number = 0;
+  /** Tiles that entered OAC because missCount>0 after simple bake attempts. */
+  chunkOacFromMiss: number = 0;
+  /** Tiles that entered OAC because complex notes used legacy schedule path. */
+  chunkOacFromComplexLegacy: number = 0;
+  /** Tiles that entered OAC because useTypedArraySimpleMix was off. */
+  chunkOacFromNoTa: number = 0;
   chunkStarts: number = 0;
   chunkLateStarts: number = 0;
   chunkLateSumMs: number = 0;
@@ -2614,7 +2620,8 @@ export class Player<
             `bakeP95=${bakeP95.toFixed(1)}ms bakeMax=${
               this.chunkBakeMaxMs.toFixed(1)
             }ms | ` +
-            `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} | ` +
+            `pureTA=${this.chunkPureTaTiles}(${purePct}%) oac=${this.chunkOacTiles} ` +
+            `(miss=${this.chunkOacFromMiss} cxLegacy=${this.chunkOacFromComplexLegacy} noTA=${this.chunkOacFromNoTa}) | ` +
             `gateWaitAvg=${
               cb > 0 ? (this.chunkGateWaitSumMs / cb).toFixed(1) : "0"
             }ms gateWaitMax=${this.chunkGateWaitMaxMs.toFixed(1)}ms ` +
@@ -4053,7 +4060,24 @@ export class Player<
               voice: n.voice,
             };
             const tBake0 = performance.now();
-            const noteBuf = this.tryBakeSimpleNoteSync(entry, true, item.key);
+            let noteBuf: AudioBuffer | null = this.tryBakeSimpleNoteSync(
+              entry,
+              true,
+              item.key,
+            );
+            // Sync bake failed (raw not ready / mod / non-TA). Prefer awaiting
+            // a single-note TypedArray bake over leaving missCount>0, which
+            // forces the entire tile onto the OAC+gate path. The old "never
+            // await on live" rule targeted stuck in-flight Promises; a fresh
+            // getSimpleNoteBuffer is actual work and still cheaper than
+            // tile-level Offline rendering.
+            if (!noteBuf && bakeChunkMiss) {
+              try {
+                noteBuf = await this.getSimpleNoteBuffer(entry, true, false);
+              } catch {
+                noteBuf = null;
+              }
+            }
             const missBakeMs = performance.now() - tBake0;
             simpleMissBakeMs += missBakeMs;
             simpleLookupMs += item.lookupMs;
@@ -4061,8 +4085,6 @@ export class Player<
               simpleHits.push({ buffer: noteBuf, offset: n.offset });
               simpleMissesBaked++;
             } else {
-              // Raw sample not ready / not TypedArray-eligible — defer to OAC miss path.
-              // scheduleSimpleNotesDirect now replays in-note pitch bend events.
               simpleMisses[missCount++] = n;
             }
           }
@@ -4252,8 +4274,17 @@ export class Player<
     // With bakeChunkMiss, simple misses are already in simpleHits → missCount
     // stays 0. With bakeChunkComplex, complex notes are in complexBufs.
     // OAC only when mix is legacy, residual simple misses, or legacy complex.
+    // Residual simple misses are the dominant pureTA killer: one miss forces
+    // the whole tile through OfflineAudioContext + gate.
     const needsOAC = !useTA || missCount > 0 ||
       (complexCount > 0 && !bakeChunkComplex);
+    if (needsOAC) {
+      if (missCount > 0) this.chunkOacFromMiss++;
+      if (complexCount > 0 && !bakeChunkComplex) {
+        this.chunkOacFromComplexLegacy++;
+      }
+      if (!useTA) this.chunkOacFromNoTa++;
+    }
 
     // Pure TypedArray path: no Offline gate — multiple tiles can bake in
     // parallel. Worker pool (useWorkerTypedArrayMix) handles the mix.
@@ -5172,18 +5203,11 @@ export class Player<
       ? voiceParams.start / audioBuffer.sampleRate
       : 0;
 
-    // Do NOT return null when rateMultipliers is set: liveRealtime chunk
-    // never awaits the deferred async bake and would schedule the note via
-    // scheduleSimpleNotesDirect with onset detune only (wrong pitch). Always
-    // complete the rate-curve bake synchronously here.
-    if (
-      !rateMultipliers &&
-      length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
-      this.useWorkerSimpleNoteBake &&
-      typeof Worker !== "undefined"
-    ) {
-      return null;
-    }
+    // Never return null just to prefer the worker. liveRealtime used to skip
+    // awaiting the deferred path; null became missCount>0 and forced the WHOLE
+    // tile through OfflineAudioContext + gate. Always finish the TypedArray
+    // bake here when the sample is ready. Worker remains available via
+    // getSimpleNoteBuffer when the caller can await.
 
     const body = this.createEmptyBuffer(1, length, sampleRate);
     this.renderSampleTypedArray(
@@ -6365,6 +6389,9 @@ export class Player<
     this.chunkBakeSamplesMs = [];
     this.chunkPureTaTiles = 0;
     this.chunkOacTiles = 0;
+    this.chunkOacFromMiss = 0;
+    this.chunkOacFromComplexLegacy = 0;
+    this.chunkOacFromNoTa = 0;
     this.chunkStarts = 0;
     this.chunkLateStarts = 0;
     this.chunkLateSumMs = 0;
