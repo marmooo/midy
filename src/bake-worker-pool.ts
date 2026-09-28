@@ -35,6 +35,13 @@ export type MixSourceEntry = {
    * are applied here so the same dry buffer can be reused across onsets.
    */
   gainRight?: number;
+  /**
+   * Optional per-sample gain curve (length >= copyLen). Multiplied with
+   * `gain` / `gainRight` at each sample. Used by chunk dry-simple path for
+   * mid-note volume/expression (CC7/CC11) so the dry buffer stays shared
+   * across different expression trajectories.
+   */
+  gainCurve?: Float32Array;
 };
 
 export type MixResult = {
@@ -184,19 +191,34 @@ function handleMix(msg) {
     if (start >= destLen) continue;
     var gL = e.gain;
     var gR = e.gainRight != null ? e.gainRight : e.gain;
+    var curve = e.gainCurve;
     var srcLeft = e.left;
     var srcLen = srcLeft.length;
     var copyLen = Math.min(srcLen, destLen - start);
     if (copyLen <= 0) continue;
     if (destRight === null) {
-      for (var i = 0; i < copyLen; i++) {
-        destLeft[start + i] += srcLeft[i] * gL;
+      if (curve) {
+        for (var i = 0; i < copyLen; i++) {
+          destLeft[start + i] += srcLeft[i] * gL * curve[i];
+        }
+      } else {
+        for (var i = 0; i < copyLen; i++) {
+          destLeft[start + i] += srcLeft[i] * gL;
+        }
       }
     } else {
       var srcRight = e.right || srcLeft;
-      for (var i = 0; i < copyLen; i++) {
-        destLeft[start + i] += srcLeft[i] * gL;
-        destRight[start + i] += srcRight[i] * gR;
+      if (curve) {
+        for (var i = 0; i < copyLen; i++) {
+          var cg = curve[i];
+          destLeft[start + i] += srcLeft[i] * gL * cg;
+          destRight[start + i] += srcRight[i] * gR * cg;
+        }
+      } else {
+        for (var i = 0; i < copyLen; i++) {
+          destLeft[start + i] += srcLeft[i] * gL;
+          destRight[start + i] += srcRight[i] * gR;
+        }
       }
     }
   }
@@ -437,6 +459,8 @@ self.onmessage = function(ev) {
         right: e.right,
         startSample: e.startSample,
         gain: e.gain,
+        gainRight: e.gainRight,
+        gainCurve: e.gainCurve,
       };
       if (useTransferable) {
         if (e.left.buffer.byteLength > 0) transfer.push(e.left.buffer);
@@ -445,6 +469,12 @@ self.onmessage = function(ev) {
           e.right.buffer.byteLength > 0
         ) {
           transfer.push(e.right.buffer);
+        }
+        if (
+          e.gainCurve && e.gainCurve.buffer.byteLength > 0 &&
+          e.gainCurve.buffer !== e.left.buffer
+        ) {
+          transfer.push(e.gainCurve.buffer);
         }
       }
     }

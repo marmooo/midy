@@ -379,8 +379,15 @@ export class Player<
   /**
    * Chunk mode: bake simple notes dry (no channel vol/pan/expression in the
    * buffer) and apply those at tile mix time. Shared dry keys then hit across
-   * different onset volumes/pans. Notes with in-interval gain/pan automation
-   * still bake with channel mix so their curves stay correct.
+   * different onset volumes/pans/expressions.
+   *
+   * Mid-note volume/expression (CC7/CC11) curves are also kept dry: the note
+   * body is unity-gain and the per-sample gain curve is applied at mix time
+   * (`gainCurve` on MixSourceEntry). This avoids gain-fingerprint key splits
+   * from CC11 steps/ramps while preserving the trajectory.
+   *
+   * Mid-note pan (CC10) still bakes with channel mix (almost-simple pan) so
+   * stereo balance curves stay inside the buffer.
    */
   useChunkDrySimpleMix: boolean = true;
 
@@ -1239,8 +1246,9 @@ export class Player<
 
   // True when the note has in-interval automation, but only volume/expression
   // (plus duration-only CCs already ignored by hasWaveformAutomation).
-  // Used for stats and for including a gain-curve fingerprint in the simple
-  // cache key so different expression trajectories do not collide.
+  // Chunk dry-simple applies the curve at mix time (no key fingerprint).
+  // Mix-baked modes (note/audio, or pan almost-simple) still fingerprint
+  // the trajectory when bakeChannelMix is true.
   protected hasGainOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
     const events = noteEvent.events;
     if (events.length === 0) return false;
@@ -1697,8 +1705,9 @@ export class Player<
 
   /**
    * Whether a simple note should be baked dry for the current cache mode.
-   * Chunk + useChunkDrySimpleMix → dry unless in-note gain/pan curves need
-   * to live inside the buffer.
+   * Chunk + useChunkDrySimpleMix → dry unless in-note pan curves need to
+   * live inside the buffer. Mid-note volume/expression stay dry and are
+   * applied as a mix-time gain curve (see chunkNoteMixParams).
    */
   protected simpleBakeChannelMixForNote(
     n: { noteEvent?: NoteOnEventEntry | null },
@@ -1708,7 +1717,8 @@ export class Player<
     if (!this.useChunkDrySimpleMix) return modeMix;
     if (!isChunkCacheMode(this.cacheMode)) return modeMix;
     const ne = n.noteEvent;
-    if (ne && this.hasGainOnlyAutomation(ne)) return true;
+    // Pan curves need L/R trajectories inside the buffer (almost-simple pan).
+    // Gain-only (CC7/CC11) stays dry — curve is applied at mix time.
     if (ne && this.hasPanOnlyAutomation(ne)) return true;
     return false;
   }
@@ -1736,6 +1746,54 @@ export class Player<
       return { gainL: 1, gainR: 1 };
     }
     return this.channelMixGainsFromState(n.channelStateArray);
+  }
+
+  /**
+   * Chunk dry-simple mix params. When the note has mid-note volume/expression
+   * automation, returns onset pan scales plus a per-sample gain curve
+   * (vol²·expr² trajectory) so the dry buffer key stays shared across
+   * different CC11 steps/ramps. Mix-baked notes return unity.
+   */
+  protected chunkNoteMixParams(
+    n: {
+      noteEvent?: NoteOnEventEntry | null;
+      channelStateArray: ArrayLike<number>;
+    },
+    bufferLength: number,
+    sampleRate: number,
+  ): { gainL: number; gainR: number; gainCurve?: Float32Array } {
+    if (this.simpleBakeChannelMixForNote(n)) {
+      return { gainL: 1, gainR: 1 };
+    }
+    const state = n.channelStateArray;
+    const vol0 = state[128 + 7] ?? (100 / 127);
+    const pan0 = state[128 + 10] ?? (64 / 127);
+    const expr0 = state[128 + 11] ?? 1;
+    const { gainLeft, gainRight } = this.panToGain(pan0);
+    const ne = n.noteEvent;
+    if (
+      ne &&
+      this.hasGainOnlyAutomation(ne) &&
+      bufferLength > 0 &&
+      sampleRate > 0
+    ) {
+      const tMax = bufferLength / sampleRate;
+      const gainCurve = this.computeGainOnlyChannelCurve(
+        ne,
+        vol0,
+        expr0,
+        bufferLength,
+        sampleRate,
+        tMax,
+      );
+      // gainCurve carries vol²·expr²; pan is a constant L/R scale.
+      return { gainL: gainLeft, gainR: gainRight, gainCurve };
+    }
+    const channelGain = vol0 * vol0 * expr0 * expr0;
+    return {
+      gainL: channelGain * gainLeft,
+      gainR: channelGain * gainRight,
+    };
   }
 
   makeSimpleNoteKey(
@@ -1854,14 +1912,17 @@ export class Player<
     if (complex) {
       parts.push(this.serializeNoteAutomationEvents(n.noteEvent));
     } else if (n.noteEvent) {
-      // Almost-simple: gain / pan / pitch-bend curves are baked into the
-      // TypedArray buffer, so the simple key must distinguish trajectories.
-      if (
-        this.hasPanOrGainOnlyAutomation(n.noteEvent) ||
-        this.hasPitchBendOnlyAutomation(n.noteEvent)
-      ) {
+      // Almost-simple curves baked into the TypedArray buffer must fingerprint
+      // the key. Dry chunk notes apply gain (CC7/CC11) at mix time, so gain
+      // trajectories must NOT split the dry key. Pan / pitch-bend still bake
+      // into the buffer when present and need fingerprints.
+      if (bakeChannelMix && this.hasPanOrGainOnlyAutomation(n.noteEvent)) {
         parts.push(this.serializeGainOnlyAutomationEvents(n.noteEvent));
         parts.push(this.serializePanAutomationEvents(n.noteEvent));
+      } else if (bakeChannelMix && this.hasPanOnlyAutomation(n.noteEvent)) {
+        parts.push(this.serializePanAutomationEvents(n.noteEvent));
+      }
+      if (this.hasPitchBendOnlyAutomation(n.noteEvent)) {
         parts.push(this.serializePitchBendAutomationEvents(n.noteEvent));
       }
     }
@@ -4017,6 +4078,7 @@ export class Player<
       offset: number;
       gainL?: number;
       gainR?: number;
+      gainCurve?: Float32Array;
     }[] = [];
     const simpleMisses = new Array<ChunkNoteEntry>(simpleCount);
     let missCount = 0;
@@ -4056,12 +4118,13 @@ export class Player<
           if (entry instanceof AudioBuffer) {
             this.noteCacheRecordSimpleHit();
             simpleLookupMs += performance.now() - tLookup0;
-            const gains = this.chunkNoteMixGains(n);
+            const gains = this.chunkNoteMixParams(n, entry.length, sampleRate);
             simpleHits.push({
               buffer: entry,
               offset: n.offset,
               gainL: gains.gainL,
               gainR: gains.gainR,
+              gainCurve: gains.gainCurve,
             });
             simpleCacheHits++;
             handled = true;
@@ -4112,12 +4175,17 @@ export class Player<
               if (again instanceof AudioBuffer) {
                 this.noteCacheRecordSimpleHit();
                 {
-                  const gains = this.chunkNoteMixGains(n);
+                  const gains = this.chunkNoteMixParams(
+                    n,
+                    again.length,
+                    sampleRate,
+                  );
                   simpleHits.push({
                     buffer: again,
                     offset: n.offset,
                     gainL: gains.gainL,
                     gainR: gains.gainR,
+                    gainCurve: gains.gainCurve,
                   });
                 }
                 simpleCacheHits++;
@@ -4167,12 +4235,17 @@ export class Player<
             simpleMissBakeMs += missBakeMs;
             simpleLookupMs += item.lookupMs;
             if (noteBuf) {
-              const gains = this.chunkNoteMixGains(n);
+              const gains = this.chunkNoteMixParams(
+                n,
+                noteBuf.length,
+                sampleRate,
+              );
               simpleHits.push({
                 buffer: noteBuf,
                 offset: n.offset,
                 gainL: gains.gainL,
                 gainR: gains.gainR,
+                gainCurve: gains.gainCurve,
               });
               simpleMissesBaked++;
             } else {
@@ -4215,13 +4288,18 @@ export class Player<
               }
               const lookupMs = item.lookupMs + awaitInflight;
               if (cached) {
-                const gains = this.chunkNoteMixGains(n);
+                const gains = this.chunkNoteMixParams(
+                  n,
+                  cached.length,
+                  sampleRate,
+                );
                 return {
                   kind: "hit" as const,
                   buffer: cached,
                   offset: n.offset,
                   gainL: gains.gainL,
                   gainR: gains.gainR,
+                  gainCurve: gains.gainCurve,
                   baked: false,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4250,13 +4328,18 @@ export class Player<
                   false, // not holding an outer gate slot
                 );
                 const missBakeMs = performance.now() - tBake0;
-                const gainsMiss = this.chunkNoteMixGains(n);
+                const gainsMiss = this.chunkNoteMixParams(
+                  n,
+                  noteBuf.length,
+                  sampleRate,
+                );
                 return {
                   kind: "hit" as const,
                   buffer: noteBuf,
                   offset: n.offset,
                   gainL: gainsMiss.gainL,
                   gainR: gainsMiss.gainR,
+                  gainCurve: gainsMiss.gainCurve,
                   baked: true,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4296,13 +4379,18 @@ export class Player<
                   false,
                 );
                 const missBakeMs = performance.now() - tBake0;
-                const gainsBake = this.chunkNoteMixGains(n);
+                const gainsBake = this.chunkNoteMixParams(
+                  n,
+                  noteBuf.length,
+                  sampleRate,
+                );
                 return {
                   kind: "hit" as const,
                   buffer: noteBuf,
                   offset: n.offset,
                   gainL: gainsBake.gainL,
                   gainR: gainsBake.gainR,
+                  gainCurve: gainsBake.gainCurve,
                   baked: true,
                   lookupMs,
                   awaitInflightMs: awaitInflight,
@@ -4329,6 +4417,7 @@ export class Player<
                 offset: number;
                 gainL?: number;
                 gainR?: number;
+                gainCurve?: Float32Array;
                 baked?: boolean;
               };
               simpleHits.push({
@@ -4336,6 +4425,7 @@ export class Player<
                 offset: rr.offset,
                 gainL: rr.gainL,
                 gainR: rr.gainR,
+                gainCurve: rr.gainCurve,
               });
               if (rr.baked) simpleMissesBaked++;
               else simpleCacheHits++;
@@ -5110,6 +5200,8 @@ export class Player<
       offset: number;
       gainL?: number;
       gainR?: number;
+      /** Per-sample gain (vol²·expr²); multiplied with gainL/gainR. */
+      gainCurve?: Float32Array;
     }[],
     sampleRate: number,
     gain = 1,
@@ -5122,7 +5214,7 @@ export class Player<
     }
     const gDefault = gain;
     for (let ei = 0; ei < entries.length; ei++) {
-      const { buffer: src, offset, gainL, gainR } = entries[ei];
+      const { buffer: src, offset, gainL, gainR, gainCurve } = entries[ei];
       const startSample = Math.round(offset * sampleRate);
       if (startSample >= destLen) continue;
       const srcChCount = src.numberOfChannels;
@@ -5131,36 +5223,65 @@ export class Player<
       if (copyLen <= 0) continue;
       const gL = gainL ?? gDefault;
       const gR = gainR ?? gDefault;
+      const curve = gainCurve;
       if (destChCount === 1) {
         const srcData = src.getChannelData(0);
         const dst = destChannels[0];
-        for (let i = 0; i < copyLen; i++) {
-          dst[startSample + i] += srcData[i] * gL;
+        if (curve) {
+          for (let i = 0; i < copyLen; i++) {
+            dst[startSample + i] += srcData[i] * gL * curve[i];
+          }
+        } else {
+          for (let i = 0; i < copyLen; i++) {
+            dst[startSample + i] += srcData[i] * gL;
+          }
         }
       } else if (srcChCount === 1) {
         // mono src → stereo dest (dry note + pan at mix)
         const srcData = src.getChannelData(0);
         const dstL = destChannels[0];
         const dstR = destChannels[1];
-        for (let i = 0; i < copyLen; i++) {
-          const s = srcData[i];
-          dstL[startSample + i] += s * gL;
-          dstR[startSample + i] += s * gR;
+        if (curve) {
+          for (let i = 0; i < copyLen; i++) {
+            const s = srcData[i] * curve[i];
+            dstL[startSample + i] += s * gL;
+            dstR[startSample + i] += s * gR;
+          }
+        } else {
+          for (let i = 0; i < copyLen; i++) {
+            const s = srcData[i];
+            dstL[startSample + i] += s * gL;
+            dstR[startSample + i] += s * gR;
+          }
         }
       } else {
         const srcL = src.getChannelData(0);
         const srcR = src.getChannelData(1);
         const dstL = destChannels[0];
         const dstR = destChannels[1];
-        for (let i = 0; i < copyLen; i++) {
-          dstL[startSample + i] += srcL[i] * gL;
-          dstR[startSample + i] += srcR[i] * gR;
+        if (curve) {
+          for (let i = 0; i < copyLen; i++) {
+            const cg = curve[i];
+            dstL[startSample + i] += srcL[i] * gL * cg;
+            dstR[startSample + i] += srcR[i] * gR * cg;
+          }
+        } else {
+          for (let i = 0; i < copyLen; i++) {
+            dstL[startSample + i] += srcL[i] * gL;
+            dstR[startSample + i] += srcR[i] * gR;
+          }
         }
         for (let c = 2; c < destChCount; c++) {
           const srcData = src.getChannelData(Math.min(c, srcChCount - 1));
           const dst = destChannels[c];
-          for (let i = 0; i < copyLen; i++) {
-            dst[startSample + i] += srcData[i] * gL;
+          if (curve) {
+            for (let i = 0; i < copyLen; i++) {
+              dst[startSample + i] += srcData[i] * gL * curve[i];
+            }
+          } else {
+            for (let i = 0; i < copyLen; i++) {
+              dst[startSample + i] += srcData[i] * gL;
+            }
           }
         }
       }
@@ -5399,6 +5520,7 @@ export class Player<
       offset: number;
       gainL?: number;
       gainR?: number;
+      gainCurve?: Float32Array;
     }[],
     destChCount: 1 | 2,
     bufferLength: number,
@@ -5431,6 +5553,7 @@ export class Player<
       offset: number;
       gainL?: number;
       gainR?: number;
+      gainCurve?: Float32Array;
     }[],
     destChCount: 1 | 2,
     bufferLength: number,
@@ -5506,6 +5629,7 @@ export class Player<
         srcSamplesSum += left.length;
         const gLAbs = ent.gainL != null ? ent.gainL * gain : gain;
         const gRAbs = ent.gainR != null ? ent.gainR * gain : gLAbs;
+        const gainCurve = ent.gainCurve;
         // Transferable detaches the underlying ArrayBuffer — must slice so
         // live AudioBuffers stay usable. Structured-clone path can pass the
         // channel views directly (clone copies; no need for an extra slice
@@ -5517,6 +5641,7 @@ export class Player<
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
+            gainCurve: gainCurve ? gainCurve.slice() : undefined,
           };
         } else {
           mixEntries[i] = {
@@ -5525,6 +5650,7 @@ export class Player<
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
+            gainCurve,
           };
         }
       }
