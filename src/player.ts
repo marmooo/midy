@@ -1205,6 +1205,28 @@ export class Player<
   // a per-sample L/R curve (computePanCurve).
   static readonly PAN_CONTROLLER_TYPE = 10;
 
+  // Controllers that never reshape the pitched sample body of an offline bake.
+  // CC111 is the RPG Maker loop marker; it must not force complex notes.
+  static readonly NON_WAVEFORM_CONTROLLER_TYPES: ReadonlySet<number> = new Set([
+    111, // RPG Maker loop marker (no waveform effect)
+  ]);
+
+  // True when a CC must not force the expensive complex offline path.
+  protected isNonWaveformController(controller: number): boolean {
+    if (controller === 64 || controller === 120 || controller === 123) {
+      return true;
+    }
+    if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) return true;
+    if (
+      this.useAlmostSimplePan &&
+      controller === Player.PAN_CONTROLLER_TYPE
+    ) {
+      return true;
+    }
+    if (Player.NON_WAVEFORM_CONTROLLER_TYPES.has(controller)) return true;
+    return false;
+  }
+
   // Sustain (CC#64) and note-stop controllers only determine the duration,
   // which buildNoteOnDurations has already resolved. They do not alter a
   // baked waveform, so they must not force an expensive complex-note bake.
@@ -1214,33 +1236,21 @@ export class Player<
   // the full complex Offline path.
   protected hasWaveformAutomation(noteEvent: NoteOnEventEntry): boolean {
     const events = noteEvent.events;
-    let sawPitchBend = false;
     for (let i = 0; i < events.length; i++) {
       const event = events[i];
       if (event.type === "pitchBend") {
         if (!this.useAlmostSimplePitchBend) return true;
-        sawPitchBend = true;
         continue;
       }
       if (event.type === "sysEx") return true;
       if (event.type !== "controller") continue;
       const controller = event.controllerType ?? -1;
-      if (controller === 64 || controller === 120 || controller === 123) {
-        continue;
-      }
-      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
-        continue;
-      }
-      if (
-        this.useAlmostSimplePan &&
-        controller === Player.PAN_CONTROLLER_TYPE
-      ) {
-        continue;
-      }
+      if (this.isNonWaveformController(controller)) continue;
+      // Modulation / sound controllers / brightness / etc. force complex.
       return true;
     }
-    // Pitch-bend-only (plus optional gain/pan almost-simple) is handled on
-    // the TypedArray path when useAlmostSimplePitchBend is enabled.
+    // Pitch-bend-only (plus optional gain/pan/non-waveform) stays on the
+    // TypedArray path when useAlmostSimplePitchBend is enabled.
     return false;
   }
 
@@ -1264,16 +1274,11 @@ export class Player<
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
-      if (controller === 64 || controller === 120 || controller === 123) {
-        continue;
-      }
       if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
         sawGain = true;
         continue;
       }
-      if (controller === Player.PAN_CONTROLLER_TYPE) {
-        continue;
-      }
+      if (this.isNonWaveformController(controller)) continue;
       return false;
     }
     return sawGain;
@@ -1296,16 +1301,11 @@ export class Player<
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
-      if (controller === 64 || controller === 120 || controller === 123) {
-        continue;
-      }
-      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
-        continue;
-      }
       if (controller === Player.PAN_CONTROLLER_TYPE) {
         sawPan = true;
         continue;
       }
+      if (this.isNonWaveformController(controller)) continue;
       return false;
     }
     return sawPan;
@@ -1335,19 +1335,8 @@ export class Player<
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
-      if (controller === 64 || controller === 120 || controller === 123) {
-        continue;
-      }
-      if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
-        continue;
-      }
-      if (
-        this.useAlmostSimplePan &&
-        controller === Player.PAN_CONTROLLER_TYPE
-      ) {
-        continue;
-      }
-      // Modulation / other CC still forces complex.
+      if (this.isNonWaveformController(controller)) continue;
+      // Modulation / sound controllers still force complex.
       return false;
     }
     return sawBend;
@@ -1425,6 +1414,8 @@ export class Player<
     otherCc: boolean;
     sysEx: boolean;
     programChange: boolean;
+    /** CC numbers that contributed to otherCc (waveform-affecting). */
+    otherCcTypes: number[];
   } {
     let pitchBend = false;
     let pan = false;
@@ -1433,6 +1424,7 @@ export class Player<
     let otherCc = false;
     let sysEx = false;
     let programChange = false;
+    const otherCcTypes: number[] = [];
     const events = noteEvent.events;
     for (let i = 0; i < events.length; i++) {
       const event = events[i];
@@ -1450,8 +1442,11 @@ export class Player<
       }
       if (event.type !== "controller") continue;
       const controller = event.controllerType ?? -1;
-      // Duration-only; ignored by hasWaveformAutomation too.
+      // Duration-only / effect sends / bank — ignored by hasWaveformAutomation.
       if (controller === 64 || controller === 120 || controller === 123) {
+        continue;
+      }
+      if (Player.NON_WAVEFORM_CONTROLLER_TYPES.has(controller)) {
         continue;
       }
       if (Player.GAIN_ONLY_CONTROLLER_TYPES.has(controller)) {
@@ -1467,8 +1462,18 @@ export class Player<
         continue;
       }
       otherCc = true;
+      otherCcTypes.push(controller);
     }
-    return { pitchBend, pan, mod, gain, sysEx, programChange, otherCc };
+    return {
+      pitchBend,
+      pan,
+      mod,
+      gain,
+      sysEx,
+      programChange,
+      otherCc,
+      otherCcTypes,
+    };
   }
 
   // Breakdown of complex notes for post-start() logging.
@@ -1491,6 +1496,7 @@ export class Player<
     bendGain: number;
     panGain: number;
     mixed: number;
+    otherCcHistogram: Map<number, number>;
   } {
     const noteOnEvents = this.noteOnEvents;
     const candidates = this.tiledBakedSet.size > 0 ? this.tiledBakedSet : null;
@@ -1510,6 +1516,7 @@ export class Player<
     let bendGain = 0;
     let panGain = 0;
     let mixed = 0;
+    const otherCcHistogram: Map<number, number> = new Map();
 
     const consider = (i: number) => {
       const noteEvent = noteOnEvents[i];
@@ -1526,6 +1533,12 @@ export class Player<
       if (f.otherCc) withOtherCc++;
       if (f.sysEx) withSysEx++;
       if (f.programChange) withProgramChange++;
+      if (f.otherCcTypes) {
+        for (let ti = 0; ti < f.otherCcTypes.length; ti++) {
+          const ct = f.otherCcTypes[ti];
+          otherCcHistogram.set(ct, (otherCcHistogram.get(ct) ?? 0) + 1);
+        }
+      }
 
       // Exclusive buckets: waveform kinds only (gain is optional companion).
       const kinds: string[] = [];
@@ -1576,6 +1589,7 @@ export class Player<
       bendGain,
       panGain,
       mixed,
+      otherCcHistogram,
     };
   }
 
@@ -2691,6 +2705,18 @@ export class Player<
             `onlySysEx=${cx.onlySysEx}(${cxPct(cx.onlySysEx)}%) ` +
             `mixed=${cx.mixed}(${cxPct(cx.mixed)}%)`,
         );
+        // otherCc CC-number histogram (which controllers still force complex).
+        if (cx.otherCcHistogram && cx.otherCcHistogram.size > 0) {
+          const parts: string[] = [];
+          const entries = [...cx.otherCcHistogram.entries()].sort(
+            (a, b) => b[1] - a[1] || a[0] - b[0],
+          );
+          for (let ei = 0; ei < entries.length; ei++) {
+            const [cc, n] = entries[ei];
+            parts.push(`CC${cc}=${n}`);
+          }
+          console.log(`[midy] otherCc histogram | ${parts.join(" ")}`);
+        }
       }
       // Chunk pipeline stability (realtime only; excludes renderFastMode).
       const cb = this.chunkBakeCount;
