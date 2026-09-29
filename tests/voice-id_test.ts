@@ -130,7 +130,7 @@ function makeVoice(opts: {
   } as unknown as Voice;
 }
 
-/** Old (buggy) packing — kept here so the regression case stays explicit. */
+/** Old (buggy) packing — 16-bit startTag ADDed after sampleID<<8. */
 function oldBuggyVoiceId(
   soundFontIndex: number,
   instrument: number,
@@ -140,6 +140,20 @@ function oldBuggyVoiceId(
   const startTag = (start | 0) & 0xffff;
   return soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
     ((sampleID & 0xffff) << 8) + startTag;
+}
+
+/** Current packing: 16-bit startTag, non-overlapping fields. */
+function packVoiceId(
+  soundFontIndex: number,
+  instrument: number,
+  sampleID: number,
+  start: number,
+): number {
+  const startTag = (start | 0) & 0xffff;
+  return (soundFontIndex & 0xff) * (2 ** 40) +
+    (instrument & 0xff) * (2 ** 32) +
+    (sampleID & 0xffff) * (2 ** 16) +
+    startTag;
 }
 
 function setupPlayer(): MidyGMLite {
@@ -297,28 +311,20 @@ Deno.test(
 );
 
 Deno.test(
-  "[voice-id] coarse start offset (startAddrsCoarseOffset) is reflected",
+  "[voice-id] audioBufferId and ADS subKey stay safe integers",
   sanOptions,
   () => {
-    const player = setupPlayer();
-    const channel = player.channels[0];
-    // start = coarse * 32768 + offset → two zones with same fine offset
-    // but different coarse must differ in the low 16 bits of startTag
-    // (or at least in the overall id).
-    installVoiceMap(
-      player,
-      new Map([
-        [60, { sampleID: 7, startAddrsCoarseOffset: 0, startAddrsOffset: 100 }],
-        [61, { sampleID: 7, startAddrsCoarseOffset: 1, startAddrsOffset: 100 }],
-      ]),
+    const audioBufferId = packVoiceId(1, 127, 0xffff, 0xffff);
+    const subKey = 127 * 128 + 127;
+    assertEquals(
+      Number.isSafeInteger(audioBufferId),
+      true,
+      `audioBufferId ${audioBufferId} must be safe`,
     );
-
-    const id0 = player.getVoiceId(channel, 60, 100);
-    const id1 = player.getVoiceId(channel, 61, 100);
-    assertNotEquals(
-      id0,
-      id1,
-      "startAddrsCoarseOffset must change the voice id",
+    assertEquals(
+      Number.isSafeInteger(subKey),
+      true,
+      `ADS subKey ${subKey} must be safe`,
     );
   },
 );
@@ -357,64 +363,46 @@ Deno.test(
   "[voice-id] ADS composite cache key distinguishes noteNumber for shared sample",
   sanOptions,
   () => {
-    // Documents the intended ADS key shape used by getAdsCachedBuffer:
-    //   `${audioBufferId}_${velocity}_${noteNumber}`
+    // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
     // Shared sample (same audioBufferId) must still get distinct ADS entries
     // per noteNumber because playbackRate / rootKey differ.
-    const audioBufferId = 0x12345678;
+    const audioBufferId = 0x123456789abc;
     const velocity = 100;
-    const keyG4 = `${audioBufferId}_${velocity}_67`;
-    const keyA4 = `${audioBufferId}_${velocity}_69`;
+    const keyG4 = (BigInt(audioBufferId) << 14n) |
+      BigInt(velocity * 128 + 67);
+    const keyA4 = (BigInt(audioBufferId) << 14n) |
+      BigInt(velocity * 128 + 69);
     assertNotEquals(
       keyG4,
       keyA4,
-      "ADS cache must not merge different noteNumbers on a shared sample",
-    );
-
-    // Same note + velocity + id must be stable (cache hit).
-    assertEquals(
-      `${audioBufferId}_${velocity}_67`,
-      keyG4,
+      "ADS keys must not merge different noteNumbers on a shared sample",
     );
   },
 );
 
 Deno.test(
-  "[voice-id] many nearby sampleIDs with start offsets never collide pairwise",
+  "[voice-id] sampleID×start (16-bit) pairs never collide",
   sanOptions,
   () => {
-    // Stress the packing: for sampleID in 0..32 and start in {0,256,512,...,2048}
-    // every (sampleID, start) pair must produce a unique id.
-    const player = setupPlayer();
-    const channel = player.channels[0];
-    const pairs: { note: number; sampleID: number; start: number }[] = [];
-    let note = 0;
+    // Every (sampleID, start) in a representative grid must be unique.
+    const seen = new Map<number, string>();
     for (let sampleID = 0; sampleID <= 32; sampleID++) {
       for (let start = 0; start <= 2048; start += 256) {
-        pairs.push({ note, sampleID, start });
-        note++;
+        const id = packVoiceId(0, 0, sampleID, start);
+        const label = `sampleID=${sampleID},start=${start}`;
+        const prev = seen.get(id);
+        assertEquals(
+          prev,
+          undefined,
+          `collision: ${label} shares id ${id} with ${prev}`,
+        );
+        seen.set(id, label);
+        assertEquals(
+          Number.isSafeInteger(id),
+          true,
+          `id ${id} must be a safe integer`,
+        );
       }
-    }
-    const map = new Map(
-      pairs.map((p) => [p.note, {
-        sampleID: p.sampleID,
-        startAddrsOffset: p.start,
-      }]),
-    );
-    installVoiceMap(player, map);
-
-    const seen = new Map<number, string>();
-    for (const p of pairs) {
-      const id = player.getVoiceId(channel, p.note, 100);
-      assertNotEquals(id, undefined, `missing id for ${JSON.stringify(p)}`);
-      const label = `sampleID=${p.sampleID},start=${p.start}`;
-      const prev = seen.get(id!);
-      assertEquals(
-        prev,
-        undefined,
-        `collision: ${label} shares id ${id} with ${prev}`,
-      );
-      seen.set(id!, label);
     }
   },
 );

@@ -108,10 +108,11 @@ export class Player<
   TChannel extends Channel<TNote> = Channel<TNote>,
 > extends BasePlayer<TNote, TChannel> {
   cacheMode: CacheMode = DEFAULT_CACHE_MODE;
-  // String keys: `${audioBufferId}_${velocity}_${noteNumber}` so large
-  // audioBufferId values never lose precision under Number arithmetic.
-  voiceCache: Map<string, CacheEntry> = new Map();
-  realtimeVoiceCache: Map<string, RenderedBuffer> = new Map();
+  // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
+  // One-level Map (no nesting). bigint avoids Number precision loss when
+  // audioBufferId is large after the non-overlapping getVoiceId packing.
+  voiceCache: Map<bigint, CacheEntry> = new Map();
+  realtimeVoiceCache: Map<bigint, RenderedBuffer> = new Map();
   adsrVoiceCache: Map<
     number,
     Map<bigint, RenderedBuffer | Promise<RenderedBuffer>>
@@ -8620,9 +8621,9 @@ export class Player<
     // Include velocity: ADS bake embeds initialAttenuation (velocity-dependent).
     // Without it, soft and loud notes of the same sample collide and dynamics vanish.
     // Include noteNumber: shared samples still need distinct playbackRate/rootKey.
-    // String key avoids Number precision loss when audioBufferId is large
-    // (after the fixed non-overlapping getVoiceId packing).
-    const cacheKey = `${audioBufferId}_${note.velocity}_${note.noteNumber}`;
+    // Single-level Map with a bigint key — no nesting, no Number precision loss.
+    const cacheKey = (BigInt(audioBufferId) << 14n) |
+      BigInt((note.velocity & 0x7f) * 128 + (note.noteNumber & 0x7f));
     const voiceParams = note.voiceParams;
     if (!voiceParams) return undefined;
     if (realtime) {
@@ -8663,8 +8664,8 @@ export class Player<
           rawBuffer,
           channel.isDrum,
         );
-        const cache = { audioBuffer: rendered, maxCount, counter: 1 };
-        this.voiceCache.set(cacheKey, cache);
+        const entry = { audioBuffer: rendered, maxCount, counter: 1 };
+        this.voiceCache.set(cacheKey, entry);
         return rendered;
       }
     }

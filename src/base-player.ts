@@ -1406,16 +1406,18 @@ export class BasePlayer<
     // slice different regions don't collide in rawAudioBufferCache
     // (createAudioBuffer applies voiceParams.start/end for PCM).
     //
-    // Bit layout (no overlapping fields — the previous packing shifted
-    // sampleID by only 8 and then ADDED a 16-bit startTag, so startTag
-    // bits [15:8] collided with sampleID bits [7:0]. That made distinct
-    // samples share one cache entry and caused wrong pitches, e.g. A4
-    // sounding like G4 when their sampleIDs differed only in the low byte).
-    //   [15:0]  startTag
+    // Bit layout — fields must NOT overlap. The previous formula was:
+    //   ((sampleID & 0xffff) << 8) + (start & 0xffff)
+    // so start bits [15:8] collided with sampleID bits [7:0]. Distinct
+    // samples could share one cache entry (e.g. A4 sounding like G4).
+    //
+    //   [15:0]  startTag (16-bit fine start; 8-bit coarse is not enough)
     //   [31:16] sampleID
     //   [39:32] instrument
     //   [47:40] soundFontIndex
     // Stays within Number.MAX_SAFE_INTEGER for practical SF indices.
+    // ADS sub-keys (velocity / noteNumber) live in a nested Map so we never
+    // multiply this id by 128*128.
     const controllerState = this.getControllerState(
       channel,
       noteNumber,
