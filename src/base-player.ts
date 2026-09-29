@@ -1402,9 +1402,20 @@ export class BasePlayer<
     if (!resolved) return;
     const instrument = resolved.voice.generators.get("instrument");
     const sampleID = resolved.voice.generators.get("sampleID");
-    // Include a coarse start-offset tag so two presets that share sampleID
-    // but slice different regions don't collide in rawAudioBufferCache
+    // Include a start-offset tag so two presets that share sampleID but
+    // slice different regions don't collide in rawAudioBufferCache
     // (createAudioBuffer applies voiceParams.start/end for PCM).
+    //
+    // Bit layout (no overlapping fields — the previous packing shifted
+    // sampleID by only 8 and then ADDED a 16-bit startTag, so startTag
+    // bits [15:8] collided with sampleID bits [7:0]. That made distinct
+    // samples share one cache entry and caused wrong pitches, e.g. A4
+    // sounding like G4 when their sampleIDs differed only in the low byte).
+    //   [15:0]  startTag
+    //   [31:16] sampleID
+    //   [39:32] instrument
+    //   [47:40] soundFontIndex
+    // Stays within Number.MAX_SAFE_INTEGER for practical SF indices.
     const controllerState = this.getControllerState(
       channel,
       noteNumber,
@@ -1413,8 +1424,10 @@ export class BasePlayer<
     );
     const params = getVoiceParams(resolved.voice, controllerState);
     const startTag = (params.start | 0) & 0xffff;
-    return resolved.soundFontIndex * (2 ** 31) + instrument * (2 ** 24) +
-      ((sampleID & 0xffff) << 8) + startTag;
+    return (resolved.soundFontIndex & 0xff) * (2 ** 40) +
+      (instrument & 0xff) * (2 ** 32) +
+      (sampleID & 0xffff) * (2 ** 16) +
+      startTag;
   }
 
   // Overridden by subclasses (e.g. Midy) that instantiate Player<TChannel,

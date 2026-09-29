@@ -108,8 +108,10 @@ export class Player<
   TChannel extends Channel<TNote> = Channel<TNote>,
 > extends BasePlayer<TNote, TChannel> {
   cacheMode: CacheMode = DEFAULT_CACHE_MODE;
-  voiceCache: Map<number, CacheEntry> = new Map();
-  realtimeVoiceCache: Map<number, RenderedBuffer> = new Map();
+  // String keys: `${audioBufferId}_${velocity}_${noteNumber}` so large
+  // audioBufferId values never lose precision under Number arithmetic.
+  voiceCache: Map<string, CacheEntry> = new Map();
+  realtimeVoiceCache: Map<string, RenderedBuffer> = new Map();
   adsrVoiceCache: Map<
     number,
     Map<bigint, RenderedBuffer | Promise<RenderedBuffer>>
@@ -8617,8 +8619,10 @@ export class Player<
     if (!audioBufferId) return undefined;
     // Include velocity: ADS bake embeds initialAttenuation (velocity-dependent).
     // Without it, soft and loud notes of the same sample collide and dynamics vanish.
-    const cacheKey = (audioBufferId! * 128 + note.velocity) * 128 +
-      note.noteNumber;
+    // Include noteNumber: shared samples still need distinct playbackRate/rootKey.
+    // String key avoids Number precision loss when audioBufferId is large
+    // (after the fixed non-overlapping getVoiceId packing).
+    const cacheKey = `${audioBufferId}_${note.velocity}_${note.noteNumber}`;
     const voiceParams = note.voiceParams;
     if (!voiceParams) return undefined;
     if (realtime) {
@@ -8646,7 +8650,8 @@ export class Player<
         }
         return cache.audioBuffer;
       } else {
-        const maxCount = this.voiceCounter.get(cacheKey) ?? 0;
+        // voiceCounter is keyed by audioBufferId alone (see cacheVoiceIds).
+        const maxCount = this.voiceCounter.get(audioBufferId) ?? 0;
         const rawBuffer = await this.getRawAudioBuffer(
           audioBufferId,
           voiceParams,
