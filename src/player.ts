@@ -134,7 +134,7 @@ export class Player<
    * setTimeout0 lag matching wall). 0 = unlimited (legacy). 256–512 is a
    * good default for realtime chunk.
    */
-  simpleNoteCacheMaxSize: number = 384;
+  simpleNoteCacheMaxSize: number = 768;
   // Pre-playback occurrence counts for simple-note cache keys (same key as
   // makeSimpleNoteKey). Keys that appear more than once are worth a separate
   // OfflineAudioContext bake + cache fill on first miss; unique keys stay on
@@ -449,6 +449,25 @@ export class Player<
   // Song-time window where scheduleTimelineEvents / closeChunk get verbose logs.
   diagSongTimeLo: number = 19;
   diagSongTimeHi: number = 25;
+  // [diag] Extra instrumentation (A–F). Gated by this.debug; throttle counters
+  // keep DevTools from stalling on dense songs.
+  /** Log every Nth tile-bake-detail (1 = all). Also always logs when workMs>=tileBakeDetailMinMs or complexCount>0. */
+  tileBakeDetailEveryN: number = 10;
+  /** Always emit tile-bake-detail when work phase exceeds this (ms). */
+  tileBakeDetailMinMs: number = 80;
+  private tileBakeDetailCount: number = 0;
+  /** Log every Nth complex-one bake (1 = all). */
+  complexOneLogEveryN: number = 5;
+  private complexOneLogCount: number = 0;
+  /** Min ms between backlog logs during updateChunkPipeline. */
+  backlogLogIntervalMs: number = 500;
+  private lastBacklogLogMs: number = 0;
+  /** Cap simple-cache-evict logs per play (Map can thrash). */
+  simpleCacheEvictLogMax: number = 30;
+  private simpleCacheEvictLogCount: number = 0;
+  /** Cap mix-path logs per play (main path is hot). */
+  mixPathLogMax: number = 40;
+  private mixPathLogCount: number = 0;
 
   constructor(
     audioContext: AudioContext | OfflineAudioContext,
@@ -1376,6 +1395,12 @@ export class Player<
   // computeGainOnlyChannelCurve / renderSimpleNoteTypedArray).
   // (Conservative approximation -- events in the release gap after noteOff
   // are not captured.)
+  //
+  // durationTicks === Infinity (note still held at song end) must NOT force
+  // complex: buildNoteOnDurations still sets a finite duration (seconds), and
+  // CC64/120/123 only affect that duration. Rejecting Infinity ticks sent
+  // long sustain-held notes through getComplexNoteBuffer (unique / slow)
+  // and blew up complexSum / gateWait / late starts.
   finalizeSimpleNoteClassification(): void {
     const simple = new Set<number>();
     // Prefer the segment-baked subset when available (segment/chunk); fall
@@ -1389,7 +1414,6 @@ export class Player<
         const noteEvent = noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
-        if (noteEvent.durationTicks === Infinity) continue;
         if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
@@ -1398,7 +1422,6 @@ export class Player<
         const noteEvent = noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
-        if (noteEvent.durationTicks === Infinity) continue;
         if (this.hasWaveformAutomation(noteEvent)) continue;
         simple.add(i);
       }
@@ -1525,7 +1548,7 @@ export class Player<
       const noteEvent = noteOnEvents[i];
       if (!noteEvent) return;
       if (noteEvent.duration <= 0) return;
-      if (noteEvent.durationTicks === Infinity) return;
+      // Match isSimpleNote: Infinity ticks alone do not imply complex.
       if (!this.hasWaveformAutomation(noteEvent)) return;
       complex++;
       const f = this.inspectComplexAutomation(noteEvent);
@@ -1698,12 +1721,20 @@ export class Player<
     noteEvent?: NoteOnEventEntry;
   }): boolean {
     if (!this.simpleNoteCache) return false;
-    if (n.timelineIndex !== undefined) {
-      return this.simpleNoteSet.has(n.timelineIndex);
+    // Prefer the precomputed set (O(1)). Fall through to a live event check
+    // when the index is missing from the set but noteEvent is available —
+    // covers song-end notes (durationTicks=Infinity) that used to be
+    // excluded from the set and any classification lag after tempoChange.
+    if (
+      n.timelineIndex !== undefined && this.simpleNoteSet.has(n.timelineIndex)
+    ) {
+      return true;
     }
     const noteEvent = n.noteEvent;
     if (!noteEvent || noteEvent.duration <= 0) return false;
-    if (noteEvent.durationTicks === Infinity) return false;
+    // Finite song-time duration is enough; Infinity ticks (held to end of
+    // song) must not force the complex path when automation is non-waveform
+    // only (CC64 sustain, gain, pan, …).
     return !this.hasWaveformAutomation(noteEvent);
   }
 
@@ -1811,6 +1842,223 @@ export class Player<
       gainL: channelGain * gainLeft,
       gainR: channelGain * gainRight,
     };
+  }
+
+  // Debug-only: estimate how much simple-key cardinality is due to fine
+  // velocity / durationTicks differences (candidates for key coarsening).
+  // Walks simpleNoteSet the same way as buildSimpleNoteCounts.
+  protected logSimpleKeyCoarseningStats(): void {
+    if (!this.debug || !this.simpleNoteCache) return;
+    if (this.simpleNoteSet.size === 0) return;
+    const cacheMode = this.cacheMode;
+    if (
+      cacheMode !== "note" && cacheMode !== "segment" &&
+      cacheMode !== "chunk" && cacheMode !== "audio"
+    ) {
+      return;
+    }
+
+    const settings = (this.constructor as typeof Player).channelSettings;
+    const numChannels = this.numChannels;
+    const channels = new Array<TChannel>(numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
+      const channel = this.createChannelInstance(ch, settings);
+      channel.player = this;
+      channels[ch] = channel;
+    }
+    if (channels[9]) channels[9].isDrum = true;
+
+    const timeline = this.timeline;
+    const inverseTempo = 1 / this.tempo;
+    const needsSegmentVoice = isTiledCacheMode(cacheMode);
+    const simpleNoteSet = this.simpleNoteSet;
+    const noteOnEvents = this.noteOnEvents;
+    const tiledVoiceParams = this.tiledVoiceParams;
+    const tiledVoices = this.tiledVoices;
+    const noteAudioBufferIds = this.noteAudioBufferIds;
+
+    // baseNoVel → Map<velocity, count>
+    const byNoVel = new Map<string, Map<number, number>>();
+    // baseNoDur → Map<durTicks, count>
+    const byNoDur = new Map<string, Map<number, number>>();
+    let noteCount = 0;
+    const fullKeys = new Set<string>();
+
+    for (let i = 0; i < timeline.length; i++) {
+      const event = timeline[i];
+      const offset = event.startTime * inverseTempo;
+      this.processTimelineEvent(event, offset, {
+        channels,
+        onNoteOn: (renderChannel: TChannel, noteEvent: TimelineEvent) => {
+          if (!simpleNoteSet.has(i)) return;
+          const noteOnEvent = noteOnEvents[i];
+          if (!noteOnEvent || noteOnEvent.duration <= 0) return;
+
+          let voiceParams: VoiceParams | null = null;
+          let voice: Voice | null | undefined = null;
+          if (needsSegmentVoice) {
+            voiceParams = tiledVoiceParams[i];
+            voice = tiledVoices[i];
+          }
+          if (!voiceParams) {
+            voice = this.resolveVoice(
+              renderChannel,
+              noteEvent.noteNumber!,
+              noteEvent.velocity!,
+            );
+            if (!voice) return;
+            voiceParams = getVoiceParams(
+              voice,
+              this.getControllerState(
+                renderChannel,
+                noteEvent.noteNumber!,
+                noteEvent.velocity!,
+                0,
+              ),
+            );
+          }
+          if (!voiceParams) return;
+
+          const bakeChannelMix = this.simpleBakeChannelMixForNote({
+            noteEvent: noteOnEvent,
+          });
+          const n = {
+            audioBufferId: noteAudioBufferIds[i],
+            noteNumber: noteEvent.noteNumber!,
+            velocity: noteEvent.velocity!,
+            noteDuration: noteOnEvent.duration,
+            noteEvent: noteOnEvent,
+            channelDetune: renderChannel.detune,
+            channelStateArray: renderChannel.state.array,
+            programNumber: renderChannel.programNumber,
+            isDrum: renderChannel.isDrum,
+            voiceParams,
+          };
+          const parts = this.buildNoteCacheKeyParts(n, bakeChannelMix, false);
+          // Layout from buildNoteCacheKeyParts (non-complex):
+          //   [0]=dry|mix [1]=audioBufferId [2]=noteNumber [3]=velocity
+          //   [4]=durTicks [5]=detuneQ ...rest
+          const fullKey = parts.join("|");
+          fullKeys.add(fullKey);
+          noteCount++;
+
+          const vel = noteEvent.velocity! | 0;
+          const durTicks = noteOnEvent.durationTicks ??
+            Math.round(noteOnEvent.duration * 1000);
+
+          const partsNoVel = parts.slice();
+          partsNoVel[3] = "*";
+          const baseNoVel = partsNoVel.join("|");
+          let velMap = byNoVel.get(baseNoVel);
+          if (!velMap) {
+            velMap = new Map();
+            byNoVel.set(baseNoVel, velMap);
+          }
+          velMap.set(vel, (velMap.get(vel) ?? 0) + 1);
+
+          const partsNoDur = parts.slice();
+          partsNoDur[4] = "*";
+          const baseNoDur = partsNoDur.join("|");
+          let durMap = byNoDur.get(baseNoDur);
+          if (!durMap) {
+            durMap = new Map();
+            byNoDur.set(baseNoDur, durMap);
+          }
+          durMap.set(durTicks, (durMap.get(durTicks) ?? 0) + 1);
+        },
+      });
+    }
+
+    if (noteCount === 0) return;
+
+    // --- velocity coarsening ---
+    let velSplitGroups = 0;
+    let velSplitNotes = 0;
+    let velUniqueSum = 0;
+    // If velocity quantized to step S, unique keys = sum over groups of unique(floor(v/S))
+    const velSteps = [2, 4, 8, 16];
+    const velKeysAtStep = new Map<number, number>();
+    for (const s of velSteps) velKeysAtStep.set(s, 0);
+
+    for (const velMap of byNoVel.values()) {
+      const uniqueVels = velMap.size;
+      if (uniqueVels > 1) {
+        velSplitGroups++;
+        let notesInGroup = 0;
+        for (const c of velMap.values()) notesInGroup += c;
+        velSplitNotes += notesInGroup;
+        velUniqueSum += uniqueVels;
+      }
+      for (const s of velSteps) {
+        const bins = new Set<number>();
+        for (const v of velMap.keys()) bins.add((v / s) | 0);
+        velKeysAtStep.set(s, (velKeysAtStep.get(s) ?? 0) + bins.size);
+      }
+    }
+    // groups with uniqueVels==1 still contribute 1 key each at every step
+    const velGroupCount = byNoVel.size;
+
+    // --- durationTicks coarsening ---
+    let durSplitGroups = 0;
+    let durSplitNotes = 0;
+    let durUniqueSum = 0;
+    // Neighbor gaps: how often consecutive sorted durs differ by 1..5, 6..20, 21..100, 100+
+    let gap1_5 = 0, gap6_20 = 0, gap21_100 = 0, gap100p = 0;
+    const durQuants = [5, 10, 20, 50, 100];
+    const durKeysAtQuant = new Map<number, number>();
+    for (const q of durQuants) durKeysAtQuant.set(q, 0);
+
+    for (const durMap of byNoDur.values()) {
+      const uniqueDurs = durMap.size;
+      if (uniqueDurs > 1) {
+        durSplitGroups++;
+        let notesInGroup = 0;
+        for (const c of durMap.values()) notesInGroup += c;
+        durSplitNotes += notesInGroup;
+        durUniqueSum += uniqueDurs;
+        const sorted = [...durMap.keys()].sort((a, b) => a - b);
+        for (let gi = 1; gi < sorted.length; gi++) {
+          const gap = sorted[gi] - sorted[gi - 1];
+          if (gap <= 5) gap1_5++;
+          else if (gap <= 20) gap6_20++;
+          else if (gap <= 100) gap21_100++;
+          else gap100p++;
+        }
+      }
+      for (const q of durQuants) {
+        const bins = new Set<number>();
+        for (const d of durMap.keys()) bins.add(Math.round(d / q) * q);
+        durKeysAtQuant.set(q, (durKeysAtQuant.get(q) ?? 0) + bins.size);
+      }
+    }
+
+    const avgVelPerSplit = velSplitGroups > 0
+      ? (velUniqueSum / velSplitGroups).toFixed(1)
+      : "0";
+    const avgDurPerSplit = durSplitGroups > 0
+      ? (durUniqueSum / durSplitGroups).toFixed(1)
+      : "0";
+
+    const velStepParts = velSteps.map(
+      (s) => `step${s}=${velKeysAtStep.get(s)}`,
+    ).join(" ");
+    const durQuantParts = durQuants.map(
+      (q) => `q${q}=${durKeysAtQuant.get(q)}`,
+    ).join(" ");
+
+    console.log(
+      `[midy] simple-key coarsen | notes=${noteCount} fullKeys=${fullKeys.size} | ` +
+        `velocity: groups=${velGroupCount} splitGroups=${velSplitGroups} ` +
+        `splitNotes=${velSplitNotes} avgVels/split=${avgVelPerSplit} | ` +
+        `keysIf ${velStepParts}`,
+    );
+    console.log(
+      `[midy] simple-key coarsen | durationTicks: groups=${byNoDur.size} ` +
+        `splitGroups=${durSplitGroups} splitNotes=${durSplitNotes} ` +
+        `avgDurs/split=${avgDurPerSplit} | ` +
+        `neighborGaps: 1-5=${gap1_5} 6-20=${gap6_20} 21-100=${gap21_100} 100+=${gap100p} | ` +
+        `keysIf ${durQuantParts}`,
+    );
   }
 
   makeSimpleNoteKey(
@@ -2116,7 +2364,7 @@ export class Player<
       if (simpleNoteSet.has(i)) return false;
       const noteOnEvent = noteOnEvents[i];
       if (!noteOnEvent || noteOnEvent.duration <= 0) return false;
-      if (noteOnEvent.durationTicks === Infinity) return false;
+      // Match isSimpleNote: Infinity ticks alone do not imply complex.
       // Must have automation -- otherwise it would be simple.
       if (!this.hasWaveformAutomation(noteOnEvent)) return false;
       return true;
@@ -2681,10 +2929,12 @@ export class Player<
         console.log(
           `[midy] note-cache | simple: hit=${sHit} miss=${sMiss} ` +
             `rate=${sRate}% peak=${this.simpleNoteCachePeakSize} ` +
+            `maxSize=${this.simpleNoteCacheMaxSize} ` +
             `prewarmMiss=${this.simpleNoteCachePrewarmMisses} | ` +
             `complex: hit=${cHit} miss=${cMiss} unique=${cUnique} ` +
             `rate=${cRate}% peak=${this.complexNoteCachePeakSize}`,
         );
+        this.logSimpleKeyCoarseningStats();
       }
       // Multi-label (with*) can sum > complex. Exclusive buckets sum to complex.
       if (this.debug) {
@@ -2751,6 +3001,18 @@ export class Player<
             `poolSize=${poolSize} ` +
             `mixMinEntries=${this.workerMixMinEntries} ` +
             `poolStarted=${!!this.bakeWorkerPool}`,
+        );
+        // Confirm almost-simple / cache knobs actually in effect this run.
+        console.log(
+          `[midy] almost-simple | bend=${this.useAlmostSimplePitchBend} ` +
+            `pan=${this.useAlmostSimplePan} ` +
+            `taNoteBake=${this.useTypedArraySimpleNoteBake} ` +
+            `taChunkMiss=${this.useTypedArrayChunkSimpleMiss} ` +
+            `taChunkComplex=${this.useTypedArrayChunkComplexBake} ` +
+            `drySimple=${this.useChunkDrySimpleMix} ` +
+            `simpleCacheMax=${this.simpleNoteCacheMaxSize} ` +
+            `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
+            `maxOffline=${this.maxConcurrentOfflineRenders}`,
         );
       }
       const simpleAvg = cb > 0 ? this.chunkBakeSimpleSumMs / cb : 0;
@@ -3285,6 +3547,40 @@ export class Player<
         `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s ` +
           `wall=${(performance.now() - t0).toFixed(0)}ms ` +
           `pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`,
+      );
+    }
+    // [diag A] How far is the contiguous ready span from songStart?
+    if (this.debug && isChunkMode) {
+      const pending = this.chunkState.pending;
+      // Assume pending is roughly chunkStart-ordered (closeChunk appends in order).
+      const sorted = pending.slice().sort((a, b) =>
+        a.chunkStart - b.chunkStart
+      );
+      let readyN = 0;
+      let readyUntil = songStart;
+      for (let i = 0; i < sorted.length; i++) {
+        const p = sorted[i];
+        if (p.bufferReady) {
+          readyN++;
+          const end = p.chunkStart + this.tileDuration;
+          if (end > readyUntil) readyUntil = end;
+        } else {
+          // First gap ends the contiguous ready span from the head.
+          break;
+        }
+      }
+      const targetEnd = Math.min(
+        this.totalTime > 0 ? this.totalTime : songStart + this.prerollSec,
+        songStart + this.prerollSec,
+      );
+      console.warn(
+        `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s ` +
+          `readyUntil=${readyUntil.toFixed(2)}s ` +
+          `gap=${(targetEnd - readyUntil).toFixed(2)}s ` +
+          `readyN=${readyN}/${sorted.length} ` +
+          `bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} ` +
+          `deferredBakes=${this.deferredChunkBakes.length} ` +
+          `chunkBakeActive=${this.chunkBakeActive}`,
       );
     }
   }
@@ -3981,6 +4277,39 @@ export class Player<
     ) {
       this.closeChunk(state);
     }
+    // [diag F] backlog snapshot (throttled)
+    if (this.debug) {
+      const nowWall = performance.now();
+      if (nowWall - this.lastBacklogLogMs >= this.backlogLogIntervalMs) {
+        this.lastBacklogLogMs = nowWall;
+        let songT = 0;
+        try {
+          songT = this.currentTime();
+        } catch { /* closed */ }
+        const deferred = this.deferredChunkBakes;
+        const oldest = deferred.length > 0
+          ? deferred.reduce(
+            (m, d) => d.chunkStart < m ? d.chunkStart : m,
+            deferred[0].chunkStart,
+          )
+          : -1;
+        let readyN = 0;
+        let notReadyN = 0;
+        for (let i = 0; i < state.pending.length; i++) {
+          if (state.pending[i].bufferReady) readyN++;
+          else notReadyN++;
+        }
+        console.warn(
+          `[midy] backlog | songT=${songT.toFixed(2)}s ` +
+            `deferred=${deferred.length} pending=${state.pending.length} ` +
+            `ready=${readyN} notReady=${notReadyN} ` +
+            `chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} ` +
+            `oldestDeferred=${
+              oldest >= 0 ? oldest.toFixed(2) : "-"
+            }s lookAhead=${lookAheadCheckTime.toFixed(2)}s`,
+        );
+      }
+    }
     const pending = state.pending;
     let write = 0;
     for (let i = 0; i < pending.length; i++) {
@@ -4613,7 +4942,8 @@ export class Player<
           }
           if (rel > topReleaseTail) topReleaseTail = rel;
         }
-        this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
+        const workMs = performance.now() - bakeT0;
+        this.recordChunkBake(workMs, pureTaPath, {
           simpleMs,
           complexMs,
           mixMs,
@@ -4659,6 +4989,24 @@ export class Player<
           mixChunkBakeActive: mixDetail.chunkBakeActive,
           mixOfflineRenderActive: mixDetail.offlineRenderActive,
           mixDeferredBakes: mixDetail.deferredBakes,
+        });
+        // [diag B] tile-bake-detail (sampled + always when heavy/complex)
+        this.maybeLogTileBakeDetail({
+          chunkStart: chunk.chunkStart,
+          notes: notesLen,
+          simple: simpleCount,
+          complex: complexCount,
+          missBakes: simpleMissesBaked,
+          missDirect: missCount,
+          bufSec: bufferLength / sampleRate,
+          simpleMs,
+          complexMs,
+          mixMs,
+          gateWaitMs,
+          workMs,
+          usedWorker: mixDetail.usedWorker === true,
+          pureTa: pureTaPath,
+          cost: chunk.cost,
         });
       }
       return buffer;
@@ -4789,7 +5137,8 @@ export class Player<
         if (n.noteDuration > topNoteDuration) topNoteDuration = n.noteDuration;
         if (rel > topReleaseTail) topReleaseTail = rel;
       }
-      this.recordChunkBake(performance.now() - bakeT0, pureTaPath, {
+      const workMs = performance.now() - bakeT0;
+      this.recordChunkBake(workMs, pureTaPath, {
         simpleMs,
         complexMs,
         mixMs,
@@ -4816,6 +5165,25 @@ export class Player<
         simpleLookupMs,
         simpleAwaitInflightMs,
         simpleMissBakeMs,
+      });
+      // [diag B] tile-bake-detail (OAC path)
+      this.maybeLogTileBakeDetail({
+        chunkStart: chunk.chunkStart,
+        notes: notesLen,
+        simple: simpleCount,
+        complex: complexCount,
+        missBakes: simpleMissesBaked,
+        missDirect: missCount,
+        bufSec: bufferLength / sampleRate,
+        simpleMs,
+        complexMs,
+        mixMs,
+        gateWaitMs,
+        workMs,
+        usedWorker: false,
+        pureTa: pureTaPath,
+        cost: chunk.cost,
+        oacMs,
       });
     }
     return result;
@@ -5611,10 +5979,29 @@ export class Player<
     // the preroll boundary and ~130ms/tile during pureTA live (work ~12ms).
     // Main mix is predictable tens of ms. Workers remain for preroll/offline.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
-    const useWorker = !liveRealtime &&
-      this.useWorkerTypedArrayMix &&
-      entries.length >= this.workerMixMinEntries &&
-      typeof Worker !== "undefined";
+    let mixPathReason = "worker";
+    if (liveRealtime) mixPathReason = "liveRealtime";
+    else if (!this.useWorkerTypedArrayMix) mixPathReason = "disabled";
+    else if (entries.length < this.workerMixMinEntries) {
+      mixPathReason =
+        `minEntries(${entries.length}<${this.workerMixMinEntries})`;
+    } else if (typeof Worker === "undefined") mixPathReason = "noWorker";
+    const useWorker = mixPathReason === "worker";
+
+    // [diag E] mix-path (throttled)
+    if (
+      this.debug &&
+      this.mixPathLogCount < this.mixPathLogMax
+    ) {
+      this.mixPathLogCount++;
+      console.warn(
+        `[midy] mix-path | entries=${entries.length} path=${
+          useWorker ? "worker" : "main"
+        } reason=${mixPathReason} ` +
+          `destSamples=${bufferLength} live=${liveRealtime} ` +
+          `preroll=${this.chunkPrerollActive} n=${this.mixPathLogCount}`,
+      );
+    }
 
     if (!useWorker) {
       const tMain0 = performance.now();
@@ -5778,6 +6165,14 @@ export class Player<
           "[midy] worker mix failed, falling back to main thread",
           err,
         );
+        // [diag E] mix-path fallback
+        if (this.mixPathLogCount < this.mixPathLogMax) {
+          this.mixPathLogCount++;
+          console.warn(
+            `[midy] mix-path | entries=${entries.length} path=main reason=error ` +
+              `destSamples=${bufferLength} n=${this.mixPathLogCount}`,
+          );
+        }
       }
       const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
@@ -6718,10 +7113,59 @@ export class Player<
     this.chunkMixWorkerTiles = 0;
     this.chunkMixMainTiles = 0;
     this.chunkMixEntriesSum = 0;
+    // [diag] reset throttle counters each play
+    this.tileBakeDetailCount = 0;
+    this.complexOneLogCount = 0;
+    this.lastBacklogLogMs = 0;
+    this.simpleCacheEvictLogCount = 0;
+    this.mixPathLogCount = 0;
     this.chunkBakeNoteCountSum = 0;
     this.chunkBakeComplexCountSum = 0;
     this.chunkBakeSumNoteDuration = 0;
     this.chunkBakeSumCost = 0;
+  }
+
+  /**
+   * [diag B] Per-tile bake breakdown. Always logs when workMs is high or the
+   * tile has complex notes; otherwise every tileBakeDetailEveryN-th tile.
+   */
+  protected maybeLogTileBakeDetail(d: {
+    chunkStart: number;
+    notes: number;
+    simple: number;
+    complex: number;
+    missBakes: number;
+    missDirect: number;
+    bufSec: number;
+    simpleMs: number;
+    complexMs: number;
+    mixMs: number;
+    gateWaitMs: number;
+    workMs: number;
+    usedWorker: boolean;
+    pureTa: boolean;
+    cost: number;
+    oacMs?: number;
+  }): void {
+    if (!this.debug) return;
+    this.tileBakeDetailCount++;
+    const every = Math.max(1, this.tileBakeDetailEveryN | 0);
+    const heavy = d.workMs >= this.tileBakeDetailMinMs || d.complex > 0 ||
+      (d.oacMs != null && d.oacMs > 0);
+    if (!heavy && (this.tileBakeDetailCount % every) !== 0) return;
+    console.warn(
+      `[midy] tile-bake-detail | start=${d.chunkStart.toFixed(2)}s ` +
+        `notes=${d.notes} simple=${d.simple} complex=${d.complex} ` +
+        `missBakes=${d.missBakes} missDirect=${d.missDirect} ` +
+        `bufSec=${d.bufSec.toFixed(2)} cost=${d.cost.toFixed(1)} ` +
+        `simpleMs=${d.simpleMs.toFixed(1)} complexMs=${
+          d.complexMs.toFixed(1)
+        } ` +
+        `mixMs=${d.mixMs.toFixed(1)} oacMs=${(d.oacMs ?? 0).toFixed(1)} ` +
+        `gateWait=${d.gateWaitMs.toFixed(1)} workMs=${d.workMs.toFixed(1)} ` +
+        `workerMix=${d.usedWorker} path=${d.pureTa ? "pureTA" : "oac"} ` +
+        `n=${this.tileBakeDetailCount}`,
+    );
   }
 
   protected recordChunkBake(
@@ -6952,6 +7396,18 @@ export class Player<
       let evicted = false;
       for (const [key, val] of cache) {
         if (val instanceof Promise) continue;
+        // [diag D] simple-cache-evict
+        if (
+          this.debug &&
+          this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax
+        ) {
+          this.simpleCacheEvictLogCount++;
+          const keyPreview = key.length > 48 ? key.slice(0, 48) + "…" : key;
+          console.warn(
+            `[midy] simple-cache-evict | size=${cache.size} max=${max} ` +
+              `n=${this.simpleCacheEvictLogCount} key=${keyPreview}`,
+          );
+        }
         cache.delete(key);
         evicted = true;
         break;
@@ -7010,18 +7466,70 @@ export class Player<
       fromOuterSlot
         ? this.renderEntryAudioBufferUngated(entry, bakeChannelMix)
         : this.renderEntryAudioBuffer(entry, bakeChannelMix);
+    // [diag C] complex-one timing wrapper
+    const shouldLogComplex = this.debug && (() => {
+      this.complexOneLogCount++;
+      return this.complexOneLogEveryN <= 1 ||
+        (this.complexOneLogCount % this.complexOneLogEveryN) === 0;
+    })();
+    const tComplexOne0 = shouldLogComplex ? performance.now() : 0;
+    const logComplexOne = (fromCache: boolean, path: string) => {
+      if (!shouldLogComplex) return;
+      const noteEvents = entry.noteEvent?.events ?? [];
+      const events = noteEvents.length;
+      // Event type summary so we can see why the note stayed complex even
+      // with useAlmostSimplePitchBend / pan / gain enabled.
+      const typeParts: string[] = [];
+      for (let ei = 0; ei < noteEvents.length; ei++) {
+        const e = noteEvents[ei];
+        if (e.type === "pitchBend") typeParts.push("bend");
+        else if (e.type === "sysEx") typeParts.push("sysEx");
+        else if (e.type === "programChange") typeParts.push("pc");
+        else if (e.type === "controller") {
+          typeParts.push(`cc${e.controllerType ?? "?"}`);
+        } else typeParts.push(String(e.type));
+      }
+      const types = typeParts.length > 0 ? typeParts.join(",") : "-";
+      const modEnv = entry.voiceParams?.modEnvToPitch ?? 0;
+      const modLfo = entry.voiceParams?.modLfoToPitch ?? 0;
+      const bendNeedsCx = this.pitchBendNeedsComplexPath(
+        entry.noteEvent,
+        entry.voiceParams,
+      );
+      const hasWf = entry.noteEvent
+        ? this.hasWaveformAutomation(entry.noteEvent)
+        : false;
+      console.warn(
+        `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} ` +
+          `dur=${entry.noteDuration.toFixed(3)}s ms=${
+            (performance.now() - tComplexOne0).toFixed(1)
+          } ` +
+          `events=${events} types=${types} count=${count} ` +
+          `fromCache=${fromCache} path=${path} ` +
+          `mix=${bakeChannelMix ? "stereo" : "dry"} | ` +
+          `almostBend=${this.useAlmostSimplePitchBend} ` +
+          `almostPan=${this.useAlmostSimplePan} ` +
+          `hasWaveform=${hasWf} bendNeedsCx=${bendNeedsCx} ` +
+          `modEnvToPitch=${modEnv} modLfoToPitch=${modLfo}`,
+      );
+    };
     if (count <= 1) {
       this.noteCacheRecordComplexUnique();
-      return await bake();
+      const buf = await bake();
+      logComplexOne(false, "unique");
+      return buf;
     }
     const cached = this.complexNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordComplexHit();
+      logComplexOne(true, "hit-buffer");
       return cached;
     }
     if (cached instanceof Promise) {
       this.noteCacheRecordComplexHit();
-      return await cached;
+      const buf = await cached;
+      logComplexOne(true, "hit-inflight");
+      return buf;
     }
 
     this.noteCacheRecordComplexMiss();
@@ -7038,7 +7546,9 @@ export class Player<
     })();
     this.complexNoteBufferCache.set(key, renderPromise);
     this.noteCacheTouchPeakSizes();
-    return await renderPromise;
+    const buf = await renderPromise;
+    logComplexOne(false, "miss-bake");
+    return buf;
   }
 
   // Resolve a cached simple-note buffer without starting a new bake.
@@ -7504,9 +8014,10 @@ export class Player<
     const canBatch = this.useTypedArraySimpleNoteBake &&
       misses.every((m) => {
         const ne = m.entry.noteEvent;
+        // Finite duration (seconds) is enough; Infinity ticks must not
+        // block the worker/TypedArray batch (same as isSimpleNote).
         const isSimple = !!ne &&
           ne.duration > 0 &&
-          ne.durationTicks !== Infinity &&
           !this.hasWaveformAutomation(ne);
         const modDepth = m.entry.channelStateArray[128 + 1] ?? 0;
         if (!isSimple || modDepth > 0) return false;
@@ -8435,10 +8946,12 @@ export class Player<
   ): Promise<AudioBuffer> {
     // Fast path: simple note (no waveform automation) + modulation wheel
     // unused → pure TypedArray bake (no OAC / offline Player / startRendering).
+    // durationTicks === Infinity is OK when duration (seconds) is finite —
+    // song-end / sustain-held notes must not fall into the OAC path solely
+    // because ticks were left at Infinity by buildNoteOnDurations.
     const noteEvent = entry.noteEvent;
     const isSimple = !!noteEvent &&
       noteEvent.duration > 0 &&
-      noteEvent.durationTicks !== Infinity &&
       !this.hasWaveformAutomation(noteEvent);
     // ControllerState index: modulationDepthMSB = 128 + 1
     const modDepth = entry.channelStateArray[128 + 1] ?? 0;
