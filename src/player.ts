@@ -141,6 +141,13 @@ export class Player<
   // the shared mix OAC path (scheduleSimpleNotesDirect) to avoid an extra
   // startRendering that would never be reused.
   simpleNoteCounts: Map<string, number> = new Map();
+  /**
+   * Song-time onsets (seconds) per simple-note cache key, ascending.
+   * Built with buildSimpleNoteCounts(). Used by evictSimpleNoteCacheIfNeeded
+   * to drop keys whose next use is furthest in the future (or never), so the
+   * capped cache prefers buffers needed near the playhead.
+   */
+  simpleNoteOnsets: Map<string, number[]> = new Map();
   // Complex-note cache (shared by note / segment / chunk / audio modes).
   // Notes with identical in-interval automation (pitch bend / CC / sysEx
   // relative timeline) + voice / duration / onset channel state share one
@@ -807,6 +814,7 @@ export class Player<
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
     this.simpleNoteCounts.clear();
+    this.simpleNoteOnsets.clear();
     this.complexNoteBufferCache.clear();
     this.complexNoteCounts.clear();
     this.tiledVoiceParams = [];
@@ -1629,6 +1637,7 @@ export class Player<
   // stereo mix. Key format is identical to makeSimpleNoteKey.
   buildSimpleNoteCounts(): void {
     this.simpleNoteCounts.clear();
+    this.simpleNoteOnsets.clear();
     if (!this.simpleNoteCache) return;
     const cacheMode = this.cacheMode;
     if (
@@ -1659,6 +1668,7 @@ export class Player<
     const tiledVoices = this.tiledVoices;
     const noteAudioBufferIds = this.noteAudioBufferIds;
     const simpleNoteCounts = this.simpleNoteCounts;
+    const simpleNoteOnsets = this.simpleNoteOnsets;
 
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
@@ -1711,8 +1721,16 @@ export class Player<
             this.simpleBakeChannelMixForNote({ noteEvent: noteOnEvent }),
           );
           simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
+          const onsetList = simpleNoteOnsets.get(key);
+          if (onsetList) onsetList.push(offset);
+          else simpleNoteOnsets.set(key, [offset]);
         },
       });
+    }
+
+    // Sort onset lists ascending for binary search in eviction.
+    for (const list of simpleNoteOnsets.values()) {
+      if (list.length > 1) list.sort((a, b) => a - b);
     }
   }
 
@@ -2590,6 +2608,7 @@ export class Player<
     // cache object once we drop this reference.
     this.simpleNoteBufferCache = new Map();
     this.simpleNoteCounts = new Map();
+    this.simpleNoteOnsets = new Map();
     this.complexNoteBufferCache = new Map();
     this.complexNoteCounts = new Map();
   }
@@ -7384,35 +7403,83 @@ export class Player<
   }
 
   /**
-   * Drop oldest simple-note cache entries (Map insertion order) when over
-   * simpleNoteCacheMaxSize. Only evicts settled AudioBuffers — in-flight
-   * Promises are skipped so concurrent bakers are not orphaned.
+   * First song-time onset at or after `songT` in an ascending onset list.
+   * Returns null when the key has no further uses after the playhead.
+   */
+  protected nextSimpleOnsetAtOrAfter(
+    onsets: number[],
+    songT: number,
+  ): number | null {
+    const n = onsets.length;
+    if (n === 0) return null;
+    // Binary search for lower_bound.
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (onsets[mid] < songT) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < n ? onsets[lo] : null;
+  }
+
+  /**
+   * Drop simple-note cache entries when over simpleNoteCacheMaxSize.
+   * Only evicts settled AudioBuffers — in-flight Promises are skipped so
+   * concurrent bakers are not orphaned.
+   *
+   * Policy (playhead-aware, not Map insertion order):
+   * prefer keeping keys whose *next* onset is nearest the current song time.
+   * Victims are keys with no remaining onset after the playhead, then keys
+   * whose next onset is furthest in the future. This stops thrashing when
+   * unique keys exceed maxSize but the working set near the playhead fits.
    */
   protected evictSimpleNoteCacheIfNeeded(): void {
     const max = this.simpleNoteCacheMaxSize | 0;
     if (max <= 0) return;
     const cache = this.simpleNoteBufferCache;
-    while (cache.size > max) {
-      let evicted = false;
-      for (const [key, val] of cache) {
-        if (val instanceof Promise) continue;
-        // [diag D] simple-cache-evict
-        if (
-          this.debug &&
-          this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax
-        ) {
-          this.simpleCacheEvictLogCount++;
-          const keyPreview = key.length > 48 ? key.slice(0, 48) + "…" : key;
-          console.warn(
-            `[midy] simple-cache-evict | size=${cache.size} max=${max} ` +
-              `n=${this.simpleCacheEvictLogCount} key=${keyPreview}`,
-          );
-        }
-        cache.delete(key);
-        evicted = true;
-        break;
+    if (cache.size <= max) return;
+
+    const need = cache.size - max;
+    const songT = this.currentTime();
+    const onsetsMap = this.simpleNoteOnsets;
+
+    type Cand = { key: string; score: number };
+    const cands: Cand[] = [];
+    for (const [key, val] of cache) {
+      if (val instanceof Promise) continue;
+      const onsets = onsetsMap.get(key);
+      let score = Number.POSITIVE_INFINITY; // no future use → evict first
+      if (onsets && onsets.length > 0) {
+        const next = this.nextSimpleOnsetAtOrAfter(onsets, songT);
+        if (next !== null) score = next;
       }
-      if (!evicted) break; // only in-flight promises left
+      cands.push({ key, score });
+    }
+    // Furthest next use (or never) first.
+    cands.sort((a, b) => b.score - a.score);
+
+    let evicted = 0;
+    for (let i = 0; i < cands.length && evicted < need; i++) {
+      const key = cands[i].key;
+      const val = cache.get(key);
+      if (!(val instanceof AudioBuffer)) continue;
+      if (
+        this.debug &&
+        this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax
+      ) {
+        this.simpleCacheEvictLogCount++;
+        const keyPreview = key.length > 48 ? key.slice(0, 48) + "…" : key;
+        const score = cands[i].score;
+        const scoreStr = Number.isFinite(score) ? score.toFixed(2) : "none";
+        console.warn(
+          `[midy] simple-cache-evict | size=${cache.size} max=${max} ` +
+            `songT=${songT.toFixed(2)} next=${scoreStr} ` +
+            `n=${this.simpleCacheEvictLogCount} key=${keyPreview}`,
+        );
+      }
+      cache.delete(key);
+      evicted++;
     }
   }
 
