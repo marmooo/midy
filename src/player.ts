@@ -3611,16 +3611,15 @@ export class Player<
   }
 
   /**
-   * Whether a ready tiled buffer should get an AudioBufferSourceNode now.
-   * Starting dozens of large preroll buffers in one sync pass (20s preroll →
-   * ~67 chunk sources) blocks the main thread for seconds and starves worker
-   * mix onmessage (residual multi-second while workerMs is ~30–100ms).
-   * Only arm sources whose song-time start is inside a short horizon; the
-   * rest stay bufferReady until updateChunkPipeline brings the playhead near.
+   * Whether a ready tiled buffer should get an AudioBufferSourceNode now
+   * during live playback (updateChunkPipeline).
+   * Starting dozens of large buffers in one sync pass can block the main
+   * thread; during play we only arm sources inside a short horizon and let
+   * later ticks catch up. Initial arming after preroll uses a separate
+   * bulk path in startReadyTiledSources (bypass this gate).
    */
   protected shouldStartChunkSourceNow(chunkStart: number): boolean {
-    // Reuse bake horizon (default 6s): enough for Web Audio schedule-ahead,
-    // small enough that preroll arming is a handful of nodes not ~67.
+    // Reuse bake horizon (default 6s): enough for Web Audio schedule-ahead.
     const horizon = Math.max(2, this.chunkBakeHorizonSec || 6);
     let songT = 0;
     try {
@@ -3632,17 +3631,29 @@ export class Player<
   }
 
   // Start preroll-baked tiles now that startTime is set.
-  // Chunk mode: only near-window tiles (see shouldStartChunkSourceNow).
+  // Chunk mode: bulk-start every bufferReady tile in the preroll window
+  // (or all ready tiles if prerollUntil is unset). Bypassing the live
+  // horizon gate here is intentional — the bake cost is already paid;
+  // deferring AudioBufferSourceNode.start() is pure wasted latency and
+  // the main cause of note/chunk "missed its scheduled start" at t≈0.
+  // Live updateChunkPipeline still uses shouldStartChunkSourceNow to
+  // avoid stampede while the playhead advances.
   startReadyTiledSources(): void {
     if (this.cacheMode === "chunk") {
       const pending = this.chunkState.pending;
       let started = 0;
       let deferred = 0;
       const t0 = performance.now();
+      // Prefer the preroll coverage window; fall back to full ready set so
+      // seek/resume after a short preroll still arms what is already baked.
+      const prerollUntil = this.prerollUntilSongTime;
+      const bulkUntil = prerollUntil > 0
+        ? prerollUntil + this.tileDuration
+        : Number.POSITIVE_INFINITY;
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
         if (!p.source && p.bufferReady) {
-          if (this.shouldStartChunkSourceNow(p.chunkStart)) {
+          if (p.chunkStart < bulkUntil) {
             this.startPendingChunk(p);
             started++;
           } else {
