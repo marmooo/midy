@@ -1460,6 +1460,31 @@ export class MidyGM2 extends Player<Note, Channel> {
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
+          } else if (this.debug && (isSegmentMode || isChunkMode)) {
+            // Diagnose realtime note-miss at song head: notes excluded from
+            // tiledBakedSet (maxTiledNoteDuration / exclusiveClass / drum
+            // exclusive) still go through setNoteAudioNode with only
+            // lookAhead=1s prep budget.
+            const dur = this.noteOnDurations[queueIndex] ?? 0;
+            const vp = this.tiledVoiceParams[queueIndex];
+            const releaseTail = vp
+              ? (vp.releaseVolEnv ?? 0) * envelopeCurve * 5
+              : -1;
+            console.warn(
+              `[midy] non-tiled noteOn | ch=${event.channel} note=${event.noteNumber} ` +
+                `idx=${queueIndex} songT=${t.toFixed(2)}s dur=${
+                  dur.toFixed(2)
+                }s ` +
+                `releaseTail=${
+                  releaseTail < 0 ? "?" : releaseTail.toFixed(2)
+                }s ` +
+                `sum=${
+                  releaseTail < 0 ? "?" : (dur + releaseTail).toFixed(2)
+                }s ` +
+                `excl=${vp?.exclusiveClass ?? "?"} ` +
+                `inSet=${this.tiledBakedSet.has(queueIndex)} ` +
+                `maxTiled=${this.maxTiledNoteDuration}`,
+            );
           }
           channel.noteOn(
             event.noteNumber!,
@@ -2330,6 +2355,9 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
 
     const audioBuffer = await this.getAudioBuffer(channel, note, realtime);
+    // pause()/stop() or a missed sample decode can leave buffer undefined —
+    // must not touch .sampleRate or createBufferSource with it.
+    if (note.ending || !audioBuffer) return;
     const isRendered = audioBuffer instanceof RenderedBuffer;
     note.renderedBuffer = isRendered ? audioBuffer : null;
     note.bufferSource = this.createBufferSource(
@@ -2517,37 +2545,67 @@ export class MidyGM2 extends Player<Note, Channel> {
   ): Promise<Note | void> {
     const t: number = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === undefined;
-    if (!note) note = new Note(noteNumber, velocity, t);
-    if (!note.voice) {
-      note.voice = this.resolveVoice(channel, noteNumber, velocity);
-    }
-    if (!note.voice) return;
-    // Free oldest voices early so async prep does not start on top of an
-    // already-over-budget sustain / sostenuto pile (steal runs again in
-    // setNoteRouting).
-    if (!note.isTiledGhost) {
-      this.enforceMaxVoices(t, 1);
-    }
+
+    // Resolve all SF2 layers first. When the caller already attached a voice
+    // (cache / preload paths), keep single-voice behaviour for that note.
+    //
+    // Tiled ghost: primary is marked isTiledGhost by the segment/chunk
+    // scheduler. Secondary layers inherit that flag so they do not fall
+    // through to realtime getAudioBuffer (miss + possible double with the
+    // tile). Ghost layers only register for noteOff/sustain matching —
+    // audio is already in the offline tile.
+    const layers = note?.voice
+      ? [{ voice: note.voice }]
+      : this.resolveVoices(channel, noteNumber, velocity);
+    if (!layers.length) return;
+
     if (!channel.activeNotes[noteNumber]) {
       channel.activeNotes[noteNumber] = [];
     }
-    channel.activeNotes[noteNumber].push(note);
-    try {
-      await this.setNoteAudioNode(channel, note, realtime);
-      // pause/stop may have set ending while setNoteAudioNode was in flight
-      if (note.ending) {
-        if (note.bufferSource || note.volumeNode) {
-          await this.soundOffNote(note, this.audioContext.currentTime);
-        }
-        return note;
+
+    const primaryIsGhost = !!note?.isTiledGhost;
+    let primary: Note | undefined = note;
+    for (let i = 0; i < layers.length; i++) {
+      const layerNote = i === 0 && primary
+        ? primary
+        : this.createNoteInstance(noteNumber, velocity, t);
+      layerNote.voice = layers[i].voice;
+      // Inherit ghost flag: createNoteInstance defaults isTiledGhost=false.
+      if (primaryIsGhost) layerNote.isTiledGhost = true;
+      // Free oldest voices early so async prep does not start on top of an
+      // already-over-budget sustain / sostenuto pile (steal runs again in
+      // setNoteRouting). Ghost layers never join the sounding set.
+      if (!layerNote.isTiledGhost) {
+        this.enforceMaxVoices(t, 1);
       }
-      channel.lastNote = note;
-      this.setNoteRouting(channel, note, t);
-    } finally {
-      note.resolveReady();
+      channel.activeNotes[noteNumber].push(layerNote);
+      try {
+        if (layerNote.isTiledGhost) {
+          // Bookkeeping only — no bufferSource / volumeNode.
+          // Exclusive-class notes are never tiled (finalizeSegmentClassification),
+          // so skipping setNoteRouting here does not break hi-hat choke.
+        } else {
+          await this.setNoteAudioNode(channel, layerNote, realtime);
+          // pause/stop may have set ending while setNoteAudioNode was in flight
+          if (layerNote.ending) {
+            if (layerNote.bufferSource || layerNote.volumeNode) {
+              await this.soundOffNote(layerNote, this.audioContext.currentTime);
+            }
+          } else {
+            // Portamento / lastNote only tracks the primary layer.
+            if (i === 0) channel.lastNote = layerNote;
+            this.setNoteRouting(channel, layerNote, t);
+          }
+        }
+      } finally {
+        layerNote.resolveReady();
+      }
+      if (0.5 <= channel.state.sustainPedal) {
+        channel.sustainNotes.push(layerNote);
+      }
+      if (i === 0) primary = layerNote;
     }
-    if (0.5 <= channel.state.sustainPedal) channel.sustainNotes.push(note);
-    return note;
+    return primary;
   }
 
   override disconnectNote(note: Note): void {

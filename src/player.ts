@@ -134,7 +134,7 @@ export class Player<
    * setTimeout0 lag matching wall). 0 = unlimited (legacy). 256–512 is a
    * good default for realtime chunk.
    */
-  simpleNoteCacheMaxSize: number = 768;
+  simpleNoteCacheMaxSize: number = 1024;
   // Pre-playback occurrence counts for simple-note cache keys (same key as
   // makeSimpleNoteKey). Keys that appear more than once are worth a separate
   // OfflineAudioContext bake + cache fill on first miss; unique keys stay on
@@ -1194,8 +1194,15 @@ export class Player<
   // that loop) to decide which notes are safe to bake into a segment/chunk.
   // Notes that ring too long, or that participate in an exclusive class
   // (hi-hat choke groups etc.), are left out so they keep going through
-  // normal per-note real-time ("ads"-style) scheduling instead -- that
-  // path is the only way to cut a note off early once it has started.
+  // normal per-note real-time ("ads"-style) scheduling instead.
+  //
+  // The duration+releaseTail gate is load-bearing: an onset tile sizes its
+  // AudioBuffer to the longest note (see renderChunkBuffer). Baking a 40s
+  // pad into a tile allocates ~15MB stereo PCM per note and will OOM under
+  // polyphony. Do NOT remove this gate to "fix" realtime misses — long
+  // notes must stay realtime (or be split across tiles with a future design).
+  // Exclusive-class drums also stay realtime so choke groups still work.
+  //
   // Cheap (no voice resolution), so tempoChange() can call this again
   // after buildNoteOnDurations() without redoing the full classification.
 
@@ -1648,7 +1655,6 @@ export class Player<
     }
     if (this.simpleNoteSet.size === 0) return;
 
-    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
     const channels = new Array<TChannel>(numChannels);
@@ -3170,7 +3176,6 @@ export class Player<
       ? this.prewarmSimpleHeadSec
       : Math.max(0.001, this.lookAhead + this.maxTiledNoteDuration);
 
-    const bakeChannelMix = bakeChannelMixForMode(cacheMode);
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
     const channels = new Array<TChannel>(numChannels);
@@ -4390,6 +4395,9 @@ export class Player<
     if (notes.length === 0) return null;
 
     // Compute total duration across all notes in all channels.
+    // Hard-cap buffer length so a mis-classified long note cannot allocate
+    // multi-10s stereo PCM and OOM the tab (classification should already
+    // exclude duration+release > maxTiledNoteDuration).
     let totalDuration = 0;
     const notesLen = notes.length;
     for (let i = 0; i < notesLen; i++) {
@@ -4401,6 +4409,19 @@ export class Player<
       if (end > totalDuration) totalDuration = end;
     }
     if (totalDuration <= 0) return null;
+    const maxTileBufSec = this.tileDuration +
+      Math.max(0, this.maxTiledNoteDuration);
+    if (totalDuration > maxTileBufSec) {
+      if (this.debug) {
+        console.warn(
+          `[midy] chunk buffer clamped ${totalDuration.toFixed(2)}s → ${
+            maxTileBufSec.toFixed(2)
+          }s ` +
+            `(maxTiledNoteDuration=${this.maxTiledNoteDuration})`,
+        );
+      }
+      totalDuration = maxTileBufSec;
+    }
 
     // Over-allocate then trim -- avoids a second isSimpleNote pass.
     const simpleNotes = new Array<ChunkNoteEntry>(notesLen);

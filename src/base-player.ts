@@ -2867,6 +2867,11 @@ export class BasePlayer<
 
     // Resolve all SF2 layers first. When the caller already attached a voice
     // (cache / preload paths), keep single-voice behaviour for that note.
+    //
+    // Tiled ghost: primary is marked isTiledGhost by the segment/chunk
+    // scheduler. Secondary layers inherit that flag so they do not fall
+    // through to realtime getAudioBuffer (miss + possible double with the
+    // tile). Ghost layers only register for noteOff/sustain matching.
     const layers = note?.voice
       ? [{ voice: note.voice }]
       : this.resolveVoices(channel, noteNumber, velocity);
@@ -2876,24 +2881,30 @@ export class BasePlayer<
       channel.activeNotes[noteNumber] = [];
     }
 
+    const primaryIsGhost = !!note?.isTiledGhost;
     let primary: TNote | undefined = note;
     for (let i = 0; i < layers.length; i++) {
       const layerNote = i === 0 && primary
         ? primary
         : this.createNoteInstance(noteNumber, velocity, t);
       layerNote.voice = layers[i].voice;
+      if (primaryIsGhost) layerNote.isTiledGhost = true;
       if (!layerNote.isTiledGhost) {
         this.enforceMaxVoices(t, 1);
       }
       channel.activeNotes[noteNumber].push(layerNote);
       try {
-        await this.setNoteAudioNode(channel, layerNote, realtime);
-        if (layerNote.ending) {
-          if (layerNote.bufferSource || layerNote.volumeNode) {
-            await this.soundOffNote(layerNote, this.audioContext.currentTime);
-          }
+        if (layerNote.isTiledGhost) {
+          // Bookkeeping only — audio is in the offline tile.
         } else {
-          this.setNoteRouting(channel, layerNote, t);
+          await this.setNoteAudioNode(channel, layerNote, realtime);
+          if (layerNote.ending) {
+            if (layerNote.bufferSource || layerNote.volumeNode) {
+              await this.soundOffNote(layerNote, this.audioContext.currentTime);
+            }
+          } else {
+            this.setNoteRouting(channel, layerNote, t);
+          }
         }
       } finally {
         layerNote.resolveReady();
