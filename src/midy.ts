@@ -1233,8 +1233,9 @@ export class Midy extends MidyGM2 {
     channel: GM2Channel,
     note: GM2Note,
     startTime: number,
+    runExclusive: boolean = true,
   ): void {
-    super.setNoteRouting(channel, note, startTime);
+    super.setNoteRouting(channel, note, startTime, runExclusive);
     const ch = channel as unknown as Channel;
     const n = note as unknown as Note;
     // Delay shares the unified effect-send path (volumeNode → send → effect).

@@ -2502,6 +2502,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     channel: Channel,
     note: Note,
     startTime: number,
+    runExclusive: boolean = true,
   ): void {
     if (note.isTiledGhost) return;
     const { volumeNode } = note;
@@ -2531,8 +2532,11 @@ export class MidyGM2 extends Player<Note, Channel> {
     // Mix-level effect sends share volumeNode with the channel bus.
     this.setChorusSend(channel, note, startTime);
     this.setReverbSend(channel, note, startTime);
-    this.handleExclusiveClass(note, channel, startTime);
-    this.handleDrumExclusiveClass(note, channel, startTime);
+    // Only primary layer runs exclusive-class / drum-exclusive choke.
+    if (runExclusive) {
+      this.handleExclusiveClass(note, channel, startTime);
+      this.handleDrumExclusiveClass(note, channel, startTime);
+    }
     this.soundingNotes.add(note);
   }
 
@@ -2594,7 +2598,9 @@ export class MidyGM2 extends Player<Note, Channel> {
           } else {
             // Portamento / lastNote only tracks the primary layer.
             if (i === 0) channel.lastNote = layerNote;
-            this.setNoteRouting(channel, layerNote, t);
+            // Exclusive-class choke only on primary layer (i===0) so multi-
+            // layer SF2 zones of the same noteOn do not cut each other.
+            this.setNoteRouting(channel, layerNote, t, i === 0);
           }
         }
       } finally {

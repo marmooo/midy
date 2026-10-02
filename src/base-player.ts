@@ -2760,7 +2760,15 @@ export class BasePlayer<
     }
   }
 
-  setNoteRouting(channel: TChannel, note: TNote, startTime: number): void {
+  setNoteRouting(
+    channel: TChannel,
+    note: TNote,
+    startTime: number,
+    /** Only the primary layer of a multi-layer SF2 note should run exclusive-
+     * class / drum-exclusive choke. Secondary layers share the same
+     * exclusiveClass and would otherwise cut the primary on the same noteOn. */
+    runExclusive: boolean = true,
+  ): void {
     if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
@@ -2772,8 +2780,10 @@ export class BasePlayer<
       volumeNode.connect(channel.gainL);
       volumeNode.connect(channel.gainR);
     }
-    this.handleExclusiveClass(note, channel, startTime);
-    this.handleDrumExclusiveClass(note, channel, startTime);
+    if (runExclusive) {
+      this.handleExclusiveClass(note, channel, startTime);
+      this.handleDrumExclusiveClass(note, channel, startTime);
+    }
     this.soundingNotes.add(note);
   }
 
@@ -2903,7 +2913,8 @@ export class BasePlayer<
               await this.soundOffNote(layerNote, this.audioContext.currentTime);
             }
           } else {
-            this.setNoteRouting(channel, layerNote, t);
+            // Exclusive-class choke only on primary layer (i===0).
+            this.setNoteRouting(channel, layerNote, t, i === 0);
           }
         }
       } finally {
@@ -3065,17 +3076,40 @@ export class BasePlayer<
         return;
       }
     }
-    const note = this.findNoteForOff(channel, noteNumber);
-    if (!note) return;
-    note.ending = true;
-    note.heldByPedal = false;
-    this.removeFromActiveNotes(channel, noteNumber);
-    const promise = note.ready.then(() => {
-      if (!note.voice) return;
-      return this.releaseNote(channel, note, endTime);
-    });
-    this.notePromises.push(promise);
-    return promise;
+    // Multi-layer SF2 notes push one entry per layer into
+    // activeNotes[noteNumber]. A single MIDI / exclusive-class noteOff must
+    // release every non-ending layer of that key, not just the head.
+    const stack = channel.activeNotes[noteNumber];
+    if (!stack || stack.length === 0) return;
+    const toRelease: TNote[] = [];
+    for (let i = 0; i < stack.length; i++) {
+      const n = stack[i];
+      if (n && !n.ending) {
+        n.ending = true;
+        n.heldByPedal = false;
+        toRelease.push(n);
+      }
+    }
+    if (toRelease.length === 0) return;
+    // Drop released layers from the stack (keep any already-ending leftovers).
+    channel.activeNotes[noteNumber] = stack.filter((n) =>
+      n && !toRelease.includes(n)
+    );
+    if (channel.activeNotes[noteNumber].length === 0) {
+      delete channel.activeNotes[noteNumber];
+    }
+    const promises: Promise<void>[] = [];
+    for (const note of toRelease) {
+      const promise = note.ready.then(() => {
+        if (!note.voice) return;
+        return this.releaseNote(channel, note, endTime);
+      });
+      this.notePromises.push(promise);
+      promises.push(promise);
+    }
+    return promises.length === 1
+      ? promises[0]
+      : Promise.all(promises).then(() => {});
   }
 
   findNoteForOff(channel: TChannel, noteNumber: number): TNote | undefined {
@@ -3089,7 +3123,15 @@ export class BasePlayer<
   removeFromActiveNotes(channel: TChannel, noteNumber: number): void {
     const stack = channel.activeNotes[noteNumber];
     if (!stack || stack.length === 0) return;
-    stack.shift();
+    // Prefer removing a non-ending entry (normal noteOff path); fall back
+    // to head for already-ending leftovers.
+    const idx = stack.findIndex((n) => n && !n.ending);
+    if (idx >= 0) {
+      stack.splice(idx, 1);
+    } else {
+      stack.shift();
+    }
+    if (stack.length === 0) delete channel.activeNotes[noteNumber];
   }
 
   releaseSustainPedal(

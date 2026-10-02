@@ -9197,7 +9197,17 @@ export class Player<
       : this.getVoiceId(channel, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        return await this.getNoteModeBuffer(channel, note, audioBufferId);
+        // Exclusive-class (SF2 exclusiveClass / GM drum exclusive groups)
+        // must stay interruptible: a full-note bake embeds the entire
+        // release tail and cannot be choked early by a later note in the
+        // same exclusive group. Fall through to the ADS path instead —
+        // same rationale as finalizeSegmentClassification skipping them
+        // for segment/chunk tiles.
+        const exclusiveClass = note.voiceParams?.exclusiveClass ?? 0;
+        const isExclDrum = this.isSegmentExcludedDrum(channel, noteNumber);
+        if (exclusiveClass === 0 && !isExclDrum) {
+          return await this.getNoteModeBuffer(channel, note, audioBufferId);
+        }
       } else if (cacheMode === "adsr") {
         return await this.getAdsrCachedBuffer(channel, note, audioBufferId);
       }
@@ -9215,6 +9225,7 @@ export class Player<
     // - "ads" (realtime or not)
     // - "adsr" + realtime
     // - "note" + realtime
+    // - "note" + exclusive-class (skipped full bake above)
     return await this.getAdsCachedBuffer(
       channel,
       note,
