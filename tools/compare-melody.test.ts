@@ -33,11 +33,10 @@ const ATTACK_START = 0.02;
 const ATTACK_END = 0.12;
 const BODY_START = 0.2;
 const BODY_END = 0.45;
-// Absolute levels vs FluidSynth land around |Δ|≈3.5 dB on baked modes and
-// ≈4.1 dB on cacheMode=none (realtime path is slightly quieter). Allow
-// headroom for EMU static attenuation + CC7/CC11 x² + constant-power pan →
-// mono average so the gate stays useful without being brittle.
-const LEVEL_ERR_MAX_DB = 5;
+// Absolute levels vs FluidSynth: after removing the CC7/CC11 double-apply
+// (channel vol² on top of SF2 attenuation modulators), residuals should be
+// small. Keep a few dB of headroom for pan→mono and filter path differences.
+const LEVEL_ERR_MAX_DB = 3;
 const ATTACK_REL_DB = 12;
 const ENV_CORR_MIN = 0.85;
 
@@ -54,11 +53,9 @@ const LOUD_AT = 1.2;
 const LOUD_ATTACK_START = LOUD_AT + 0.02;
 const LOUD_ATTACK_END = LOUD_AT + 0.12;
 // Soft zone (GeneralUser piano vel=40) closes the lowpass near the C4
-// fundamental. After aligning Web Audio Q (dB) with TypedArray linear Q,
-// none is ~4.4 dB and bake ~5.7 dB quieter than FluidSynth; soft/loud ratio
-// matches within ~1.2 dB. Headroom covers residual path difference without
-// masking a fully silent soft layer.
-const VEL_SOFT_LEVEL_ERR_MAX_DB = 6;
+// fundamental. Soft absolute level may still differ slightly vs FluidSynth
+// due to filter path residuals; ratio should stay tight.
+const VEL_SOFT_LEVEL_ERR_MAX_DB = 4;
 const VEL_RATIO_ERR_MAX_DB = 2;
 const VEL_RATIO_MIN_DB = 3; // loud must be clearly louder than soft on piano
 

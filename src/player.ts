@@ -1229,7 +1229,7 @@ export class Player<
     this.tiledBakedSet = bakedSet;
   }
 
-  // Controllers that only scale amplitude (GM/FluidSynth x² curve) and do not
+  // Controllers that only scale amplitude (CC7/CC11 via SF2 modulators) and do not
   // change the pitched sample body. Notes whose in-interval automation is
   // exclusively these can stay on the simple TypedArray path: the gain curve
   // is applied sample-by-sample when baking the note buffer.
@@ -1799,12 +1799,10 @@ export class Player<
   protected channelMixGainsFromState(
     state: ArrayLike<number>,
   ): { gainL: number; gainR: number } {
-    const vol0 = state[128 + 7] ?? (100 / 127);
     const pan0 = state[128 + 10] ?? (64 / 127);
-    const expr0 = state[128 + 11] ?? 1;
-    const channelGain = vol0 * vol0 * expr0 * expr0;
+    // Volume/expression: SF2 modulators only (see updateChannelVolume).
     const { gainLeft, gainRight } = this.panToGain(pan0);
-    return { gainL: channelGain * gainLeft, gainR: channelGain * gainRight };
+    return { gainL: gainLeft, gainR: gainRight };
   }
 
   /** Mix scales for a chunk note: unity if mix-baked, else from state. */
@@ -1858,13 +1856,13 @@ export class Player<
         sampleRate,
         tMax,
       );
-      // gainCurve carries vol²·expr²; pan is a constant L/R scale.
+      // gainCurve carries relative SF2 vol/expr; pan is a constant L/R scale.
       return { gainL: gainLeft, gainR: gainRight, gainCurve };
     }
-    const channelGain = vol0 * vol0 * expr0 * expr0;
+    // Volume/expression: SF2 modulators only (see updateChannelVolume).
     return {
-      gainL: channelGain * gainLeft,
-      gainR: channelGain * gainRight,
+      gainL: gainLeft,
+      gainR: gainRight,
     };
   }
 
@@ -5841,7 +5839,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = vol0 * vol0 * expr0 * expr0;
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -6238,11 +6236,11 @@ export class Player<
     }
   }
 
-  // Build a per-sample channel gain curve (vol² × expr²) for almost-simple
-  // notes. Starts from onset vol/expr, then steps to each in-interval CC7/CC11
-  // event. Matches updateChannelVolume's GM/FluidSynth x² convention without
-  // perceptual smoothing (offline bake uses instantaneous values, same as the
-  // complex OAC path's processTimelineEvent → setVolume/setExpression).
+  // Build a per-sample channel gain curve for almost-simple notes with
+  // mid-note CC7/CC11. SF2 default modulators already fold onset volume into
+  // initialAttenuation; this curve only carries the *relative* change from
+  // note-on using the same concave→attenuation mapping FluidSynth uses
+  // (amount 960 each for CC7 and CC11).
   protected computeGainOnlyChannelCurve(
     noteEvent: NoteOnEventEntry,
     vol0: number,
@@ -6271,20 +6269,28 @@ export class Player<
       else if (ct === 11) expr = raw;
       steps.push({ t, vol, expr });
     }
-    // Sort by time (events should already be chronological, but be safe).
     steps.sort((a, b) => a.t - b.t);
+    // SF2 concave (unipolar, negative direction) → attenuation cB (amount 960).
+    const sf2VolAttenCb = (norm: number): number => {
+      let v = 1 - Math.max(0, Math.min(1, norm));
+      if (v <= 0) return 0;
+      if (v >= 1) return 960;
+      return 960 * (-(20 / 96) * Math.log10(1 - v));
+    };
+    const onsetAtten = sf2VolAttenCb(vol0) + sf2VolAttenCb(expr0);
     const invSr = 1 / sampleRate;
     let si = 0;
     let curVol = steps[0].vol;
     let curExpr = steps[0].expr;
-    let curGain = curVol * curVol * curExpr * curExpr;
+    let curGain = 1;
     for (let i = 0; i < length; i++) {
       const t = i * invSr;
       while (si + 1 < steps.length && steps[si + 1].t <= t + 1e-9) {
         si++;
         curVol = steps[si].vol;
         curExpr = steps[si].expr;
-        curGain = curVol * curVol * curExpr * curExpr;
+        const atten = sf2VolAttenCb(curVol) + sf2VolAttenCb(curExpr);
+        curGain = cbToRatio(-(atten - onsetAtten));
       }
       curve[i] = curGain;
     }
@@ -8472,7 +8478,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = vol0 * vol0 * expr0 * expr0;
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -8910,7 +8916,7 @@ export class Player<
       filterDcGain = qDc.dcGain;
     }
 
-    // Channel volume/expression (GM/FluidSynth x²) and pan when baking mix.
+    // Channel pan when baking mix (volume/expression via SF2 modulators).
     // Almost-simple notes (in-interval volume/expression and/or pan only) get
     // time-varying curves so the full note stays on the TypedArray path with
     // no OfflineAudioContext.
@@ -8925,7 +8931,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = vol0 * vol0 * expr0 * expr0;
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;

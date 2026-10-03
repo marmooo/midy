@@ -3408,20 +3408,19 @@ export class BasePlayer<
   updateChannelVolume(channel: TChannel, scheduleTime: number): void {
     if (!channel.gainL) return;
     const state = channel.state;
-    // GM / FluidSynth convention: channel volume and expression are applied
-    // as squared linear gains so equal CC steps feel closer to equal loudness.
-    // MIDI 1.0 does not mandate the curve; GM practice and fluidsynth use x².
-    const vol = state.volumeMSB;
-    const expr = state.expressionMSB;
-    const gain = vol * vol * expr * expr;
+    // CC7 / CC11 already scale amplitude via SF2 default modulators into
+    // initialAttenuation (concave, amount 960) — same path FluidSynth uses.
+    // Do NOT also multiply channel gain by vol²·expr²; that double-applies
+    // volume and makes midy ~4 dB quieter than FluidSynth at the GM default
+    // CC7=100. Channel nodes only implement pan (and unity amplitude).
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
+      .setTargetAtTime(gainLeft, scheduleTime, timeConstant);
     channel.gainR.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
+      .setTargetAtTime(gainRight, scheduleTime, timeConstant);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(

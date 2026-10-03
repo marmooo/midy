@@ -1345,7 +1345,8 @@ export class Midy extends MidyGM2 {
   }
 
   // Volume / expression / pan use virtual 14-bit readouts.
-  // GM / FluidSynth: volume and expression are squared linear gains.
+  // CC7/CC11 amplitude is applied via SF2 default modulators (attenuation),
+  // not as a second vol²·expr² factor on the channel gain (FluidSynth-compatible).
   override updateChannelVolume(
     channel: GM2Channel,
     scheduleTime: number,
@@ -1354,9 +1355,7 @@ export class Midy extends MidyGM2 {
     if (!ch.gainL) return;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    const vol = state.volume;
-    const expr = state.expression;
-    const gain = vol * vol * expr * expr * (1 + effect);
+    const gain = 1 + effect;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.gainL.gain
@@ -1377,11 +1376,11 @@ export class Midy extends MidyGM2 {
     if (!gainL) return;
     const gainR = ch.keyBasedGainRs[keyNumber]!;
     const state = ch.state as ControllerState;
-    const vol = state.volume;
-    const expr = state.expression;
-    const defaultGain = vol * vol * expr * expr;
+    const effect = this.getChannelAmplitudeControl(ch);
+    const defaultGain = 1 + effect;
     const defaultPan = state.pan;
     const keyBasedVolume = this.getKeyBasedValue(ch, keyNumber, 7);
+    // Key-based volume scales the channel amplitude; CC7/CC11 stay on SF2 mods.
     const gain = (0 <= keyBasedVolume)
       ? defaultGain * keyBasedVolume / 64
       : defaultGain;
