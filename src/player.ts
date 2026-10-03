@@ -9501,11 +9501,12 @@ export class Player<
         voiceParams.modEnvToFilterFc,
       );
       if (filterAudible) {
-        const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+        const { resonanceDb, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
         note.filterDcGain = dcGain;
+        // Lowpass Q AudioParam is resonance in dB (Chromium SetLowpassParams).
         note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
           type: "lowpass",
-          Q: q,
+          Q: resonanceDb,
         });
       } else {
         note.filterDcGain = 1;

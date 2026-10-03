@@ -278,7 +278,13 @@ export function getVoiceParams(
     sampleModes: staticGenerators.get("sampleModes"),
     exclusiveClass: staticGenerators.get("exclusiveClass"),
   };
-  const generators = voice.transformAllParams(controllerState);
+  // transformAllParams returns voice.generators by reference when no
+  // controller is active (see @marmooo/soundfont Voice). Clone before the
+  // EMU rewrite so we never mutate the voice's static zone store.
+  const transformed = voice.transformAllParams(controllerState);
+  const generators = transformed === staticGenerators
+    ? staticGenerators.clone()
+    : transformed;
 
   // EMU8k/10k / FluidSynth compatibility for initialAttenuation.
   //
@@ -1001,25 +1007,29 @@ export const envelopeCurve = 1 / (-Math.log(cbToRatio(-1000)));
 export const FULLY_OPEN_FILTER_CENTS = 13500;
 
 // SF2 initialFilterQ is in centibels (cB) above DC gain (§8.1.3).
-// Web Audio BiquadFilterNode.Q is the linear quality factor of
-//   H(s) = 1 / (s² + s/Q + 1), not dB.
 //
-//   q_dB  = cB/10 − 20·log10(√2)   // so 0 cB → Q = 1/√2 (Butterworth, no peak)
-//   q_lin = 10^(q_dB/20)           // 100 cB → 10 dB of peak above that baseline
-//   dcGain = 1/√q_lin              // SF2: DC reduced by half the peak height
+// Web Audio / Chromium lowpass treats BiquadFilterNode.Q as resonance in *dB*
+// (not linear Q). Chromium SetLowpassParams does:
+//   Q_lin = 10^(resonanceDb/20);  α = sin(ω0)/(2*Q_lin);  // RBJ
+// See third_party/blink/renderer/platform/audio/biquad.cc.
 //
-// Without the 20·log10(√2) offset, 0 cB would map to Q=1, which still has a
-// small resonance hump. SF2 at Q=0 means no peak (“gain at fc may be < 0”).
-export function sf2FilterQ(centibels: number): { q: number; dcGain: number } {
-  let qDb = centibels / 10;
-  if (qDb < 0) qDb = 0;
-  if (qDb > 96) qDb = 96;
-  // 0 cB → Q = 1/√2 (Butterworth); see comment above.
-  qDb -= 20 * Math.log10(Math.SQRT2);
-  const qLin = Math.pow(10, qDb / 20);
+// TypedArray bake must use the same Q_lin. Callers:
+//   - BiquadFilterNode: pass resonanceDb as Q
+//   - renderSampleTypedArray: pass q (linear) into biquadLowpassCoeffs
+//
+//   resonanceDb = cB/10
+//   q_lin       = 10^(resonanceDb/20)
+//   dcGain      = 1/√q_lin   // keep resonant peaks from raising overall level
+export function sf2FilterQ(
+  centibels: number,
+): { q: number; resonanceDb: number; dcGain: number } {
+  let resonanceDb = centibels / 10;
+  if (resonanceDb < 0) resonanceDb = 0;
+  if (resonanceDb > 96) resonanceDb = 96;
+  const qLin = Math.pow(10, resonanceDb / 20);
   const q = Math.max(0.001, qLin);
   const dcGain = 1 / Math.sqrt(q);
-  return { q, dcGain };
+  return { q, resonanceDb, dcGain };
 }
 
 // True when the lowpass can still shape the signal. SF2: no effect only
@@ -2662,11 +2672,12 @@ export class BasePlayer<
       voiceParams.modEnvToFilterFc,
     );
     if (filterAudible) {
-      const { q, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+      const { resonanceDb, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
       note.filterDcGain = dcGain;
+      // Lowpass Q AudioParam is resonance in dB (Chromium SetLowpassParams).
       note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
         type: "lowpass",
-        Q: q,
+        Q: resonanceDb,
       });
     } else {
       note.filterDcGain = 1;
