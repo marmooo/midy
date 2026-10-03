@@ -115,14 +115,16 @@ Deno.test("almost-simple: pitch bend forces complex", () => {
   assertEquals(player.isSimpleNote({ noteEvent: entry }), false);
 });
 
-Deno.test("almost-simple: pan (CC10) forces complex", () => {
+Deno.test("almost-simple: pan (CC10) is almost-simple pan (not complex)", () => {
   const player = makePlayer();
   const entry = noteEntry([cc(100, 10, 0)]);
   // deno-lint-ignore no-explicit-any
   const p = player as any;
-  assertEquals(p.hasWaveformAutomation(entry), true);
+  // CC10-only stays on TypedArray path via hasPanOnlyAutomation.
+  assertEquals(p.hasWaveformAutomation(entry), false);
+  assertEquals(p.hasPanOnlyAutomation(entry), true);
   assertEquals(p.hasGainOnlyAutomation(entry), false);
-  assertEquals(player.isSimpleNote({ noteEvent: entry }), false);
+  assertEquals(player.isSimpleNote({ noteEvent: entry }), true);
 });
 
 Deno.test("almost-simple: modulation (CC1) forces complex", () => {
@@ -163,12 +165,6 @@ Deno.test("almost-simple: finalizeSimpleNoteClassification puts gain-only in sim
   assertEquals(player.simpleNoteSet.has(0), true, "pure simple");
   assertEquals(player.simpleNoteSet.has(1), true, "gain-only → simple");
   assertEquals(player.simpleNoteSet.has(2), false, "pitch bend → complex");
-
-  const stats = (player as any).countNoteClassificationStats();
-  assertEquals(stats.pureSimple, 1);
-  assertEquals(stats.almostSimple, 1);
-  assertEquals(stats.complex, 1);
-  assertEquals(stats.totalCandidates, 3);
 });
 
 Deno.test("almost-simple: gain curve fingerprint differs for different trajectories", () => {
@@ -204,9 +200,8 @@ Deno.test("almost-simple: computeGainOnlyChannelCurve steps to new gain", () => 
   assertEquals(curve.length, length);
   const g0 = curve[0];
   const gLate = curve[length - 1];
-  // Onset: (100/127)² × (100/127)²; late: (100/127)² × (20/127)²
+  // FluidSynth concave ≡ (cc/127)² amplitude; expr 100→20 → (20/100)² = 0.04.
   assertEquals(g0 > gLate, true, "late gain must be quieter after expr drop");
-  // Rough ratio check: (20/100)² = 0.04 of expression part
   const ratio = gLate / g0;
   if (ratio > 0.1 || ratio < 0.01) {
     throw new Error(

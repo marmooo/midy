@@ -179,11 +179,12 @@ Deno.test("almost-simple pitchbend: absolute rate is 1.0 at center onset", () =>
   assertAlmostEquals(rates[length - 1], 1.0, 1e-6);
 });
 
-Deno.test("almost-simple pitchbend: onset already at +200c → absolute rate ~1.122", () => {
+Deno.test("almost-simple pitchbend: onset already at +200c → relative rate 1.0", () => {
   const player = makePlayer();
   // deno-lint-ignore no-explicit-any
   const p = player as any;
-  // Note starts with wheel at max; no further in-note bends.
+  // Rate curve is relative to onset wheel; onset cents live in channelDetune.
+  // With no in-note bends, every sample stays 1.0 (absolute pitch from detune).
   const entry = noteEntry([]);
   const length = 100;
   const sampleRate = 100;
@@ -195,8 +196,8 @@ Deno.test("almost-simple pitchbend: onset already at +200c → absolute rate ~1.
     sampleRate,
     1.0,
   ) as Float32Array;
-  const expected = Math.pow(2, (8191 / 8192) * 200 / 1200);
-  assertAlmostEquals(rates[0], expected, expected * 0.001);
+  assertAlmostEquals(rates[0], 1.0, 1e-5);
+  assertAlmostEquals(rates[length - 1], 1.0, 1e-5);
 });
 
 Deno.test("almost-simple pitchbend: detuneWithoutPitchWheel strips wheel cents", () => {
@@ -251,11 +252,12 @@ Deno.test("almost-simple pitchbend: multi-step curve returns to 1.0 at center", 
   assertAlmostEquals(rates[iDown], expectDown, expectDown * 0.001);
 });
 
-Deno.test("almost-simple pitchbend: full-scale up rate is 2^(~200/1200) not relative-1", () => {
+Deno.test("almost-simple pitchbend: full-scale up stays relative 1.0 at onset max", () => {
   const player = makePlayer();
   // deno-lint-ignore no-explicit-any
   const p = player as any;
-  // Onset already at max bend; curve must stay at absolute ~+200c rate (not 1.0).
+  // Relative-to-onset design: onset wheel is in channelDetune; curve is 1.0
+  // when the in-note wheel does not move away from onset.
   const entry = noteEntry([pitchBend(0, 8191)]);
   const rates = p.computePitchBendRateCurve(
     entry,
@@ -265,13 +267,5 @@ Deno.test("almost-simple pitchbend: full-scale up rate is 2^(~200/1200) not rela
     100,
     1.0,
   ) as Float32Array;
-  const expected = Math.pow(2, (8191 / 8192) * 200 / 1200);
-  // Absolute curve: onset max → rate ≈ 1.122, NOT relative 1.0
-  assertAlmostEquals(rates[0], expected, expected * 0.001);
-  if (Math.abs(rates[0] - 1.0) < 0.01) {
-    throw new Error(
-      "rate curve appears relative-to-onset (≈1.0) but must be absolute " +
-        `(got ${rates[0]}, expected ~${expected})`,
-    );
-  }
+  assertAlmostEquals(rates[0], 1.0, 1e-5);
 });

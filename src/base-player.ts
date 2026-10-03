@@ -278,10 +278,18 @@ export function getVoiceParams(
     sampleModes: staticGenerators.get("sampleModes"),
     exclusiveClass: staticGenerators.get("exclusiveClass"),
   };
+  // CC7/CC11 amplitude is applied on the channel gain with the same SF2
+  // concave curve FluidSynth uses (see updateChannelVolume). Zero those
+  // modulators here (full scale → 0 atten) so they are not double-applied
+  // into initialAttenuation; mid-note volume changes then track the channel.
+  const stateForMods = new Float32Array(controllerState);
+  stateForMods[128 + 7] = 1; // volumeMSB full
+  stateForMods[128 + 11] = 1; // expressionMSB full
+
   // transformAllParams returns voice.generators by reference when no
   // controller is active (see @marmooo/soundfont Voice). Clone before the
   // EMU rewrite so we never mutate the voice's static zone store.
-  const transformed = voice.transformAllParams(controllerState);
+  const transformed = voice.transformAllParams(stateForMods);
   const generators = transformed === staticGenerators
     ? staticGenerators.clone()
     : transformed;
@@ -329,6 +337,11 @@ export function getVoiceParamsForController(
   controllerState: Float32Array,
 ): Partial<VoiceParams> {
   const params: Partial<VoiceParams> = {};
+  // Volume/expression (CC7/CC11) amplitude is owned by channel gain
+  // (sf2VolumeExprGain). Skip per-voice atten updates for those controllers.
+  if (controllerType === 128 + 7 || controllerType === 128 + 11) {
+    return params;
+  }
   const updatedParams = voice.transformParams(controllerType, controllerState);
   const updatedKeys = Object.keys(updatedParams) as ValueGeneratorKey[];
   if (updatedKeys.length === 0) return params;
@@ -988,6 +1001,25 @@ export function cbToRatio(cb: number): number {
   return Math.pow(10, cb / 200);
 }
 
+// SF2 / FluidSynth CC7/CC11 → attenuation (amount 960, unipolar, negative,
+// concave). FluidSynth fluid_conv.c builds the table as
+//   x = -20/96 * log10((i/127)²) = -40/96 * log10(i/127)
+// for the negative-direction lookup — equivalent to amplitude (cc/127)².
+// Returns attenuation in centibels.
+export function sf2VolumeAttenCb(norm: number): number {
+  const x = Math.max(0, Math.min(1, norm));
+  if (x <= 0) return 960;
+  if (x >= 1) return 0;
+  const normalized = Math.min(1, -(40 / 96) * Math.log10(x));
+  return 960 * normalized;
+}
+
+// Linear amplitude from MIDI volume/expression norms (each 0..1).
+// With the FluidSynth concave above this equals vol² * expr².
+export function sf2VolumeExprGain(volNorm: number, exprNorm: number): number {
+  return cbToRatio(-(sf2VolumeAttenCb(volNorm) + sf2VolumeAttenCb(exprNorm)));
+}
+
 // https://www.synthfont.com/sfspec24.pdf
 // SF2 spec (decayVolEnv/decayModEnv/releaseVolEnv/releaseModEnv):
 // both the decay and release phase timecent values are defined as
@@ -1465,11 +1497,14 @@ export class BasePlayer<
   createChannelAudioNodes(
     audioContext: AudioContext | OfflineAudioContext,
   ): { gainL: GainNode; gainR: GainNode; merger: ChannelMergerNode } {
+    const vol = defaultControllerState.volumeMSB.defaultValue;
+    const expr = defaultControllerState.expressionMSB.defaultValue;
+    const amp = sf2VolumeExprGain(vol, expr);
     const { gainLeft, gainRight } = this.panToGain(
       defaultControllerState.panMSB.defaultValue,
     );
-    const gainL = new GainNode(audioContext, { gain: gainLeft });
-    const gainR = new GainNode(audioContext, { gain: gainRight });
+    const gainL = new GainNode(audioContext, { gain: amp * gainLeft });
+    const gainR = new GainNode(audioContext, { gain: amp * gainRight });
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
@@ -3408,19 +3443,19 @@ export class BasePlayer<
   updateChannelVolume(channel: TChannel, scheduleTime: number): void {
     if (!channel.gainL) return;
     const state = channel.state;
-    // CC7 / CC11 already scale amplitude via SF2 default modulators into
-    // initialAttenuation (concave, amount 960) — same path FluidSynth uses.
-    // Do NOT also multiply channel gain by vol²·expr²; that double-applies
-    // volume and makes midy ~4 dB quieter than FluidSynth at the GM default
-    // CC7=100. Channel nodes only implement pan (and unity amplitude).
+    // FluidSynth applies CC7/CC11 via SF2 concave→attenuation modulators.
+    // midy applies the same curve here on the channel so mid-note volume
+    // changes work offline (envelope restart is avoided). getVoiceParams
+    // forces vol/expr modulators to full scale so attenuation is not doubled.
+    const gain = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB);
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gainLeft, scheduleTime, timeConstant);
+      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
     channel.gainR.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gainRight, scheduleTime, timeConstant);
+      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(

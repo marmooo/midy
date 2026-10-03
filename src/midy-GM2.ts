@@ -21,6 +21,7 @@ import {
   pitchEnvelopeKeySet,
   Player,
   RenderedBuffer,
+  sf2VolumeExprGain,
   type TimelineEvent,
   type VoiceParams,
   volumeEnvelopeKeySet,
@@ -3139,7 +3140,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     const state = channel.state;
     const effect = this.getChannelAmplitudeControl(channel);
     // CC7/CC11 via SF2 modulators only; channel gain is pan (+ GS effect).
-    const gain = 1 + effect;
+    const gain = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB) *
+      (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
@@ -3160,7 +3162,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     const gainR = channel.keyBasedGainRs[keyNumber]!;
     const state = channel.state;
     const effect = this.getChannelAmplitudeControl(channel);
-    const defaultGain = 1 + effect;
+    const defaultGain =
+      sf2VolumeExprGain(state.volumeMSB, state.expressionMSB) * (1 + effect);
     const defaultPan = state.panMSB;
     const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
     const gain = (0 <= keyBasedVolume)
