@@ -145,7 +145,6 @@ export async function renderMidyMode(
     const midiBytes = await Deno.readFile(options.midiPath);
     const sf2Bytes = await Deno.readFile(options.soundFontPath);
 
-    // deno-lint-ignore no-explicit-any
     const result = await page.evaluate(
       (params) => {
         // deno-lint-ignore no-explicit-any
