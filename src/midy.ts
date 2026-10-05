@@ -8,7 +8,7 @@ import {
   Note as GM2Note,
   RenderedBuffer,
 } from "./midy-GM2.ts";
-import { cbToRatio, type MessageHandler, sf2VolumeExprGain } from "./player.ts";
+import { cbToRatio, type MessageHandler } from "./player.ts";
 
 export { RenderedBuffer };
 
@@ -1355,8 +1355,8 @@ export class Midy extends MidyGM2 {
     if (!ch.gainL) return;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    const gain = sf2VolumeExprGain(state.volume, state.expression) *
-      (1 + effect);
+    // CC7/CC11 via SF2 modulators only; channel gain is pan (+ GS effect).
+    const gain = 1 + effect;
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.gainL.gain
@@ -1378,8 +1378,7 @@ export class Midy extends MidyGM2 {
     const gainR = ch.keyBasedGainRs[keyNumber]!;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    const defaultGain = sf2VolumeExprGain(state.volume, state.expression) *
-      (1 + effect);
+    const defaultGain = 1 + effect;
     const defaultPan = state.pan;
     const keyBasedVolume = this.getKeyBasedValue(ch, keyNumber, 7);
     // Key-based volume scales the channel amplitude; CC7/CC11 stay on SF2 mods.

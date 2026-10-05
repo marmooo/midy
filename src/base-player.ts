@@ -278,18 +278,13 @@ export function getVoiceParams(
     sampleModes: staticGenerators.get("sampleModes"),
     exclusiveClass: staticGenerators.get("exclusiveClass"),
   };
-  // CC7/CC11 amplitude is applied on the channel gain with the same SF2
-  // concave curve FluidSynth uses (see updateChannelVolume). Zero those
-  // modulators here (full scale → 0 atten) so they are not double-applied
-  // into initialAttenuation; mid-note volume changes then track the channel.
-  const stateForMods = new Float32Array(controllerState);
-  stateForMods[128 + 7] = 1; // volumeMSB full
-  stateForMods[128 + 11] = 1; // expressionMSB full
-
+  // CC7/CC11 amplitude is applied via SF2 default modulators into
+  // initialAttenuation (same path as FluidSynth). Channel gain is pan-only —
+  // do NOT also multiply by vol²·expr² (that double-applies ~4 dB at CC7=100).
   // transformAllParams returns voice.generators by reference when no
   // controller is active (see @marmooo/soundfont Voice). Clone before the
   // EMU rewrite so we never mutate the voice's static zone store.
-  const transformed = voice.transformAllParams(stateForMods);
+  const transformed = voice.transformAllParams(controllerState);
   const generators = transformed === staticGenerators
     ? staticGenerators.clone()
     : transformed;
@@ -337,11 +332,7 @@ export function getVoiceParamsForController(
   controllerState: Float32Array,
 ): Partial<VoiceParams> {
   const params: Partial<VoiceParams> = {};
-  // Volume/expression (CC7/CC11) amplitude is owned by channel gain
-  // (sf2VolumeExprGain). Skip per-voice atten updates for those controllers.
-  if (controllerType === 128 + 7 || controllerType === 128 + 11) {
-    return params;
-  }
+  // CC7/CC11 go through SF2 modulators → initialAttenuation (channel is pan-only).
   const updatedParams = voice.transformParams(controllerType, controllerState);
   const updatedKeys = Object.keys(updatedParams) as ValueGeneratorKey[];
   if (updatedKeys.length === 0) return params;
@@ -423,6 +414,11 @@ export class Note {
   fullCacheVoiceId: number | null = null;
   filterEnvelopeNode: BiquadFilterNode | null = null;
   volumeEnvelopeNode: GainNode | null = null;
+  // Per-voice SF2 pan (zone pan generator). Splits volumeNode into L/R so
+  // stereo-sample pairs (hard L/R) sum like FluidSynth instead of both
+  // sitting at channel-center equal-power.
+  panGainL: GainNode | null = null;
+  panGainR: GainNode | null = null;
   modLfo: OscillatorNode | null = null;
   modLfoToPitch: GainNode | null = null;
   modLfoToFilterFc: GainNode | null = null;
@@ -1497,14 +1493,12 @@ export class BasePlayer<
   createChannelAudioNodes(
     audioContext: AudioContext | OfflineAudioContext,
   ): { gainL: GainNode; gainR: GainNode; merger: ChannelMergerNode } {
-    const vol = defaultControllerState.volumeMSB.defaultValue;
-    const expr = defaultControllerState.expressionMSB.defaultValue;
-    const amp = sf2VolumeExprGain(vol, expr);
+    // CC7/CC11 via SF2 modulators only; channel nodes implement pan (unity amp).
     const { gainLeft, gainRight } = this.panToGain(
       defaultControllerState.panMSB.defaultValue,
     );
-    const gainL = new GainNode(audioContext, { gain: amp * gainLeft });
-    const gainR = new GainNode(audioContext, { gain: amp * gainRight });
+    const gainL = new GainNode(audioContext, { gain: gainLeft });
+    const gainR = new GainNode(audioContext, { gain: gainRight });
     const merger = new ChannelMergerNode(audioContext, { numberOfInputs: 2 });
     gainL.connect(merger, 0, 0);
     gainR.connect(merger, 0, 1);
@@ -2502,23 +2496,50 @@ export class BasePlayer<
     // Fold SF2 filter DC-gain compensation into the volume envelope so
     // resonant peaks do not raise overall level (see sf2FilterQ).
     const dc = note.filterDcGain;
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) * dc;
-    const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.sustainVolEnv);
+    const attackVolume = Math.max(
+      cbToRatio(-voiceParams.initialAttenuation) * dc,
+      1e-6,
+    );
+    const sustainVolume = Math.max(
+      attackVolume * cbToRatio(-1000 * voiceParams.sustainVolEnv),
+      1e-6,
+    );
     const delayVolEnvTime = startTime + voiceParams.delayVolEnv;
-    const attackVolEnvTime = delayVolEnvTime + voiceParams.attackVolEnv;
+    const attackDur = Math.max(voiceParams.attackVolEnv, 0);
+    const attackVolEnvTime = delayVolEnvTime + attackDur;
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    const decayDuration = voiceParams.decayVolEnv;
-    note.volumeEnvelopeNode.gain
-      .cancelScheduledValues(scheduleTime)
-      .setValueAtTime(0, startTime)
-      .setValueAtTime(1e-6, delayVolEnvTime)
-      .exponentialRampToValueAtTime(attackVolume, attackVolEnvTime)
-      .setValueAtTime(attackVolume, holdVolEnvTime)
-      .exponentialRampToValueAtTime(
-        sustainVolume,
-        holdVolEnvTime + decayDuration,
-      );
+    const decayDur = Math.max(voiceParams.decayVolEnv, 0);
+    const decayEnd = holdVolEnvTime + decayDur;
+    const g = note.volumeEnvelopeNode.gain;
+    g.cancelScheduledValues(scheduleTime);
+    // Hold silence until delay ends (also covers t < startTime in offline).
+    g.setValueAtTime(0, Math.min(scheduleTime, startTime));
+    g.setValueAtTime(1e-6, delayVolEnvTime);
+    // Attack/decay: multi-segment linearRamp approximating the same exponential
+    // curve as computeAdsVolumeGains (pow). OfflineAudioContext has been
+    // unreliable with exponentialRampToValueAtTime on long/short spans.
+    const N = 8;
+    if (attackDur > 1e-6) {
+      for (let i = 1; i <= N; i++) {
+        const frac = i / N;
+        const level = 1e-6 * Math.pow(attackVolume / 1e-6, frac);
+        g.linearRampToValueAtTime(level, delayVolEnvTime + attackDur * frac);
+      }
+    } else {
+      g.setValueAtTime(attackVolume, attackVolEnvTime);
+    }
+    g.setValueAtTime(attackVolume, holdVolEnvTime);
+    if (decayDur > 1e-6 && Math.abs(attackVolume - sustainVolume) > 1e-9) {
+      for (let i = 1; i <= N; i++) {
+        const frac = i / N;
+        const level = attackVolume *
+          Math.pow(sustainVolume / attackVolume, frac);
+        g.linearRampToValueAtTime(level, holdVolEnvTime + decayDur * frac);
+      }
+    } else {
+      g.setValueAtTime(sustainVolume, decayEnd);
+    }
+    g.setValueAtTime(sustainVolume, decayEnd);
   }
 
   setDetune(channel: TChannel, note: TNote, scheduleTime: number): void {
@@ -2818,13 +2839,37 @@ export class BasePlayer<
     if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
-    // Free room for this voice before it joins soundingNotes.
-    this.enforceMaxVoices(startTime, 1);
+    // Voice budget reserved by noteOnChannel for the full layer stack.
     if (note.renderedBuffer?.isFull) {
       volumeNode.connect((this.masterVolume as unknown) as AudioNode);
     } else {
-      volumeNode.connect(channel.gainL);
-      volumeNode.connect(channel.gainR);
+      // Combine SF2 *static* zone pan with the channel's current pan so
+      // multi-layer instruments (e.g. GeneralUser strings L/R zones) land at
+      // their authored positions instead of both sitting at channel-center.
+      // Use the static generator only — voiceParams.pan includes CC10
+      // modulators which channel.gainL/R already apply.
+      const staticPan = note.voice
+        ? note.voice.generators.get("pan") / 1000
+        : (note.voiceParams?.pan ?? 0);
+      const voiceNorm = Math.max(0, Math.min(1, staticPan + 0.5));
+      const { gainLeft: vL, gainRight: vR } = this.panToGain(voiceNorm);
+      const chPan = channel.state?.panMSB ?? 0.5;
+      const { gainLeft: cL, gainRight: cR } = this.panToGain(chPan);
+      const eps = 1e-6;
+      const relL = cL > eps ? vL / cL : (vL > eps ? 1 : 0);
+      const relR = cR > eps ? vR / cR : (vR > eps ? 1 : 0);
+      if (Math.abs(relL - 1) < 1e-6 && Math.abs(relR - 1) < 1e-6) {
+        volumeNode.connect(channel.gainL);
+        volumeNode.connect(channel.gainR);
+      } else {
+        const ctx = this.audioContext;
+        note.panGainL = new GainNode(ctx, { gain: relL });
+        note.panGainR = new GainNode(ctx, { gain: relR });
+        volumeNode.connect(note.panGainL);
+        volumeNode.connect(note.panGainR);
+        note.panGainL.connect(channel.gainL);
+        note.panGainR.connect(channel.gainR);
+      }
     }
     if (runExclusive) {
       this.handleExclusiveClass(note, channel, startTime);
@@ -2928,8 +2973,20 @@ export class BasePlayer<
     // scheduler. Secondary layers inherit that flag so they do not fall
     // through to realtime getAudioBuffer (miss + possible double with the
     // tile). Ghost layers only register for noteOff/sustain matching.
-    const layers = note?.voice
-      ? [{ voice: note.voice }]
+    // Same multi-layer policy as MidyGM2.noteOnChannel: expand all zones for
+    // MIDI note-on; keep a single zone when the caller already bound one for
+    // an offline per-zone bake (voice + audioBufferId on OfflineAudioContext).
+    // offlineRenderOnly is set only by per-zone bakers (segment/chunk).
+    // Full-song OfflineAudioContext must expand every SF2 zone.
+    const singleZoneBake = !!note?.voice && note.audioBufferId !== undefined &&
+      !!(this as { offlineRenderOnly?: boolean }).offlineRenderOnly;
+    const layers = singleZoneBake
+      ? [{
+        voice: note!.voice!,
+        soundFontIndex: 0,
+        bank: 0,
+        programNumber: channel.programNumber,
+      }]
       : this.resolveVoices(channel, noteNumber, velocity);
     if (!layers.length) return;
 
@@ -2939,15 +2996,28 @@ export class BasePlayer<
 
     const primaryIsGhost = !!note?.isTiledGhost;
     let primary: TNote | undefined = note;
+    if (!primaryIsGhost) {
+      this.enforceMaxVoices(t, layers.length);
+    }
     for (let i = 0; i < layers.length; i++) {
       const layerNote = i === 0 && primary
         ? primary
         : this.createNoteInstance(noteNumber, velocity, t);
       layerNote.voice = layers[i].voice;
-      if (primaryIsGhost) layerNote.isTiledGhost = true;
-      if (!layerNote.isTiledGhost) {
-        this.enforceMaxVoices(t, 1);
+      // Secondary layers need the same timeline identity so adsr/note mode
+      // bakes use the real MIDI noteDuration (not 0). Each zone must use
+      // its own sample id — getVoiceId() only returns the primary zone.
+      if (i > 0 && primary) {
+        layerNote.timelineIndex = primary.timelineIndex;
+        layerNote.pressure = primary.pressure;
       }
+      {
+        const instrument = layers[i].voice.generators.get("instrument") ?? 0;
+        const sampleID = layers[i].voice.generators.get("sampleID") ?? 0;
+        layerNote.audioBufferId = layers[i].soundFontIndex * (2 ** 31) +
+          instrument * (2 ** 24) + (sampleID << 8);
+      }
+      if (primaryIsGhost) layerNote.isTiledGhost = true;
       channel.activeNotes[noteNumber].push(layerNote);
       try {
         if (layerNote.isTiledGhost) {
@@ -3027,10 +3097,14 @@ export class BasePlayer<
     } catch { /* ignore */ }
     try {
       note.volumeNode?.disconnect();
+      note.panGainL?.disconnect();
+      note.panGainR?.disconnect();
     } catch { /* ignore */ }
     note.filterEnvelopeNode = null;
     note.volumeEnvelopeNode = null;
     note.volumeNode = null;
+    note.panGainL = null;
+    note.panGainR = null;
     if (note.modLfoToPitch || note.modLfo) {
       try {
         note.modLfoToFilterFc?.disconnect();
@@ -3056,6 +3130,76 @@ export class BasePlayer<
     }
   }
 
+  /**
+   * Reconstruct volume-envelope gain at relative time t (seconds from note start).
+   */
+  protected volumeEnvelopeLevelAt(note: TNote, tRel: number): number {
+    const vp = note.voiceParams;
+    if (!vp) return 1;
+    const dc = note.filterDcGain || 1;
+    const attackVolume = cbToRatio(-vp.initialAttenuation) * dc;
+    const sustainVolume = attackVolume *
+      cbToRatio(-1000 * vp.sustainVolEnv);
+    const delay = vp.delayVolEnv;
+    const attack = vp.attackVolEnv;
+    const hold = vp.holdVolEnv;
+    const decay = vp.decayVolEnv;
+    if (tRel <= delay) return 1e-6;
+    if (tRel <= delay + attack) {
+      const frac = (tRel - delay) / Math.max(attack, 1e-9);
+      const logStart = Math.log(1e-6);
+      const logEnd = Math.log(Math.max(attackVolume, 1e-6));
+      return Math.exp(logStart + frac * (logEnd - logStart));
+    }
+    if (tRel <= delay + attack + hold) return attackVolume;
+    if (tRel <= delay + attack + hold + decay) {
+      const frac = (tRel - delay - attack - hold) / Math.max(decay, 1e-9);
+      const logStart = Math.log(Math.max(attackVolume, 1e-6));
+      const logEnd = Math.log(Math.max(sustainVolume, 1e-6));
+      return Math.exp(logStart + frac * (logEnd - logStart));
+    }
+    return Math.max(sustainVolume, 1e-6);
+  }
+
+  /**
+   * Reliable amplitude release for OfflineAudioContext.
+   * Multi-segment linearRamp approximates SF2 exponential release.
+   */
+  protected scheduleVolumeRelease(
+    param: AudioParam,
+    endTime: number,
+    releaseDur: number,
+    heldLevel: number,
+  ): void {
+    const held = Math.max(heldLevel, 1e-6);
+    // SF2 releaseVolEnv is the time for a 100 dB drop; zero means instantaneous.
+    // Use a 1-sample floor only to keep AudioParam automation well-defined.
+    const dur = Math.max(releaseDur, 1e-4);
+    const floor = 1e-5;
+    // SF2: τ such that exp(-t/τ) falls 100 dB when t = releaseDur.
+    const tau = Math.max(dur * envelopeCurve, 1e-4);
+    try {
+      // cancelAndHoldAtTime freezes the current automation value at endTime
+      // (important for offline when the param is mid-ramp). Then re-latch to
+      // the reconstructed sustain level so a stale intermediate value cannot
+      // pull the release start too low.
+      param.cancelAndHoldAtTime(endTime);
+      param.setValueAtTime(held, endTime);
+      const N = 6;
+      for (let i = 1; i <= N; i++) {
+        const t = endTime + (dur * i) / N;
+        const g = Math.max(held * Math.exp(-(dur * i) / N / tau), floor);
+        param.linearRampToValueAtTime(g, t);
+      }
+    } catch {
+      try {
+        param.cancelScheduledValues(endTime);
+        param.setValueAtTime(held, endTime);
+        param.setTargetAtTime(floor, endTime, tau);
+      } catch { /* already closed */ }
+    }
+  }
+
   releaseNote(
     _channel: TChannel,
     note: TNote,
@@ -3063,7 +3207,14 @@ export class BasePlayer<
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
     const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
-    const releaseVolEnvTime = endTime + volDuration;
+    const releaseVolEnvTime = endTime + Math.max(volDuration, 1e-4);
+    const tRel = Math.max(0, endTime - note.startTime);
+    const heldFromEnvelope = note.volumeEnvelopeNode
+      ? this.volumeEnvelopeLevelAt(note, tRel)
+      : 1;
+    try {
+      if (note.bufferSource) note.bufferSource.loop = false;
+    } catch { /* ignore */ }
 
     if (note.volumeEnvelopeNode) {
       try {
@@ -3071,22 +3222,28 @@ export class BasePlayer<
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.releaseModEnv ?? 0),
+            endTime + Math.max(note.voiceParams?.releaseModEnv ?? 0, 1e-4),
           );
-        note.volumeEnvelopeNode.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        this.scheduleVolumeRelease(
+          note.volumeEnvelopeNode.gain,
+          endTime,
+          volDuration,
+          heldFromEnvelope,
+        );
       } catch { /* already closed */ }
     } else {
       try {
-        note.volumeNode?.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        if (note.volumeNode) {
+          this.scheduleVolumeRelease(
+            note.volumeNode.gain,
+            endTime,
+            volDuration,
+            1,
+          );
+        }
       } catch { /* already closed */ }
     }
 
-    // waitSourceEnded always settles (onended or timeout), so notePromises
-    // cannot hang if the browser skips onended under load.
     return this.waitSourceEnded(note, releaseVolEnvTime);
   }
 
@@ -3443,19 +3600,19 @@ export class BasePlayer<
   updateChannelVolume(channel: TChannel, scheduleTime: number): void {
     if (!channel.gainL) return;
     const state = channel.state;
-    // FluidSynth applies CC7/CC11 via SF2 concave→attenuation modulators.
-    // midy applies the same curve here on the channel so mid-note volume
-    // changes work offline (envelope restart is avoided). getVoiceParams
-    // forces vol/expr modulators to full scale so attenuation is not doubled.
-    const gain = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB);
+    // CC7/CC11 already scale amplitude via SF2 default modulators into
+    // initialAttenuation (concave, amount 960) — same path FluidSynth uses.
+    // Do NOT also multiply channel gain by vol²·expr²; that double-applies
+    // volume and makes midy ~4 dB quieter than FluidSynth at the GM default
+    // CC7=100. Channel nodes only implement pan (and unity amplitude).
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
+      .setTargetAtTime(gainLeft, scheduleTime, timeConstant);
     channel.gainR.gain
       .cancelAndHoldAtTime(scheduleTime)
-      .setTargetAtTime(gain * gainRight, scheduleTime, timeConstant);
+      .setTargetAtTime(gainRight, scheduleTime, timeConstant);
   }
 
   handleUniversalNonRealTimeExclusiveMessage(

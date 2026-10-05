@@ -197,13 +197,15 @@ function handleMix(msg) {
     var copyLen = Math.min(srcLen, destLen - start);
     if (copyLen <= 0) continue;
     if (destRight === null) {
+      // Equal-power mono: center pan (0.707,0.707) → gain 1, not -3 dB.
+      var gMono = (e.gainRight != null) ? Math.sqrt(gL * gL + gR * gR) : gL;
       if (curve) {
         for (var i = 0; i < copyLen; i++) {
-          destLeft[start + i] += srcLeft[i] * gL * curve[i];
+          destLeft[start + i] += srcLeft[i] * gMono * curve[i];
         }
       } else {
         for (var i = 0; i < copyLen; i++) {
-          destLeft[start + i] += srcLeft[i] * gL;
+          destLeft[start + i] += srcLeft[i] * gMono;
         }
       }
     } else {

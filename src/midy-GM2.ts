@@ -21,7 +21,6 @@ import {
   pitchEnvelopeKeySet,
   Player,
   RenderedBuffer,
-  sf2VolumeExprGain,
   type TimelineEvent,
   type VoiceParams,
   volumeEnvelopeKeySet,
@@ -2508,11 +2507,45 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (note.isTiledGhost) return;
     const { volumeNode } = note;
     if (!volumeNode) return;
-    // Free room for this voice before it joins soundingNotes.
-    this.enforceMaxVoices(startTime, 1);
+    // Voice budget is reserved in noteOnChannel for the whole layer stack.
+    // Do not steal here — a per-layer enforceMaxVoices(1) would drop the
+    // primary zone when the secondary zone of the same MIDI note routes.
     if (note.renderedBuffer?.isFull) {
       volumeNode.connect((this.masterVolume as unknown) as AudioNode);
     } else {
+      // SF2 zone pan (static generator) relative to channel equal-power pan so
+      // multi-layer instruments (strings L/R zones) match FluidSynth instead
+      // of both collapsing to channel-center. Use the static zone pan only —
+      // voiceParams.pan already includes CC10 modulators which channel.gainL/R
+      // also apply, so using the combined value would double-count CC10.
+      const staticPan = note.voice
+        ? note.voice.generators.get("pan") / 1000
+        : (note.voiceParams?.pan ?? 0);
+      const voiceNorm = Math.max(0, Math.min(1, staticPan + 0.5));
+      const { gainLeft: vL, gainRight: vR } = this.panToGain(voiceNorm);
+      const chPan = channel.state?.panMSB ?? 0.5;
+      const { gainLeft: cL, gainRight: cR } = this.panToGain(chPan);
+      const eps = 1e-6;
+      const relL = cL > eps ? vL / cL : (vL > eps ? 1 : 0);
+      const relR = cR > eps ? vR / cR : (vR > eps ? 1 : 0);
+      const needsZonePan = Math.abs(relL - 1) >= 1e-6 ||
+        Math.abs(relR - 1) >= 1e-6;
+
+      const connectTo = (gainL: GainNode, gainR: GainNode) => {
+        if (!needsZonePan) {
+          volumeNode.connect(gainL);
+          volumeNode.connect(gainR);
+        } else {
+          const ctx = this.audioContext;
+          note.panGainL = new GainNode(ctx, { gain: relL });
+          note.panGainR = new GainNode(ctx, { gain: relR });
+          volumeNode.connect(note.panGainL);
+          volumeNode.connect(note.panGainR);
+          note.panGainL.connect(gainL);
+          note.panGainR.connect(gainR);
+        }
+      };
+
       if (channel.isDrum) {
         const noteNumber = note.noteNumber;
         const { keyBasedGainLs, keyBasedGainRs } = channel;
@@ -2523,11 +2556,9 @@ export class MidyGM2 extends Player<Note, Channel> {
           gainL = keyBasedGainLs[noteNumber] = audioNodes.gainL;
           gainR = keyBasedGainRs[noteNumber] = audioNodes.gainR;
         }
-        volumeNode.connect(gainL!);
-        volumeNode.connect(gainR!);
+        connectTo(gainL!, gainR!);
       } else {
-        volumeNode.connect(channel.gainL);
-        volumeNode.connect(channel.gainR);
+        connectTo(channel.gainL, channel.gainR);
       }
     }
     // Mix-level effect sends share volumeNode with the channel bus.
@@ -2551,16 +2582,24 @@ export class MidyGM2 extends Player<Note, Channel> {
     const t: number = startTime ?? this.audioContext.currentTime;
     const realtime = startTime === undefined;
 
-    // Resolve all SF2 layers first. When the caller already attached a voice
-    // (cache / preload paths), keep single-voice behaviour for that note.
-    //
-    // Tiled ghost: primary is marked isTiledGhost by the segment/chunk
-    // scheduler. Secondary layers inherit that flag so they do not fall
-    // through to realtime getAudioBuffer (miss + possible double with the
-    // tile). Ghost layers only register for noteOff/sustain matching —
-    // audio is already in the offline tile.
-    const layers = note?.voice
-      ? [{ voice: note.voice }]
+    // Multi-layer policy:
+    // - Normal MIDI note-on (realtime or full-song offline): expand every SF2
+    //   zone so stereo ensembles match FluidSynth.
+    // - Per-zone offline bake (segment/chunk/simple-cache entry already carries
+    //   one specific voice + audioBufferId): play only that zone. Expanding
+    //   again would double-schedule layers and break dry rewire (only the
+    //   primary volumeNode was reconnected to the offline destination).
+    // Only segment/chunk per-zone bakers set offlineRenderOnly. Full-song
+    // OfflineAudioContext (none/ads/adsr/note) must still expand every zone.
+    const singleZoneBake = !!note?.voice && note.audioBufferId !== undefined &&
+      !!this.offlineRenderOnly;
+    const layers = singleZoneBake
+      ? [{
+        voice: note!.voice!,
+        soundFontIndex: 0,
+        bank: 0,
+        programNumber: channel.programNumber,
+      }]
       : this.resolveVoices(channel, noteNumber, velocity);
     if (!layers.length) return;
 
@@ -2570,19 +2609,35 @@ export class MidyGM2 extends Player<Note, Channel> {
 
     const primaryIsGhost = !!note?.isTiledGhost;
     let primary: Note | undefined = note;
+    // Reserve room for every non-ghost layer up front. Calling
+    // enforceMaxVoices(t, 1) inside the loop let the secondary zone steal
+    // the primary after setNoteRouting added it to soundingNotes — stereo
+    // ensembles then played as a single zone (~3–6 dB quiet vs FluidSynth).
+    if (!primaryIsGhost) {
+      let need = 0;
+      for (let li = 0; li < layers.length; li++) need++;
+      this.enforceMaxVoices(t, need);
+    }
     for (let i = 0; i < layers.length; i++) {
       const layerNote = i === 0 && primary
         ? primary
         : this.createNoteInstance(noteNumber, velocity, t);
       layerNote.voice = layers[i].voice;
+      // Secondary layers need the same timeline identity so adsr/note mode
+      // bakes use the real MIDI noteDuration (not 0). Each zone must use
+      // its own sample id — getVoiceId() only returns the primary zone.
+      if (i > 0 && primary) {
+        layerNote.timelineIndex = primary.timelineIndex;
+        layerNote.pressure = primary.pressure;
+      }
+      if (!(singleZoneBake && note?.audioBufferId !== undefined)) {
+        const instrument = layers[i].voice.generators.get("instrument") ?? 0;
+        const sampleID = layers[i].voice.generators.get("sampleID") ?? 0;
+        layerNote.audioBufferId = layers[i].soundFontIndex * (2 ** 31) +
+          instrument * (2 ** 24) + (sampleID << 8);
+      }
       // Inherit ghost flag: createNoteInstance defaults isTiledGhost=false.
       if (primaryIsGhost) layerNote.isTiledGhost = true;
-      // Free oldest voices early so async prep does not start on top of an
-      // already-over-budget sustain / sostenuto pile (steal runs again in
-      // setNoteRouting). Ghost layers never join the sounding set.
-      if (!layerNote.isTiledGhost) {
-        this.enforceMaxVoices(t, 1);
-      }
       channel.activeNotes[noteNumber].push(layerNote);
       try {
         if (layerNote.isTiledGhost) {
@@ -2621,6 +2676,12 @@ export class MidyGM2 extends Player<Note, Channel> {
     note.filterEnvelopeNode?.disconnect();
     note.volumeEnvelopeNode?.disconnect();
     note.volumeNode?.disconnect();
+    try {
+      note.panGainL?.disconnect();
+      note.panGainR?.disconnect();
+    } catch { /* ignore */ }
+    note.panGainL = null;
+    note.panGainR = null;
     if (note.modLfoToPitch) {
       note.modLfoToFilterFc?.disconnect();
       note.modLfoToVolume?.disconnect?.();
@@ -2652,24 +2713,37 @@ export class MidyGM2 extends Player<Note, Channel> {
   // releaseFullCache() was removed; full/adsr release follows Player.releaseNote
   // (waitSourceEnded disconnects the note — no separate cache callback).
   override releaseNote(
-    _channel: Channel,
-    note: Note,
+    _channel: TChannel,
+    note: TNote,
     endTime: number,
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
     const now = this.audioContext.currentTime;
+    const tRel = Math.max(0, endTime - note.startTime);
+    const heldFromEnvelope = note.volumeEnvelopeNode
+      ? this.volumeEnvelopeLevelAt(note, tRel)
+      : 1;
+    try {
+      if (note.bufferSource) note.bufferSource.loop = false;
+    } catch { /* ignore */ }
+
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;
       const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-      const isEarlyCut = endTime < noteOffTime;
+      const isEarlyCut = endTime < noteOffTime - 1e-4;
       if (isEarlyCut) {
         const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
-        const releaseVolEnvTime = endTime + volDuration;
+        const releaseVolEnvTime = endTime + Math.max(volDuration, 1e-4);
         try {
-          note.volumeNode?.gain
-            .cancelScheduledValues(endTime)
-            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+          if (note.volumeNode) {
+            this.scheduleVolumeRelease(
+              note.volumeNode.gain,
+              endTime,
+              volDuration,
+              1,
+            );
+          }
         } catch { /* already closed */ }
         return this.waitSourceEnded(note, releaseVolEnvTime);
       }
@@ -2681,35 +2755,41 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
 
     const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
-    const releaseVolEnvTime = endTime + volDuration;
+    const releaseVolEnvTime = endTime + Math.max(volDuration, 1e-4);
 
     if (note.volumeEnvelopeNode) {
-      // "none" mode
       try {
         note.filterEnvelopeNode?.frequency
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.releaseModEnv ?? 0),
+            endTime + Math.max(note.voiceParams?.releaseModEnv ?? 0, 1e-4),
           );
-        note.volumeEnvelopeNode.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        this.scheduleVolumeRelease(
+          note.volumeEnvelopeNode.gain,
+          endTime,
+          volDuration,
+          heldFromEnvelope,
+        );
       } catch { /* already closed */ }
     } else {
-      // "ads" / "adsr" mode
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
       if (isAdsr) {
         const rb = note.renderedBuffer!;
         const naturalEndTime = note.startTime + rb.buffer.duration;
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-        const isEarlyCut = endTime < noteOffTime;
+        const isEarlyCut = endTime < noteOffTime - 1e-4;
         if (isEarlyCut) {
           try {
-            note.volumeNode?.gain
-              .cancelScheduledValues(endTime)
-              .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+            if (note.volumeNode) {
+              this.scheduleVolumeRelease(
+                note.volumeNode.gain,
+                endTime,
+                volDuration,
+                1,
+              );
+            }
           } catch { /* already closed */ }
           return this.waitSourceEnded(note, releaseVolEnvTime);
         }
@@ -2720,9 +2800,14 @@ export class MidyGM2 extends Player<Note, Channel> {
         return this.waitSourceEnded(note, naturalEndTime);
       }
       try {
-        note.volumeNode?.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        if (note.volumeNode) {
+          this.scheduleVolumeRelease(
+            note.volumeNode.gain,
+            endTime,
+            volDuration,
+            1,
+          );
+        }
       } catch { /* already closed */ }
     }
 
@@ -2776,17 +2861,39 @@ export class MidyGM2 extends Player<Note, Channel> {
         return;
       }
     }
-    const note = this.findNoteForOff(channel, noteNumber);
-    if (!note) return;
-    note.ending = true;
-    note.heldByPedal = false;
-    this.removeFromActiveNotes(channel, noteNumber);
-    const promise = note.ready.then(() => {
-      if (!note.voice) return;
-      return this.releaseNote(channel, note, endTime);
-    });
-    this.notePromises.push(promise);
-    return promise;
+    // Multi-layer SF2 instruments (e.g. stereo strings) push one entry per
+    // layer into activeNotes[noteNumber]. Release every non-ending layer —
+    // releasing only the head left secondary layers sustaining (drop≈0 dB).
+    const stack = channel.activeNotes[noteNumber];
+    if (!stack || stack.length === 0) return;
+    const toRelease: Note[] = [];
+    for (let i = 0; i < stack.length; i++) {
+      const n = stack[i];
+      if (n && !n.ending) {
+        n.ending = true;
+        n.heldByPedal = false;
+        toRelease.push(n);
+      }
+    }
+    if (toRelease.length === 0) return;
+    channel.activeNotes[noteNumber] = stack.filter((n) =>
+      n && !toRelease.includes(n)
+    );
+    if (channel.activeNotes[noteNumber].length === 0) {
+      delete channel.activeNotes[noteNumber];
+    }
+    const promises: Promise<void>[] = [];
+    for (const note of toRelease) {
+      const promise = note.ready.then(() => {
+        if (!note.voice) return;
+        return this.releaseNote(channel, note, endTime);
+      });
+      this.notePromises.push(promise);
+      promises.push(promise);
+    }
+    return promises.length === 1
+      ? promises[0]
+      : Promise.all(promises).then(() => {});
   }
 
   // Also drop from sostenutoNotes (base only cleans sustainNotes).
@@ -3140,8 +3247,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     const state = channel.state;
     const effect = this.getChannelAmplitudeControl(channel);
     // CC7/CC11 via SF2 modulators only; channel gain is pan (+ GS effect).
-    const gain = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB) *
-      (1 + effect);
+    const gain = 1 + effect;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain
@@ -3162,8 +3268,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     const gainR = channel.keyBasedGainRs[keyNumber]!;
     const state = channel.state;
     const effect = this.getChannelAmplitudeControl(channel);
-    const defaultGain =
-      sf2VolumeExprGain(state.volumeMSB, state.expressionMSB) * (1 + effect);
+    const defaultGain = 1 + effect;
     const defaultPan = state.panMSB;
     const keyBasedVolume = this.getKeyBasedValue(channel, keyNumber, 7);
     const gain = (0 <= keyBasedVolume)

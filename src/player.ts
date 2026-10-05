@@ -1687,50 +1687,54 @@ export class Player<
           const noteOnEvent = noteOnEvents[i];
           if (!noteOnEvent || noteOnEvent.duration <= 0) return;
 
-          let voiceParams: VoiceParams | null = null;
-          let voice: Voice | null | undefined = null;
-          if (needsSegmentVoice) {
-            voiceParams = tiledVoiceParams[i];
-            voice = tiledVoices[i];
-          }
-          if (!voiceParams) {
-            voice = this.resolveVoice(
-              renderChannel,
-              noteEvent.noteNumber!,
-              noteEvent.velocity!,
-            );
-            if (!voice) return;
-            voiceParams = getVoiceParams(
-              voice,
-              this.getControllerState(
-                renderChannel,
-                noteEvent.noteNumber!,
-                noteEvent.velocity!,
-                0,
-              ),
-            );
-          }
-          if (!voiceParams) return;
-
-          const key = this.makeSimpleNoteKey(
-            {
-              audioBufferId: noteAudioBufferIds[i],
-              noteNumber: noteEvent.noteNumber!,
-              velocity: noteEvent.velocity!,
-              noteDuration: noteOnEvent.duration,
-              noteEvent: noteOnEvent,
-              channelDetune: renderChannel.detune,
-              channelStateArray: renderChannel.state.array,
-              programNumber: renderChannel.programNumber,
-              isDrum: renderChannel.isDrum,
-              voiceParams,
-            },
-            this.simpleBakeChannelMixForNote({ noteEvent: noteOnEvent }),
+          // Expand every matching SF2 zone. Singular resolveVoice dropped
+          // secondary layers and left segment/chunk/audio quieter than
+          // note/ads (which already sum all layers via noteOnChannel).
+          const layers = this.resolveVoices(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
           );
-          simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
-          const onsetList = simpleNoteOnsets.get(key);
-          if (onsetList) onsetList.push(offset);
-          else simpleNoteOnsets.set(key, [offset]);
+          if (layers.length === 0) return;
+          const ctrl = this.getControllerState(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
+            0,
+          );
+          const bakeMix = this.simpleBakeChannelMixForNote({
+            noteEvent: noteOnEvent,
+          });
+          for (const layer of layers) {
+            const voice = layer.voice;
+            const voiceParams = getVoiceParams(voice, ctrl);
+            if (!voiceParams) continue;
+            // Same id layout as getVoiceId / MidyGM2.getVoiceId so each zone
+            // hits its own rawAudioBufferCache entry.
+            const instrument = voice.generators.get("instrument") ?? 0;
+            const sampleID = voice.generators.get("sampleID") ?? 0;
+            const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+              instrument * (2 ** 24) + (sampleID << 8);
+            const key = this.makeSimpleNoteKey(
+              {
+                audioBufferId,
+                noteNumber: noteEvent.noteNumber!,
+                velocity: noteEvent.velocity!,
+                noteDuration: noteOnEvent.duration,
+                noteEvent: noteOnEvent,
+                channelDetune: renderChannel.detune,
+                channelStateArray: renderChannel.state.array,
+                programNumber: renderChannel.programNumber,
+                isDrum: renderChannel.isDrum,
+                voiceParams,
+              },
+              bakeMix,
+            );
+            simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
+            const onsetList = simpleNoteOnsets.get(key);
+            if (onsetList) onsetList.push(offset);
+            else simpleNoteOnsets.set(key, [offset]);
+          }
         },
       });
     }
@@ -1800,12 +1804,10 @@ export class Player<
   protected channelMixGainsFromState(
     state: ArrayLike<number>,
   ): { gainL: number; gainR: number } {
-    const vol0 = state[128 + 7] ?? (100 / 127);
     const pan0 = state[128 + 10] ?? (64 / 127);
-    const expr0 = state[128 + 11] ?? 1;
-    const channelGain = sf2VolumeExprGain(vol0, expr0);
+    // Volume/expression: SF2 modulators only (see updateChannelVolume).
     const { gainLeft, gainRight } = this.panToGain(pan0);
-    return { gainL: channelGain * gainLeft, gainR: channelGain * gainRight };
+    return { gainL: gainLeft, gainR: gainRight };
   }
 
   /** Mix scales for a chunk note: unity if mix-baked, else from state. */
@@ -1862,10 +1864,10 @@ export class Player<
       // gainCurve carries relative SF2 vol/expr; pan is a constant L/R scale.
       return { gainL: gainLeft, gainR: gainRight, gainCurve };
     }
-    const channelGain = sf2VolumeExprGain(vol0, expr0);
+    // Volume/expression: SF2 modulators only (see updateChannelVolume).
     return {
-      gainL: channelGain * gainLeft,
-      gainR: channelGain * gainRight,
+      gainL: gainLeft,
+      gainR: gainRight,
     };
   }
 
@@ -1919,77 +1921,69 @@ export class Player<
           const noteOnEvent = noteOnEvents[i];
           if (!noteOnEvent || noteOnEvent.duration <= 0) return;
 
-          let voiceParams: VoiceParams | null = null;
-          let voice: Voice | null | undefined = null;
-          if (needsSegmentVoice) {
-            voiceParams = tiledVoiceParams[i];
-            voice = tiledVoices[i];
-          }
-          if (!voiceParams) {
-            voice = this.resolveVoice(
-              renderChannel,
-              noteEvent.noteNumber!,
-              noteEvent.velocity!,
-            );
-            if (!voice) return;
-            voiceParams = getVoiceParams(
-              voice,
-              this.getControllerState(
-                renderChannel,
-                noteEvent.noteNumber!,
-                noteEvent.velocity!,
-                0,
-              ),
-            );
-          }
-          if (!voiceParams) return;
-
+          const layers = this.resolveVoices(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
+          );
+          if (layers.length === 0) return;
+          const ctrl = this.getControllerState(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
+            0,
+          );
           const bakeChannelMix = this.simpleBakeChannelMixForNote({
             noteEvent: noteOnEvent,
           });
-          const n = {
-            audioBufferId: noteAudioBufferIds[i],
-            noteNumber: noteEvent.noteNumber!,
-            velocity: noteEvent.velocity!,
-            noteDuration: noteOnEvent.duration,
-            noteEvent: noteOnEvent,
-            channelDetune: renderChannel.detune,
-            channelStateArray: renderChannel.state.array,
-            programNumber: renderChannel.programNumber,
-            isDrum: renderChannel.isDrum,
-            voiceParams,
-          };
-          const parts = this.buildNoteCacheKeyParts(n, bakeChannelMix, false);
-          // Layout from buildNoteCacheKeyParts (non-complex):
-          //   [0]=dry|mix [1]=audioBufferId [2]=noteNumber [3]=velocity
-          //   [4]=durTicks [5]=detuneQ ...rest
-          const fullKey = parts.join("|");
-          fullKeys.add(fullKey);
-          noteCount++;
+          for (const layer of layers) {
+            const voiceParams = getVoiceParams(layer.voice, ctrl);
+            if (!voiceParams) continue;
+            const instrument = layer.voice.generators.get("instrument") ?? 0;
+            const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+            const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+              instrument * (2 ** 24) + (sampleID << 8);
+            const n = {
+              audioBufferId,
+              noteNumber: noteEvent.noteNumber!,
+              velocity: noteEvent.velocity!,
+              noteDuration: noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array,
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams,
+            };
+            const parts = this.buildNoteCacheKeyParts(n, bakeChannelMix, false);
+            const fullKey = parts.join("|");
+            fullKeys.add(fullKey);
+            noteCount++;
 
-          const vel = noteEvent.velocity! | 0;
-          const durTicks = noteOnEvent.durationTicks ??
-            Math.round(noteOnEvent.duration * 1000);
+            const vel = noteEvent.velocity! | 0;
+            const durTicks = noteOnEvent.durationTicks ??
+              Math.round(noteOnEvent.duration * 1000);
 
-          const partsNoVel = parts.slice();
-          partsNoVel[3] = "*";
-          const baseNoVel = partsNoVel.join("|");
-          let velMap = byNoVel.get(baseNoVel);
-          if (!velMap) {
-            velMap = new Map();
-            byNoVel.set(baseNoVel, velMap);
+            const partsNoVel = parts.slice();
+            partsNoVel[3] = "*";
+            const baseNoVel = partsNoVel.join("|");
+            let velMap = byNoVel.get(baseNoVel);
+            if (!velMap) {
+              velMap = new Map();
+              byNoVel.set(baseNoVel, velMap);
+            }
+            velMap.set(vel, (velMap.get(vel) ?? 0) + 1);
+
+            const partsNoDur = parts.slice();
+            partsNoDur[4] = "*";
+            const baseNoDur = partsNoDur.join("|");
+            let durMap = byNoDur.get(baseNoDur);
+            if (!durMap) {
+              durMap = new Map();
+              byNoDur.set(baseNoDur, durMap);
+            }
+            durMap.set(durTicks, (durMap.get(durTicks) ?? 0) + 1);
           }
-          velMap.set(vel, (velMap.get(vel) ?? 0) + 1);
-
-          const partsNoDur = parts.slice();
-          partsNoDur[4] = "*";
-          const baseNoDur = partsNoDur.join("|");
-          let durMap = byNoDur.get(baseNoDur);
-          if (!durMap) {
-            durMap = new Map();
-            byNoDur.set(baseNoDur, durMap);
-          }
-          durMap.set(durTicks, (durMap.get(durTicks) ?? 0) + 1);
         },
       });
     }
@@ -3216,60 +3210,54 @@ export class Player<
           const noteOnEvent = noteOnEvents[i];
           if (!noteOnEvent || noteOnEvent.duration <= 0) return;
 
-          let voiceParams: VoiceParams | null = null;
-          let voice: Voice | null | undefined = null;
-          if (needsSegmentVoice) {
-            voiceParams = tiledVoiceParams[i];
-            voice = tiledVoices[i];
-          }
-          if (!voiceParams) {
-            voice = this.resolveVoice(
-              renderChannel,
-              noteEvent.noteNumber!,
-              noteEvent.velocity!,
-            );
-            if (!voice) return;
-            voiceParams = getVoiceParams(
-              voice,
-              this.getControllerState(
-                renderChannel,
-                noteEvent.noteNumber!,
-                noteEvent.velocity!,
-                0,
-              ),
-            );
-          }
-          if (!voiceParams) return;
-
-          const entry: BakeNoteEntry = {
-            channelNumber: renderChannel.channelNumber,
-            audioBufferId: noteAudioBufferIds[i],
-            noteNumber: noteEvent.noteNumber!,
-            velocity: noteEvent.velocity!,
-            noteDuration: noteOnEvent.duration,
-            noteEvent: noteOnEvent,
-            channelDetune: renderChannel.detune,
-            channelStateArray: renderChannel.state.array.slice(),
-            programNumber: renderChannel.programNumber,
-            isDrum: renderChannel.isDrum,
-            voiceParams,
-            voice: voice ?? undefined,
-          };
-          const key = this.makeSimpleNoteKey(
-            entry,
-            this.simpleBakeChannelMixForNote(entry),
+          const layers = this.resolveVoices(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
           );
-          const count = simpleNoteCounts.get(key) ?? 0;
-          const prev = allKeys.get(key);
-          if (prev) {
-            if (offset < prev.earliest) {
-              prev.earliest = offset;
-              // Prefer the earliest-onset snapshot for the bake entry.
-              prev.entry = entry;
+          if (layers.length === 0) return;
+          const ctrl = this.getControllerState(
+            renderChannel,
+            noteEvent.noteNumber!,
+            noteEvent.velocity!,
+            0,
+          );
+          for (const layer of layers) {
+            const voiceParams = getVoiceParams(layer.voice, ctrl);
+            if (!voiceParams) continue;
+            const instrument = layer.voice.generators.get("instrument") ?? 0;
+            const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+            const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+              instrument * (2 ** 24) + (sampleID << 8);
+            const entry: BakeNoteEntry = {
+              channelNumber: renderChannel.channelNumber,
+              audioBufferId,
+              noteNumber: noteEvent.noteNumber!,
+              velocity: noteEvent.velocity!,
+              noteDuration: noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array.slice(),
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams,
+              voice: layer.voice,
+            };
+            const key = this.makeSimpleNoteKey(
+              entry,
+              this.simpleBakeChannelMixForNote(entry),
+            );
+            const count = simpleNoteCounts.get(key) ?? 0;
+            const prev = allKeys.get(key);
+            if (prev) {
+              if (offset < prev.earliest) {
+                prev.earliest = offset;
+                prev.entry = entry;
+              }
+              continue;
             }
-            return;
+            allKeys.set(key, { key, entry, count, earliest: offset });
           }
-          allKeys.set(key, { key, entry, count, earliest: offset });
         },
       });
     }
@@ -3835,9 +3823,11 @@ export class Player<
   ): void {
     const state = this.segmentChannelStates[channelNumber];
     if (!state) return;
-    const voiceParams = this.tiledVoiceParams[timelineIndex];
-    if (!voiceParams) return;
     const channel = this.channels[channelNumber];
+    // Expand every SF2 zone. tiledVoiceParams only stores the primary zone;
+    // multi-layer instruments must contribute all zones to the tile mix.
+    const layers = this.resolveVoices(channel, noteNumber, velocity);
+    if (layers.length === 0) return;
     if (
       state.openSegment &&
       this.tileDuration <= t - state.openSegment.segmentStart
@@ -3853,23 +3843,32 @@ export class Player<
         programNumber: channel.programNumber,
       };
     }
-    state.openSegment.notes.push({
-      offset: t - state.openSegment.segmentStart,
-      noteNumber,
-      velocity,
-      voiceParams,
-      noteDuration: this.noteOnDurations[timelineIndex] ?? 0,
-      noteEvent: this.noteOnEvents[timelineIndex],
-      audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.tiledVoices[timelineIndex] ?? undefined,
-      // Per-note onset snapshot -- simple-note bakes need the detune/state
-      // at this note's start, not the segment-open values (pitch bend may
-      // have moved them in the meantime).
-      channelDetune: channel.detune,
-      channelStateArray: channel.state.array.slice(),
-      programNumber: channel.programNumber,
-      timelineIndex,
-    });
+    const ctrl = this.getControllerState(channel, noteNumber, velocity, 0);
+    const noteDuration = this.noteOnDurations[timelineIndex] ?? 0;
+    const noteEvent = this.noteOnEvents[timelineIndex];
+    const offset = t - state.openSegment.segmentStart;
+    for (const layer of layers) {
+      const voiceParams = getVoiceParams(layer.voice, ctrl);
+      if (!voiceParams) continue;
+      const instrument = layer.voice.generators.get("instrument") ?? 0;
+      const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+      const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+        instrument * (2 ** 24) + (sampleID << 8);
+      state.openSegment.notes.push({
+        offset,
+        noteNumber,
+        velocity,
+        voiceParams,
+        noteDuration,
+        noteEvent,
+        audioBufferId,
+        voice: layer.voice,
+        channelDetune: channel.detune,
+        channelStateArray: channel.state.array.slice(),
+        programNumber: channel.programNumber,
+        timelineIndex,
+      });
+    }
   }
 
   closeSegment(state: SegmentChannelState, channel: TChannel): void {
@@ -4067,8 +4066,9 @@ export class Player<
     velocity: number,
   ): void {
     const state = this.chunkState;
-    const voiceParams = this.tiledVoiceParams[timelineIndex];
-    if (!voiceParams) return;
+    // Expand every SF2 zone (tiledVoiceParams is primary-only).
+    const layers = this.resolveVoices(channel, noteNumber, velocity);
+    if (layers.length === 0) return;
 
     const noteDuration = this.noteOnDurations[timelineIndex] ?? 0;
     const noteEvent = this.noteOnEvents[timelineIndex];
@@ -4076,23 +4076,23 @@ export class Player<
       timelineIndex,
       noteEvent,
     });
+    const ctrl = this.getControllerState(channel, noteNumber, velocity, 0);
+    // Cost from primary layer only (budget should not scale with zone count).
+    const primaryParams = getVoiceParams(layers[0].voice, ctrl);
+    if (!primaryParams) return;
     const noteCost = this.estimateChunkNoteCost(
       noteDuration,
-      voiceParams,
+      primaryParams,
       noteEvent,
       isComplex,
     );
 
-    // Close by wall-time upper bound first (max tileDuration).
     if (
       state.openChunk &&
       this.tileDuration <= t - state.openChunk.chunkStart
     ) {
       this.closeChunk(state);
     }
-    // Split at onset-group boundaries only (never mid-chord).
-    // Same song-time onsets always stay together even if over budget / max notes.
-    // Triggers: cost budget, or maxChunkNotes soft cap.
     const budget = this.chunkCostBudget;
     const maxNotes = this.maxChunkNotes | 0;
     if (
@@ -4118,25 +4118,31 @@ export class Player<
         lastOnsetTime: t,
       };
     }
-    state.openChunk.notes.push({
-      channelNumber: channel.channelNumber,
-      offset: t - state.openChunk.chunkStart,
-      noteNumber,
-      velocity,
-      voiceParams,
-      noteDuration,
-      noteEvent,
-      audioBufferId: this.noteAudioBufferIds[timelineIndex],
-      voice: this.tiledVoices[timelineIndex] ?? undefined,
-      // Snapshot per-channel state now -- channel volume/pan/expression
-      // are baked into the buffer so they must be captured at note-append
-      // time before subsequent events on the same channel change them.
-      channelDetune: channel.detune,
-      channelStateArray: channel.state.array.slice(),
-      programNumber: channel.programNumber,
-      isDrum: channel.isDrum,
-      timelineIndex,
-    });
+    const offset = t - state.openChunk.chunkStart;
+    for (const layer of layers) {
+      const voiceParams = getVoiceParams(layer.voice, ctrl);
+      if (!voiceParams) continue;
+      const instrument = layer.voice.generators.get("instrument") ?? 0;
+      const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+      const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+        instrument * (2 ** 24) + (sampleID << 8);
+      state.openChunk.notes.push({
+        channelNumber: channel.channelNumber,
+        offset,
+        noteNumber,
+        velocity,
+        voiceParams,
+        noteDuration,
+        noteEvent,
+        audioBufferId,
+        voice: layer.voice,
+        channelDetune: channel.detune,
+        channelStateArray: channel.state.array.slice(),
+        programNumber: channel.programNumber,
+        isDrum: channel.isDrum,
+        timelineIndex,
+      });
+    }
     state.openChunk.cost += noteCost;
     state.openChunk.sumNoteDuration += noteDuration;
     state.openChunk.lastOnsetTime = t;
@@ -5307,32 +5313,42 @@ export class Player<
             this.noteOnDurations[i] ?? 0;
           if (noteDuration <= 0) return;
           const { noteNumber, velocity } = event;
-          const voice = this.resolveVoice(
+          const layers = this.resolveVoices(
             renderChannel,
             noteNumber!,
             velocity!,
           );
-          if (!voice) return;
-          const voiceParams = getVoiceParams(
-            voice,
-            this.getControllerState(renderChannel, noteNumber!, velocity!, 0),
+          if (layers.length === 0) return;
+          const ctrl = this.getControllerState(
+            renderChannel,
+            noteNumber!,
+            velocity!,
+            0,
           );
-          notes.push({
-            channelNumber: renderChannel.channelNumber,
-            offset,
-            noteNumber: noteNumber!,
-            velocity: velocity!,
-            voiceParams,
-            noteDuration,
-            noteEvent,
-            audioBufferId: this.noteAudioBufferIds[i],
-            voice,
-            channelDetune: renderChannel.detune,
-            channelStateArray: renderChannel.state.array.slice(),
-            programNumber: renderChannel.programNumber,
-            isDrum: renderChannel.isDrum,
-            timelineIndex: i,
-          });
+          for (const layer of layers) {
+            const voiceParams = getVoiceParams(layer.voice, ctrl);
+            if (!voiceParams) continue;
+            const instrument = layer.voice.generators.get("instrument") ?? 0;
+            const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+            const audioBufferId = layer.soundFontIndex * (2 ** 31) +
+              instrument * (2 ** 24) + (sampleID << 8);
+            notes.push({
+              channelNumber: renderChannel.channelNumber,
+              offset,
+              noteNumber: noteNumber!,
+              velocity: velocity!,
+              voiceParams,
+              noteDuration,
+              noteEvent,
+              audioBufferId,
+              voice: layer.voice,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array.slice(),
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              timelineIndex: i,
+            });
+          }
         },
       });
     }
@@ -5676,13 +5692,19 @@ export class Player<
       if (destChCount === 1) {
         const srcData = src.getChannelData(0);
         const dst = destChannels[0];
+        // Equal-power mono: center pan (≈0.707,0.707) must yield gain 1, not
+        // -3 dB. Matches note-mode isFull path (unity into masterVolume).
+        // When only one side is specified, keep that absolute gain.
+        const gMono = (gainL != null && gainR != null)
+          ? Math.hypot(gL, gR)
+          : gL;
         if (curve) {
           for (let i = 0; i < copyLen; i++) {
-            dst[startSample + i] += srcData[i] * gL * curve[i];
+            dst[startSample + i] += srcData[i] * gMono * curve[i];
           }
         } else {
           for (let i = 0; i < copyLen; i++) {
-            dst[startSample + i] += srcData[i] * gL;
+            dst[startSample + i] += srcData[i] * gMono;
           }
         }
       } else if (srcChCount === 1) {
@@ -5842,7 +5864,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = sf2VolumeExprGain(vol0, expr0);
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -5911,7 +5933,11 @@ export class Player<
     // bake here when the sample is ready. Worker remains available via
     // getSimpleNoteBuffer when the caller can await.
 
-    const body = this.createEmptyBuffer(1, length, sampleRate);
+    const body = this.createEmptyBuffer(
+      audioBuffer.numberOfChannels,
+      length,
+      sampleRate,
+    );
     this.renderSampleTypedArray(
       audioBuffer,
       body,
@@ -5931,20 +5957,22 @@ export class Player<
       out = body;
     } else {
       const stereo = this.createEmptyBuffer(2, length, sampleRate);
-      const src = body.getChannelData(0);
+      const srcL = body.getChannelData(0);
+      // Stereo sources: keep both channels and apply pan as balance.
+      // Using only channel 0 discarded half the energy for true-stereo samples
+      // (~3 dB quiet vs FluidSynth / ads path that preserve both channels).
+      const srcR = body.numberOfChannels > 1 ? body.getChannelData(1) : srcL;
       const left = stereo.getChannelData(0);
       const right = stereo.getChannelData(1);
       if (panCurveLeft && panCurveRight) {
         for (let i = 0; i < length; i++) {
-          const s = src[i];
-          left[i] = s * panCurveLeft[i];
-          right[i] = s * panCurveRight[i];
+          left[i] = srcL[i] * panCurveLeft[i];
+          right[i] = srcR[i] * panCurveRight[i];
         }
       } else {
         for (let i = 0; i < length; i++) {
-          const s = src[i];
-          left[i] = s * panLeft;
-          right[i] = s * panRight;
+          left[i] = srcL[i] * panLeft;
+          right[i] = srcR[i] * panRight;
         }
       }
       out = stereo;
@@ -6271,14 +6299,17 @@ export class Player<
       steps.push({ t, vol, expr });
     }
     steps.sort((a, b) => a.t - b.t);
+    // SF2 modulators already fold onset volume into initialAttenuation;
+    // this curve only carries the *relative* change from note-on.
+    const onsetGain = Math.max(1e-12, sf2VolumeExprGain(vol0, expr0));
     const invSr = 1 / sampleRate;
     let si = 0;
-    let curGain = sf2VolumeExprGain(steps[0].vol, steps[0].expr);
+    let curGain = sf2VolumeExprGain(steps[0].vol, steps[0].expr) / onsetGain;
     for (let i = 0; i < length; i++) {
       const t = i * invSr;
       while (si + 1 < steps.length && steps[si + 1].t <= t + 1e-9) {
         si++;
-        curGain = sf2VolumeExprGain(steps[si].vol, steps[si].expr);
+        curGain = sf2VolumeExprGain(steps[si].vol, steps[si].expr) / onsetGain;
       }
       curve[i] = curGain;
     }
@@ -6512,18 +6543,21 @@ export class Player<
     const decayDur = voiceParams.decayVolEnv;
     const releaseDur = voiceParams.releaseVolEnv;
     const invSr = 1 / sampleRate;
+    // Reconstruct envelope level at note-off with the same curve used in the
+    // sample loop (exponential attack/decay), so release starts from the true
+    // held amplitude — linear interpolation here used to under/over-shoot.
     let gainAtNoteOff: number;
     if (noteOffTime <= delay) {
       gainAtNoteOff = 0;
     } else if (noteOffTime <= attackEnd) {
-      gainAtNoteOff = 1e-6 + (attackVolume - 1e-6) *
-          (noteOffTime - delay) / Math.max(attackDur, 1e-12);
+      const frac = attackDur > 0 ? (noteOffTime - delay) / attackDur : 1;
+      gainAtNoteOff = 1e-6 * Math.pow(attackVolume / 1e-6, frac);
     } else if (noteOffTime <= holdEnd) {
       gainAtNoteOff = attackVolume;
     } else if (noteOffTime <= decayEnd) {
-      const decayFraction = (noteOffTime - holdEnd) / Math.max(decayDur, 1e-12);
+      const frac = decayDur > 0 ? (noteOffTime - holdEnd) / decayDur : 1;
       gainAtNoteOff = attackVolume *
-        Math.pow(sustainVolume / attackVolume, decayFraction);
+        Math.pow(sustainVolume / attackVolume, frac);
     } else {
       gainAtNoteOff = sustainVolume;
     }
@@ -7041,13 +7075,14 @@ export class Player<
     const loopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
       : 0;
-    const noteLoopCount = isLoop && noteDuration > loopStartTime
-      ? Math.ceil((noteDuration - loopStartTime) / loopDuration)
-      : 0;
-    const alignedNoteEnd = isLoop
-      ? loopStartTime + noteLoopCount * loopDuration
-      : noteDuration;
-    const noteOffTime = alignedNoteEnd;
+    // SF2 volume release starts at the actual MIDI note-off, not at a
+    // loop-phase boundary. Aligning the gain envelope to the loop end made
+    // every normal note-off look like an "early cut" (endTime < alignedEnd),
+    // which then applied scheduleVolumeRelease on top of the already-baked
+    // release and drove late levels to -80dB+.
+    // Sample playback still loops inside renderSampleTypedArray for the full
+    // buffer length; only the gain timeline follows MIDI.
+    const noteOffTime = Math.max(0, noteDuration);
     const totalDuration = noteOffTime + releaseDuration;
     const sampleRate = this.audioContext.sampleRate;
     const length = Math.ceil(totalDuration * sampleRate);
@@ -7739,6 +7774,9 @@ export class Player<
     preNote.voiceParams = entry.voiceParams;
     preNote.voice = entry.voice ?? null;
     preNote.audioBufferId = entry.audioBufferId;
+    // Ensure offline bakers expand only the bound zone (see noteOnChannel
+    // singleZoneBake). offlineRenderOnly also drives leaner node graphs.
+    offlinePlayer.offlineRenderOnly = true;
     const offlineNote = await offlinePlayer.noteOnChannel(
       dstChannel,
       entry.noteNumber,
@@ -7746,11 +7784,36 @@ export class Player<
       startTime,
       preNote,
     ) as TNote | undefined;
-    const volumeNode = offlineNote?.volumeNode ?? preNote.volumeNode;
-    // Dry: drop channel bus + mix-level sends (delay connects off volumeNode).
-    if (!bakeChannelMix && volumeNode) {
-      volumeNode.disconnect();
-      volumeNode.connect(offlineContext.destination);
+    // Dry: rewire *every* sounding volumeNode for this key to the offline
+    // destination. noteOnChannel may still create multiple layers when the
+    // entry did not bind a single zone; only reconnecting the primary left
+    // secondary zones on a channel bus that never reaches the destination.
+    if (!bakeChannelMix) {
+      const stack = dstChannel.activeNotes[entry.noteNumber];
+      if (stack) {
+        for (let si = 0; si < stack.length; si++) {
+          const n = stack[si];
+          if (n.ending || n.isTiledGhost) continue;
+          const vn = n.volumeNode;
+          if (!vn) continue;
+          try {
+            vn.disconnect();
+          } catch { /* ignore */ }
+          try {
+            n.panGainL?.disconnect();
+            n.panGainR?.disconnect();
+          } catch { /* ignore */ }
+          n.panGainL = null;
+          n.panGainR = null;
+          vn.connect(offlineContext.destination);
+        }
+      } else {
+        const volumeNode = offlineNote?.volumeNode ?? preNote.volumeNode;
+        if (volumeNode) {
+          volumeNode.disconnect();
+          volumeNode.connect(offlineContext.destination);
+        }
+      }
     }
     return offlineNote;
   }
@@ -8466,7 +8529,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = sf2VolumeExprGain(vol0, expr0);
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -8670,7 +8733,16 @@ export class Player<
             // scheduleSimpleNotesDirect path is unsafe for same-channel polyphony.
             buf = await this.getSimpleNoteBuffer(bakeInput, false, true); // gate slot held
           }
-          simpleHits.push({ buffer: buf, offset: n.offset });
+          // SF2 zone pan so stereo L/R layers mix with correct balance.
+          const vp = n.voiceParams?.pan ?? 0;
+          const voiceNorm = Math.max(0, Math.min(1, vp + 0.5));
+          const { gainLeft, gainRight } = this.panToGain(voiceNorm);
+          simpleHits.push({
+            buffer: buf,
+            offset: n.offset,
+            gainL: gainLeft,
+            gainR: gainRight,
+          });
         }
       }
 
@@ -8759,15 +8831,40 @@ export class Player<
   // Release tails are ignored so a few long decays do not inflate the count
   // and over-attenuate the mix gain.
   estimateMaxConcurrentNotes(
-    notes: { offset: number; noteDuration: number }[],
+    notes: {
+      offset: number;
+      noteDuration: number;
+      timelineIndex?: number | null;
+    }[],
   ): number {
     const n = notes.length;
     if (n <= 1) return n;
-    // Events: +1 at onset, -1 at note-off. Sort by time; onsets before
-    // releases at the same time so a note-off/note-on pair still counts.
-    const events = new Array<{ t: number; d: number }>(n * 2);
+    // Collapse SF2 multi-layer zones that share the same MIDI onset into one
+    // polyphony unit. Counting each zone as concurrent applied 1/sqrt(N)
+    // headroom and left multi-layer tiles ~3 dB quieter than note/ads.
+    type Unit = { offset: number; noteDuration: number };
+    const byKey = new Map<string | number, Unit>();
     for (let i = 0; i < n; i++) {
       const note = notes[i];
+      const key = note.timelineIndex != null
+        ? note.timelineIndex
+        : `o:${note.offset}`;
+      const prev = byKey.get(key);
+      if (!prev) {
+        byKey.set(key, {
+          offset: note.offset,
+          noteDuration: note.noteDuration,
+        });
+      } else if (note.noteDuration > prev.noteDuration) {
+        prev.noteDuration = note.noteDuration;
+      }
+    }
+    const units = Array.from(byKey.values());
+    const u = units.length;
+    if (u <= 1) return u;
+    const events = new Array<{ t: number; d: number }>(u * 2);
+    for (let i = 0; i < u; i++) {
+      const note = units[i];
       const start = note.offset;
       const end = note.offset + Math.max(0, note.noteDuration);
       events[i * 2] = { t: start, d: 1 };
@@ -8919,7 +9016,7 @@ export class Player<
       const vol0 = state[128 + 7] ?? (100 / 127);
       const pan0 = state[128 + 10] ?? (64 / 127);
       const expr0 = state[128 + 11] ?? 1;
-      channelGain = sf2VolumeExprGain(vol0, expr0);
+      channelGain = 1 /* SF2 mod handles vol/expr */;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -8989,7 +9086,11 @@ export class Player<
     // per-sample resample/filter loop runs on a worker; curves stay here.
     // Rate-curve (almost-simple bend) is also worker-capable: long onlyBend
     // notes were starving the main event loop when forced on-thread.
-    const body = this.createEmptyBuffer(1, length, sampleRate);
+    const body = this.createEmptyBuffer(
+      audioBuffer.numberOfChannels,
+      length,
+      sampleRate,
+    );
     await this.renderSampleTypedArrayMaybeWorker(
       audioBuffer,
       body,
@@ -9009,20 +9110,19 @@ export class Player<
     }
 
     const stereo = this.createEmptyBuffer(2, length, sampleRate);
-    const src = body.getChannelData(0);
+    const srcL = body.getChannelData(0);
+    const srcR = body.numberOfChannels > 1 ? body.getChannelData(1) : srcL;
     const left = stereo.getChannelData(0);
     const right = stereo.getChannelData(1);
     if (panCurveLeft && panCurveRight) {
       for (let i = 0; i < length; i++) {
-        const s = src[i];
-        left[i] = s * panCurveLeft[i];
-        right[i] = s * panCurveRight[i];
+        left[i] = srcL[i] * panCurveLeft[i];
+        right[i] = srcR[i] * panCurveRight[i];
       }
     } else {
       for (let i = 0; i < length; i++) {
-        const s = src[i];
-        left[i] = s * panLeft;
-        right[i] = s * panRight;
+        left[i] = srcL[i] * panLeft;
+        right[i] = srcR[i] * panRight;
       }
     }
     return stereo;
@@ -9571,18 +9671,31 @@ export class Player<
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
     const now = this.audioContext.currentTime;
+    const tRel = Math.max(0, endTime - note.startTime);
+    const heldFromEnvelope = note.volumeEnvelopeNode
+      ? this.volumeEnvelopeLevelAt(note, tRel)
+      : 1;
+    try {
+      if (note.bufferSource) note.bufferSource.loop = false;
+    } catch { /* ignore */ }
+
     if (note.renderedBuffer?.isFull) {
       const rb = note.renderedBuffer;
       const naturalEndTime = note.startTime + rb.buffer.duration;
       const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-      const isEarlyCut = endTime < noteOffTime;
+      const isEarlyCut = endTime < noteOffTime - 1e-4;
       if (isEarlyCut) {
         const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
-        const releaseVolEnvTime = endTime + volDuration;
+        const releaseVolEnvTime = endTime + Math.max(volDuration, 1e-4);
         try {
-          note.volumeNode?.gain
-            .cancelScheduledValues(endTime)
-            .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+          if (note.volumeNode) {
+            this.scheduleVolumeRelease(
+              note.volumeNode.gain,
+              endTime,
+              volDuration,
+              1,
+            );
+          }
         } catch { /* already closed */ }
         return this.waitSourceEnded(note, releaseVolEnvTime);
       }
@@ -9594,35 +9707,44 @@ export class Player<
     }
 
     const volDuration = note.voiceParams?.releaseVolEnv ?? 0;
-    const releaseVolEnvTime = endTime + volDuration;
+    const releaseVolEnvTime = endTime + Math.max(volDuration, 1e-4);
 
     if (note.volumeEnvelopeNode) {
-      // "none" mode
       try {
         note.filterEnvelopeNode?.frequency
           .cancelScheduledValues(endTime)
           .exponentialRampToValueAtTime(
             note.adjustedBaseFreq,
-            endTime + (note.voiceParams?.releaseModEnv ?? 0),
+            endTime + Math.max(note.voiceParams?.releaseModEnv ?? 0, 1e-4),
           );
-        note.volumeEnvelopeNode.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        this.scheduleVolumeRelease(
+          note.volumeEnvelopeNode.gain,
+          endTime,
+          volDuration,
+          heldFromEnvelope,
+        );
       } catch { /* already closed */ }
     } else {
-      // "ads" / "adsr" mode
       const isAdsr = note.renderedBuffer?.releaseDuration != null &&
         !note.renderedBuffer.isFull;
       if (isAdsr) {
         const rb = note.renderedBuffer!;
         const naturalEndTime = note.startTime + rb.buffer.duration;
         const noteOffTime = note.startTime + (rb.noteDuration ?? 0);
-        const isEarlyCut = endTime < noteOffTime;
+        // 50ms tolerance: baked noteDuration can drift slightly vs MIDI off due
+        // to loop-alignment rounding; avoid double-release (gain + baked tail)
+        // on near-on-time cuts.
+        const isEarlyCut = endTime < noteOffTime - 1e-4;
         if (isEarlyCut) {
           try {
-            note.volumeNode?.gain
-              .cancelScheduledValues(endTime)
-              .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+            if (note.volumeNode) {
+              this.scheduleVolumeRelease(
+                note.volumeNode.gain,
+                endTime,
+                volDuration,
+                1,
+              );
+            }
           } catch { /* already closed */ }
           return this.waitSourceEnded(note, releaseVolEnvTime);
         }
@@ -9633,13 +9755,17 @@ export class Player<
         return this.waitSourceEnded(note, naturalEndTime);
       }
       try {
-        note.volumeNode?.gain
-          .cancelScheduledValues(endTime)
-          .setTargetAtTime(0, endTime, volDuration * envelopeCurve);
+        if (note.volumeNode) {
+          this.scheduleVolumeRelease(
+            note.volumeNode.gain,
+            endTime,
+            volDuration,
+            1,
+          );
+        }
       } catch { /* already closed */ }
     }
 
-    // waitSourceEnded always settles (onended or timeout).
     return this.waitSourceEnded(note, releaseVolEnvTime);
   }
 }
