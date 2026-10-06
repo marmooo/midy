@@ -2484,8 +2484,10 @@ export class MidyGM2 extends Player<Note, Channel> {
     const index = (drumExclusiveClass - 1) * this.channels.length +
       channel.channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
-    if (prevNote && !prevNote.ending) {
-      channel.noteOff(prevNote.noteNumber, 0, startTime, true);
+    // Release only the previous instance — noteOff(noteNumber) would also
+    // cut the newly started note on the same key (closed-hat retrigger).
+    if (prevNote && !prevNote.ending && prevNote !== note) {
+      this.releaseExclusivePrevNote(prevNote, channel, startTime);
     }
     this.drumExclusiveClassNotes[index] = note;
   }
@@ -2640,6 +2642,11 @@ export class MidyGM2 extends Player<Note, Channel> {
       }
       // Inherit ghost flag: createNoteInstance defaults isTiledGhost=false.
       if (primaryIsGhost) layerNote.isTiledGhost = true;
+      // Re-ensure: exclusive choke of a same-key prev may have deleted the slot
+      // between layers of a multi-zone stack.
+      if (!channel.activeNotes[noteNumber]) {
+        channel.activeNotes[noteNumber] = [];
+      }
       channel.activeNotes[noteNumber].push(layerNote);
       try {
         if (layerNote.isTiledGhost) {

@@ -2824,6 +2824,38 @@ export class BasePlayer<
     }
   }
 
+  /**
+   * Exclusive-class choke: release only the previous note instance.
+   * Using noteOff(noteNumber) would also cut a newly-started note that
+   * already sits on the same key stack (closed-hat retrigger), delete
+   * activeNotes[noteNumber], and crash the next layer push.
+   */
+  protected releaseExclusivePrevNote(
+    prevNote: TNote,
+    prevChannel: TChannel,
+    startTime: number,
+  ): void {
+    if (prevNote.ending) return;
+    prevNote.ending = true;
+    prevNote.heldByPedal = false;
+    const stack = prevChannel.activeNotes[prevNote.noteNumber];
+    if (stack) {
+      const remaining = stack.filter((n) => n !== prevNote);
+      if (remaining.length === 0) {
+        delete prevChannel.activeNotes[prevNote.noteNumber];
+      } else {
+        prevChannel.activeNotes[prevNote.noteNumber] = remaining;
+      }
+    }
+    const sus = prevChannel.sustainNotes;
+    const si = sus.indexOf(prevNote);
+    if (si >= 0) sus.splice(si, 1);
+    void Promise.resolve(prevNote.ready).then(() => {
+      if (!prevNote.voice) return;
+      return this.releaseNote(prevChannel, prevNote, startTime);
+    });
+  }
+
   handleExclusiveClass(
     note: TNote,
     channel: TChannel,
@@ -2834,8 +2866,8 @@ export class BasePlayer<
     const prev = this.exclusiveClassNotes[exclusiveClass];
     if (prev) {
       const [prevNote, prevChannel] = prev;
-      if (prevNote && !prevNote.ending) {
-        prevChannel.noteOff(prevNote.noteNumber, 0, startTime, true);
+      if (prevNote && !prevNote.ending && prevNote !== note) {
+        this.releaseExclusivePrevNote(prevNote, prevChannel, startTime);
       }
     }
     this.exclusiveClassNotes[exclusiveClass] = [note, channel];
@@ -2852,8 +2884,8 @@ export class BasePlayer<
     const index = drumExclusiveClass * this.channels.length +
       channel.channelNumber;
     const prevNote = this.drumExclusiveClassNotes[index];
-    if (prevNote && !prevNote.ending) {
-      channel.noteOff(prevNote.noteNumber, 0, startTime, true);
+    if (prevNote && !prevNote.ending && prevNote !== note) {
+      this.releaseExclusivePrevNote(prevNote, channel, startTime);
     }
     this.drumExclusiveClassNotes[index] = note;
   }
@@ -3069,6 +3101,11 @@ export class BasePlayer<
           instrument * (2 ** 24) + (sampleID << 8);
       }
       if (primaryIsGhost) layerNote.isTiledGhost = true;
+      // Re-ensure: exclusive choke of a same-key prev may have deleted the slot
+      // between layers of a multi-zone stack.
+      if (!channel.activeNotes[noteNumber]) {
+        channel.activeNotes[noteNumber] = [];
+      }
       channel.activeNotes[noteNumber].push(layerNote);
       try {
         if (layerNote.isTiledGhost) {
