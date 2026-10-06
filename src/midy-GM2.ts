@@ -2715,8 +2715,8 @@ export class MidyGM2 extends Player<Note, Channel> {
   // releaseFullCache() was removed; full/adsr release follows Player.releaseNote
   // (waitSourceEnded disconnects the note — no separate cache callback).
   override releaseNote(
-    _channel: TChannel,
-    note: TNote,
+    _channel: Channel,
+    note: Note,
     endTime: number,
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
