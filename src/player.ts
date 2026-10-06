@@ -797,6 +797,7 @@ export class Player<
     );
     offlinePlayer.cacheMode = "none";
     offlinePlayer.offlineRenderOnly = lightweight;
+    offlinePlayer.useAlmostSimplePitchBend = this.useAlmostSimplePitchBend;
     offlineContext.suspend = () => Promise.resolve();
     offlineContext.resume = () => Promise.resolve();
     offlinePlayer.soundFonts = this.soundFonts;
@@ -1361,6 +1362,14 @@ export class Player<
   // True when in-interval automation includes pitch bend and nothing that
   // forces complex (mod / other CC / SysEx). Gain and pan may coexist and
   // stay on the TypedArray almost-simple curves.
+  protected noteEventHasPitchBend(noteEvent: NoteOnEventEntry): boolean {
+    const events = noteEvent.events;
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].type === "pitchBend") return true;
+    }
+    return false;
+  }
+
   protected hasPitchBendOnlyAutomation(noteEvent: NoteOnEventEntry): boolean {
     if (!this.useAlmostSimplePitchBend) return false;
     const events = noteEvent.events;
@@ -5505,6 +5514,10 @@ export class Player<
     offlinePlayer.maxTiledNoteDuration = this.maxTiledNoteDuration;
     offlinePlayer.lookAhead = this.lookAhead;
     offlinePlayer.cacheMode = cacheMode;
+    // Almost-simple pitch-bend path must follow the outer player: otherwise
+    // renderWholeSongLive always bakes with the default (false), so A/B
+    // flag-on vs flag-off compares identical audio (onset-bent, bend-up, …).
+    offlinePlayer.useAlmostSimplePitchBend = this.useAlmostSimplePitchBend;
     // Absolute time base: no real-time start delay / resume offset.
     offlinePlayer.startTime = 0;
     offlinePlayer.resumeTime = 0;
@@ -5828,7 +5841,15 @@ export class Player<
       this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
       (voiceParams.modEnvToPitch ?? 0) === 0 &&
       (voiceParams.modLfoToPitch ?? 0) === 0);
-    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    // Strip onset wheel from base rate when the absolute rate curve carries it.
+    const detune = (
+      onlyBend
+        ? this.detuneWithoutPitchWheel(
+          entry.channelDetune,
+          entry.channelStateArray,
+        )
+        : entry.channelDetune
+    ) + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
 
@@ -6373,14 +6394,10 @@ export class Player<
     return Math.max(0, Math.min(16383, Math.round(norm * 16383)));
   }
 
-  // Build a per-sample playback-rate multiplier for almost-simple pitch bend.
-  //
-  // Returns RELATIVE multipliers vs the onset pitch-wheel position
-  // (onset → 1.0). Callers keep the full channelDetune (including onset
-  // wheel) in the constant base playbackRate; this curve only applies
-  // in-note wheel *changes*. That avoids double-counting and is robust
-  // to the small signed-formula differences between setPitchBend deltas
-  // and absolute reconstruction.
+  // Build a per-sample ABSOLUTE playback-rate multiplier for almost-simple
+  // pitch bend (1.0 = center wheel). Callers must strip onset wheel cents
+  // from channelDetune via detuneWithoutPitchWheel so the constant base
+  // rate does not double-apply the wheel.
   //
   // Signed scale matches Channel.setPitchBend:
   //   signed = (absolute - 8192) / 8192   ∈ [-1, 1]
@@ -6434,9 +6451,10 @@ export class Player<
       const clamped = Math.max(-4800, Math.min(4800, cents));
       return Math.pow(2, clamped / 1200);
     };
-    const onsetRate = absRate(onsetAbs);
-    const invOnset = onsetRate > 0 ? 1 / onsetRate : 1;
-    // Piecewise-constant (matches OfflineAudioContext setValueAtTime steps).
+    // Absolute rates (onset wheel is stripped from channelDetune via
+    // detuneWithoutPitchWheel). Relative-to-onset was fragile when the
+    // onset snapshot and channelDetune disagreed — mid-note returns to
+    // center then stayed at the onset pitch (onset-bent chunk failure).
     let si = 0;
     let curAbs = compact[0].abs;
     for (let i = 0; i < length; i++) {
@@ -6445,7 +6463,7 @@ export class Player<
         si++;
         curAbs = compact[si].abs;
       }
-      rates[i] = absRate(curAbs) * invOnset;
+      rates[i] = absRate(curAbs);
     }
     return rates;
   }
@@ -6471,6 +6489,35 @@ export class Player<
     state: Float32Array | undefined,
   ): number {
     return channelDetune - this.pitchWheelCentsFromState(state);
+  }
+
+  /**
+   * Schedule absolute pitch-wheel playbackRate on all active layers of a key
+   * inside an OfflineAudioContext. Preferred over setPitchBend detune-deltas
+   * which can leave onset-bent notes stuck at the onset pitch offline.
+   */
+  protected scheduleOfflinePitchBendAbsolute(
+    channel: TChannel,
+    noteNumber: number,
+    wheelAbs: number,
+    t: number,
+    voiceBaseRate: number,
+    otherDetuneCents: number,
+    sensitivity: number,
+  ): void {
+    const signed = (wheelAbs - 8192) / 8192;
+    const cents = signed * sensitivity * 12800 + otherDetuneCents;
+    const clamped = Math.max(-4800, Math.min(4800, cents));
+    const rate = voiceBaseRate * Math.pow(2, clamped / 1200);
+    const stack = channel.activeNotes[noteNumber];
+    if (!stack) return;
+    for (let si = 0; si < stack.length; si++) {
+      const n = stack[si];
+      if (!n || n.ending || n.isTiledGhost || !n.bufferSource) continue;
+      n.bufferSource.playbackRate
+        .cancelScheduledValues(t)
+        .setValueAtTime(rate, t);
+    }
   }
 
   // Precompute ADS volume envelope gains (no release; holds at sustain).
@@ -7852,6 +7899,22 @@ export class Player<
           ? 0
           : (n.voiceParams.releaseVolEnv * envelopeCurve * 5);
         const tMax = n.noteDuration + releaseEnd;
+        const stateArr = n.channelStateArray;
+        const sens = this.readPitchWheelSensitivity(stateArr);
+        const otherDetune = this.detuneWithoutPitchWheel(
+          n.channelDetune,
+          stateArr,
+        ) + (n.voiceParams.detune || 0);
+        const voiceBase = n.voiceParams.playbackRate || 1;
+        this.scheduleOfflinePitchBendAbsolute(
+          dstChannel,
+          n.noteNumber,
+          this.readPitchWheelAbs(stateArr),
+          n.offset,
+          voiceBase,
+          otherDetune,
+          sens,
+        );
         const events = noteEvent.events;
         for (let ei = 0; ei < events.length; ei++) {
           const event = events[ei];
@@ -7863,6 +7926,22 @@ export class Player<
           );
           if (t < -1e-4 || t > tMax) continue;
           if (t < 0) t = 0;
+          if (event.type === "pitchBend") {
+            const abs = this.normalizePitchBendValue(event.value ?? 8192);
+            this.scheduleOfflinePitchBendAbsolute(
+              dstChannel,
+              n.noteNumber,
+              abs,
+              n.offset + t,
+              voiceBase,
+              otherDetune,
+              sens,
+            );
+            dstChannel.state.pitchWheel = abs / 16383;
+            dstChannel.detune = otherDetune +
+              ((abs - 8192) / 8192) * sens * 12800;
+            continue;
+          }
           offlinePlayer.processTimelineEvent(event, n.offset + t, {
             channels: offlinePlayer.channels,
           });
@@ -8493,8 +8572,15 @@ export class Player<
       this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
       (voiceParams.modEnvToPitch ?? 0) === 0 &&
       (voiceParams.modLfoToPitch ?? 0) === 0);
-    // Relative rate curve carries in-note wheel deltas; keep full onset detune.
-    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    // Strip onset wheel from base rate when the absolute rate curve carries it.
+    const detune = (
+      onlyBend
+        ? this.detuneWithoutPitchWheel(
+          entry.channelDetune,
+          entry.channelStateArray,
+        )
+        : entry.channelDetune
+    ) + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
 
@@ -8978,7 +9064,15 @@ export class Player<
       this.hasPitchBendOnlyAutomation(entry.noteEvent) &&
       (voiceParams.modEnvToPitch ?? 0) === 0 &&
       (voiceParams.modLfoToPitch ?? 0) === 0);
-    const detune = entry.channelDetune + (voiceParams.detune || 0);
+    // Strip onset wheel from base rate when the absolute rate curve carries it.
+    const detune = (
+      onlyBend
+        ? this.detuneWithoutPitchWheel(
+          entry.channelDetune,
+          entry.channelStateArray,
+        )
+        : entry.channelDetune
+    ) + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detune / 1200);
 
@@ -9208,14 +9302,54 @@ export class Player<
     // Allow events through the release tail (not only up to noteDuration):
     // realtime playback still applies pitch bend after note-off while the
     // voice is releasing; skipping those made bends sound early/shifted.
+    //
+    // Pitch bend is applied as absolute playbackRate on each active layer.
+    // Relying on setPitchBend detune-deltas + updateChannelDetune was not
+    // reliable for OfflineAudioContext when the note started already bent
+    // (onset-bent chunk/note measured afterCenter still at +200c).
     const tMax = entry.noteDuration + releaseEndDuration;
     const noteOnEvent = entry.noteEvent;
+    const stateArr = entry.channelStateArray;
+    const sens = this.readPitchWheelSensitivity(stateArr);
+    const otherDetune = this.detuneWithoutPitchWheel(
+      entry.channelDetune,
+      stateArr,
+    ) + (entry.voiceParams.detune || 0);
+    const voiceBase = entry.voiceParams.playbackRate || 1;
+    // Ensure onset rate matches the absolute wheel (setDetune already ran;
+    // re-latch so later pitch-bend steps are relative to a known baseline).
+    this.scheduleOfflinePitchBendAbsolute(
+      dstChannel,
+      entry.noteNumber,
+      this.readPitchWheelAbs(stateArr),
+      0,
+      voiceBase,
+      otherDetune,
+      sens,
+    );
     for (let i = 0; i < noteEvents.length; i++) {
       const event = noteEvents[i];
       if (event.type === "programChange") continue;
       let t = this.relativeTimeInNote(event, noteOnEvent, noteStartTime);
       if (t < -1e-4 || t > tMax) continue;
       if (t < 0) t = 0;
+      if (event.type === "pitchBend") {
+        const abs = this.normalizePitchBendValue(event.value ?? 8192);
+        this.scheduleOfflinePitchBendAbsolute(
+          dstChannel,
+          entry.noteNumber,
+          abs,
+          t,
+          voiceBase,
+          otherDetune,
+          sens,
+        );
+        // Keep channel state in sync for any subsequent non-bend handlers.
+        dstChannel.state.pitchWheel = abs / 16383;
+        dstChannel.detune = otherDetune +
+          ((abs - 8192) / 8192) * sens * 12800;
+        continue;
+      }
       offlinePlayer.processTimelineEvent(event, t, {
         channels: offlinePlayer.channels,
       });

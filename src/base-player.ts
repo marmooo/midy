@@ -282,10 +282,18 @@ export function getVoiceParams(
   // path as FluidSynth). Channel gain carries only the *relative* square-law
   // change from DEFAULT_SF2_VOLUME_EXPR_GAIN (GM CC7=100, CC11=127) so mid-note drops match
   // fluid_conv.c without double-applying attenuation at the default level.
+  //
+  // Pitch wheel (controller type 14) is owned by channel.detune / the
+  // almost-simple rate curve — same rationale as setPitchBend avoiding
+  // applyVoiceParams(14). If transformAllParams sees a non-center wheel it
+  // locks that bend into voiceParams.detune for the whole note, so mid-note
+  // returns to center never fully unbend (onset-bent chunk/note failure).
+  const stateForMods = controllerState.slice();
+  stateForMods[14] = 8192 / 16383; // center: strip pitch-wheel modulators
   // transformAllParams returns voice.generators by reference when no
   // controller is active. Clone before the EMU rewrite so we never mutate
   // the voice's static zone store.
-  const transformed = voice.transformAllParams(controllerState);
+  const transformed = voice.transformAllParams(stateForMods);
   // transformAllParams returns voice.generators by reference when no
   // controller is active. Clone before the EMU rewrite so we never
   // mutate the voice's static zone store.
