@@ -18,6 +18,7 @@ import {
   RenderedBuffer,
   sf2FilterQ,
   sf2VolumeExprGain,
+  sf2VolumeExprGain,
   type TimelineEvent,
   type VoiceParams,
 } from "./base-player.ts";
@@ -1668,12 +1669,8 @@ export class Player<
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    const needsSegmentVoice = isTiledCacheMode(cacheMode);
     const simpleNoteSet = this.simpleNoteSet;
     const noteOnEvents = this.noteOnEvents;
-    const tiledVoiceParams = this.tiledVoiceParams;
-    const tiledVoices = this.tiledVoices;
-    const noteAudioBufferIds = this.noteAudioBufferIds;
     const simpleNoteCounts = this.simpleNoteCounts;
     const simpleNoteOnsets = this.simpleNoteOnsets;
 
@@ -1805,7 +1802,7 @@ export class Player<
     state: ArrayLike<number>,
   ): { gainL: number; gainR: number } {
     const pan0 = state[128 + 10] ?? (64 / 127);
-    // Volume/expression: SF2 modulators only (see updateChannelVolume).
+    // Volume/expression: channel owns absolute SF2 gain (see updateChannelVolume).
     const { gainLeft, gainRight } = this.panToGain(pan0);
     return { gainL: gainLeft, gainR: gainRight };
   }
@@ -1841,9 +1838,9 @@ export class Player<
       return { gainL: 1, gainR: 1 };
     }
     const state = n.channelStateArray;
-    const vol0 = state[128 + 7] ?? (100 / 127);
+    const vol0 = state[128 + 7] ?? DEFAULT_VOLUME_MSB;
     const pan0 = state[128 + 10] ?? (64 / 127);
-    const expr0 = state[128 + 11] ?? 1;
+    const expr0 = state[128 + 11] ?? DEFAULT_EXPRESSION_MSB;
     const { gainLeft, gainRight } = this.panToGain(pan0);
     const ne = n.noteEvent;
     if (
@@ -1864,10 +1861,12 @@ export class Player<
       // gainCurve carries relative SF2 vol/expr; pan is a constant L/R scale.
       return { gainL: gainLeft, gainR: gainRight, gainCurve };
     }
-    // Volume/expression: SF2 modulators only (see updateChannelVolume).
+    // Absolute SF2 vol/expr on channel (see updateChannelVolume).
+    const channelGain = sf2VolumeExprGain(vol0, expr0) /
+      DEFAULT_SF2_VOLUME_EXPR_GAIN;
     return {
-      gainL: gainLeft,
-      gainR: gainRight,
+      gainL: channelGain * gainLeft,
+      gainR: channelGain * gainRight,
     };
   }
 
@@ -1897,12 +1896,8 @@ export class Player<
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    const needsSegmentVoice = isTiledCacheMode(cacheMode);
     const simpleNoteSet = this.simpleNoteSet;
     const noteOnEvents = this.noteOnEvents;
-    const tiledVoiceParams = this.tiledVoiceParams;
-    const tiledVoices = this.tiledVoices;
-    const noteAudioBufferIds = this.noteAudioBufferIds;
 
     // baseNoVel → Map<velocity, count>
     const byNoVel = new Map<string, Map<number, number>>();
@@ -3163,7 +3158,6 @@ export class Player<
   }
 
   private async prewarmSimpleNoteCacheBody(): Promise<void> {
-    const cacheMode = this.cacheMode;
     const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
     const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
     const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
@@ -3183,12 +3177,8 @@ export class Player<
 
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
-    const needsSegmentVoice = isTiledCacheMode(cacheMode);
     const simpleNoteSet = this.simpleNoteSet;
     const noteOnEvents = this.noteOnEvents;
-    const tiledVoiceParams = this.tiledVoiceParams;
-    const tiledVoices = this.tiledVoices;
-    const noteAudioBufferIds = this.noteAudioBufferIds;
     const simpleNoteCounts = this.simpleNoteCounts;
 
     type Cand = {
@@ -5861,10 +5851,11 @@ export class Player<
     let panCurveRight: Float32Array | null = null;
     if (bakeChannelMix) {
       const state = entry.channelStateArray;
-      const vol0 = state[128 + 7] ?? (100 / 127);
+      const vol0 = state[128 + 7] ?? DEFAULT_VOLUME_MSB;
       const pan0 = state[128 + 10] ?? (64 / 127);
-      const expr0 = state[128 + 11] ?? 1;
-      channelGain = 1 /* SF2 mod handles vol/expr */;
+      const expr0 = state[128 + 11] ?? DEFAULT_EXPRESSION_MSB;
+      channelGain = sf2VolumeExprGain(vol0, expr0) /
+        DEFAULT_SF2_VOLUME_EXPR_GAIN;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -6299,17 +6290,17 @@ export class Player<
       steps.push({ t, vol, expr });
     }
     steps.sort((a, b) => a.t - b.t);
-    // SF2 modulators already fold onset volume into initialAttenuation;
-    // this curve only carries the *relative* change from note-on.
-    const onsetGain = Math.max(1e-12, sf2VolumeExprGain(vol0, expr0));
+    // Channel owns absolute SF2 vol/expr (see updateChannelVolume);
+    // bake the absolute trajectory so dry-mix notes stay correct.
     const invSr = 1 / sampleRate;
     let si = 0;
-    let curGain = sf2VolumeExprGain(steps[0].vol, steps[0].expr) / onsetGain;
+    const refGain = DEFAULT_SF2_VOLUME_EXPR_GAIN;
+    let curGain = sf2VolumeExprGain(steps[0].vol, steps[0].expr) / refGain;
     for (let i = 0; i < length; i++) {
       const t = i * invSr;
       while (si + 1 < steps.length && steps[si + 1].t <= t + 1e-9) {
         si++;
-        curGain = sf2VolumeExprGain(steps[si].vol, steps[si].expr) / onsetGain;
+        curGain = sf2VolumeExprGain(steps[si].vol, steps[si].expr) / refGain;
       }
       curve[i] = curGain;
     }
@@ -8526,10 +8517,11 @@ export class Player<
     let panCurveRight: Float32Array | null = null;
     if (bakeChannelMix) {
       const state = entry.channelStateArray;
-      const vol0 = state[128 + 7] ?? (100 / 127);
+      const vol0 = state[128 + 7] ?? DEFAULT_VOLUME_MSB;
       const pan0 = state[128 + 10] ?? (64 / 127);
-      const expr0 = state[128 + 11] ?? 1;
-      channelGain = 1 /* SF2 mod handles vol/expr */;
+      const expr0 = state[128 + 11] ?? DEFAULT_EXPRESSION_MSB;
+      channelGain = sf2VolumeExprGain(vol0, expr0) /
+        DEFAULT_SF2_VOLUME_EXPR_GAIN;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -9013,10 +9005,11 @@ export class Player<
     let panCurveRight: Float32Array | null = null;
     if (bakeChannelMix) {
       const state = entry.channelStateArray;
-      const vol0 = state[128 + 7] ?? (100 / 127);
+      const vol0 = state[128 + 7] ?? DEFAULT_VOLUME_MSB;
       const pan0 = state[128 + 10] ?? (64 / 127);
-      const expr0 = state[128 + 11] ?? 1;
-      channelGain = 1 /* SF2 mod handles vol/expr */;
+      const expr0 = state[128 + 11] ?? DEFAULT_EXPRESSION_MSB;
+      channelGain = sf2VolumeExprGain(vol0, expr0) /
+        DEFAULT_SF2_VOLUME_EXPR_GAIN;
       const { gainLeft, gainRight } = this.panToGain(pan0);
       panLeft = gainLeft;
       panRight = gainRight;
@@ -9777,6 +9770,9 @@ export {
   Channel,
   type ControlChangeHandler,
   ControllerState,
+  DEFAULT_EXPRESSION_MSB,
+  DEFAULT_SF2_VOLUME_EXPR_GAIN,
+  DEFAULT_VOLUME_MSB,
   envelopeCurve,
   f64ToBigInt,
   filterEnvelopeKeySet,

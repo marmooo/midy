@@ -8,7 +8,12 @@ import {
   Note as GM2Note,
   RenderedBuffer,
 } from "./midy-GM2.ts";
-import { cbToRatio, type MessageHandler } from "./player.ts";
+import {
+  cbToRatio,
+  DEFAULT_SF2_VOLUME_EXPR_GAIN,
+  type MessageHandler,
+  sf2VolumeExprGain,
+} from "./player.ts";
 
 export { RenderedBuffer };
 
@@ -1345,8 +1350,8 @@ export class Midy extends MidyGM2 {
   }
 
   // Volume / expression / pan use virtual 14-bit readouts.
-  // CC7/CC11 amplitude is applied via SF2 default modulators (attenuation),
-  // not as a second vol²·expr² factor on the channel gain (FluidSynth-compatible).
+  // Channel owns CC7/CC11 amplitude (SF2 concave); modulators zeroed in
+  // getVoiceParams so mid-note changes track the channel offline.
   override updateChannelVolume(
     channel: GM2Channel,
     scheduleTime: number,
@@ -1355,8 +1360,9 @@ export class Midy extends MidyGM2 {
     if (!ch.gainL) return;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    // CC7/CC11 via SF2 modulators only; channel gain is pan (+ GS effect).
-    const gain = 1 + effect;
+    const gain = (sf2VolumeExprGain(state.volume, state.expression) /
+      DEFAULT_SF2_VOLUME_EXPR_GAIN) *
+      (1 + effect);
     const { gainLeft, gainRight } = this.panToGain(state.pan);
     const timeConstant = this.perceptualSmoothingTime / 5;
     ch.gainL.gain
@@ -1378,10 +1384,11 @@ export class Midy extends MidyGM2 {
     const gainR = ch.keyBasedGainRs[keyNumber]!;
     const state = ch.state as ControllerState;
     const effect = this.getChannelAmplitudeControl(ch);
-    const defaultGain = 1 + effect;
+    const defaultGain = (sf2VolumeExprGain(state.volume, state.expression) /
+      DEFAULT_SF2_VOLUME_EXPR_GAIN) *
+      (1 + effect);
     const defaultPan = state.pan;
     const keyBasedVolume = this.getKeyBasedValue(ch, keyNumber, 7);
-    // Key-based volume scales the channel amplitude; CC7/CC11 stay on SF2 mods.
     const gain = (0 <= keyBasedVolume)
       ? defaultGain * keyBasedVolume / 64
       : defaultGain;
