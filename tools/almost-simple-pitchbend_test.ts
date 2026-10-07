@@ -179,12 +179,13 @@ Deno.test("almost-simple pitchbend: absolute rate is 1.0 at center onset", () =>
   assertAlmostEquals(rates[length - 1], 1.0, 1e-6);
 });
 
-Deno.test("almost-simple pitchbend: onset already at +200c → relative rate 1.0", () => {
+Deno.test("almost-simple pitchbend: onset already at +200c → absolute rate at max", () => {
   const player = makePlayer();
   // deno-lint-ignore no-explicit-any
   const p = player as any;
-  // Rate curve is relative to onset wheel; onset cents live in channelDetune.
-  // With no in-note bends, every sample stays 1.0 (absolute pitch from detune).
+  // Absolute rate curve: onset wheel is carried by the rate samples themselves
+  // (channelDetune is stripped via detuneWithoutPitchWheel). With no in-note
+  // bends the whole curve stays at the absolute max-up rate.
   const entry = noteEntry([]);
   const length = 100;
   const sampleRate = 100;
@@ -196,8 +197,9 @@ Deno.test("almost-simple pitchbend: onset already at +200c → relative rate 1.0
     sampleRate,
     1.0,
   ) as Float32Array;
-  assertAlmostEquals(rates[0], 1.0, 1e-5);
-  assertAlmostEquals(rates[length - 1], 1.0, 1e-5);
+  const expected = Math.pow(2, 200 / 1200);
+  assertAlmostEquals(rates[0], expected, expected * 0.02);
+  assertAlmostEquals(rates[length - 1], expected, expected * 0.02);
 });
 
 Deno.test("almost-simple pitchbend: detuneWithoutPitchWheel strips wheel cents", () => {
@@ -252,12 +254,12 @@ Deno.test("almost-simple pitchbend: multi-step curve returns to 1.0 at center", 
   assertAlmostEquals(rates[iDown], expectDown, expectDown * 0.001);
 });
 
-Deno.test("almost-simple pitchbend: full-scale up stays relative 1.0 at onset max", () => {
+Deno.test("almost-simple pitchbend: full-scale up stays absolute at onset max", () => {
   const player = makePlayer();
   // deno-lint-ignore no-explicit-any
   const p = player as any;
-  // Relative-to-onset design: onset wheel is in channelDetune; curve is 1.0
-  // when the in-note wheel does not move away from onset.
+  // Absolute design: onset wheel is in the rate curve (channelDetune stripped).
+  // In-note bend to the same max position keeps the absolute max-up rate.
   const entry = noteEntry([pitchBend(0, 8191)]);
   const rates = p.computePitchBendRateCurve(
     entry,
@@ -267,5 +269,6 @@ Deno.test("almost-simple pitchbend: full-scale up stays relative 1.0 at onset ma
     100,
     1.0,
   ) as Float32Array;
-  assertAlmostEquals(rates[0], 1.0, 1e-5);
+  const expected = Math.pow(2, 200 / 1200);
+  assertAlmostEquals(rates[0], expected, expected * 0.02);
 });
