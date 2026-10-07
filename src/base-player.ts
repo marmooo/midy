@@ -1686,6 +1686,60 @@ export class BasePlayer<
     return false;
   }
 
+  /**
+   * Tile a looped SF2 sample into a longer AudioBuffer so sustained notes do
+   * not depend solely on AudioBufferSourceNode.loop (which is unreliable for
+   * some buffer/context sample-rate combinations in OfflineAudioContext).
+   * Pre-loop region is copied once; [loopStart, loopEnd) is repeated.
+   */
+  protected expandLoopedAudioBuffer(
+    src: AudioBuffer,
+    loopStartSec: number,
+    loopEndSec: number,
+    targetDurationSec: number,
+  ): AudioBuffer {
+    const rate = src.sampleRate;
+    const targetLen = Math.max(1, Math.ceil(targetDurationSec * rate));
+    if (src.length >= targetLen) return src;
+    const ls = Math.max(
+      0,
+      Math.min(src.length - 1, Math.floor(loopStartSec * rate)),
+    );
+    let le = Math.max(
+      ls + 1,
+      Math.min(src.length, Math.floor(loopEndSec * rate)),
+    );
+    if (le <= ls) le = Math.min(src.length, ls + 1);
+    const loopLen = le - ls;
+    const out = new AudioBuffer({
+      numberOfChannels: src.numberOfChannels,
+      length: targetLen,
+      sampleRate: rate,
+    });
+    for (let ch = 0; ch < src.numberOfChannels; ch++) {
+      const s = src.getChannelData(ch);
+      const d = out.getChannelData(ch);
+      const preEnd = Math.min(ls, s.length, targetLen);
+      for (let i = 0; i < preEnd; i++) d[i] = s[i];
+      let pos = preEnd;
+      while (pos < targetLen) {
+        const remain = targetLen - pos;
+        const take = Math.min(loopLen, remain);
+        for (let i = 0; i < take; i++) {
+          d[pos + i] = s[ls + i];
+        }
+        pos += take;
+      }
+    }
+    return out;
+  }
+
+  /** Max duration to pre-expand looped one-shots (seconds). Beyond this,
+   * AudioBufferSourceNode.loop is still enabled on the expanded buffer. */
+  loopExpandDurationSec: number = 30;
+  /** Cache expanded loop buffers keyed by the raw AudioBuffer instance. */
+  private loopExpandedBufferCache = new WeakMap<AudioBuffer, AudioBuffer>();
+
   createBufferSource(
     channel: TChannel,
     noteNumber: number,
@@ -1693,23 +1747,79 @@ export class BasePlayer<
     renderedOrRaw: RenderedBuffer | AudioBuffer,
   ): AudioBufferSourceNode {
     const isRendered = renderedOrRaw instanceof RenderedBuffer;
-    const audioBuffer = isRendered ? renderedOrRaw.buffer : renderedOrRaw;
+    let audioBuffer = isRendered ? renderedOrRaw.buffer : renderedOrRaw;
     const bufferSource = new AudioBufferSourceNode(this.audioContext);
-    bufferSource.buffer = audioBuffer;
-    const isDrumLoop = channel.isDrum
-      ? this.isLoopDrum(channel, noteNumber)
-      : voiceParams.sampleModes % 2 !== 0;
-    const isLoop = isRendered ? renderedOrRaw.isLoop : isDrumLoop;
-    bufferSource.loop = isLoop;
-    if (bufferSource.loop) {
+    const wantsLoop = isRendered
+      ? renderedOrRaw.isLoop
+      : (channel.isDrum
+        ? this.isLoopDrum(channel, noteNumber)
+        : (voiceParams.sampleModes % 2 !== 0));
+
+    let loopStartSec = 0;
+    let loopEndSec = audioBuffer.duration;
+    if (wantsLoop) {
       if (isRendered && renderedOrRaw.adsDuration != null) {
-        bufferSource.loopStart = renderedOrRaw.loopStart!;
-        bufferSource.loopEnd = renderedOrRaw.loopStart! +
-          renderedOrRaw.loopDuration!;
+        loopStartSec = renderedOrRaw.loopStart!;
+        loopEndSec = renderedOrRaw.loopStart! + renderedOrRaw.loopDuration!;
       } else {
-        bufferSource.loopStart = voiceParams.loopStart / voiceParams.sampleRate;
-        bufferSource.loopEnd = voiceParams.loopEnd / voiceParams.sampleRate;
+        // Prefer the buffer's sample rate (decoded OGG may differ from header).
+        const srcRate = audioBuffer.sampleRate || voiceParams.sampleRate || 1;
+        loopStartSec = voiceParams.loopStart / srcRate;
+        loopEndSec = voiceParams.loopEnd / srcRate;
       }
+      const duration = audioBuffer.duration;
+      const minLen = 1 / (audioBuffer.sampleRate || 1);
+      if (!(loopStartSec >= 0) || !Number.isFinite(loopStartSec)) {
+        loopStartSec = 0;
+      }
+      if (!(loopEndSec > loopStartSec) || !Number.isFinite(loopEndSec)) {
+        loopEndSec = duration;
+      }
+      loopStartSec = Math.min(
+        Math.max(0, loopStartSec),
+        Math.max(0, duration - minLen),
+      );
+      loopEndSec = Math.min(
+        Math.max(loopStartSec + minLen, loopEndSec),
+        Math.max(loopStartSec + minLen, duration),
+      );
+
+      // Raw (non-RenderedBuffer) looped samples: expand PCM so sustain does
+      // not depend on AudioBufferSourceNode.loop alone. ADS/note bakes already
+      // tile loops via renderSampleTypedArray; none-mode was truncating at
+      // one-shot length (e.g. piano ~2s, prog88 layers ~1s).
+      if (!isRendered && loopEndSec > loopStartSec + minLen) {
+        const cached = this.loopExpandedBufferCache.get(audioBuffer);
+        if (cached) {
+          audioBuffer = cached;
+        } else {
+          const expanded = this.expandLoopedAudioBuffer(
+            audioBuffer,
+            loopStartSec,
+            loopEndSec,
+            this.loopExpandDurationSec,
+          );
+          this.loopExpandedBufferCache.set(audioBuffer, expanded);
+          audioBuffer = expanded;
+        }
+        // Loop region on the expanded buffer: last tiled cycle, for notes
+        // longer than loopExpandDurationSec.
+        const loopLenSec = loopEndSec - loopStartSec;
+        const expDuration = audioBuffer.duration;
+        if (expDuration > loopStartSec + loopLenSec) {
+          loopStartSec = Math.max(0, expDuration - loopLenSec);
+          loopEndSec = expDuration;
+        }
+      }
+    }
+
+    bufferSource.buffer = audioBuffer;
+    if (wantsLoop && loopEndSec > loopStartSec) {
+      bufferSource.loopStart = loopStartSec;
+      bufferSource.loopEnd = loopEndSec;
+      bufferSource.loop = true;
+    } else {
+      bufferSource.loop = false;
     }
     return bufferSource;
   }

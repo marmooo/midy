@@ -22,6 +22,7 @@ import {
   pitchEnvelopeKeySet,
   Player,
   RenderedBuffer,
+  sf2FilterQ,
   sf2VolumeExprGain,
   type TimelineEvent,
   type VoiceParams,
@@ -2236,7 +2237,7 @@ export class MidyGM2 extends Player<Note, Channel> {
 
     const filter = new BiquadFilterNode(this.audioContext, {
       type: "lowpass",
-      Q: voiceParams.initialFilterQ / 10,
+      Q: sf2FilterQ(voiceParams.initialFilterQ).resonanceDb,
     });
     note.filterEnvelopeNode = filter;
 
@@ -2383,12 +2384,17 @@ export class MidyGM2 extends Player<Note, Channel> {
       const filterIsAudible = voiceParams.modEnvToFilterFc !== 0 ||
         voiceParams.initialFilterFc < FULLY_OPEN_FILTER_CENTS ||
         isPortamento;
-      note.filterEnvelopeNode = filterIsAudible
-        ? new BiquadFilterNode(audioContext, {
+      if (filterIsAudible) {
+        const { resonanceDb, dcGain } = sf2FilterQ(voiceParams.initialFilterQ);
+        note.filterDcGain = dcGain;
+        note.filterEnvelopeNode = new BiquadFilterNode(audioContext, {
           type: "lowpass",
-          Q: voiceParams.initialFilterQ / 10,
-        })
-        : null;
+          Q: resonanceDb,
+        });
+      } else {
+        note.filterDcGain = 1;
+        note.filterEnvelopeNode = null;
+      }
       if (isPortamento) {
         this.setPortamentoVolumeEnvelope(channel, note, now);
         this.setPortamentoFilterEnvelope(channel, note, now);
