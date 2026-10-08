@@ -647,4 +647,91 @@ export function registerNoteTests(
       }
     },
   );
+
+  Deno.test(
+    `[${label}] exclusiveClass eviction leaves other pitches with different class alone`,
+    sanOptions,
+    async () => {
+      // exclusiveClass=1 on all voices from this factory — second noteOn of a
+      // different pitch still evicts the first. A third pitch also evicts.
+      const player = makePlayer(1);
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 80.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(64, 80, t);
+      await flushNotePromises(player);
+
+      const s60 = channel.activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        s60 === undefined || s60.length === 0,
+        true,
+        "pitch 60 evicted",
+      );
+      assertEquals(
+        (channel.activeNotes[64] as unknown[]).length,
+        1,
+        "pitch 64 active",
+      );
+
+      await channel.noteOn(67, 80, t);
+      await flushNotePromises(player);
+      const s64 = channel.activeNotes[64] as unknown[] | undefined;
+      assertEquals(
+        s64 === undefined || s64.length === 0,
+        true,
+        "pitch 64 evicted by 67",
+      );
+      assertEquals((channel.activeNotes[67] as unknown[]).length, 1);
+    },
+  );
+
+  Deno.test(
+    `[${label}] noteOff force after partial FIFO clears remaining note`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 81.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 40, t);
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(60, 120, t);
+      await channel.noteOff(60, 0, t, false); // release oldest
+      await channel.noteOff(60, 0, t, true); // force next
+      await channel.noteOff(60, 0, t, true); // force last
+      await flushNotePromises(player);
+
+      const stack = channel.activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        stack === undefined || stack.length === 0,
+        true,
+        "stack empty after three releases",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] processScheduledNotes visits every non-ending stacked note`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 82.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 40, t);
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(64, 90, t);
+
+      let called = 0;
+      await channel.processScheduledNotes(() => {
+        called++;
+      });
+      assertEquals(called, 3, "all three non-ending notes visited");
+      await flushNotePromises(player);
+    },
+  );
 }

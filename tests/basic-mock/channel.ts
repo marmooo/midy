@@ -331,4 +331,118 @@ export function registerChannelTests(
       await flushNotePromises(player);
     },
   );
+
+  // -----------------------------------------------------------------------
+  // Multi-channel independence / pitch bend interaction
+  // -----------------------------------------------------------------------
+
+  Deno.test(
+    `[${label}] volume CC on one channel does not affect another`,
+    sanOptions,
+    () => {
+      const player = makePlayer();
+      setMockCurrentTime(player.audioContext, 20.0);
+      const t = player.audioContext.currentTime;
+
+      const before1 = player.channels[1].state.volumeMSB;
+      player.channels[0].setControlChange(7, 10, t);
+      assertAlmostEquals(player.channels[0].state.volumeMSB, 10 / 127, 1e-6);
+      assertAlmostEquals(
+        player.channels[1].state.volumeMSB,
+        before1,
+        1e-6,
+        "channel 1 volume must stay unchanged",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] program change is per-channel`,
+    sanOptions,
+    () => {
+      const player = makePlayer();
+      player.channels[0].setProgramChange(10);
+      player.channels[2].setProgramChange(42);
+      assertEquals(player.channels[0].programNumber, 10);
+      assertEquals(player.channels[2].programNumber, 42);
+      assertEquals(player.channels[1].programNumber, 0);
+    },
+  );
+
+  Deno.test(
+    `[${label}] pitch bend on channel 0 does not change channel 1 detune`,
+    sanOptions,
+    () => {
+      const player = makePlayer();
+      setMockCurrentTime(player.audioContext, 21.0);
+      const t = player.audioContext.currentTime;
+
+      const before = player.channels[1].detune;
+      player.channels[0].setPitchBend(16383, t);
+      assertEquals(
+        player.channels[1].detune,
+        before,
+        "channel 1 detune must be untouched",
+      );
+      assertEquals(
+        player.channels[0].detune > before,
+        true,
+        "channel 0 detune must increase on bend up",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] simultaneous notes on two channels stay independent`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      setMockCurrentTime(player.audioContext, 22.0);
+      const t = player.audioContext.currentTime;
+
+      await player.channels[0].noteOn(60, 80, t);
+      await player.channels[1].noteOn(60, 90, t);
+      await player.channels[0].noteOff(60, 0, t, false);
+
+      const s0 = player.channels[0].activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        s0 === undefined || s0.length === 0,
+        true,
+        "channel 0 note released",
+      );
+      assertEquals(
+        (player.channels[1].activeNotes[60] as unknown[]).length,
+        1,
+        "channel 1 same pitch still active",
+      );
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] allNotesOff on one channel leaves other channels alone`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      setMockCurrentTime(player.audioContext, 23.0);
+      const t = player.audioContext.currentTime;
+
+      await player.channels[0].noteOn(60, 80, t);
+      await player.channels[1].noteOn(64, 80, t);
+      await player.channels[0].allNotesOff(t);
+      await flushNotePromises(player);
+
+      const s0 = player.channels[0].activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        s0 === undefined || s0.length === 0,
+        true,
+        "channel 0 cleared",
+      );
+      assertEquals(
+        (player.channels[1].activeNotes[64] as unknown[]).length,
+        1,
+        "channel 1 still holds its note",
+      );
+    },
+  );
 }

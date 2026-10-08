@@ -197,4 +197,102 @@ export function registerMessageTests(
       assertEquals(player.channels[0].programNumber, 0);
     },
   );
+
+  Deno.test(
+    `[${label}] handleMessage pitch bend min is 0`,
+    sanOptions,
+    () => {
+      const player = asMessagePlayer();
+      setMockCurrentTime(player.audioContext, 10.0);
+      const t = player.audioContext.currentTime;
+
+      // LSB=0 MSB=0 → 0 → normalized 0
+      player.handleMessage(new Uint8Array([0xE0, 0, 0]), t);
+      assertAlmostEquals(player.channels[0].state.pitchWheel, 0, 1e-6);
+    },
+  );
+
+  Deno.test(
+    `[${label}] handleMessage noteOn then noteOff same pitch clears stack`,
+    sanOptions,
+    async () => {
+      const player = asMessagePlayer();
+      setMockCurrentTime(player.audioContext, 11.0);
+      const t = player.audioContext.currentTime;
+
+      player.handleMessage(new Uint8Array([0x90, 60, 100]), t);
+      await flushNotePromises(player);
+      await new Promise((r) => setTimeout(r, 20));
+      await flushNotePromises(player);
+
+      const afterOn = player.channels[0].activeNotes[60] as
+        | unknown[]
+        | undefined;
+      assertEquals(
+        afterOn !== undefined && afterOn.length >= 1,
+        true,
+        "noteOn via handleMessage must leave at least one note",
+      );
+
+      player.handleMessage(new Uint8Array([0x80, 60, 0]), t + 0.05);
+      await flushNotePromises(player);
+      await new Promise((r) => setTimeout(r, 20));
+      await flushNotePromises(player);
+
+      const stack = player.channels[0].activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        stack === undefined || stack.length === 0,
+        true,
+        "stack empty after noteOn+noteOff via handleMessage",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] handleMessage CC#7 on channel 5 only affects that channel`,
+    sanOptions,
+    () => {
+      const player = asMessagePlayer();
+      setMockCurrentTime(player.audioContext, 12.0);
+      const t = player.audioContext.currentTime;
+
+      const before0 = player.channels[0].state.volumeMSB;
+      // 0xB5 = CC on channel 5, CC#7 volume=20
+      player.handleMessage(new Uint8Array([0xB5, 7, 20]), t);
+      assertAlmostEquals(player.channels[5].state.volumeMSB, 20 / 127, 1e-6);
+      assertAlmostEquals(player.channels[0].state.volumeMSB, before0, 1e-6);
+    },
+  );
+
+  Deno.test(
+    `[${label}] handleMessage stacked noteOn/noteOff is FIFO`,
+    sanOptions,
+    async () => {
+      const player = asMessagePlayer();
+      setMockCurrentTime(player.audioContext, 13.0);
+      const t = player.audioContext.currentTime;
+
+      player.handleMessage(new Uint8Array([0x90, 60, 40]), t);
+      player.handleMessage(new Uint8Array([0x90, 60, 100]), t);
+      await flushNotePromises(player);
+      await new Promise((r) => setTimeout(r, 30));
+      await flushNotePromises(player);
+
+      const stack = player.channels[0].activeNotes[60] as
+        | { velocity: number; ending: boolean }[]
+        | undefined;
+      assertEquals(stack?.length, 2);
+
+      player.handleMessage(new Uint8Array([0x80, 60, 0]), t + 0.05);
+      await flushNotePromises(player);
+      await new Promise((r) => setTimeout(r, 20));
+      await flushNotePromises(player);
+
+      const after = player.channels[0].activeNotes[60] as
+        | { velocity: number }[]
+        | undefined;
+      assertEquals(after?.length, 1);
+      assertEquals(after![0].velocity, 100, "younger note remains");
+    },
+  );
 }
