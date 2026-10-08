@@ -366,7 +366,7 @@ export class Player<
   // the volume envelope stays in real time (SF2-compatible) while sample
   // position advances with the bend. Set false to force bend notes through
   // the legacy complex OAC path.
-  useAlmostSimplePitchBend: boolean = false;
+  useAlmostSimplePitchBend: boolean = true;
 
   // Offload tile-level TypedArray mix (simpleHits + complexBufs → dest) to a
   // Web Worker pool. This is the primary worker path for segment / chunk:
@@ -382,7 +382,7 @@ export class Player<
   // Prefer Transferable ArrayBuffers when posting mix / sample-render jobs
   // (zero-copy). Default false (structured clone) for safer ownership; set
   // true once call sites no longer need the source Float32Arrays after post.
-  useWorkerTransferable: boolean = false;
+  useWorkerTransferable: boolean = true;
 
   // Min number of mix entries before a worker is used (below this the
   // postMessage overhead dominates). Applies to tile-level mix only.
