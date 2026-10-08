@@ -3,6 +3,7 @@ import { gmliteFactory } from "./setup.ts";
 import {
   registerCCTests,
   registerChannelTests,
+  registerMessageTests,
   registerNoteTests,
   registerPedalTests,
   registerPlaybackTests,
@@ -19,3 +20,4 @@ registerChannelTests(factory, label);
 registerRPNTests(factory, label);
 registerTimelineTests(factory, label);
 registerPlaybackTests(factory, label);
+registerMessageTests(factory, label);

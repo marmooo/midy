@@ -5,3 +5,4 @@ export { registerChannelTests } from "./channel.ts";
 export { registerRPNTests } from "./rpn.ts";
 export { registerTimelineTests } from "./timeline.ts";
 export { registerPlaybackTests } from "./playback.ts";
+export { registerMessageTests } from "./message.ts";

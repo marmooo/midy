@@ -3670,16 +3670,23 @@ export class BasePlayer<
 
   createMessageHandlers(): MessageHandler[] {
     const handlers: MessageHandler[] = new Array(256);
-    handlers[0x80] = (data, t) =>
-      this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
-    handlers[0x90] = (data, t) =>
-      this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
-    handlers[0xB0] = (data, t) =>
-      this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
-    handlers[0xC0] = (data, _t) =>
-      this.channels[data[0] & 0x0F].setProgramChange(data[1]);
-    handlers[0xE0] = (data, t) =>
-      this.channels[data[0] & 0x0F].setPitchBend(data[2] * 128 + data[1], t);
+    // Register every channel variant (0x80-0x8F, 0x90-0x9F, …). Handlers
+    // still resolve the channel via data[0] & 0x0F.
+    for (let ch = 0; ch < 16; ch++) {
+      handlers[0x80 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
+      handlers[0x90 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
+      handlers[0xB0 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
+      handlers[0xC0 + ch] = (data, _t) =>
+        this.channels[data[0] & 0x0F].setProgramChange(data[1]);
+      handlers[0xE0 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].setPitchBend(
+          data[2] * 128 + data[1],
+          t,
+        );
+    }
     return handlers;
   }
 

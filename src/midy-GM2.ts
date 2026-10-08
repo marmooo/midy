@@ -2993,19 +2993,24 @@ export class MidyGM2 extends Player<Note, Channel> {
 
   override createMessageHandlers(): MessageHandler[] {
     const handlers: MessageHandler[] = new Array(256);
-    // Channel Message
-    handlers[0x80] = (data, t) =>
-      this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
-    handlers[0x90] = (data, t) =>
-      this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
-    handlers[0xB0] = (data, t) =>
-      this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
-    handlers[0xC0] = (data, _t) =>
-      this.channels[data[0] & 0x0F].setProgramChange(data[1]);
-    handlers[0xD0] = (data, t) =>
-      this.channels[data[0] & 0x0F].setChannelPressure(data[1], t);
-    handlers[0xE0] = (data, t) =>
-      this.channels[data[0] & 0x0F].setPitchBend(data[2] * 128 + data[1], t);
+    // Channel Message — every channel nibble (0x80-0x8F … 0xE0-0xEF).
+    for (let ch = 0; ch < 16; ch++) {
+      handlers[0x80 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].noteOff(data[1], data[2], t);
+      handlers[0x90 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].noteOn(data[1], data[2], t);
+      handlers[0xB0 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].setControlChange(data[1], data[2], t);
+      handlers[0xC0 + ch] = (data, _t) =>
+        this.channels[data[0] & 0x0F].setProgramChange(data[1]);
+      handlers[0xD0 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].setChannelPressure(data[1], t);
+      handlers[0xE0 + ch] = (data, t) =>
+        this.channels[data[0] & 0x0F].setPitchBend(
+          data[2] * 128 + data[1],
+          t,
+        );
+    }
     return handlers;
   }
 

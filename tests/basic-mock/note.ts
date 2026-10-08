@@ -433,4 +433,218 @@ export function registerNoteTests(
       await flushNotePromises(player);
     },
   );
+
+  // -----------------------------------------------------------------------
+  // Stacked same-pitch FIFO / noteGroupId
+  // -----------------------------------------------------------------------
+
+  Deno.test(
+    `[${label}] stacked noteOff is FIFO by ending flags`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 70.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(60, 90, t + 0.01);
+      await channel.noteOn(60, 100, t + 0.02);
+      const stack = channel.activeNotes[60] as {
+        ending: boolean;
+        velocity: number;
+        noteGroupId: number;
+      }[];
+      assertEquals(stack.length, 3);
+      const [first, second, third] = stack;
+      assertEquals(first.velocity, 80);
+      assertEquals(second.velocity, 90);
+      assertEquals(third.velocity, 100);
+      // Distinct groups for separate noteOns.
+      assertNotEquals(first.noteGroupId, second.noteGroupId);
+      assertNotEquals(second.noteGroupId, third.noteGroupId);
+
+      await channel.noteOff(60, 0, t + 0.1, false);
+      assertEquals(first.ending, true, "oldest must end first");
+      assertEquals(second.ending, false);
+      assertEquals(third.ending, false);
+      assertEquals(
+        (channel.activeNotes[60] as unknown[]).length,
+        2,
+        "two younger notes remain on the stack",
+      );
+
+      await channel.noteOff(60, 0, t + 0.2, false);
+      assertEquals(second.ending, true);
+      assertEquals(third.ending, false);
+      assertEquals((channel.activeNotes[60] as unknown[]).length, 1);
+
+      await channel.noteOff(60, 0, t + 0.3, false);
+      assertEquals(third.ending, true);
+      const left = channel.activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        left === undefined || left.length === 0,
+        true,
+        "stack empty after three noteOffs",
+      );
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] remaining stacked note keeps its velocity after partial noteOff`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 71.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 40, t);
+      await channel.noteOn(60, 100, t);
+      await channel.noteOff(60, 0, t, false);
+
+      const stack = channel.activeNotes[60] as { velocity: number }[];
+      assertEquals(stack.length, 1);
+      assertEquals(stack[0].velocity, 100, "younger note must remain");
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] force noteOff still releases only the oldest stacked group`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 72.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 50, t);
+      await channel.noteOn(60, 70, t);
+      await channel.noteOff(60, 0, t, true); // force
+
+      const stack = channel.activeNotes[60] as
+        | { ending: boolean; velocity: number }[]
+        | undefined;
+      assertEquals(
+        stack !== undefined && stack.length === 1,
+        true,
+        "force must not wipe the whole stack",
+      );
+      assertEquals(stack![0].velocity, 70);
+      assertEquals(stack![0].ending, false);
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] noteOff on one pitch does not affect another pitch stack`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 73.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(64, 90, t);
+      await channel.noteOff(60, 0, t, false);
+
+      const s60 = channel.activeNotes[60] as unknown[] | undefined;
+      assertEquals(
+        s60 === undefined || s60.length === 0,
+        true,
+        "pitch 60 released",
+      );
+      assertEquals(
+        (channel.activeNotes[64] as unknown[]).length,
+        1,
+        "pitch 64 untouched",
+      );
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] two noteOns share distinct noteGroupId`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 74.0);
+      const t = player.audioContext.currentTime;
+
+      const a = await channel.noteOn(60, 80, t) as { noteGroupId: number };
+      const b = await channel.noteOn(64, 80, t) as { noteGroupId: number };
+      assertNotEquals(a, undefined);
+      assertNotEquals(b, undefined);
+      assertNotEquals(
+        a.noteGroupId,
+        b.noteGroupId,
+        "each noteOn allocates a unique noteGroupId",
+      );
+      assertEquals(
+        a.noteGroupId > 0 && b.noteGroupId > 0,
+        true,
+        "noteGroupId is positive after noteOn",
+      );
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] allNotesOff clears a multi-pitch active stack`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 75.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(60, 90, t);
+      await channel.noteOn(67, 100, t);
+      await channel.allNotesOff(t);
+
+      for (const nn of [60, 67]) {
+        const stack = channel.activeNotes[nn] as unknown[] | undefined;
+        assertEquals(
+          stack === undefined || stack.length === 0,
+          true,
+          `activeNotes[${nn}] empty after allNotesOff`,
+        );
+      }
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] allSoundOff marks stacked notes ending`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 76.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(60, 90, t);
+      const before = channel.activeNotes[60] as { ending: boolean }[];
+      assertEquals(before.length, 2);
+      await channel.allSoundOff(t);
+      await flushNotePromises(player);
+
+      // Implementations may clear the stack or leave ending entries; every
+      // remaining entry must be marked ending.
+      const after = channel.activeNotes[60] as
+        | { ending: boolean }[]
+        | undefined;
+      if (after && after.length > 0) {
+        for (const n of after) {
+          assertEquals(n.ending, true, "allSoundOff marks notes ending");
+        }
+      }
+    },
+  );
 }

@@ -229,4 +229,54 @@ export function registerPedalTests(
       await flushNotePromises(player);
     },
   );
+
+  Deno.test(
+    `[${label}] force noteOff overrides sustain pedal`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 10.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      channel.state.sustainPedal = 1;
+      await channel.noteOff(60, 0, t, true); // force
+
+      const stack = channel.activeNotes[60] as
+        | { ending: boolean }[]
+        | undefined;
+      // force bypasses the sustain deferral path and releases the group.
+      assertEquals(
+        stack === undefined || stack.length === 0 || stack[0].ending === true,
+        true,
+        "force noteOff must release even with sustain ON",
+      );
+      await flushNotePromises(player);
+    },
+  );
+
+  Deno.test(
+    `[${label}] stacked notes under sustain: deferred noteOff does not end them`,
+    sanOptions,
+    async () => {
+      const player = makePlayer();
+      const channel = player.channels[0];
+      setMockCurrentTime(player.audioContext, 11.0);
+      const t = player.audioContext.currentTime;
+
+      await channel.noteOn(60, 80, t);
+      await channel.noteOn(60, 90, t);
+      channel.state.sustainPedal = 1;
+
+      await channel.noteOff(60, 0, t, false);
+      await channel.noteOff(60, 0, t, false);
+
+      const stack = channel.activeNotes[60] as { ending: boolean }[];
+      assertEquals(stack.length, 2);
+      assertEquals(stack[0].ending, false);
+      assertEquals(stack[1].ending, false);
+      await flushNotePromises(player);
+    },
+  );
 }

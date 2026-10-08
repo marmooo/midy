@@ -163,6 +163,63 @@ Deno.test(
 );
 
 Deno.test(
+  "Case 7b: Three stacked notes release FIFO and keep distinct noteGroupId",
+  sanOptions,
+  async () => {
+    const player = setupMidyPlayer();
+    const channel = player.channels[1];
+    setMockCurrentTime(player.audioContext, 360.0);
+    const t = player.audioContext.currentTime;
+
+    await channel.noteOn(60, 40, t);
+    await channel.noteOn(60, 80, t + 0.01);
+    await channel.noteOn(60, 120, t + 0.02);
+    const stack = channel.activeNotes[60]!;
+    assertEquals(stack.length, 3);
+    assertNotEquals(stack[0].noteGroupId, stack[1].noteGroupId);
+    assertNotEquals(stack[1].noteGroupId, stack[2].noteGroupId);
+
+    await channel.noteOff(60, 0, t + 0.1);
+    await flushNotePromises(player);
+    assertEquals(stack[0].ending, true);
+    assertEquals(stack[1].ending, false);
+    assertEquals(stack[2].ending, false);
+    assertEquals(channel.activeNotes[60]!.length, 2);
+
+    await channel.noteOff(60, 0, t + 0.2);
+    await flushNotePromises(player);
+    assertEquals(stack[1].ending, true);
+    assertEquals(stack[2].ending, false);
+
+    await channel.noteOff(60, 0, t + 0.3);
+    await flushNotePromises(player);
+    assertEquals(stack[2].ending, true);
+  },
+);
+
+Deno.test(
+  "Case 7c: force noteOff still only ends the oldest stacked group",
+  sanOptions,
+  async () => {
+    const player = setupMidyPlayer();
+    const channel = player.channels[1];
+    setMockCurrentTime(player.audioContext, 370.0);
+    const t = player.audioContext.currentTime;
+
+    await channel.noteOn(60, 50, t);
+    await channel.noteOn(60, 100, t + 0.01);
+    const [first, second] = channel.activeNotes[60]!;
+
+    await channel.noteOff(60, 0, t + 0.1, true);
+    await flushNotePromises(player);
+    assertEquals(first.ending, true);
+    assertEquals(second.ending, false);
+    assertEquals(channel.activeNotes[60]!.length, 1);
+    assertEquals(channel.activeNotes[60]![0].velocity, 100);
+  },
+);
+
+Deno.test(
   "Case 8: noteOn with velocity 0 creates a note in activeNotes",
   sanOptions,
   async () => {
