@@ -116,6 +116,61 @@ function serveDir(dir: string): { url: string; close: () => void } {
   };
 }
 
+/** Launch args that keep Chromium stable under sequential test load. */
+const CHROME_LAUNCH_ARGS = [
+  "--autoplay-policy=no-user-gesture-required",
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  // Avoid /dev/shm exhaustion when many headless Chromes are launched
+  // back-to-back (common flake: "Timed out waiting for the WS endpoint").
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--mute-audio",
+];
+
+const LAUNCH_TIMEOUT_MS = 60_000;
+const LAUNCH_RETRIES = 3;
+
+function isLaunchTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return (
+    err.name === "TimeoutError" ||
+    msg.includes("Timed out after") ||
+    msg.includes("WS endpoint") ||
+    msg.includes("Failed to launch")
+  );
+}
+
+async function launchBrowser(
+  options: RenderMidyModeOptions,
+): Promise<Awaited<ReturnType<typeof puppeteer.launch>>> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= LAUNCH_RETRIES; attempt++) {
+    try {
+      return await puppeteer.launch({
+        headless: !options.headed,
+        executablePath: options.executablePath,
+        timeout: LAUNCH_TIMEOUT_MS,
+        protocolTimeout: LAUNCH_TIMEOUT_MS,
+        args: CHROME_LAUNCH_ARGS,
+      });
+    } catch (err) {
+      lastErr = err;
+      if (!isLaunchTimeout(err) || attempt === LAUNCH_RETRIES) throw err;
+      const delayMs = 500 * attempt;
+      console.warn(
+        `[render-midy-headless] Chrome launch timed out ` +
+          `(attempt ${attempt}/${LAUNCH_RETRIES}); retrying in ${delayMs}ms…`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * Render a single MIDI file through midy in a given cacheMode, inside a
  * real headless browser, and return the WAV bytes.
@@ -125,15 +180,7 @@ export async function renderMidyMode(
 ): Promise<Uint8Array> {
   const rootDir = options.rootDir ?? ".";
   const { url, close } = serveDir(rootDir);
-  const browser = await puppeteer.launch({
-    headless: !options.headed,
-    executablePath: options.executablePath,
-    args: [
-      "--autoplay-policy=no-user-gesture-required",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-    ],
-  });
+  const browser = await launchBrowser(options);
   try {
     const page = await browser.newPage();
     page.on("console", (msg) => console.log(`[browser] ${msg.text()}`));
@@ -195,7 +242,13 @@ export async function renderMidyMode(
 
     return fromBase64(wavBase64);
   } finally {
-    await browser.close();
+    try {
+      await browser.close();
+    } catch (closeErr) {
+      console.warn(
+        `[render-midy-headless] browser.close() failed: ${closeErr}`,
+      );
+    }
     close();
   }
 }
