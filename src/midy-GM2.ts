@@ -2628,10 +2628,13 @@ export class MidyGM2 extends Player<Note, Channel> {
       for (let li = 0; li < layers.length; li++) need++;
       this.enforceMaxVoices(t, need);
     }
+    // One id for every zone of this noteOn; stacked noteOns get a new id.
+    const groupId = this.nextNoteGroupId++;
     for (let i = 0; i < layers.length; i++) {
       const layerNote = i === 0 && primary
         ? primary
         : this.createNoteInstance(noteNumber, velocity, t);
+      layerNote.noteGroupId = groupId;
       layerNote.voice = layers[i].voice;
       // Secondary layers need the same timeline identity so adsr/note mode
       // bakes use the real MIDI noteDuration (not 0). Each zone must use
@@ -2876,15 +2879,24 @@ export class MidyGM2 extends Player<Note, Channel> {
         return;
       }
     }
-    // Multi-layer SF2 instruments (e.g. stereo strings) push one entry per
-    // layer into activeNotes[noteNumber]. Release every non-ending layer —
-    // releasing only the head left secondary layers sustaining (drop≈0 dB).
+    // Stacked same-pitch noteOns share activeNotes[noteNumber] and release
+    // FIFO (oldest group first). Multi-zone SF2 layers from one noteOn share
+    // noteGroupId and must all release together on that group's noteOff.
     const stack = channel.activeNotes[noteNumber];
     if (!stack || stack.length === 0) return;
-    const toRelease: Note[] = [];
+    let targetGroupId: number | undefined;
     for (let i = 0; i < stack.length; i++) {
       const n = stack[i];
       if (n && !n.ending) {
+        targetGroupId = n.noteGroupId;
+        break;
+      }
+    }
+    if (targetGroupId === undefined) return;
+    const toRelease: Note[] = [];
+    for (let i = 0; i < stack.length; i++) {
+      const n = stack[i];
+      if (n && !n.ending && n.noteGroupId === targetGroupId) {
         n.ending = true;
         n.heldByPedal = false;
         toRelease.push(n);

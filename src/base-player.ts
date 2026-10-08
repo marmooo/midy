@@ -451,6 +451,10 @@ export class Note {
   // for subclasses (e.g. Midy's) whose Channel actually tracks/updates it
   // via setPolyphonicKeyPressure; stays 0 and unused otherwise.
   pressure: number = 0;
+  // Shared by every SF2 zone/layer created by a single noteOn. noteOff is
+  // FIFO across groups (stacked same-pitch noteOns) but releases every
+  // non-ending layer of the oldest group together.
+  noteGroupId: number = 0;
 
   constructor(noteNumber: number, velocity: number, startTime: number) {
     this.noteNumber = noteNumber;
@@ -1267,6 +1271,9 @@ export class BasePlayer<
   // received, heldByPedal). Keeps whole-song sustain from eating the entire
   // maxVoices budget. Default 32. <= 0 means unlimited.
   maxPedalVoices: number = 32;
+  // Monotonic id assigned to each noteOn so multi-zone layers share a group
+  // while stacked same-pitch noteOns stay distinct for FIFO noteOff.
+  nextNoteGroupId: number = 1;
   // Max time to wait for natural note-release tails at song end before
   // force-stopping remaining notes. Also bounds
   // waitNotePromisesInterruptible so seek/pause/stop can break out of a
@@ -2943,10 +2950,10 @@ export class BasePlayer<
   }
 
   /**
-   * Exclusive-class choke: release only the previous note instance.
-   * Using noteOff(noteNumber) would also cut a newly-started note that
-   * already sits on the same key stack (closed-hat retrigger), delete
-   * activeNotes[noteNumber], and crash the next layer push.
+   * Exclusive-class choke: release the previous note's group (all SF2 layers
+   * from that noteOn). Using noteOff(noteNumber) would also cut a newly-
+   * started note that already sits on the same key stack (closed-hat
+   * retrigger), delete activeNotes[noteNumber], and crash the next layer push.
    */
   protected releaseExclusivePrevNote(
     prevNote: TNote,
@@ -2954,24 +2961,38 @@ export class BasePlayer<
     startTime: number,
   ): void {
     if (prevNote.ending) return;
-    prevNote.ending = true;
-    prevNote.heldByPedal = false;
+    const groupId = prevNote.noteGroupId;
     const stack = prevChannel.activeNotes[prevNote.noteNumber];
+    const toRelease: TNote[] = [];
     if (stack) {
-      const remaining = stack.filter((n) => n !== prevNote);
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
+        if (n && !n.ending && n.noteGroupId === groupId) {
+          n.ending = true;
+          n.heldByPedal = false;
+          toRelease.push(n);
+        }
+      }
+      const remaining = stack.filter((n) => n && !toRelease.includes(n));
       if (remaining.length === 0) {
         delete prevChannel.activeNotes[prevNote.noteNumber];
       } else {
         prevChannel.activeNotes[prevNote.noteNumber] = remaining;
       }
+    } else {
+      prevNote.ending = true;
+      prevNote.heldByPedal = false;
+      toRelease.push(prevNote);
     }
     const sus = prevChannel.sustainNotes;
-    const si = sus.indexOf(prevNote);
-    if (si >= 0) sus.splice(si, 1);
-    void Promise.resolve(prevNote.ready).then(() => {
-      if (!prevNote.voice) return;
-      return this.releaseNote(prevChannel, prevNote, startTime);
-    });
+    for (const note of toRelease) {
+      const si = sus.indexOf(note);
+      if (si >= 0) sus.splice(si, 1);
+      void Promise.resolve(note.ready).then(() => {
+        if (!note.voice) return;
+        return this.releaseNote(prevChannel, note, startTime);
+      });
+    }
   }
 
   handleExclusiveClass(
@@ -3200,10 +3221,13 @@ export class BasePlayer<
     if (!primaryIsGhost) {
       this.enforceMaxVoices(t, layers.length);
     }
+    // One id for every zone of this noteOn; stacked noteOns get a new id.
+    const groupId = this.nextNoteGroupId++;
     for (let i = 0; i < layers.length; i++) {
       const layerNote = i === 0 && primary
         ? primary
         : this.createNoteInstance(noteNumber, velocity, t);
+      layerNote.noteGroupId = groupId;
       layerNote.voice = layers[i].voice;
       // Secondary layers need the same timeline identity so adsr/note mode
       // bakes use the real MIDI noteDuration (not 0). Each zone must use
@@ -3485,22 +3509,32 @@ export class BasePlayer<
         return;
       }
     }
-    // Multi-layer SF2 notes push one entry per layer into
-    // activeNotes[noteNumber]. A single MIDI / exclusive-class noteOff must
-    // release every non-ending layer of that key, not just the head.
+    // Stacked same-pitch noteOns share activeNotes[noteNumber] and release
+    // FIFO (oldest group first). Multi-zone SF2 layers from one noteOn share
+    // noteGroupId and must all release together on that group's noteOff.
     const stack = channel.activeNotes[noteNumber];
     if (!stack || stack.length === 0) return;
-    const toRelease: TNote[] = [];
+    let targetGroupId: number | undefined;
     for (let i = 0; i < stack.length; i++) {
       const n = stack[i];
       if (n && !n.ending) {
+        targetGroupId = n.noteGroupId;
+        break;
+      }
+    }
+    if (targetGroupId === undefined) return;
+    const toRelease: TNote[] = [];
+    for (let i = 0; i < stack.length; i++) {
+      const n = stack[i];
+      if (n && !n.ending && n.noteGroupId === targetGroupId) {
         n.ending = true;
         n.heldByPedal = false;
         toRelease.push(n);
       }
     }
     if (toRelease.length === 0) return;
-    // Drop released layers from the stack (keep any already-ending leftovers).
+    // Drop released layers from the stack (keep any already-ending leftovers
+    // and younger stacked noteOns).
     channel.activeNotes[noteNumber] = stack.filter((n) =>
       n && !toRelease.includes(n)
     );
