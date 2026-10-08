@@ -1,12 +1,12 @@
 // almost-simple (gain-only automation) regression vs fluidsynth + path checks.
 //
 // Covers the TypedArray path that treats in-interval CC7/CC11-only motion as
-// simple (no Offline complex bake). Existing compare-controllers.test.ts
+// simple (no Offline complex bake). Existing compare-controllers_test.ts
 // already validates single-drop CC7/CC11; this file adds multi-step curves,
 // combined vol+expr, and a negative control (pan must still behave as complex).
 //
 // Usage:
-//   deno test -A tools/compare-almost-simple.test.ts
+//   deno test -A tools/compare-almost-simple_test.ts
 //
 // Checklist (what to confirm when changing almost-simple):
 //   1. CC7 drop / CC11 drop still match fluidsynth (compare-controllers)
@@ -227,6 +227,6 @@ Deno.test("almost-simple: volume+expression vs fluidsynth", async (t) => {
 });
 
 // Negative control for pan / pitch-bend is already covered by:
-//   tools/compare-controllers.test.ts  (CC10 pan left→right)
-//   tools/compare-pitch.test.ts         (pitch bend)
+//   tools/compare-controllers_test.ts  (CC10 pan left→right)
+//   tools/compare-pitch_test.ts         (pitch bend)
 // Those must keep failing if almost-simple accidentally swallows non-gain CCs.

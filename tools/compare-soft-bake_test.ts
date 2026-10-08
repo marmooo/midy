@@ -9,7 +9,7 @@
 // none↔bake consistency on the soft attack window.
 //
 // Usage:
-//   deno test -A tools/compare-soft-bake.test.ts
+//   deno test -A tools/compare-soft-bake_test.ts
 import { buildVelocityZoneMidi } from "./gen-midi-scenarios.ts";
 import {
   assertNonEmptyFile,

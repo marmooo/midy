@@ -4,7 +4,7 @@
 // is active; the EMU initialAttenuation rewrite must clone first.
 //
 // Usage:
-//   deno test -A tools/voice-params-emu.test.ts
+//   deno test -A tools/voice-params-emu_test.ts
 import { parse } from "@marmooo/soundfont";
 import { assertEquals } from "@std/assert";
 import { getVoiceParams } from "../src/base-player.ts";

@@ -1,6 +1,6 @@
 // Gate the almost-simple pitch-bend TypedArray path.
 //
-// compare-pitch.test.ts does NOT enable useAlmostSimplePitchBend, so it only
+// compare-pitch_test.ts does NOT enable useAlmostSimplePitchBend, so it only
 // validates the complex/OAC path. This file:
 //   1. Renders the same MIDI with flag ON vs OFF (midy A/B)
 //   2. Requires measured pitch in windows to match within a tight cents budget
@@ -9,7 +9,7 @@
 //   4. Covers bend-up, bend-down, multi-step, and note-on during active bend
 //
 // Usage:
-//   deno test -A tools/compare-almost-simple-pitchbend.test.ts
+//   deno test -A tools/compare-almost-simple-pitchbend_test.ts
 //
 import { buildScenarioMidi } from "./gen-midi-scenarios.ts";
 import {

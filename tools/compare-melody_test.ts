@@ -1,12 +1,12 @@
 // fluidsynth ↔ midy: melody-side level, release, and velocity-zone conformance.
 //
-// Complements compare-drums.test.ts (percussion absolute levels) with pitched
+// Complements compare-drums_test.ts (percussion absolute levels) with pitched
 // instruments so the EMU static-attenuation scale and unity master gain are
 // verified outside the drum kit as well.
 //
 // Usage:
-//   deno test -A tools/compare-melody.test.ts
-//   deno test -A tools/compare-melody.test.ts --filter "piano"
+//   deno test -A tools/compare-melody_test.ts
+//   deno test -A tools/compare-melody_test.ts --filter "piano"
 //
 import {
   buildMelodyReleaseMidi,

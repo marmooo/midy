@@ -10,7 +10,7 @@
 // Envelope correlation is a soft structural check; residual is logged only.
 //
 // Usage:
-//   deno test -A tools/compare-drums.test.ts
+//   deno test -A tools/compare-drums_test.ts
 //
 import {
   buildCymbalAlternateMidi,

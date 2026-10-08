@@ -5,7 +5,7 @@
 // single-note / two-note residuals (~-10 dB after the ADS playbackRate fix).
 //
 // Usage:
-//   deno test -A tools/compare-polyphony.test.ts
+//   deno test -A tools/compare-polyphony_test.ts
 //
 import {
   buildChordPolyphonyMidi,

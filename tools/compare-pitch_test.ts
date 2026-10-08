@@ -1,7 +1,7 @@
 // fluidsynth ↔ midy: pitch bend + RPN pitch-bend range.
 //
 // Usage:
-//   deno test -A tools/compare-pitch.test.ts
+//   deno test -A tools/compare-pitch_test.ts
 //
 import {
   buildPitchBendMidi,

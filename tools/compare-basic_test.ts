@@ -1,7 +1,7 @@
 // fluidsynth ↔ midy: basic note / exclusive-class scenarios.
 //
 // Usage:
-//   deno test -A tools/compare-basic.test.ts
+//   deno test -A tools/compare-basic_test.ts
 //
 import { buildSingleNoteMidi } from "./gen-single-note-midi.ts";
 import {

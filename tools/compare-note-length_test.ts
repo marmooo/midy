@@ -4,7 +4,7 @@
 // length (e.g. GeneralUser Grand Piano-C4 ≈ 2.0s while MIDI note is longer).
 //
 // Usage:
-//   deno test -A tools/compare-note-length.test.ts
+//   deno test -A tools/compare-note-length_test.ts
 //
 import { buildSingleNoteMidi } from "./gen-single-note-midi.ts";
 import {

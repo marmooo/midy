@@ -1,7 +1,7 @@
 // fluidsynth ↔ midy: continuous controllers + all-off.
 //
 // Usage:
-//   deno test -A tools/compare-controllers.test.ts
+//   deno test -A tools/compare-controllers_test.ts
 //
 import {
   buildAllOffMidi,

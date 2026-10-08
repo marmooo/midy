@@ -3,21 +3,21 @@
 // The original monolithic file has been split for maintainability:
 //
 //   compare-common.ts            shared constants, asserts, render helpers
-//   compare-basic.test.ts        single note, exclusive hi-hat, closed-hat retrigger
-//   compare-pitch.test.ts        pitch bend, RPN pitch-bend range
-//   compare-controllers.test.ts  CC7/10/11, sustain, all-off, CC1 modulation
-//   compare-dynamics.test.ts     velocity soft/loud
-//   compare-polyphony.test.ts    two-note polyphony
+//   compare-basic_test.ts        single note, exclusive hi-hat, closed-hat retrigger
+//   compare-pitch_test.ts        pitch bend, RPN pitch-bend range
+//   compare-controllers_test.ts  CC7/10/11, sustain, all-off, CC1 modulation
+//   compare-dynamics_test.ts     velocity soft/loud
+//   compare-polyphony_test.ts    two-note polyphony
 //
 // Scenario MIDI builders live in gen-midi-scenarios.ts (incl. modulation).
 //
 // Usage:
-//   deno test -A tools/compare-basic.test.ts \
-//                tools/compare-pitch.test.ts \
-//                tools/compare-controllers.test.ts \
-//                tools/compare-dynamics.test.ts \
-//                tools/compare-polyphony.test.ts \
-//                tools/compare-almost-simple.test.ts
+//   deno test -A tools/compare-basic_test.ts \
+//                tools/compare-pitch_test.ts \
+//                tools/compare-controllers_test.ts \
+//                tools/compare-dynamics_test.ts \
+//                tools/compare-polyphony_test.ts \
+//                tools/compare-almost-simple_test.ts
 //
 // Speed knobs (env):
 //   MIDY_QUICK=1                 24 kHz + cacheModes=note,chunk (~3–5× faster)
@@ -28,7 +28,7 @@
 //
 // Chrome is shared across parallel test workers (one process). Interrupted
 // runs (Ctrl+C) tear down Chrome via signal handlers; leftover PIDs can be
-// cleaned with: rm -rf /tmp/midy-chrome-state && pkill -f 'chrome.*puppeteer'
+// cleaned with: rm -rf /tmp/midy-chrome-state && pkill -f 'chrome.*puppeteer' 
 //
 // WAV outputs land in /tmp/midy-gm2-check for manual inspection.
 //
@@ -36,3 +36,4 @@
 // pointer without double-running suites when you `deno test tools/`.
 
 export {};
+

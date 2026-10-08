@@ -1,7 +1,7 @@
 // fluidsynth ↔ midy: velocity dynamics.
 //
 // Usage:
-//   deno test -A tools/compare-dynamics.test.ts
+//   deno test -A tools/compare-dynamics_test.ts
 //
 import { buildVelocityDynamicsMidi } from "./gen-midi-scenarios.ts";
 import {
