@@ -133,6 +133,20 @@ const CHROME_LAUNCH_ARGS = [
 const LAUNCH_TIMEOUT_MS = 60_000;
 const LAUNCH_RETRIES = 3;
 
+/** Set MIDY_NO_BROWSER_REUSE=1 to force a fresh Chrome per render (debug). */
+const REUSE_BROWSER = Deno.env.get("MIDY_NO_BROWSER_REUSE") !== "1";
+
+/**
+ * Cross-process state so parallel `deno test` workers share ONE Chrome.
+ * Without this, each test file launches its own browser and processes pile up.
+ */
+const STATE_DIR = Deno.env.get("MIDY_CHROME_STATE_DIR") ??
+  "/tmp/midy-chrome-state";
+const LOCK_PATH = `${STATE_DIR}/render.lock`;
+const WS_PATH = `${STATE_DIR}/ws-endpoint`;
+const CHROME_PID_PATH = `${STATE_DIR}/chrome.pid`;
+const OWNER_PID_PATH = `${STATE_DIR}/owner.pid`;
+
 function isLaunchTimeout(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const msg = err.message;
@@ -142,6 +156,58 @@ function isLaunchTimeout(err: unknown): boolean {
     msg.includes("WS endpoint") ||
     msg.includes("Failed to launch")
   );
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    Deno.kill(pid, "SIGCONT"); // no-op signal probe; throws if gone
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readPidFile(path: string): Promise<number | null> {
+  try {
+    const text = (await Deno.readTextFile(path)).trim();
+    const pid = Number(text);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Kill a process group/tree best-effort (Chrome spawns many children). */
+function forceKillPid(pid: number, label: string): void {
+  if (!isPidAlive(pid)) return;
+  try {
+    Deno.kill(pid, "SIGTERM");
+  } catch {
+    // ignore
+  }
+  // Brief wait then SIGKILL if still up.
+  try {
+    // Synchronous short spin — avoid async in signal paths.
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline && isPidAlive(pid)) {
+      // spin
+    }
+    if (isPidAlive(pid)) {
+      try {
+        Deno.kill(pid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+  if (isPidAlive(pid)) {
+    console.warn(
+      `[render-midy-headless] ${label} pid=${pid} still alive after SIGKILL`,
+    );
+  }
 }
 
 async function launchBrowser(
@@ -155,6 +221,11 @@ async function launchBrowser(
         executablePath: options.executablePath,
         timeout: LAUNCH_TIMEOUT_MS,
         protocolTimeout: LAUNCH_TIMEOUT_MS,
+        // We handle signals ourselves so Chrome is not left orphaned when
+        // the Deno test runner is interrupted.
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
         args: CHROME_LAUNCH_ARGS,
       });
     } catch (err) {
@@ -171,35 +242,418 @@ async function launchBrowser(
   throw lastErr;
 }
 
+// ---------------------------------------------------------------------------
+// Cross-process render lock + single shared Chrome
+// ---------------------------------------------------------------------------
+
+type PuppeteerBrowser = Awaited<ReturnType<typeof puppeteer.launch>>;
+type PuppeteerPage = Awaited<ReturnType<PuppeteerBrowser["newPage"]>>;
+
+interface SharedSession {
+  rootDir: string;
+  harnessDir: string;
+  url: string;
+  closeServer: () => void;
+  browser: PuppeteerBrowser;
+  page: PuppeteerPage;
+  /** True when this process launched Chrome (must close it on exit). */
+  ownsBrowser: boolean;
+  chromePid: number | null;
+}
+
+let sharedSession: SharedSession | null = null;
+/** In-process queue so concurrent tests in one worker don't interleave. */
+let sharedSessionLock: Promise<void> = Promise.resolve();
+let cleanupHandlersInstalled = false;
+
+/** In-process cache of SF2 base64 (same GeneralUser file for every test). */
+const sf2Base64Cache = new Map<string, string>();
+
+async function getSf2Base64(path: string): Promise<string> {
+  let cached = sf2Base64Cache.get(path);
+  if (cached) return cached;
+  const bytes = await Deno.readFile(path);
+  cached = toBase64(bytes);
+  sf2Base64Cache.set(path, cached);
+  return cached;
+}
+
+/**
+ * Exclusive file lock shared by all Deno test workers.
+ * Recovers stale locks left by killed processes.
+ */
+async function acquireGlobalLock(): Promise<() => Promise<void>> {
+  await Deno.mkdir(STATE_DIR, { recursive: true });
+  const deadline = Date.now() + 600_000; // 10 min max wait
+  while (Date.now() < deadline) {
+    try {
+      const f = await Deno.open(LOCK_PATH, { createNew: true, write: true });
+      await f.write(new TextEncoder().encode(`${Deno.pid}\n`));
+      f.close();
+      return async () => {
+        try {
+          await Deno.remove(LOCK_PATH);
+        } catch {
+          // already gone
+        }
+      };
+    } catch (err) {
+      if (!(err instanceof Deno.errors.AlreadyExists)) throw err;
+      const holder = await readPidFile(LOCK_PATH);
+      if (holder !== null && !isPidAlive(holder)) {
+        console.warn(
+          `[render-midy-headless] removing stale render.lock ` +
+            `(dead pid=${holder})`,
+        );
+        try {
+          await Deno.remove(LOCK_PATH);
+        } catch {
+          // race with another worker
+        }
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  throw new Error(
+    `[render-midy-headless] timed out waiting for render.lock in ${STATE_DIR}`,
+  );
+}
+
+async function clearBrowserStateFiles(): Promise<void> {
+  for (const p of [WS_PATH, CHROME_PID_PATH, OWNER_PID_PATH]) {
+    try {
+      await Deno.remove(p);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function connectOrLaunchBrowser(
+  options: RenderMidyModeOptions,
+): Promise<
+  { browser: PuppeteerBrowser; ownsBrowser: boolean; chromePid: number | null }
+> {
+  // Try existing endpoint first.
+  try {
+    const ws = (await Deno.readTextFile(WS_PATH)).trim();
+    const chromePid = await readPidFile(CHROME_PID_PATH);
+    if (ws && (chromePid === null || isPidAlive(chromePid))) {
+      const browser = await puppeteer.connect({
+        browserWSEndpoint: ws,
+        protocolTimeout: LAUNCH_TIMEOUT_MS,
+      });
+      return { browser, ownsBrowser: false, chromePid };
+    }
+  } catch {
+    // fall through to launch
+  }
+
+  // Stale state — drop and launch.
+  await clearBrowserStateFiles();
+  const browser = await launchBrowser(options);
+  const ws = browser.wsEndpoint();
+  const proc = browser.process();
+  const chromePid = proc?.pid ?? null;
+  await Deno.writeTextFile(WS_PATH, ws);
+  if (chromePid != null) {
+    await Deno.writeTextFile(CHROME_PID_PATH, `${chromePid}\n`);
+  }
+  await Deno.writeTextFile(OWNER_PID_PATH, `${Deno.pid}\n`);
+  return { browser, ownsBrowser: true, chromePid };
+}
+
+async function acquireSession(
+  options: RenderMidyModeOptions,
+): Promise<SharedSession> {
+  const rootDir = options.rootDir ?? ".";
+
+  if (
+    REUSE_BROWSER &&
+    sharedSession &&
+    sharedSession.rootDir === rootDir &&
+    sharedSession.harnessDir === options.harnessDir
+  ) {
+    try {
+      await sharedSession.page.evaluate(() => true);
+      return sharedSession;
+    } catch {
+      console.warn(
+        "[render-midy-headless] shared page died; reconnecting…",
+      );
+      await disposeSharedSession({ killChrome: false });
+    }
+  }
+
+  if (sharedSession) {
+    await disposeSharedSession({ killChrome: false });
+  }
+
+  const { url, close } = serveDir(rootDir);
+  const { browser, ownsBrowser, chromePid } = await connectOrLaunchBrowser(
+    options,
+  );
+  const page = await browser.newPage();
+  page.on("console", (msg) => console.log(`[browser] ${msg.text()}`));
+  page.on("pageerror", (err) => console.error(`[browser error] ${err}`));
+  await page.goto(`${url}/${options.harnessDir}/harness.html`, {
+    waitUntil: "load",
+  });
+
+  sharedSession = {
+    rootDir,
+    harnessDir: options.harnessDir,
+    url,
+    closeServer: close,
+    browser,
+    page,
+    ownsBrowser,
+    chromePid,
+  };
+  return sharedSession;
+}
+
+async function disposeSharedSession(
+  opts: { killChrome: boolean } = { killChrome: true },
+): Promise<void> {
+  const s = sharedSession;
+  sharedSession = null;
+  if (!s) {
+    if (opts.killChrome) await shutdownGlobalChrome();
+    return;
+  }
+
+  try {
+    await s.page.close().catch(() => {});
+  } catch {
+    // ignore
+  }
+
+  if (s.ownsBrowser && opts.killChrome) {
+    try {
+      await s.browser.close();
+    } catch (closeErr) {
+      console.warn(
+        `[render-midy-headless] browser.close() failed: ${closeErr}`,
+      );
+    }
+    if (s.chromePid != null) forceKillPid(s.chromePid, "chrome");
+    await clearBrowserStateFiles();
+  } else {
+    // Connected client: disconnect without killing the shared Chrome.
+    try {
+      s.browser.disconnect();
+    } catch {
+      // ignore
+    }
+  }
+
+  try {
+    s.closeServer();
+  } catch {
+    // already shut down
+  }
+}
+
+/** Kill the process-global Chrome recorded in state files (any worker). */
+async function shutdownGlobalChrome(): Promise<void> {
+  const chromePid = await readPidFile(CHROME_PID_PATH);
+  const ownerPid = await readPidFile(OWNER_PID_PATH);
+  if (chromePid != null) forceKillPid(chromePid, "chrome");
+  // If we are the owner process still alive, nothing else to do.
+  if (ownerPid != null && ownerPid !== Deno.pid && isPidAlive(ownerPid)) {
+    // Owner still running — only kill chrome, leave ownership files for it
+    // unless chrome is dead.
+    if (chromePid != null && !isPidAlive(chromePid)) {
+      await clearBrowserStateFiles();
+    }
+    return;
+  }
+  await clearBrowserStateFiles();
+}
+
+/** Close the shared Chrome session (call from test teardown if desired). */
+export async function closeSharedBrowser(): Promise<void> {
+  await sharedSessionLock;
+  await disposeSharedSession({ killChrome: true });
+}
+
+function installCleanupHandlers(): void {
+  if (cleanupHandlersInstalled) return;
+  cleanupHandlersInstalled = true;
+
+  const cleanup = () => {
+    // Sync best-effort path for signal handlers.
+    try {
+      const s = sharedSession;
+      sharedSession = null;
+      if (s?.ownsBrowser) {
+        try {
+          s.browser.close();
+        } catch {
+          // ignore
+        }
+        if (s.chromePid != null) forceKillPid(s.chromePid, "chrome");
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const text = Deno.readTextFileSync(CHROME_PID_PATH).trim();
+      const pid = Number(text);
+      if (Number.isFinite(pid)) forceKillPid(pid, "chrome");
+    } catch {
+      // no pid file
+    }
+    for (const p of [LOCK_PATH, WS_PATH, CHROME_PID_PATH, OWNER_PID_PATH]) {
+      try {
+        Deno.removeSync(p);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // unload fires on normal process exit.
+  globalThis.addEventListener("unload", cleanup);
+
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    try {
+      Deno.addSignalListener(sig, () => {
+        console.warn(
+          `[render-midy-headless] ${sig} — shutting down Chrome…`,
+        );
+        cleanup();
+        // Let the runtime abort after cleanup; re-raise by exiting.
+        Deno.exit(130);
+      });
+    } catch {
+      // Signal may be unavailable (Windows / restricted env).
+    }
+  }
+}
+
+function parseRenderResult(
+  result: string | {
+    wavBase64: string;
+    useAlmostSimplePitchBend?: boolean;
+    cacheMode?: string;
+  },
+  options: RenderMidyModeOptions,
+): Uint8Array {
+  let wavBase64: string;
+  if (typeof result === "string") {
+    wavBase64 = result;
+    if (options.useAlmostSimplePitchBend != null) {
+      console.warn(
+        "[render-midy-headless] harness returned bare base64; " +
+          "cannot verify useAlmostSimplePitchBend was applied. " +
+          "Update tools/midy-harness.js.",
+      );
+    }
+  } else {
+    wavBase64 = result.wavBase64;
+    if (options.useAlmostSimplePitchBend != null) {
+      const actual = !!result.useAlmostSimplePitchBend;
+      const requested = !!options.useAlmostSimplePitchBend;
+      console.log(
+        `[render-midy-headless] useAlmostSimplePitchBend ` +
+          `requested=${requested} actual=${actual} mode=${options.cacheMode}`,
+      );
+      if (actual !== requested) {
+        throw new Error(
+          `useAlmostSimplePitchBend mismatch: requested=${requested} ` +
+            `actual=${actual}. Rebuild dist/midy.js and ensure harness sets the flag.`,
+        );
+      }
+    }
+  }
+  return fromBase64(wavBase64);
+}
+
 /**
  * Render a single MIDI file through midy in a given cacheMode, inside a
  * real headless browser, and return the WAV bytes.
+ *
+ * By default reuses one Chrome across renders AND across parallel Deno test
+ * workers (file lock + shared WebSocket endpoint). Set MIDY_NO_BROWSER_REUSE=1
+ * for a fresh Chrome per render (debug).
  */
 export async function renderMidyMode(
   options: RenderMidyModeOptions,
 ): Promise<Uint8Array> {
-  const rootDir = options.rootDir ?? ".";
-  const { url, close } = serveDir(rootDir);
-  const browser = await launchBrowser(options);
+  installCleanupHandlers();
+
+  // In-process queue.
+  let releaseLocal!: () => void;
+  const prev = sharedSessionLock;
+  sharedSessionLock = new Promise<void>((r) => {
+    releaseLocal = r;
+  });
+  await prev;
+
+  // Cross-process lock (parallel test files).
+  let releaseGlobal: (() => Promise<void>) | null = null;
+  if (REUSE_BROWSER) {
+    releaseGlobal = await acquireGlobalLock();
+  }
+
   try {
-    const page = await browser.newPage();
-    page.on("console", (msg) => console.log(`[browser] ${msg.text()}`));
-    page.on("pageerror", (err) => console.error(`[browser error] ${err}`));
-    await page.goto(`${url}/${options.harnessDir}/harness.html`, {
-      waitUntil: "load",
-    });
+    if (!REUSE_BROWSER) {
+      const rootDir = options.rootDir ?? ".";
+      const { url, close } = serveDir(rootDir);
+      const browser = await launchBrowser(options);
+      const chromePid = browser.process()?.pid ?? null;
+      try {
+        const page = await browser.newPage();
+        page.on("console", (msg) => console.log(`[browser] ${msg.text()}`));
+        page.on("pageerror", (err) => console.error(`[browser error] ${err}`));
+        await page.goto(`${url}/${options.harnessDir}/harness.html`, {
+          waitUntil: "load",
+        });
+        const midiBytes = await Deno.readFile(options.midiPath);
+        const result = await page.evaluate(
+          (params) => {
+            // deno-lint-ignore no-explicit-any
+            return (globalThis as any).__renderMidyMode(params);
+          },
+          {
+            midiBytesBase64: toBase64(midiBytes),
+            soundFontBytesBase64: await getSf2Base64(options.soundFontPath),
+            cacheMode: options.cacheMode,
+            sampleRate: options.sampleRate ?? 48000,
+            useAlmostSimplePitchBend: options.useAlmostSimplePitchBend,
+          },
+        ) as string | {
+          wavBase64: string;
+          useAlmostSimplePitchBend?: boolean;
+          cacheMode?: string;
+        };
+        return parseRenderResult(result, options);
+      } finally {
+        try {
+          await browser.close();
+        } catch (closeErr) {
+          console.warn(
+            `[render-midy-headless] browser.close() failed: ${closeErr}`,
+          );
+        }
+        if (chromePid != null) forceKillPid(chromePid, "chrome");
+        close();
+      }
+    }
 
+    const session = await acquireSession(options);
     const midiBytes = await Deno.readFile(options.midiPath);
-    const sf2Bytes = await Deno.readFile(options.soundFontPath);
-
-    const result = await page.evaluate(
+    const result = await session.page.evaluate(
       (params) => {
         // deno-lint-ignore no-explicit-any
         return (globalThis as any).__renderMidyMode(params);
       },
       {
         midiBytesBase64: toBase64(midiBytes),
-        soundFontBytesBase64: toBase64(sf2Bytes),
+        soundFontBytesBase64: await getSf2Base64(options.soundFontPath),
         cacheMode: options.cacheMode,
         sampleRate: options.sampleRate ?? 48000,
         useAlmostSimplePitchBend: options.useAlmostSimplePitchBend,
@@ -209,47 +663,10 @@ export async function renderMidyMode(
       useAlmostSimplePitchBend?: boolean;
       cacheMode?: string;
     };
-
-    // New harness returns { wavBase64, useAlmostSimplePitchBend, ... }.
-    // Old harness returned a bare base64 string — still supported.
-    let wavBase64: string;
-    if (typeof result === "string") {
-      wavBase64 = result;
-      if (options.useAlmostSimplePitchBend != null) {
-        console.warn(
-          "[render-midy-headless] harness returned bare base64; " +
-            "cannot verify useAlmostSimplePitchBend was applied. " +
-            "Update tools/midy-harness.js.",
-        );
-      }
-    } else {
-      wavBase64 = result.wavBase64;
-      if (options.useAlmostSimplePitchBend != null) {
-        const actual = !!result.useAlmostSimplePitchBend;
-        const requested = !!options.useAlmostSimplePitchBend;
-        console.log(
-          `[render-midy-headless] useAlmostSimplePitchBend ` +
-            `requested=${requested} actual=${actual} mode=${options.cacheMode}`,
-        );
-        if (actual !== requested) {
-          throw new Error(
-            `useAlmostSimplePitchBend mismatch: requested=${requested} ` +
-              `actual=${actual}. Rebuild dist/midy.js and ensure harness sets the flag.`,
-          );
-        }
-      }
-    }
-
-    return fromBase64(wavBase64);
+    return parseRenderResult(result, options);
   } finally {
-    try {
-      await browser.close();
-    } catch (closeErr) {
-      console.warn(
-        `[render-midy-headless] browser.close() failed: ${closeErr}`,
-      );
-    }
-    close();
+    if (releaseGlobal) await releaseGlobal();
+    releaseLocal();
   }
 }
 

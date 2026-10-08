@@ -134,12 +134,27 @@ function assertDeltaCents(
   }
 }
 
+/** Honour MIDY_QUICK / MIDY_CACHE_MODES for A/B mode matrix. */
+function defaultAbModes(): Array<"note" | "chunk" | "none"> {
+  const raw = Deno.env.get("MIDY_CACHE_MODES");
+  if (raw && raw.trim()) {
+    const allowed = new Set(["note", "chunk", "none"]);
+    const picked = raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter((m): m is "note" | "chunk" | "none" => allowed.has(m));
+    if (picked.length > 0) return picked;
+  }
+  // Quick and full both use note+chunk for A/B (none is rarely informative here).
+  return ["note", "chunk"];
+}
+
 async function abCheck(
   t: Deno.TestContext,
   name: string,
   midiBytes: Uint8Array,
   windows: WindowSpec[],
-  modes: Array<"note" | "chunk" | "none"> = ["note", "chunk"],
+  modes: Array<"note" | "chunk" | "none"> = defaultAbModes(),
   /** When false, only A/B is asserted (no delta vs unbent ref). */
   checkDelta = true,
 ): Promise<void> {

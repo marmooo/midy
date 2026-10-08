@@ -41,8 +41,33 @@ export type { CacheMode };
 export const OUT_DIR = "/tmp/midy-gm2-check";
 export const SF2_PATH = "tools/GeneralUser_GS_v1.472.sf3";
 export const HARNESS_DIR = "tools";
-export const SAMPLE_RATE = 48000;
 export const FLUIDSYNTH_VERSION = "v2.6.0";
+
+// ---------------------------------------------------------------------------
+// Runtime knobs (env) — cut wall-clock without editing every test file.
+//
+//   MIDY_QUICK=1              → SAMPLE_RATE=24000, CACHE_MODES=note,chunk
+//   MIDY_SAMPLE_RATE=22050    → override sample rate (fluidsynth + midy)
+//   MIDY_CACHE_MODES=note,audio  → only these cache modes
+//   MIDY_NO_BROWSER_REUSE=1   → fresh Chrome per render (see render-midy-headless)
+//
+// Full suite (default, no env): 48 kHz × all 7 cache modes.
+// ---------------------------------------------------------------------------
+
+function envTruthy(name: string): boolean {
+  const v = Deno.env.get(name);
+  return v === "1" || v === "true" || v === "yes";
+}
+
+const QUICK = envTruthy("MIDY_QUICK");
+
+export const SAMPLE_RATE: number = (() => {
+  const raw = Deno.env.get("MIDY_SAMPLE_RATE");
+  if (raw && Number.isFinite(Number(raw)) && Number(raw) > 0) {
+    return Number(raw);
+  }
+  return QUICK ? 24000 : 48000;
+})();
 
 export const NOTE_NUMBER = 60;
 export const NOTE_VELOCITY = 100;
@@ -111,7 +136,7 @@ export const RETRIG_ATTACK_REL_DB = 25;
 export const RETRIG_RESIDUAL_DB_MAX = 4.0;
 export const RETRIG_ENV_CORR_MIN = 0.65;
 
-export const CACHE_MODES: CacheMode[] = [
+const ALL_CACHE_MODES: CacheMode[] = [
   "none",
   "ads",
   "adsr",
@@ -120,6 +145,40 @@ export const CACHE_MODES: CacheMode[] = [
   "chunk",
   "audio",
 ];
+
+/** Default quick subset: one realtime-ish mode + one offline bake mode. */
+const QUICK_CACHE_MODES: CacheMode[] = ["note", "chunk"];
+
+function resolveCacheModes(): CacheMode[] {
+  const raw = Deno.env.get("MIDY_CACHE_MODES");
+  if (raw && raw.trim().length > 0) {
+    const wanted = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    const resolved = wanted.filter((m): m is CacheMode =>
+      (ALL_CACHE_MODES as string[]).includes(m)
+    );
+    if (resolved.length === 0) {
+      console.warn(
+        `[compare-common] MIDY_CACHE_MODES=${raw} matched nothing; ` +
+          `using ${QUICK ? "quick" : "full"} defaults`,
+      );
+    } else {
+      return resolved;
+    }
+  }
+  return QUICK ? QUICK_CACHE_MODES : ALL_CACHE_MODES;
+}
+
+export const CACHE_MODES: CacheMode[] = resolveCacheModes();
+
+if (
+  QUICK || Deno.env.get("MIDY_CACHE_MODES") || Deno.env.get("MIDY_SAMPLE_RATE")
+) {
+  console.log(
+    `[compare-common] SAMPLE_RATE=${SAMPLE_RATE} CACHE_MODES=${
+      CACHE_MODES.join(",")
+    }${QUICK ? " (MIDY_QUICK)" : ""}`,
+  );
+}
 
 export async function assertNonEmptyFile(path: string): Promise<void> {
   const stat = await Deno.stat(path);
