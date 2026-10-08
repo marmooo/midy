@@ -130,11 +130,19 @@ Deno.test(
     const t = player.audioContext.currentTime;
 
     player.handleMessage(new Uint8Array([0xD0, 77]), t);
-    assertAlmostEquals(player.channels[0].state.channelPressure, 77 / 127, 1e-6);
+    assertAlmostEquals(
+      player.channels[0].state.channelPressure,
+      77 / 127,
+      1e-6,
+    );
 
     // channel 2 (0xD2)
     player.handleMessage(new Uint8Array([0xD2, 10]), t);
-    assertAlmostEquals(player.channels[2].state.channelPressure, 10 / 127, 1e-6);
+    assertAlmostEquals(
+      player.channels[2].state.channelPressure,
+      10 / 127,
+      1e-6,
+    );
   },
 );
 
