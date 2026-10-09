@@ -1,0 +1,38 @@
+[
+  {
+    "name": "baseline",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "preferWorkerMixDuringLive": false,
+      "preferWorkerBakeDuringLive": false,
+      "maxTiledNoteDuration": 8,
+      "maxConcurrentChunkBakes": 2,
+      "useWorkerTransferable": true
+    }
+  },
+  {
+    "name": "worker-mix",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "preferWorkerMixDuringLive": true,
+      "preferWorkerBakeDuringLive": false,
+      "maxTiledNoteDuration": 8,
+      "maxConcurrentChunkBakes": 2,
+      "useWorkerTransferable": true
+    }
+  },
+  {
+    "name": "main-offload",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "preferWorkerMixDuringLive": true,
+      "preferWorkerBakeDuringLive": true,
+      "maxTiledNoteDuration": 16,
+      "maxConcurrentChunkBakes": 3,
+      "useWorkerTransferable": true
+    }
+  }
+]

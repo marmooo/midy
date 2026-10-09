@@ -28,7 +28,7 @@
 //
 // Chrome is shared across parallel test workers (one process). Interrupted
 // runs (Ctrl+C) tear down Chrome via signal handlers; leftover PIDs can be
-// cleaned with: rm -rf /tmp/midy-chrome-state && pkill -f 'chrome.*puppeteer' 
+// cleaned with: rm -rf /tmp/midy-chrome-state && pkill -f 'chrome.*puppeteer'
 //
 // WAV outputs land in /tmp/midy-gm2-check for manual inspection.
 //
@@ -36,4 +36,3 @@
 // pointer without double-running suites when you `deno test tools/`.
 
 export {};
-
