@@ -241,11 +241,15 @@ const CHROME_LAUNCH_ARGS = [
 async function launchBrowser(opts: {
   headed?: boolean;
   executablePath?: string;
+  /** CDP protocolTimeout (ms). Must cover full song wall time inside page.evaluate. */
+  protocolTimeoutMs?: number;
 }): Promise<Browser> {
   return await puppeteer.launch({
     headless: !opts.headed,
     executablePath: opts.executablePath,
-    protocolTimeout: 120_000,
+    // Default 10 min: a 175s song + preroll easily exceeds the old 120s limit
+    // and aborts page.evaluate with Runtime.callFunctionOn timed out.
+    protocolTimeout: opts.protocolTimeoutMs ?? 600_000,
     args: CHROME_LAUNCH_ARGS,
   });
 }
@@ -269,9 +273,15 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
   const sf2Base64 = toBase64(sf2Bytes);
 
   const { url, close } = serveDir(rootDir);
+  // page.evaluate runs the entire song; protocolTimeout must exceed wall time.
+  const protocolTimeoutMs = Math.max(
+    600_000,
+    ((options.maxPlaySec ?? 300) + 120) * 1000,
+  );
   const browser = await launchBrowser({
     headed: options.headed,
     executablePath: options.executablePath,
+    protocolTimeoutMs,
   });
 
   const manifest: Array<Record<string, unknown>> = [];
