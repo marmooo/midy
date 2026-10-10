@@ -14,8 +14,8 @@ local browser run are exercised (`preferWorkerMixDuringLive`,
 - Built `dist/midy.js` (must be visible from the repo root)
 
 ```bash
-# Example: use the latest offload build
-cp /path/to/midy-main-offload.js dist/midy.js
+# Example: use a build that includes preferWorker* flags
+cp /path/to/midy.js dist/midy.js
 ```
 
 ## Usage
@@ -28,9 +28,27 @@ deno run -A tools/bench-main-load.ts \
   --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
   --set cacheMode=chunk \
   --set debug=true \
+  --set useWorkerTypedArrayMix=true \
+  --set workerMixMinEntries=1 \
+  --set preferWorkerMixDuringLive=false \
+  --set preferWorkerBakeDuringLive=false \
+  --out-dir ./bench-logs
+```
+
+### Main-thread minimisation (games / shared main)
+
+```bash
+deno run -A tools/bench-main-load.ts \
+  --midi ./tools/op1a.mid \
+  --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
+  --set cacheMode=chunk \
+  --set prerollSec=20 \
+  --set debug=true \
+  --set useWorkerTypedArrayMix=true \
+  --set workerMixMinEntries=1 \
   --set preferWorkerMixDuringLive=true \
   --set preferWorkerBakeDuringLive=true \
-  --set maxTiledNoteDuration=16 \
+  --max-play-sec 200 \
   --out-dir ./bench-logs
 ```
 
@@ -59,23 +77,47 @@ Unknown keys emit a warning but the assignment is still attempted.
 bench-logs/
   songA__baseline.log      # full browser console
   songA__worker-mix.log
-  songA__main-offload.log
   ...
   manifest.json            # run metadata
 ```
 
-Log contents match the format of the local browser DevTools console (e.g.
-`[midy] main-summary`).
+Log contents match the format of the local browser DevTools console.
 
-No CSV is produced. Grep for `main-summary` / `offload` lines afterward if
-needed:
+### Metrics to compare (main-thread load)
+
+After a run finishes (`debug=true`), grep:
 
 ```bash
-grep -h 'main-summary\|offload \|chunk-pipeline' bench-logs/*.log
+grep -h 'main-thread \|offload \|chunk-mix-parts\|chunk-pipeline\|chunk-bake-parts' bench-logs/*.log
 ```
+
+Key lines:
+
+| Line                                                                | What it means                                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `[midy] main-thread \| mixMainMs=… mixWorkerMs=… mixMainRatio=…%`   | **Primary target.** Lower `mixMainMs` / `mixMainRatio` = less main-thread mix work |
+| `[midy] offload \| mixMainTiles=… mixWorkerTiles=… mixMainRatio=…%` | Same split, easy to grep                                                           |
+| `[midy] chunk-mix-parts \| … mainSum=… workerSum=…`                 | Detailed mix-phase timing                                                          |
+| `[midy] chunk-pipeline \| … late=… dropped=…`                       | Playback health (should stay `late=0 dropped=0`)                                   |
+| `[midy] chunk-bake-parts \| simpleSum=… mixSum=…`                   | Bake vs mix wall inside tiles                                                      |
+
+Example A/B:
+
+```text
+# baseline (live mix on main)
+main-thread | mixMainMs=5093 mixWorkerMs=1298 mixMainRatio=88.3% liveMix=main
+
+# preferWorkerMixDuringLive=true
+main-thread | mixMainMs=…   mixWorkerMs=…   mixMainRatio=…%  liveMix=worker
+```
+
+Trade-off: lower main occupancy may raise per-tile latency / residual. Watch
+`late` and `dropped` on `chunk-pipeline`.
 
 ## Notes
 
 - Times out after song length + a few seconds (override with `--max-play-sec`)
 - Launches Chrome with `--mute-audio` (no sound)
 - `debug=true` is recommended (forced on by the harness if not set)
+- Puppeteer `protocolTimeout` defaults to 10 minutes so long songs can finish
+  inside one `page.evaluate`
