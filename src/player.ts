@@ -202,7 +202,7 @@ export class Player<
   // Typical single-note cost is often ~1–2 (duration + release tail). Dense
   // 1s windows can sum to 50+. Budget ~12–24 splits outliers without
   // one-note tiles. Tune from [midy] chunk-tile-shape costAvg / notesAvg.
-  chunkCostBudget: number = 16;
+  chunkCostBudget: number = 12;
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight: number = 1.75;
   maxTiledNoteDuration: number = 8;
@@ -309,7 +309,7 @@ export class Player<
   // Primary anti-stampede control when near is 0. 0 = unlimited (legacy).
   // 3: one schedule/update tick can promote several deferred tiles (was 1 →
   // deferredN climbed to 60+ while playhead advanced → late/dropped).
-  maxChunkBakeStartsPerPass: number = 3;
+  maxChunkBakeStartsPerPass: number = 5;
   // Counter for the current pass; reset by beginChunkBakePass().
   private chunkBakeStartsThisPass: number = 0;
   // Throttle close-chunk console.warn (DevTools stack traces are expensive).
@@ -391,6 +391,29 @@ export class Player<
   workerMixMinEntries: number = 1;
 
   /**
+   * When true, allow tile-level TypedArray mix to use the worker pool even
+   * during live realtime playback (not only preroll / offline).
+   *
+   * Default false: live mix stays on the main thread. Worker await residual
+   * was measured ~130ms/tile (work ~12ms) and could dominate bakeAvg / late.
+   *
+   * Set true when minimising main-thread occupancy matters more than
+   * per-tile latency (e.g. games sharing the main thread). Pair with
+   * useWorkerTypedArrayMix=true and a small workerMixMinEntries.
+   */
+  preferWorkerMixDuringLive: boolean = true;
+
+  /**
+   * When true, allow simple-note TypedArray sample bake to use the worker
+   * pool during live realtime (miss bakes / batch). Default false keeps
+   * short live note bakes on main to avoid multi-second onmessage residual.
+   *
+   * Long almost-simple pitch-bend notes already prefer the worker even when
+   * this is false (main variable-rate loops can block 1–2s).
+   */
+  preferWorkerBakeDuringLive: boolean = true;
+
+  /**
    * Chunk mode: bake simple notes dry (no channel vol/pan/expression in the
    * buffer) and apply those at tile mix time. Shared dry keys then hit across
    * different onset volumes/pans/expressions.
@@ -446,7 +469,7 @@ export class Player<
   // Soft cap on notes per chunk tile. When adding a *new onset group* would
   // exceed this, close and start a new tile (same-timestamp chords stay).
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
-  maxChunkNotes: number = 48;
+  maxChunkNotes: number = 32;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
   // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
   chunkBakeHeavyThresholdMs: number = 1500;
@@ -3026,6 +3049,8 @@ export class Player<
             `transferable=${this.useWorkerTransferable} ` +
             `poolSize=${poolSize} ` +
             `mixMinEntries=${this.workerMixMinEntries} ` +
+            `preferLiveMix=${this.preferWorkerMixDuringLive} ` +
+            `preferLiveBake=${this.preferWorkerBakeDuringLive} ` +
             `poolStarted=${!!this.bakeWorkerPool}`,
         );
         // Confirm almost-simple / cache knobs actually in effect this run.
@@ -3124,6 +3149,35 @@ export class Player<
               `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
           );
         }
+        // Main-thread occupancy focus (compare baseline vs preferWorker* flags).
+        // mixMainMs = time spent in mixSimpleBuffersTypedArray on main.
+        // mixWorkerMs = pure mix loop inside workers (not main).
+        // Ratio close to 0% means tile mix is largely off the main thread.
+        const mixMainMs = this.chunkMixMainSumMs;
+        const mixWorkerMs = this.chunkMixWorkerSumMs;
+        const mixTiles = mw + mm;
+        const mixMainRatio = mixTiles > 0 ? (100 * mm) / mixTiles : 0;
+        const liveMixPolicy = this.preferWorkerMixDuringLive
+          ? "worker"
+          : "main";
+        const liveBakePolicy = this.preferWorkerBakeDuringLive
+          ? "worker"
+          : "main";
+        console.log(
+          `[midy] main-thread | ` +
+            `mixMainMs=${mixMainMs.toFixed(0)} ` +
+            `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
+            `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+            `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
+            `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
+            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
+            `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
+        );
+        // Offload summary (same numbers, easy to grep alongside older logs).
+        console.log(
+          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+            `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
+        );
       }
       if (this.debug) {
         console.log(
@@ -4928,14 +4982,15 @@ export class Player<
         mainMs: 0,
         usedWorker: false,
       };
-      // LIVE: synchronous mix only. Worker await residual was measured at
-      // ~130ms average (work ~12ms) even with pureTA=100%, which dominated
-      // bakeAvg and late. Preroll / offline keep async+worker.
+      // LIVE default: synchronous mix on main (avoids worker await residual
+      // ~130ms/tile). preferWorkerMixDuringLive=true opts into async+worker
+      // during live to minimise main-thread occupancy (games etc.).
       // Dry-simple gainL/gainR still apply via mixSimpleBuffersTypedArray.
       const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
         !forAudioOffline;
+      const liveMixOnMain = liveRealtime && !this.preferWorkerMixDuringLive;
       let buffer: AudioBuffer;
-      if (liveRealtime) {
+      if (liveMixOnMain) {
         buffer = this.mixEntriesToBufferSync(
           allEntries,
           2,
@@ -6069,17 +6124,21 @@ export class Player<
 
     this.chunkMixEntriesSum += entries.length;
 
-    // LIVE PLAYBACK: always mix on main. Worker residual was multi-second at
-    // the preroll boundary and ~130ms/tile during pureTA live (work ~12ms).
-    // Main mix is predictable tens of ms. Workers remain for preroll/offline.
+    // LIVE PLAYBACK default: mix on main (predictable tens of ms; avoids
+    // worker residual). preferWorkerMixDuringLive opts into the worker path
+    // to minimise main-thread time when sharing the thread with a game loop.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
     let mixPathReason = "worker";
-    if (liveRealtime) mixPathReason = "liveRealtime";
-    else if (!this.useWorkerTypedArrayMix) mixPathReason = "disabled";
-    else if (entries.length < this.workerMixMinEntries) {
+    if (liveRealtime && !this.preferWorkerMixDuringLive) {
+      mixPathReason = "liveRealtime";
+    } else if (!this.useWorkerTypedArrayMix) {
+      mixPathReason = "disabled";
+    } else if (entries.length < this.workerMixMinEntries) {
       mixPathReason =
         `minEntries(${entries.length}<${this.workerMixMinEntries})`;
-    } else if (typeof Worker === "undefined") mixPathReason = "noWorker";
+    } else if (typeof Worker === "undefined") {
+      mixPathReason = "noWorker";
+    }
     const useWorker = mixPathReason === "worker";
 
     // [diag E] mix-path (throttled)
@@ -6857,14 +6916,14 @@ export class Player<
   ): Promise<void> {
     // Same live residual issue as tile mix: worker finishes in tens of ms but
     // main may not process onmessage for seconds → missBake multi-second.
-    // Prefer main during live playback for short notes; keep workers for
-    // preroll/offline. Exception: almost-simple pitch-bend rate curves on
-    // long notes — main-thread variable-rate loops can block for 1–2s and
-    // are worse than residual, so allow worker even while live.
+    // Prefer main during live for short notes unless preferWorkerBakeDuringLive.
+    // Exception: almost-simple pitch-bend rate curves on long notes — main
+    // variable-rate loops can block 1–2s, so allow worker even while live.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
     const longBend = rateMultipliers != null &&
       dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER;
-    const useWorker = (!liveRealtime || longBend) &&
+    const useWorker = (!liveRealtime || longBend ||
+      this.preferWorkerBakeDuringLive) &&
       this.useWorkerSimpleNoteBake &&
       dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER &&
       typeof Worker !== "undefined";
@@ -8288,9 +8347,10 @@ export class Player<
     };
     const sampleRate = this.audioContext.sampleRate;
     const maxPer = BakeWorkerPool.MAX_NOTES_PER_BATCH;
-    // Live: main-thread note bake (avoid multi-second residual on onmessage).
+    // Live default: main-thread note bake (avoid multi-second residual).
+    // preferWorkerBakeDuringLive opts into worker batches during live.
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
-    const useWorker = !liveRealtime &&
+    const useWorker = (!liveRealtime || this.preferWorkerBakeDuringLive) &&
       this.useWorkerSimpleNoteBake &&
       typeof Worker !== "undefined";
     const resolveMap = new Map<string, {
