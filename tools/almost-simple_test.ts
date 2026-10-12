@@ -105,8 +105,20 @@ Deno.test("almost-simple: sustain CC64 does not force complex or gain-only", () 
   assertEquals(player.isSimpleNote({ noteEvent: entry }), true);
 });
 
-Deno.test("almost-simple: pitch bend forces complex", () => {
+Deno.test("almost-simple: pitch bend is almost-simple by default", () => {
   const player = makePlayer();
+  const entry = noteEntry([pitchBend(100, 9000)]);
+  // deno-lint-ignore no-explicit-any
+  const p = player as any;
+  // Default useAlmostSimplePitchBend=true → bend stays on TypedArray path.
+  assertEquals(p.hasWaveformAutomation(entry), false);
+  assertEquals(p.hasGainOnlyAutomation(entry), false);
+  assertEquals(player.isSimpleNote({ noteEvent: entry }), true);
+});
+
+Deno.test("almost-simple: pitch bend forces complex when flag off", () => {
+  const player = makePlayer();
+  player.useAlmostSimplePitchBend = false;
   const entry = noteEntry([pitchBend(100, 9000)]);
   // deno-lint-ignore no-explicit-any
   const p = player as any;
@@ -137,8 +149,20 @@ Deno.test("almost-simple: modulation (CC1) forces complex", () => {
   assertEquals(player.isSimpleNote({ noteEvent: entry }), false);
 });
 
-Deno.test("almost-simple: gain + pitch bend is complex (not gain-only)", () => {
+Deno.test("almost-simple: gain + pitch bend is almost-simple by default", () => {
   const player = makePlayer();
+  const entry = noteEntry([cc(50, 11, 40), pitchBend(100, 8192)]);
+  // deno-lint-ignore no-explicit-any
+  const p = player as any;
+  // Bend coexists with gain on the TypedArray path when almost-simple bend is on.
+  assertEquals(p.hasWaveformAutomation(entry), false);
+  assertEquals(p.hasGainOnlyAutomation(entry), true);
+  assertEquals(player.isSimpleNote({ noteEvent: entry }), true);
+});
+
+Deno.test("almost-simple: gain + pitch bend is complex when bend flag off", () => {
+  const player = makePlayer();
+  player.useAlmostSimplePitchBend = false;
   const entry = noteEntry([cc(50, 11, 40), pitchBend(100, 8192)]);
   // deno-lint-ignore no-explicit-any
   const p = player as any;
@@ -152,11 +176,13 @@ Deno.test("almost-simple: finalizeSimpleNoteClassification puts gain-only in sim
   player.cacheMode = "chunk";
   // timelineIndex 0: pure simple
   // timelineIndex 1: gain-only
-  // timelineIndex 2: pitch bend complex
+  // timelineIndex 2: pitch bend (almost-simple by default)
+  // timelineIndex 3: modulation → complex
   player.noteOnEvents = [
     noteEntry([]),
     noteEntry([cc(100, 7, 20)]),
     noteEntry([pitchBend(100, 10000)]),
+    noteEntry([cc(50, 1, 64)]),
   ];
   // No tiled set → classify all noteOnEvents
   player.tiledBakedSet.clear();
@@ -164,7 +190,8 @@ Deno.test("almost-simple: finalizeSimpleNoteClassification puts gain-only in sim
 
   assertEquals(player.simpleNoteSet.has(0), true, "pure simple");
   assertEquals(player.simpleNoteSet.has(1), true, "gain-only → simple");
-  assertEquals(player.simpleNoteSet.has(2), false, "pitch bend → complex");
+  assertEquals(player.simpleNoteSet.has(2), true, "pitch bend → simple (almost-simple)");
+  assertEquals(player.simpleNoteSet.has(3), false, "modulation → complex");
 });
 
 Deno.test("almost-simple: gain curve fingerprint differs for different trajectories", () => {
