@@ -1464,15 +1464,24 @@ export class MidyGM2 extends Player<Note, Channel> {
             note.isTiledGhost = true;
             note.tiledNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
           } else if (this.debug && (isSegmentMode || isChunkMode)) {
-            // Diagnose realtime note-miss at song head: notes excluded from
-            // tiledBakedSet (maxTiledNoteDuration / exclusiveClass / drum
-            // exclusive) still go through setNoteAudioNode with only
-            // lookAhead=1s prep budget.
+            // Diagnose non-tiled path: long non-exclusive → noteBake
+            // (Player.getAudioBuffer → getNoteModeBuffer); exclusive stays
+            // realtime for choke; other exclusions stay realtime ADS.
             const dur = this.noteOnDurations[queueIndex] ?? 0;
             const vp = this.tiledVoiceParams[queueIndex];
             const releaseTail = vp
               ? (vp.releaseVolEnv ?? 0) * envelopeCurve * 5
               : -1;
+            const excl = vp?.exclusiveClass ?? 0;
+            const inLong = this.longNoteBakedSet.has(queueIndex);
+            const path = inLong
+              ? "noteBake"
+              : (excl !== 0 || this.isSegmentExcludedDrum(
+                  channel,
+                  event.noteNumber!,
+                )
+                ? "realtimeExcl"
+                : "realtime");
             console.warn(
               `[midy] non-tiled noteOn | ch=${event.channel} note=${event.noteNumber} ` +
                 `idx=${queueIndex} songT=${t.toFixed(2)}s dur=${
@@ -1486,6 +1495,7 @@ export class MidyGM2 extends Player<Note, Channel> {
                 }s ` +
                 `excl=${vp?.exclusiveClass ?? "?"} ` +
                 `inSet=${this.tiledBakedSet.has(queueIndex)} ` +
+                `inLong=${inLong} path=${path} ` +
                 `maxTiled=${this.maxTiledNoteDuration}`,
             );
           }
