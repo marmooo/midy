@@ -208,13 +208,21 @@ export class Player<
   maxTiledNoteDuration: number = 8;
   tiledBakedSet: Set<number> = new Set();
   /**
-   * Notes excluded from tiles because duration+releaseTail exceeds
-   * maxTiledNoteDuration, but still eligible for a full-note offline bake
-   * (exclusiveClass === 0). Played via getNoteModeBuffer + BufferSource
-   * instead of the heavy realtime ADS path. Exclusive-class notes are
-   * never added here (choke must stay realtime).
+   * Timeline indices played via full-note offline bake (getNoteModeBuffer)
+   * instead of realtime ADS / tiles:
+   * - non-exclusive notes with duration+releaseTail > maxTiledNoteDuration
+   * - exclusive-class notes with choke time precomputed from the MIDI
+   *   timeline (scheduled playback only; live realtime stays ADS)
    */
   longNoteBakedSet: Set<number> = new Set();
+  /**
+   * Optional bake duration override (seconds) per timeline index.
+   * Set for exclusive-class notes truncated at the next same-class onset
+   * so the offline buffer ends at the choke point.
+   */
+  noteBakeDurations: (number | undefined)[] = [];
+  /** Short release used when an exclusive note is truncated by a choke. */
+  static readonly EXCLUSIVE_CHOKE_FADE_SEC = 0.008;
   tiledVoiceParams: (VoiceParams | null)[] = [];
   tiledVoices: (Voice | null)[] = [];
   // segment mode
@@ -848,6 +856,7 @@ export class Player<
     this.preloadEntries = [];
     this.tiledBakedSet.clear();
     this.longNoteBakedSet.clear();
+    this.noteBakeDurations = [];
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
     this.simpleNoteCounts.clear();
@@ -1182,6 +1191,9 @@ export class Player<
     } else if (usesSimpleComplexNoteCache(cacheMode)) {
       // audio mode uses renderChunkBuffer's simple-note path;
       // note mode reuses simpleNoteBufferCache for identical onsets.
+      // Exclusive choke times are known from the MIDI timeline — bake them.
+      this.longNoteBakedSet = new Set();
+      this.finalizeExclusiveNoteBakeClassification();
       this.finalizeSimpleNoteClassification();
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
@@ -1237,13 +1249,14 @@ export class Player<
   // pad into a tile allocates ~15MB stereo PCM per note and will OOM under
   // polyphony. Do NOT remove this gate to "fix" realtime misses.
   //
-  // Long non-exclusive notes are instead classified into longNoteBakedSet
-  // and played via a full-note offline bake (getNoteModeBuffer) so they do
-  // not flood the realtime ADS path. Exclusive-class drums stay realtime
-  // so choke groups still work.
+  // Long non-exclusive notes are classified into longNoteBakedSet and played
+  // via full-note offline bake (getNoteModeBuffer). Exclusive-class notes
+  // are never tiled (choke across tile boundaries is awkward) but for
+  // scheduled MIDI playback their choke times are precomputed from the
+  // timeline and they join longNoteBakedSet with a truncated bake duration.
   //
-  // Cheap (no voice resolution), so tempoChange() can call this again
-  // after buildNoteOnDurations() without redoing the full classification.
+  // Cheap (no voice resolution for the non-exclusive pass), so tempoChange()
+  // can call this again after buildNoteOnDurations() without a full re-walk.
 
   finalizeSegmentClassification(): void {
     const {
@@ -1257,9 +1270,7 @@ export class Player<
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
-      // Exclusive-class must stay realtime for choke (never tile, never
-      // full-note prebake — a full bake embeds the release and cannot be
-      // interrupted early by a later exclusive-class note).
+      // Exclusive-class: never tile (handled by exclusive note-bake below).
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
       // All Sound Off ends the voice with no release tail.
@@ -1275,12 +1286,104 @@ export class Player<
     }
     this.tiledBakedSet = bakedSet;
     this.longNoteBakedSet = longSet;
+    this.finalizeExclusiveNoteBakeClassification();
     if (this.debug) {
       console.warn(
-        `[midy] segment-classify | tiled=${bakedSet.size} longNote=${longSet.size} ` +
-          `maxTiled=${maxTiledNoteDuration}`,
+        `[midy] segment-classify | tiled=${this.tiledBakedSet.size} ` +
+          `noteBake=${this.longNoteBakedSet.size} ` +
+          `exclBake=${
+            this.noteBakeDurations.filter((d) => d !== undefined).length
+          } maxTiled=${maxTiledNoteDuration}`,
       );
     }
+  }
+
+  /**
+   * Drum exclusive-class id for a kit program / note (GM1 default table).
+   * GM2 overrides with per-kit tables.
+   */
+  protected exclusiveClassForDrumKit(
+    _programNumber: number,
+    noteNumber: number,
+  ): number {
+    return this.drumExclusiveClasses[noteNumber] ?? 0;
+  }
+
+  /**
+   * Scheduled-playback exclusive notes: precompute choke time from the next
+   * same-channel / same-exclusiveClass noteOn and full-note bake with that
+   * duration. Live realtime (no timeline) is unchanged.
+   *
+   * Exclusive notes stay out of tiles; only the per-note bake path is used.
+   */
+  finalizeExclusiveNoteBakeClassification(): void {
+    const {
+      timeline,
+      noteOnEvents,
+      noteOnDurations,
+      tiledVoiceParams,
+      numChannels,
+    } = this;
+    const n = timeline.length;
+    const bakeDurs: (number | undefined)[] = new Array(n);
+    // key = channel * 128 + exclusiveClass → ordered timeline indices
+    const groups = new Map<number, number[]>();
+    // Track program per channel so GM2 kit exclusive tables resolve correctly.
+    const programs = new Int32Array(numChannels);
+    const drumCh = new Uint8Array(numChannels);
+    if (numChannels > 9) drumCh[9] = 1;
+
+    for (let i = 0; i < n; i++) {
+      const event = timeline[i];
+      if (event.type === "programChange") {
+        const ch = event.channel ?? 0;
+        if (ch >= 0 && ch < numChannels) {
+          programs[ch] = event.programNumber ?? 0;
+        }
+        continue;
+      }
+      if (event.type !== "noteOn") continue;
+      if (!noteOnEvents[i] || (noteOnDurations[i] ?? 0) <= 0) continue;
+
+      const ch = event.channel ?? 0;
+      let excl = tiledVoiceParams[i]?.exclusiveClass ?? 0;
+      if (excl === 0 && (drumCh[ch] || ch === 9)) {
+        excl = this.exclusiveClassForDrumKit(
+          programs[ch] ?? 0,
+          event.noteNumber!,
+        );
+      }
+      if (excl === 0) continue;
+
+      const key = ch * 128 + (excl & 127);
+      let list = groups.get(key);
+      if (!list) {
+        list = [];
+        groups.set(key, list);
+      }
+      list.push(i);
+    }
+
+    const fade = Player.EXCLUSIVE_CHOKE_FADE_SEC;
+    for (const list of groups.values()) {
+      for (let j = 0; j < list.length; j++) {
+        const i = list[j];
+        const start = noteOnEvents[i]!.startTime;
+        const natural = noteOnDurations[i] ?? 0;
+        let held = natural;
+        if (j + 1 < list.length) {
+          const nextStart = noteOnEvents[list[j + 1]]!.startTime;
+          // Hold until just before the choking note; short fade is release.
+          held = Math.max(0, Math.min(natural, nextStart - start - fade));
+        }
+        // Last in group: natural duration (full release baked in note path).
+        const bakeDur = j + 1 < list.length ? held : natural;
+        if (bakeDur <= 1e-4) continue;
+        bakeDurs[i] = bakeDur;
+        this.longNoteBakedSet.add(i);
+      }
+    }
+    this.noteBakeDurations = bakeDurs;
   }
 
   // Controllers that only scale amplitude (CC7/CC11 via SF2 modulators) and do not
@@ -1792,7 +1895,8 @@ export class Player<
                 audioBufferId,
                 noteNumber: noteEvent.noteNumber!,
                 velocity: noteEvent.velocity!,
-                noteDuration: noteOnEvent.duration,
+                noteDuration: this.noteBakeDurations[i] ??
+                  noteOnEvent.duration,
                 noteEvent: noteOnEvent,
                 channelDetune: renderChannel.detune,
                 channelStateArray: renderChannel.state.array,
@@ -2497,7 +2601,7 @@ export class Player<
               audioBufferId: noteAudioBufferIds[i],
               noteNumber: noteEvent.noteNumber!,
               velocity: noteEvent.velocity!,
-              noteDuration: noteOnEvent.duration,
+              noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
               noteEvent: noteOnEvent,
               channelDetune: renderChannel.detune,
               channelStateArray: renderChannel.state.array,
@@ -3383,7 +3487,7 @@ export class Player<
               audioBufferId,
               noteNumber: noteEvent.noteNumber!,
               velocity: noteEvent.velocity!,
-              noteDuration: noteOnEvent.duration,
+              noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
               noteEvent: noteOnEvent,
               channelDetune: renderChannel.detune,
               channelStateArray: renderChannel.state.array.slice(),
@@ -3392,7 +3496,8 @@ export class Player<
               voiceParams,
               voice: layer.voice,
             };
-            // Long-note prebakes always embed channel mix (isFull → masterVolume).
+            // Long-note / exclusive prebakes always embed channel mix
+            // (isFull → masterVolume).
             const bakeMix = this.longNoteBakedSet.has(i)
               ? true
               : this.simpleBakeChannelMixForNote(entry);
@@ -9581,15 +9686,16 @@ export class Player<
       : this.getVoiceId(channel, noteNumber, velocity);
     if (!realtime) {
       if (cacheMode === "note") {
-        // Exclusive-class (SF2 exclusiveClass / GM drum exclusive groups)
-        // must stay interruptible: a full-note bake embeds the entire
-        // release tail and cannot be choked early by a later note in the
-        // same exclusive group. Fall through to the ADS path instead —
-        // same rationale as finalizeSegmentClassification skipping them
-        // for segment/chunk tiles.
+        // Scheduled note mode: non-exclusive always full-bake; exclusive
+        // only when choke time was precomputed into longNoteBakedSet.
         const exclusiveClass = note.voiceParams?.exclusiveClass ?? 0;
         const isExclDrum = this.isSegmentExcludedDrum(channel, noteNumber);
-        if (exclusiveClass === 0 && !isExclDrum) {
+        const isExcl = exclusiveClass !== 0 || isExclDrum;
+        if (
+          !isExcl ||
+          (note.timelineIndex != null &&
+            this.longNoteBakedSet.has(note.timelineIndex))
+        ) {
           return await this.getNoteModeBuffer(channel, note, audioBufferId);
         }
       } else if (cacheMode === "adsr") {
@@ -9599,15 +9705,9 @@ export class Player<
         note.timelineIndex != null &&
         this.longNoteBakedSet.has(note.timelineIndex)
       ) {
-        // Long non-exclusive notes excluded from tiles: full-note offline
-        // bake + BufferSource playback (same path as "note" mode). Avoids
-        // flooding the realtime ADS graph with long-release drums while
-        // also avoiding huge tile buffers / OOM. Exclusive-class notes
-        // are never in longNoteBakedSet.
-        const exclusiveClass = note.voiceParams?.exclusiveClass ?? 0;
-        if (exclusiveClass === 0) {
-          return await this.getNoteModeBuffer(channel, note, audioBufferId);
-        }
+        // Long non-exclusive notes and exclusive notes with precomputed
+        // choke duration: full-note offline bake (not tiles).
+        return await this.getNoteModeBuffer(channel, note, audioBufferId);
       }
     }
     if (cacheMode === "none") {
@@ -9766,16 +9866,33 @@ export class Player<
     const noteEvent = timelineIndex != null
       ? this.noteOnEvents[timelineIndex]
       : undefined;
-    const noteDuration = noteEvent?.duration ?? 0;
+    const naturalDuration = noteEvent?.duration ?? 0;
+    const bakeOverride = timelineIndex != null
+      ? this.noteBakeDurations[timelineIndex]
+      : undefined;
+    // Exclusive choke: hold until next same-class onset (override), then a
+    // short fade instead of the natural long open-hat release.
+    const choked = bakeOverride != null &&
+      bakeOverride < naturalDuration - 1e-4;
+    const noteDuration = bakeOverride ?? naturalDuration;
     const releaseEndDuration = noteEvent?.soundOff
       ? 0
+      : choked
+      ? Player.EXCLUSIVE_CHOKE_FADE_SEC
       : voiceParams.releaseVolEnv * envelopeCurve * 5;
+
+    // Choked exclusive: end like All Sound Off so the buffer does not keep
+    // the natural open-hat release past the next exclusive onset.
+    const bakeNoteEvent = choked && noteEvent
+      ? { ...noteEvent, duration: noteDuration, soundOff: true }
+      : noteEvent;
 
     if (
       this.isSimpleNote({
         timelineIndex: timelineIndex ?? undefined,
         noteEvent,
-      })
+      }) ||
+      (choked && noteEvent && !this.hasWaveformAutomation(noteEvent))
     ) {
       const buffer = await this.getSimpleNoteBuffer({
         channelNumber: channel.channelNumber,
@@ -9783,7 +9900,7 @@ export class Player<
         noteNumber: note.noteNumber,
         velocity: note.velocity,
         noteDuration,
-        noteEvent,
+        noteEvent: bakeNoteEvent,
         channelDetune: channel.detune,
         channelStateArray: channel.state.array.slice(),
         programNumber: channel.programNumber,
@@ -9806,7 +9923,7 @@ export class Player<
       noteNumber: note.noteNumber,
       velocity: note.velocity,
       noteDuration,
-      noteEvent,
+      noteEvent: bakeNoteEvent,
       channelDetune: channel.detune,
       channelStateArray: channel.state.array.slice(),
       programNumber: channel.programNumber,

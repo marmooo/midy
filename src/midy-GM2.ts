@@ -1300,6 +1300,16 @@ export class MidyGM2 extends Player<Note, Channel> {
     return kitTable !== undefined && kitTable[noteNumber] !== 0;
   }
 
+  /** Per-kit exclusive class for scheduled exclusive note-bake. */
+  protected override exclusiveClassForDrumKit(
+    programNumber: number,
+    noteNumber: number,
+  ): number {
+    const kitTable = drumExclusiveClassesByKit[programNumber];
+    if (kitTable) return kitTable[noteNumber] ?? 0;
+    return super.exclusiveClassForDrumKit(programNumber, noteNumber);
+  }
+
   override onCacheTimelineEvent(event: TimelineEvent): void {
     if (event.type !== "controller") return;
     const channel = this.channels[event.channel!];
