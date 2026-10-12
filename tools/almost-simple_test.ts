@@ -190,7 +190,11 @@ Deno.test("almost-simple: finalizeSimpleNoteClassification puts gain-only in sim
 
   assertEquals(player.simpleNoteSet.has(0), true, "pure simple");
   assertEquals(player.simpleNoteSet.has(1), true, "gain-only → simple");
-  assertEquals(player.simpleNoteSet.has(2), true, "pitch bend → simple (almost-simple)");
+  assertEquals(
+    player.simpleNoteSet.has(2),
+    true,
+    "pitch bend → simple (almost-simple)",
+  );
   assertEquals(player.simpleNoteSet.has(3), false, "modulation → complex");
 });
 
