@@ -39,6 +39,25 @@ import type { Browser, Page } from "npm:puppeteer@25.10.0";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Params passed into the browser harness entry point. */
+export interface BenchMainLoadParams {
+  midiBytesBase64: string;
+  soundFontBytesBase64: string;
+  sampleRate?: number;
+  settings?: Record<string, unknown>;
+  maxPlaySec?: number;
+}
+
+/** Shape of `globalThis.__benchMainLoad` exposed by bench-harness.js. */
+type BenchMainLoadFn = (
+  params: BenchMainLoadParams,
+) => Promise<Record<string, unknown>>;
+
+/** Typed access to the harness entry point on globalThis (browser side). */
+type GlobalWithBench = typeof globalThis & {
+  __benchMainLoad?: BenchMainLoadFn;
+};
+
 export interface BenchConfig {
   /** Short name used in log filenames (e.g. "baseline"). */
   name: string;
@@ -332,13 +351,19 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
 
           // Wait until the module has exposed the entry point.
           await page.waitForFunction(
-            () => typeof (globalThis as any).__benchMainLoad === "function",
+            () =>
+              typeof (globalThis as GlobalWithBench).__benchMainLoad ===
+                "function",
             { timeout: 30_000 },
           );
 
           result = await page.evaluate(
-            async (params) => {
-              return await (globalThis as any).__benchMainLoad(params);
+            async (params: BenchMainLoadParams) => {
+              const fn = (globalThis as GlobalWithBench).__benchMainLoad;
+              if (typeof fn !== "function") {
+                throw new Error("__benchMainLoad is not available");
+              }
+              return await fn(params);
             },
             {
               midiBytesBase64: midiBase64,
@@ -346,7 +371,7 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
               sampleRate,
               settings: config.set,
               maxPlaySec: options.maxPlaySec,
-            },
+            } satisfies BenchMainLoadParams,
           ) as Record<string, unknown>;
 
           push(
