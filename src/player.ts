@@ -212,7 +212,7 @@ export class Player<
    * (createAdsrRenderedBuffer) so 40s+ pads cannot starve the tile pipeline.
    * Must be >= maxTiledNoteDuration. 0 = no cap (legacy: all long notes bake).
    */
-  maxNoteBakeDuration: number = 16;
+  maxNoteBakeDuration: number = 12;
   tiledBakedSet: Set<number> = new Set();
   /**
    * Timeline indices played via full-note offline bake (getNoteModeBuffer)

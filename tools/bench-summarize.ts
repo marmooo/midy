@@ -26,6 +26,10 @@ const METRIC_KEYS = [
   "mixMainRatio",
   "residualSum",
   "cacheHit",
+  "clsTiled",
+  "clsNoteBake",
+  "clsAdsFallback",
+  "clsExclBake",
   "elapsedMs",
 ] as const;
 
@@ -89,6 +93,17 @@ function parseLog(text: string, configHint: string): Row {
   );
   if (cache) row.cacheHit = +cache[1];
 
+  // segment-classify | tiled=N noteBake=N adsFallback=N exclBake=N ...
+  const cls = m(
+    /\[midy\] segment-classify \| tiled=(\d+) noteBake=(\d+)(?: adsFallback=(\d+))? exclBake=(\d+)/,
+  );
+  if (cls) {
+    row.clsTiled = +cls[1];
+    row.clsNoteBake = +cls[2];
+    if (cls[3] !== undefined) row.clsAdsFallback = +cls[3];
+    row.clsExclBake = +cls[4];
+  }
+
   const finished = m(
     /\[bench\] play finished elapsedMs=([\d.]+) timedOut=(true|false)/,
   );
@@ -137,6 +152,9 @@ function printTable(rows: Row[], sortKey: string) {
     "mixMainMs",
     "mixMainRatio",
     "residualSum",
+    "clsTiled",
+    "clsNoteBake",
+    "clsAdsFallback",
     "late",
     "dropped",
     "cacheHit",
@@ -164,6 +182,9 @@ function printTable(rows: Row[], sortKey: string) {
   );
   console.log(
     "       mixMainRatio near 0 = live mix off main (game-friendly, watch residual).",
+  );
+  console.log(
+    "       clsTiled/clsNoteBake/clsAdsFallback = segment-classify split (long-note policy).",
   );
 }
 

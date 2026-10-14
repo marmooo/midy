@@ -121,3 +121,11 @@ Trade-off: lower main occupancy may raise per-tile latency / residual. Watch
 - `debug=true` is recommended (forced on by the harness if not set)
 - Puppeteer `protocolTimeout` defaults to 10 minutes so long songs can finish
   inside one `page.evaluate`
+
+## Related sweeps
+
+- Parameter hitch tune: [`BENCH-TUNE.md`](./BENCH-TUNE.md) +
+  `bench-configs.tune.json`
+- lookAhead / maxTiled / maxNoteBake:
+  [`BENCH-LOOKAHEAD-LONG.md`](./BENCH-LOOKAHEAD-LONG.md) +
+  `bench-configs.lookAhead-long.json`
