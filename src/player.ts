@@ -206,13 +206,22 @@ export class Player<
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight: number = 1.75;
   maxTiledNoteDuration: number = 8;
+  /**
+   * Upper bound (seconds, duration+releaseTail) for full-note offline bake.
+   * Notes longer than this stay off longNoteBakedSet and play via ADS
+   * (createAdsrRenderedBuffer) so 40s+ pads cannot starve the tile pipeline.
+   * Must be >= maxTiledNoteDuration. 0 = no cap (legacy: all long notes bake).
+   */
+  maxNoteBakeDuration: number = 16;
   tiledBakedSet: Set<number> = new Set();
   /**
    * Timeline indices played via full-note offline bake (getNoteModeBuffer)
    * instead of realtime ADS / tiles:
-   * - non-exclusive notes with duration+releaseTail > maxTiledNoteDuration
+   * - non-exclusive notes with
+   *     maxTiledNoteDuration < duration+releaseTail <= maxNoteBakeDuration
    * - exclusive-class notes with choke time precomputed from the MIDI
    *   timeline (scheduled playback only; live realtime stays ADS)
+   * Notes longer than maxNoteBakeDuration use ADS (not listed here).
    */
   longNoteBakedSet: Set<number> = new Set();
   /**
@@ -1280,11 +1289,13 @@ export class Player<
   // pad into a tile allocates ~15MB stereo PCM per note and will OOM under
   // polyphony. Do NOT remove this gate to "fix" realtime misses.
   //
-  // Long non-exclusive notes are classified into longNoteBakedSet and played
-  // via full-note offline bake (getNoteModeBuffer). Exclusive-class notes
-  // are never tiled (choke across tile boundaries is awkward) but for
-  // scheduled MIDI playback their choke times are precomputed from the
-  // timeline and they join longNoteBakedSet with a truncated bake duration.
+  // Moderately long non-exclusive notes (up to maxNoteBakeDuration) go to
+  // longNoteBakedSet → full-note offline bake (getNoteModeBuffer). Notes
+  // longer than that fall back to ADS so ultra-long pads cannot starve the
+  // tile pipeline. Exclusive-class notes are never tiled (choke across tile
+  // boundaries is awkward) but for scheduled MIDI playback their choke
+  // times are precomputed and they join longNoteBakedSet with a truncated
+  // bake duration.
   //
   // Cheap (no voice resolution for the non-exclusive pass), so tempoChange()
   // can call this again after buildNoteOnDurations() without a full re-walk.
@@ -1295,9 +1306,15 @@ export class Player<
       tiledVoiceParams,
       noteOnEvents,
       maxTiledNoteDuration,
+      maxNoteBakeDuration,
     } = this;
+    // 0 = legacy (no ADS fallback for ultra-long notes).
+    const bakeCap = maxNoteBakeDuration > 0
+      ? Math.max(maxTiledNoteDuration, maxNoteBakeDuration)
+      : Infinity;
     const bakedSet = new Set<number>();
     const longSet = new Set<number>();
+    let adsFallback = 0;
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
@@ -1308,12 +1325,17 @@ export class Player<
       const releaseTail = noteOnEvents[i]?.soundOff
         ? 0
         : voiceParams.releaseVolEnv * envelopeCurve * 5;
-      if (maxTiledNoteDuration < duration + releaseTail) {
-        // Too long for a tile → full-note prebake path instead of realtime.
+      const sum = duration + releaseTail;
+      if (sum <= maxTiledNoteDuration) {
+        bakedSet.add(i);
+      } else if (sum <= bakeCap) {
+        // Moderate long note: single-note offline bake.
         longSet.add(i);
-        continue;
+      } else {
+        // Ultra-long (pads etc.): leave both sets → ADS realtime path.
+        // Full-note bake of 40s+ buffers starves tile pipeline (ready=0).
+        adsFallback++;
       }
-      bakedSet.add(i);
     }
     this.tiledBakedSet = bakedSet;
     this.longNoteBakedSet = longSet;
@@ -1322,9 +1344,12 @@ export class Player<
       console.warn(
         `[midy] segment-classify | tiled=${this.tiledBakedSet.size} ` +
           `noteBake=${this.longNoteBakedSet.size} ` +
+          `adsFallback=${adsFallback} ` +
           `exclBake=${
             this.noteBakeDurations.filter((d) => d !== undefined).length
-          } maxTiled=${maxTiledNoteDuration}`,
+          } maxTiled=${maxTiledNoteDuration} maxNoteBake=${
+            maxNoteBakeDuration > 0 ? maxNoteBakeDuration : "inf"
+          }`,
       );
     }
   }
@@ -2765,17 +2790,21 @@ export class Player<
               ? 0
               : releaseVolEnv * envelopeCurve * 5;
             const inLong = this.longNoteBakedSet.has(queueIndex);
+            const sum = duration + releaseTail;
             const path = inLong
               ? "noteBake"
-              : (excl !== 0 ? "realtimeExcl" : "realtime");
+              : (excl !== 0
+                ? "realtimeExcl"
+                : (sum > this.maxTiledNoteDuration ? "ads" : "realtime"));
             console.warn(
               `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
                 `note=${event.noteNumber!} idx=${queueIndex} ` +
                 `songT=${t.toFixed(2)}s dur=${duration.toFixed(2)}s ` +
                 `releaseTail=${releaseTail.toFixed(2)}s ` +
-                `sum=${(duration + releaseTail).toFixed(2)}s ` +
+                `sum=${sum.toFixed(2)}s ` +
                 `excl=${excl} inSet=false inLong=${inLong} ` +
-                `path=${path} maxTiled=${this.maxTiledNoteDuration}`,
+                `path=${path} maxTiled=${this.maxTiledNoteDuration} ` +
+                `maxNoteBake=${this.maxNoteBakeDuration}`,
             );
           }
           channel.noteOn(
