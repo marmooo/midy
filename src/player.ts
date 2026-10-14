@@ -282,6 +282,16 @@ export class Player<
   chunkMixWorkerTiles: number = 0;
   chunkMixMainTiles: number = 0;
   chunkMixEntriesSum: number = 0;
+  /** Per-tile mixMs samples (for P50/P95 of mix alone). */
+  private chunkMixSamplesMs: number[] = [];
+  /** Sum of mix entry counts (for cost model: ms/entry). */
+  chunkMixEntryCountSum: number = 0;
+  /** Sum of dest sample-frames across mixed tiles. */
+  chunkMixDestSamplesSum: number = 0;
+  /** Sum of source sample-frames (all entries) across mixed tiles. */
+  chunkMixSrcSamplesSum: number = 0;
+  /** Max observed mixMs in this play. */
+  chunkMixMaxMs: number = 0;
   // Per-tile composition stats (sums over tiles; realtime only).
   chunkBakeNoteCountSum: number = 0;
   chunkBakeComplexCountSum: number = 0;
@@ -505,6 +515,12 @@ export class Player<
   tileBakeDetailEveryN: number = 10;
   /** Always emit tile-bake-detail when work phase exceeds this (ms). */
   tileBakeDetailMinMs: number = 80;
+  /**
+   * Always emit tile-bake-detail (with mix sub-breakdown) when mixMs exceeds
+   * this, even if total workMs is below tileBakeDetailMinMs. Catches
+   * mix-dominated tiles that would otherwise only appear in every-Nth samples.
+   */
+  mixDetailMinMs: number = 15;
   private tileBakeDetailCount: number = 0;
   /** Log every Nth complex-one bake (1 = all). */
   complexOneLogEveryN: number = 5;
@@ -712,6 +728,21 @@ export class Player<
         return performance.now() - t0;
       },
     };
+  }
+
+  /**
+   * Yield to the browser event loop so worker onmessage / rAF / audio
+   * worklets can run. Prefers scheduler.yield() (Chrome) then setTimeout(0).
+   * Promise.resolve() is intentionally NOT used — it only drains microtasks
+   * and leaves worker messages queued behind long schedule/bake chains.
+   */
+  protected yieldToMain(): Promise<void> {
+    // deno-lint-ignore no-explicit-any
+    const sched = (globalThis as any).scheduler;
+    if (sched && typeof sched.yield === "function") {
+      return sched.yield();
+    }
+    return new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   /**
@@ -3346,6 +3377,34 @@ export class Player<
               `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
               `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
           );
+          // Minimal cost model: pure add (+= loop) vs overhead (prep/await/copy),
+          // scaled by source sample volume (the only thing the loop should care about).
+          const mixSum = this.chunkBakeMixSumMs;
+          const addSum = this.chunkMixWorkerSumMs + this.chunkMixMainSumMs;
+          const overheadSum = Math.max(0, mixSum - addSum);
+          const srcSum = this.chunkMixSrcSamplesSum;
+          const entrySum = this.chunkMixEntryCountSum;
+          const mixP50 = this.chunkMixPercentile(50);
+          const mixP95 = this.chunkMixPercentile(95);
+          const msPerMSrc = srcSum > 0 ? (addSum / srcSum) * 1e6 : 0;
+          console.log(
+            `[midy] chunk-mix-cost | ` +
+              `tiles=${mt} mixP50=${mixP50.toFixed(1)}ms ` +
+              `mixP95=${mixP95.toFixed(1)}ms mixMax=${
+                this.chunkMixMaxMs.toFixed(1)
+              }ms | ` +
+              `add=${addSum.toFixed(0)}ms (${
+                mixSum > 0 ? (100 * addSum / mixSum).toFixed(0) : "0"
+              }%) ` +
+              `overhead=${overheadSum.toFixed(0)}ms (${
+                mixSum > 0 ? (100 * overheadSum / mixSum).toFixed(0) : "0"
+              }%) | ` +
+              `entriesAvg=${entriesAvg.toFixed(1)} ` +
+              `srcSamples=${srcSum} ms/Msrc=${msPerMSrc.toFixed(2)} ` +
+              `src/entry=${
+                entrySum > 0 ? (srcSum / entrySum).toFixed(0) : "0"
+              }`,
+          );
         }
         // Main-thread occupancy focus (compare baseline vs preferWorker* flags).
         // mixMainMs = time spent in mixSimpleBuffersTypedArray on main.
@@ -4843,6 +4902,9 @@ export class Player<
         const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
           !forAudioOffline;
         if (liveRealtime && bakeChunkMiss) {
+          // LIVE: prefer synchronous TypedArray bake when the raw sample is
+          // already in rawAudioBufferCache. Worker-first / parallel awaits
+          // shared the pool with mix and produced simpleMs=400–800ms walls.
           for (let ai = 0; ai < needAsync.length; ai++) {
             const item = needAsync[ai];
             const n = item.note;
@@ -4893,10 +4955,7 @@ export class Player<
             );
             // Sync bake failed (raw not ready / mod / non-TA). Prefer awaiting
             // a single-note TypedArray bake over leaving missCount>0, which
-            // forces the entire tile onto the OAC+gate path. The old "never
-            // await on live" rule targeted stuck in-flight Promises; a fresh
-            // getSimpleNoteBuffer is actual work and still cheaper than
-            // tile-level Offline rendering.
+            // forces the entire tile onto the OAC+gate path.
             if (!noteBuf && bakeChunkMiss) {
               try {
                 noteBuf = await this.getSimpleNoteBuffer(
@@ -5310,7 +5369,10 @@ export class Player<
           mixOfflineRenderActive: mixDetail.offlineRenderActive,
           mixDeferredBakes: mixDetail.deferredBakes,
         });
-        // [diag B] tile-bake-detail (sampled + always when heavy/complex)
+        // [diag B] tile-bake-detail (sampled + always when heavy/complex/mix-heavy)
+        const mixAddMs = mixDetail.usedWorker
+          ? mixDetail.workerMs
+          : mixDetail.mainMs;
         this.maybeLogTileBakeDetail({
           chunkStart: chunk.chunkStart,
           notes: notesLen,
@@ -5327,6 +5389,9 @@ export class Player<
           usedWorker: mixDetail.usedWorker === true,
           pureTa: pureTaPath,
           cost: chunk.cost,
+          mixAddMs,
+          mixEntryCount: mixDetail.entryCount ?? allEntries.length,
+          mixSrcSamplesSum: mixDetail.srcSamplesSum,
         });
       }
       return buffer;
@@ -6287,6 +6352,10 @@ export class Player<
     );
     if (entries.length === 0) return buffer;
     this.chunkMixEntriesSum += entries.length;
+    let srcSamplesSum = 0;
+    for (let i = 0; i < entries.length; i++) {
+      srcSamplesSum += entries[i].buffer.getChannelData(0).length;
+    }
     const tMain0 = performance.now();
     this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
     const mainMs = performance.now() - tMain0;
@@ -6295,6 +6364,9 @@ export class Player<
     if (detailOut) {
       detailOut.mainMs = mainMs;
       detailOut.usedWorker = false;
+      detailOut.entryCount = entries.length;
+      detailOut.destSamples = bufferLength;
+      detailOut.srcSamplesSum = srcSamplesSum;
     }
     return buffer;
   }
@@ -6327,8 +6399,6 @@ export class Player<
     );
     const allocMs = performance.now() - tAlloc0;
     if (entries.length === 0) return buffer;
-
-    this.chunkMixEntriesSum += entries.length;
 
     // LIVE PLAYBACK default: mix on main (predictable tens of ms; avoids
     // worker residual). preferWorkerMixDuringLive opts into the worker path
@@ -6363,6 +6433,7 @@ export class Player<
     }
 
     if (!useWorker) {
+      this.chunkMixEntriesSum += entries.length;
       const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
       const mainMs = performance.now() - tMain0;
@@ -6371,6 +6442,7 @@ export class Player<
       if (detailOut) {
         detailOut.mainMs = mainMs;
         detailOut.usedWorker = false;
+        detailOut.entryCount = entries.length;
       }
       const bodyMs = performance.now() - tBody0;
       if (bodyMs >= 100 || allocMs >= 50) {
@@ -6391,46 +6463,63 @@ export class Player<
       const transferable = this.useWorkerTransferable;
       const tPrep0 = performance.now();
       let srcSamplesSum = 0;
-      const mixEntries: MixSourceEntry[] = new Array(entries.length);
+      // Only the samples that the worker loop will actually touch
+      // (copyLen = min(srcLen, destLen - start)). Full-buffer slice was
+      // the dominant main-thread cost for long note buffers placed into
+      // short tiles (prep + transfer size both scaled with full release).
+      const mixEntries: MixSourceEntry[] = [];
       for (let i = 0; i < entries.length; i++) {
         const ent = entries[i];
         const src = ent.buffer;
         const offset = ent.offset;
         const startSample = Math.round(offset * sampleRate);
+        if (startSample >= bufferLength) continue;
         const left = src.getChannelData(0);
         const right = src.numberOfChannels > 1
           ? src.getChannelData(1)
           : undefined;
-        srcSamplesSum += left.length;
+        const copyLen = Math.min(left.length, bufferLength - startSample);
+        if (copyLen <= 0) continue;
+        srcSamplesSum += copyLen;
         const gLAbs = ent.gainL != null ? ent.gainL * gain : gain;
         const gRAbs = ent.gainR != null ? ent.gainR * gain : gLAbs;
         const gainCurve = ent.gainCurve;
-        // Transferable detaches the underlying ArrayBuffer — must slice so
-        // live AudioBuffers stay usable. Structured-clone path can pass the
-        // channel views directly (clone copies; no need for an extra slice
-        // on the main thread before postMessage).
-        if (transferable) {
-          mixEntries[i] = {
-            left: left.slice(),
-            right: right ? right.slice() : undefined,
+        // Transferable detaches the underlying ArrayBuffer — must copy so
+        // live AudioBuffers stay usable. Slice only [0, copyLen) so main
+        // allocate + postMessage size track mixed samples, not full release.
+        // Non-transferable: still pass a trimmed copy when the source is
+        // much longer than copyLen (avoids structured-clone of unused tail).
+        const trim = transferable || copyLen < left.length;
+        if (trim) {
+          mixEntries.push({
+            left: left.slice(0, copyLen),
+            right: right ? right.slice(0, copyLen) : undefined,
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
-            gainCurve: gainCurve ? gainCurve.slice() : undefined,
-          };
+            gainCurve: gainCurve
+              ? gainCurve.slice(0, Math.min(gainCurve.length, copyLen))
+              : undefined,
+          });
         } else {
-          mixEntries[i] = {
+          mixEntries.push({
             left,
             right,
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
             gainCurve,
-          };
+          });
+        }
+        // Cooperative yield during large prepares so worker onmessage /
+        // audio callbacks are not stalled for the whole entries loop.
+        if ((i & 15) === 15 && performance.now() - tPrep0 > 4) {
+          await this.yieldToMain();
         }
       }
       const prepareMs = performance.now() - tPrep0;
       this.chunkMixPrepareSumMs += prepareMs;
+      this.chunkMixEntriesSum += mixEntries.length;
 
       const concurrentSnap = {
         chunkBakeActive: this.chunkBakeActive,
@@ -6438,10 +6527,10 @@ export class Player<
         deferredBakes: this.deferredChunkBakes.length,
       };
 
-      // Yield so pending worker onmessage / setTimeout can run before we
-      // block again on this tile's mix round-trip (cuts residual when main
-      // was mid-schedule).
-      await Promise.resolve();
+      // Macrotask yield (not just microtask): worker onmessage is a task, so
+      // Promise.resolve() alone can leave residuals of tens–hundreds of ms
+      // when main is in a long microtask chain (schedule + multi-tile bake).
+      await this.yieldToMain();
 
       const pool = this.getBakeWorkerPool();
       const tAwait0 = performance.now();
@@ -6487,7 +6576,7 @@ export class Player<
         detailOut.residualMs = residualMs;
         detailOut.copyBackMs = copyBackMs;
         detailOut.usedWorker = true;
-        detailOut.entryCount = entries.length;
+        detailOut.entryCount = mixEntries.length;
         detailOut.destSamples = bufferLength;
         detailOut.srcSamplesSum = srcSamplesSum;
         detailOut.transferable = transferable;
@@ -6496,9 +6585,9 @@ export class Player<
         detailOut.offlineRenderActive = concurrentSnap.offlineRenderActive;
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
       }
-      // Residual outlier log even when total tile work is below heavy threshold.
-      // Helps catch "hits only, residual 10s" without needing workMs >= thr.
-      if (residualMs >= 500) {
+      // Residual ≥40ms is already audible as main-thread jank; log with
+      // concurrent snapshot so we can tell bake/offline contention apart.
+      if (residualMs >= 40) {
         if (this.debug) {
           console.warn(
             `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
@@ -6508,7 +6597,7 @@ export class Player<
               `prepare=${prepareMs.toFixed(0)}ms copyBack=${
                 copyBackMs.toFixed(0)
               }ms | ` +
-              `entries=${entries.length} destSamples=${bufferLength} ` +
+              `entries=${mixEntries.length} destSamples=${bufferLength} ` +
               `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
               `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
               `offline=${concurrentSnap.offlineRenderActive} ` +
@@ -7498,6 +7587,11 @@ export class Player<
     this.chunkMixWorkerTiles = 0;
     this.chunkMixMainTiles = 0;
     this.chunkMixEntriesSum = 0;
+    this.chunkMixSamplesMs = [];
+    this.chunkMixEntryCountSum = 0;
+    this.chunkMixDestSamplesSum = 0;
+    this.chunkMixSrcSamplesSum = 0;
+    this.chunkMixMaxMs = 0;
     // [diag] reset throttle counters each play
     this.tileBakeDetailCount = 0;
     this.complexOneLogCount = 0;
@@ -7511,8 +7605,12 @@ export class Player<
   }
 
   /**
-   * [diag B] Per-tile bake breakdown. Always logs when workMs is high or the
-   * tile has complex notes; otherwise every tileBakeDetailEveryN-th tile.
+   * [diag B] Per-tile bake breakdown. Always logs when workMs is high, the
+   * tile has complex notes, or mixMs >= mixDetailMinMs; otherwise every
+   * tileBakeDetailEveryN-th tile.
+   *
+   * Mix appendix is intentionally minimal: pure add vs everything else, plus
+   * sample volume (the only scaling that should matter for += loops).
    */
   protected maybeLogTileBakeDetail(d: {
     chunkStart: number;
@@ -7531,26 +7629,37 @@ export class Player<
     pureTa: boolean;
     cost: number;
     oacMs?: number;
+    /** Pure multiply-add time (workerMs or mainMs). */
+    mixAddMs?: number;
+    mixEntryCount?: number;
+    mixSrcSamplesSum?: number;
   }): void {
     if (!this.debug) return;
     this.tileBakeDetailCount++;
     const every = Math.max(1, this.tileBakeDetailEveryN | 0);
+    const mixHeavy = d.mixMs >= this.mixDetailMinMs;
     const heavy = d.workMs >= this.tileBakeDetailMinMs || d.complex > 0 ||
-      (d.oacMs != null && d.oacMs > 0);
+      (d.oacMs != null && d.oacMs > 0) || mixHeavy;
     if (!heavy && (this.tileBakeDetailCount % every) !== 0) return;
-    console.warn(
-      `[midy] tile-bake-detail | start=${d.chunkStart.toFixed(2)}s ` +
-        `notes=${d.notes} simple=${d.simple} complex=${d.complex} ` +
-        `missBakes=${d.missBakes} missDirect=${d.missDirect} ` +
-        `bufSec=${d.bufSec.toFixed(2)} cost=${d.cost.toFixed(1)} ` +
-        `simpleMs=${d.simpleMs.toFixed(1)} complexMs=${
-          d.complexMs.toFixed(1)
-        } ` +
-        `mixMs=${d.mixMs.toFixed(1)} oacMs=${(d.oacMs ?? 0).toFixed(1)} ` +
-        `gateWait=${d.gateWaitMs.toFixed(1)} workMs=${d.workMs.toFixed(1)} ` +
-        `workerMix=${d.usedWorker} path=${d.pureTa ? "pureTA" : "oac"} ` +
-        `n=${this.tileBakeDetailCount}`,
-    );
+    let line = `[midy] tile-bake-detail | start=${d.chunkStart.toFixed(2)}s ` +
+      `notes=${d.notes} simple=${d.simple} complex=${d.complex} ` +
+      `missBakes=${d.missBakes} missDirect=${d.missDirect} ` +
+      `bufSec=${d.bufSec.toFixed(2)} cost=${d.cost.toFixed(1)} ` +
+      `simpleMs=${d.simpleMs.toFixed(1)} complexMs=${d.complexMs.toFixed(1)} ` +
+      `mixMs=${d.mixMs.toFixed(1)} oacMs=${(d.oacMs ?? 0).toFixed(1)} ` +
+      `gateWait=${d.gateWaitMs.toFixed(1)} workMs=${d.workMs.toFixed(1)} ` +
+      `workerMix=${d.usedWorker} path=${d.pureTa ? "pureTA" : "oac"} ` +
+      `n=${this.tileBakeDetailCount}`;
+    if (d.mixAddMs != null) {
+      const add = d.mixAddMs;
+      const overhead = Math.max(0, d.mixMs - add);
+      const entries = d.mixEntryCount ?? 0;
+      const src = d.mixSrcSamplesSum ?? 0;
+      const msPerMSrc = src > 0 ? (add / src) * 1e6 : 0;
+      line += ` | mix: add=${add.toFixed(1)} overhead=${overhead.toFixed(1)} ` +
+        `entries=${entries} srcSum=${src} ms/Msrc=${msPerMSrc.toFixed(2)}`;
+    }
+    console.warn(line);
   }
 
   protected recordChunkBake(
@@ -7631,6 +7740,25 @@ export class Player<
       this.chunkBakeComplexCountSum += parts.complexCount ?? 0;
       this.chunkBakeSumNoteDuration += parts.sumNoteDuration ?? 0;
       this.chunkBakeSumCost += parts.cost ?? 0;
+      // Mix cost-model samples (entries / dest / src → ms).
+      const mixMs = parts.mixMs ?? 0;
+      if (mixMs > this.chunkMixMaxMs) this.chunkMixMaxMs = mixMs;
+      const mixSamples = this.chunkMixSamplesMs;
+      if (mixSamples.length < Player.CHUNK_BAKE_SAMPLE_CAP) {
+        mixSamples.push(mixMs);
+      } else {
+        const j = (Math.random() * this.chunkBakeCount) | 0;
+        if (j < mixSamples.length) mixSamples[j] = mixMs;
+      }
+      if (parts.mixEntryCount != null) {
+        this.chunkMixEntryCountSum += parts.mixEntryCount;
+      }
+      if (parts.mixDestSamples != null) {
+        this.chunkMixDestSamplesSum += parts.mixDestSamples;
+      }
+      if (parts.mixSrcSamplesSum != null) {
+        this.chunkMixSrcSamplesSum += parts.mixSrcSamplesSum;
+      }
     }
     const samples = this.chunkBakeSamplesMs;
     if (samples.length < Player.CHUNK_BAKE_SAMPLE_CAP) {
@@ -7729,7 +7857,14 @@ export class Player<
   }
 
   protected chunkBakePercentile(p: number): number {
-    const samples = this.chunkBakeSamplesMs;
+    return this.percentileOf(this.chunkBakeSamplesMs, p);
+  }
+
+  protected chunkMixPercentile(p: number): number {
+    return this.percentileOf(this.chunkMixSamplesMs, p);
+  }
+
+  private percentileOf(samples: number[], p: number): number {
     if (samples.length === 0) return 0;
     const sorted = samples.slice().sort((a, b) => a - b);
     const idx = Math.min(
