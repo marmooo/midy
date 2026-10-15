@@ -9603,11 +9603,36 @@ var Player = class _Player extends BasePlayer {
   // Typical single-note cost is often ~1–2 (duration + release tail). Dense
   // 1s windows can sum to 50+. Budget ~12–24 splits outliers without
   // one-note tiles. Tune from [midy] chunk-tile-shape costAvg / notesAvg.
-  chunkCostBudget = 16;
+  chunkCostBudget = 12;
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight = 1.75;
   maxTiledNoteDuration = 8;
+  /**
+   * Upper bound (seconds, duration+releaseTail) for full-note offline bake.
+   * Notes longer than this stay off longNoteBakedSet and play via ADS
+   * (createAdsrRenderedBuffer) so 40s+ pads cannot starve the tile pipeline.
+   * Must be >= maxTiledNoteDuration. 0 = no cap (legacy: all long notes bake).
+   */
+  maxNoteBakeDuration = 12;
   tiledBakedSet = /* @__PURE__ */ new Set();
+  /**
+   * Timeline indices played via full-note offline bake (getNoteModeBuffer)
+   * instead of realtime ADS / tiles:
+   * - non-exclusive notes with
+   *     maxTiledNoteDuration < duration+releaseTail <= maxNoteBakeDuration
+   * - exclusive-class notes with choke time precomputed from the MIDI
+   *   timeline (scheduled playback only; live realtime stays ADS)
+   * Notes longer than maxNoteBakeDuration use ADS (not listed here).
+   */
+  longNoteBakedSet = /* @__PURE__ */ new Set();
+  /**
+   * Optional bake duration override (seconds) per timeline index.
+   * Set for exclusive-class notes truncated at the next same-class onset
+   * so the offline buffer ends at the choke point.
+   */
+  noteBakeDurations = [];
+  /** Short release used when an exclusive note is truncated by a choke. */
+  static EXCLUSIVE_CHOKE_FADE_SEC = 8e-3;
   tiledVoiceParams = [];
   tiledVoices = [];
   // segment mode
@@ -9667,6 +9692,16 @@ var Player = class _Player extends BasePlayer {
   chunkMixWorkerTiles = 0;
   chunkMixMainTiles = 0;
   chunkMixEntriesSum = 0;
+  /** Per-tile mixMs samples (for P50/P95 of mix alone). */
+  chunkMixSamplesMs = [];
+  /** Sum of mix entry counts (for cost model: ms/entry). */
+  chunkMixEntryCountSum = 0;
+  /** Sum of dest sample-frames across mixed tiles. */
+  chunkMixDestSamplesSum = 0;
+  /** Sum of source sample-frames (all entries) across mixed tiles. */
+  chunkMixSrcSamplesSum = 0;
+  /** Max observed mixMs in this play. */
+  chunkMixMaxMs = 0;
   // Per-tile composition stats (sums over tiles; realtime only).
   chunkBakeNoteCountSum = 0;
   chunkBakeComplexCountSum = 0;
@@ -9709,7 +9744,7 @@ var Player = class _Player extends BasePlayer {
   // Primary anti-stampede control when near is 0. 0 = unlimited (legacy).
   // 3: one schedule/update tick can promote several deferred tiles (was 1 →
   // deferredN climbed to 60+ while playhead advanced → late/dropped).
-  maxChunkBakeStartsPerPass = 3;
+  maxChunkBakeStartsPerPass = 5;
   // Counter for the current pass; reset by beginChunkBakePass().
   chunkBakeStartsThisPass = 0;
   // Throttle close-chunk console.warn (DevTools stack traces are expensive).
@@ -9753,7 +9788,7 @@ var Player = class _Player extends BasePlayer {
   // the volume envelope stays in real time (SF2-compatible) while sample
   // position advances with the bend. Set false to force bend notes through
   // the legacy complex OAC path.
-  useAlmostSimplePitchBend = false;
+  useAlmostSimplePitchBend = true;
   // Offload tile-level TypedArray mix (simpleHits + complexBufs → dest) to a
   // Web Worker pool. This is the primary worker path for segment / chunk:
   // one (or a few parallel) postMessage(s) per tile, not per note.
@@ -9766,12 +9801,33 @@ var Player = class _Player extends BasePlayer {
   // Prefer Transferable ArrayBuffers when posting mix / sample-render jobs
   // (zero-copy). Default false (structured clone) for safer ownership; set
   // true once call sites no longer need the source Float32Arrays after post.
-  useWorkerTransferable = false;
+  useWorkerTransferable = true;
   // Min number of mix entries before a worker is used (below this the
   // postMessage overhead dominates). Applies to tile-level mix only.
   // 1 = offload almost every pureTA tile mix (entriesAvg ~10–15). Was 4,
   // which still left most short tiles on the main thread (mainTiles ≫ workerTiles).
   workerMixMinEntries = 1;
+  /**
+   * When true, allow tile-level TypedArray mix to use the worker pool even
+   * during live realtime playback (not only preroll / offline).
+   *
+   * Default false: live mix stays on the main thread. Worker await residual
+   * was measured ~130ms/tile (work ~12ms) and could dominate bakeAvg / late.
+   *
+   * Set true when minimising main-thread occupancy matters more than
+   * per-tile latency (e.g. games sharing the main thread). Pair with
+   * useWorkerTypedArrayMix=true and a small workerMixMinEntries.
+   */
+  preferWorkerMixDuringLive = true;
+  /**
+   * When true, allow simple-note TypedArray sample bake to use the worker
+   * pool during live realtime (miss bakes / batch). Default false keeps
+   * short live note bakes on main to avoid multi-second onmessage residual.
+   *
+   * Long almost-simple pitch-bend notes already prefer the worker even when
+   * this is false (main variable-rate loops can block 1–2s).
+   */
+  preferWorkerBakeDuringLive = true;
   /**
    * Chunk mode: bake simple notes dry (no channel vol/pan/expression in the
    * buffer) and apply those at tile mix time. Shared dry keys then hit across
@@ -9824,7 +9880,7 @@ var Player = class _Player extends BasePlayer {
   // Soft cap on notes per chunk tile. When adding a *new onset group* would
   // exceed this, close and start a new tile (same-timestamp chords stay).
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
-  maxChunkNotes = 48;
+  maxChunkNotes = 32;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
   // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
   chunkBakeHeavyThresholdMs = 1500;
@@ -9844,6 +9900,12 @@ var Player = class _Player extends BasePlayer {
   tileBakeDetailEveryN = 10;
   /** Always emit tile-bake-detail when work phase exceeds this (ms). */
   tileBakeDetailMinMs = 80;
+  /**
+   * Always emit tile-bake-detail (with mix sub-breakdown) when mixMs exceeds
+   * this, even if total workMs is below tileBakeDetailMinMs. Catches
+   * mix-dominated tiles that would otherwise only appear in every-Nth samples.
+   */
+  mixDetailMinMs = 15;
   tileBakeDetailCount = 0;
   /** Log every Nth complex-one bake (1 = all). */
   complexOneLogEveryN = 5;
@@ -10018,6 +10080,19 @@ var Player = class _Player extends BasePlayer {
     };
   }
   /**
+   * Yield to the browser event loop so worker onmessage / rAF / audio
+   * worklets can run. Prefers scheduler.yield() (Chrome) then setTimeout(0).
+   * Promise.resolve() is intentionally NOT used — it only drains microtasks
+   * and leaves worker messages queued behind long schedule/bake chains.
+   */
+  yieldToMain() {
+    const sched = globalThis.scheduler;
+    if (sched && typeof sched.yield === "function") {
+      return sched.yield();
+    }
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  /**
    * Promote deferred tiles whose chunkStart is inside the bake horizon.
    * Called from the realtime schedule loop so far tiles do not stampede the
    * gate at preroll boundaries.
@@ -10124,6 +10199,8 @@ var Player = class _Player extends BasePlayer {
     this.noteAudioBufferIds = [];
     this.preloadEntries = [];
     this.tiledBakedSet.clear();
+    this.longNoteBakedSet.clear();
+    this.noteBakeDurations = [];
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
     this.simpleNoteCounts.clear();
@@ -10410,6 +10487,8 @@ var Player = class _Player extends BasePlayer {
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
     } else if (usesSimpleComplexNoteCache(cacheMode)) {
+      this.longNoteBakedSet = /* @__PURE__ */ new Set();
+      this.finalizeExclusiveNoteBakeClassification();
       this.finalizeSimpleNoteClassification();
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
@@ -10450,36 +10529,133 @@ var Player = class _Player extends BasePlayer {
   // (which needs its own full-timeline pass and isn't ready until after
   // that loop) to decide which notes are safe to bake into a segment/chunk.
   // Notes that ring too long, or that participate in an exclusive class
-  // (hi-hat choke groups etc.), are left out so they keep going through
-  // normal per-note real-time ("ads"-style) scheduling instead.
+  // (hi-hat choke groups etc.), are left out of tiles.
   //
   // The duration+releaseTail gate is load-bearing: an onset tile sizes its
   // AudioBuffer to the longest note (see renderChunkBuffer). Baking a 40s
   // pad into a tile allocates ~15MB stereo PCM per note and will OOM under
-  // polyphony. Do NOT remove this gate to "fix" realtime misses — long
-  // notes must stay realtime (or be split across tiles with a future design).
-  // Exclusive-class drums also stay realtime so choke groups still work.
+  // polyphony. Do NOT remove this gate to "fix" realtime misses.
   //
-  // Cheap (no voice resolution), so tempoChange() can call this again
-  // after buildNoteOnDurations() without redoing the full classification.
+  // Moderately long non-exclusive notes (up to maxNoteBakeDuration) go to
+  // longNoteBakedSet → full-note offline bake (getNoteModeBuffer). Notes
+  // longer than that fall back to ADS so ultra-long pads cannot starve the
+  // tile pipeline. Exclusive-class notes are never tiled (choke across tile
+  // boundaries is awkward) but for scheduled MIDI playback their choke
+  // times are precomputed and they join longNoteBakedSet with a truncated
+  // bake duration.
+  //
+  // Cheap (no voice resolution for the non-exclusive pass), so tempoChange()
+  // can call this again after buildNoteOnDurations() without a full re-walk.
   finalizeSegmentClassification() {
     const {
       noteOnDurations,
       tiledVoiceParams,
       noteOnEvents,
-      maxTiledNoteDuration
+      maxTiledNoteDuration,
+      maxNoteBakeDuration
     } = this;
+    const bakeCap = maxNoteBakeDuration > 0 ? Math.max(maxTiledNoteDuration, maxNoteBakeDuration) : Infinity;
     const bakedSet = /* @__PURE__ */ new Set();
+    const longSet = /* @__PURE__ */ new Set();
+    let adsFallback = 0;
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration2 = noteOnDurations[i] ?? 0;
       const releaseTail = noteOnEvents[i]?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
-      if (maxTiledNoteDuration < duration2 + releaseTail) continue;
-      bakedSet.add(i);
+      const sum = duration2 + releaseTail;
+      if (sum <= maxTiledNoteDuration) {
+        bakedSet.add(i);
+      } else if (sum <= bakeCap) {
+        longSet.add(i);
+      } else {
+        adsFallback++;
+      }
     }
     this.tiledBakedSet = bakedSet;
+    this.longNoteBakedSet = longSet;
+    this.finalizeExclusiveNoteBakeClassification();
+    if (this.debug) {
+      console.warn(
+        `[midy] segment-classify | tiled=${this.tiledBakedSet.size} noteBake=${this.longNoteBakedSet.size} adsFallback=${adsFallback} exclBake=${this.noteBakeDurations.filter((d) => d !== void 0).length} maxTiled=${maxTiledNoteDuration} maxNoteBake=${maxNoteBakeDuration > 0 ? maxNoteBakeDuration : "inf"}`
+      );
+    }
+  }
+  /**
+   * Drum exclusive-class id for a kit program / note (GM1 default table).
+   * GM2 overrides with per-kit tables.
+   */
+  exclusiveClassForDrumKit(_programNumber, noteNumber) {
+    return this.drumExclusiveClasses[noteNumber] ?? 0;
+  }
+  /**
+   * Scheduled-playback exclusive notes: precompute choke time from the next
+   * same-channel / same-exclusiveClass noteOn and full-note bake with that
+   * duration. Live realtime (no timeline) is unchanged.
+   *
+   * Exclusive notes stay out of tiles; only the per-note bake path is used.
+   */
+  finalizeExclusiveNoteBakeClassification() {
+    const {
+      timeline,
+      noteOnEvents,
+      noteOnDurations,
+      tiledVoiceParams,
+      numChannels
+    } = this;
+    const n = timeline.length;
+    const bakeDurs = new Array(n);
+    const groups = /* @__PURE__ */ new Map();
+    const programs = new Int32Array(numChannels);
+    const drumCh = new Uint8Array(numChannels);
+    if (numChannels > 9) drumCh[9] = 1;
+    for (let i = 0; i < n; i++) {
+      const event = timeline[i];
+      if (event.type === "programChange") {
+        const ch2 = event.channel ?? 0;
+        if (ch2 >= 0 && ch2 < numChannels) {
+          programs[ch2] = event.programNumber ?? 0;
+        }
+        continue;
+      }
+      if (event.type !== "noteOn") continue;
+      if (!noteOnEvents[i] || (noteOnDurations[i] ?? 0) <= 0) continue;
+      const ch = event.channel ?? 0;
+      let excl = tiledVoiceParams[i]?.exclusiveClass ?? 0;
+      if (excl === 0 && (drumCh[ch] || ch === 9)) {
+        excl = this.exclusiveClassForDrumKit(
+          programs[ch] ?? 0,
+          event.noteNumber
+        );
+      }
+      if (excl === 0) continue;
+      const key = ch * 128 + (excl & 127);
+      let list = groups.get(key);
+      if (!list) {
+        list = [];
+        groups.set(key, list);
+      }
+      list.push(i);
+    }
+    const fade = _Player.EXCLUSIVE_CHOKE_FADE_SEC;
+    for (const list of groups.values()) {
+      for (let j = 0; j < list.length; j++) {
+        const i = list[j];
+        const start = noteOnEvents[i].startTime;
+        const natural = noteOnDurations[i] ?? 0;
+        let held = natural;
+        if (j + 1 < list.length) {
+          const nextStart = noteOnEvents[list[j + 1]].startTime;
+          held = Math.max(0, Math.min(natural, nextStart - start - fade));
+        }
+        const bakeDur = j + 1 < list.length ? held : natural;
+        if (bakeDur <= 1e-4) continue;
+        bakeDurs[i] = bakeDur;
+        this.longNoteBakedSet.add(i);
+      }
+    }
+    this.noteBakeDurations = bakeDurs;
   }
   // Controllers that only scale amplitude (CC7/CC11 via SF2 modulators) and do not
   // change the pitched sample body. Notes whose in-interval automation is
@@ -10662,6 +10838,14 @@ var Player = class _Player extends BasePlayer {
       const candidateArr = Array.from(candidates);
       for (let ci = 0; ci < candidateArr.length; ci++) {
         const i = candidateArr[ci];
+        const noteEvent = noteOnEvents[i];
+        if (!noteEvent) continue;
+        if (noteEvent.duration <= 0) continue;
+        if (this.hasWaveformAutomation(noteEvent)) continue;
+        simple.add(i);
+      }
+      for (const i of this.longNoteBakedSet) {
+        if (simple.has(i)) continue;
         const noteEvent = noteOnEvents[i];
         if (!noteEvent) continue;
         if (noteEvent.duration <= 0) continue;
@@ -10884,7 +11068,7 @@ var Player = class _Player extends BasePlayer {
             noteEvent.velocity,
             0
           );
-          const bakeMix = this.simpleBakeChannelMixForNote({
+          const bakeMix = this.longNoteBakedSet.has(i) ? true : this.simpleBakeChannelMixForNote({
             noteEvent: noteOnEvent
           });
           for (const layer2 of layers) {
@@ -10899,7 +11083,7 @@ var Player = class _Player extends BasePlayer {
                 audioBufferId,
                 noteNumber: noteEvent.noteNumber,
                 velocity: noteEvent.velocity,
-                noteDuration: noteOnEvent.duration,
+                noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
                 noteEvent: noteOnEvent,
                 channelDetune: renderChannel.detune,
                 channelStateArray: renderChannel.state.array,
@@ -11428,7 +11612,7 @@ var Player = class _Player extends BasePlayer {
               audioBufferId: noteAudioBufferIds[i],
               noteNumber: noteEvent.noteNumber,
               velocity: noteEvent.velocity,
-              noteDuration: noteOnEvent.duration,
+              noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
               noteEvent: noteOnEvent,
               channelDetune: renderChannel.detune,
               channelStateArray: renderChannel.state.array,
@@ -11495,6 +11679,44 @@ var Player = class _Player extends BasePlayer {
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = noteOnDurations[queueIndex] ?? 0;
+          } else if (this.debug && isTiledCacheMode(cacheMode)) {
+            const vp = this.tiledVoiceParams[queueIndex];
+            const duration2 = noteOnDurations[queueIndex] ?? 0;
+            let releaseVolEnv = vp?.releaseVolEnv ?? 0;
+            let excl = vp?.exclusiveClass ?? 0;
+            if (!vp) {
+              const resolved = this.resolveVoice(
+                channel2,
+                event2.noteNumber,
+                event2.velocity
+              );
+              if (resolved) {
+                const ctrl = this.getControllerState(
+                  channel2,
+                  event2.noteNumber,
+                  event2.velocity,
+                  0
+                );
+                const liveVp = getVoiceParams(resolved, ctrl);
+                if (liveVp) {
+                  releaseVolEnv = liveVp.releaseVolEnv;
+                  excl = liveVp.exclusiveClass ?? 0;
+                }
+              }
+              if (excl === 0 && this.isSegmentExcludedDrum(
+                channel2,
+                event2.noteNumber
+              )) {
+                excl = this.drumExclusiveClasses[event2.noteNumber] ?? 1;
+              }
+            }
+            const releaseTail = this.noteOnEvents[queueIndex]?.soundOff ? 0 : releaseVolEnv * envelopeCurve * 5;
+            const inLong = this.longNoteBakedSet.has(queueIndex);
+            const sum = duration2 + releaseTail;
+            const path = inLong ? "noteBake" : excl !== 0 ? "realtimeExcl" : sum > this.maxTiledNoteDuration ? "ads" : "realtime";
+            console.warn(
+              `[midy] non-tiled noteOn | ch=${channel2.channelNumber} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s dur=${duration2.toFixed(2)}s releaseTail=${releaseTail.toFixed(2)}s sum=${sum.toFixed(2)}s excl=${excl} inSet=false inLong=${inLong} path=${path} maxTiled=${this.maxTiledNoteDuration} maxNoteBake=${this.maxNoteBakeDuration}`
+            );
           }
           channel2.noteOn(
             event2.noteNumber,
@@ -11887,7 +12109,7 @@ var Player = class _Player extends BasePlayer {
       );
       if (this.debug) {
         console.log(
-          `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} noteBake=${this.useWorkerSimpleNoteBake} (noteBake also used in segment/chunk when dest is long enough) transferable=${this.useWorkerTransferable} poolSize=${poolSize} mixMinEntries=${this.workerMixMinEntries} poolStarted=${!!this.bakeWorkerPool}`
+          `[midy] worker | tileMix=${this.useWorkerTypedArrayMix} noteBake=${this.useWorkerSimpleNoteBake} (noteBake also used in segment/chunk when dest is long enough) transferable=${this.useWorkerTransferable} poolSize=${poolSize} mixMinEntries=${this.workerMixMinEntries} preferLiveMix=${this.preferWorkerMixDuringLive} preferLiveBake=${this.preferWorkerBakeDuringLive} poolStarted=${!!this.bakeWorkerPool}`
         );
         console.log(
           `[midy] almost-simple | bend=${this.useAlmostSimplePitchBend} pan=${this.useAlmostSimplePan} taNoteBake=${this.useTypedArraySimpleNoteBake} taChunkMiss=${this.useTypedArrayChunkSimpleMiss} taChunkComplex=${this.useTypedArrayChunkComplexBake} drySimple=${this.useChunkDrySimpleMix} simpleCacheMax=${this.simpleNoteCacheMaxSize} maxChunkBakes=${this.maxConcurrentChunkBakes} maxOffline=${this.maxConcurrentOfflineRenders}`
@@ -11928,7 +12150,30 @@ var Player = class _Player extends BasePlayer {
           console.log(
             `[midy] chunk-mix-parts | workerTiles=${mw} mainTiles=${mm} entriesAvg=${entriesAvg.toFixed(1)} | prepareAvg=${prepAvg.toFixed(1)}ms awaitAvg=${awaitAvg.toFixed(1)}ms queueAvg=${queueAvg.toFixed(1)}ms postAvg=${postAvg.toFixed(1)}ms workerAvg=${workerAvg.toFixed(1)}ms residualAvg=${residualAvg.toFixed(1)}ms copyBackAvg=${copyAvg.toFixed(1)}ms mainAvg=${mainAvg.toFixed(1)}ms | prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms queueSum=${this.chunkMixQueueSumMs.toFixed(0)}ms postSum=${this.chunkMixPostSumMs.toFixed(0)}ms workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms residualSum=${this.chunkMixResidualSumMs.toFixed(0)}ms copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`
           );
+          const mixSum = this.chunkBakeMixSumMs;
+          const addSum = this.chunkMixWorkerSumMs + this.chunkMixMainSumMs;
+          const overheadSum = Math.max(0, mixSum - addSum);
+          const srcSum = this.chunkMixSrcSamplesSum;
+          const entrySum = this.chunkMixEntryCountSum;
+          const mixP50 = this.chunkMixPercentile(50);
+          const mixP95 = this.chunkMixPercentile(95);
+          const msPerMSrc = srcSum > 0 ? addSum / srcSum * 1e6 : 0;
+          console.log(
+            `[midy] chunk-mix-cost | tiles=${mt} mixP50=${mixP50.toFixed(1)}ms mixP95=${mixP95.toFixed(1)}ms mixMax=${this.chunkMixMaxMs.toFixed(1)}ms | add=${addSum.toFixed(0)}ms (${mixSum > 0 ? (100 * addSum / mixSum).toFixed(0) : "0"}%) overhead=${overheadSum.toFixed(0)}ms (${mixSum > 0 ? (100 * overheadSum / mixSum).toFixed(0) : "0"}%) | entriesAvg=${entriesAvg.toFixed(1)} srcSamples=${srcSum} ms/Msrc=${msPerMSrc.toFixed(2)} src/entry=${entrySum > 0 ? (srcSum / entrySum).toFixed(0) : "0"}`
+          );
         }
+        const mixMainMs = this.chunkMixMainSumMs;
+        const mixWorkerMs = this.chunkMixWorkerSumMs;
+        const mixTiles = mw + mm;
+        const mixMainRatio = mixTiles > 0 ? 100 * mm / mixTiles : 0;
+        const liveMixPolicy = this.preferWorkerMixDuringLive ? "worker" : "main";
+        const liveBakePolicy = this.preferWorkerBakeDuringLive ? "worker" : "main";
+        console.log(
+          `[midy] main-thread | mixMainMs=${mixMainMs.toFixed(0)} mixWorkerMs=${mixWorkerMs.toFixed(0)} mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}% | liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`
+        );
+        console.log(
+          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}%`
+        );
       }
       if (this.debug) {
         console.log(
@@ -12010,7 +12255,7 @@ var Player = class _Player extends BasePlayer {
               audioBufferId,
               noteNumber: noteEvent.noteNumber,
               velocity: noteEvent.velocity,
-              noteDuration: noteOnEvent.duration,
+              noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
               noteEvent: noteOnEvent,
               channelDetune: renderChannel.detune,
               channelStateArray: renderChannel.state.array.slice(),
@@ -12019,10 +12264,8 @@ var Player = class _Player extends BasePlayer {
               voiceParams,
               voice: layer2.voice
             };
-            const key = this.makeSimpleNoteKey(
-              entry,
-              this.simpleBakeChannelMixForNote(entry)
-            );
+            const bakeMix = this.longNoteBakedSet.has(i) ? true : this.simpleBakeChannelMixForNote(entry);
+            const key = this.makeSimpleNoteKey(entry, bakeMix);
             const count = simpleNoteCounts.get(key) ?? 0;
             const prev = allKeys.get(key);
             if (prev) {
@@ -12066,10 +12309,10 @@ var Player = class _Player extends BasePlayer {
           break;
         }
         try {
-          await this.getSimpleNoteBuffer(
-            list[i].entry,
-            this.simpleBakeChannelMixForNote(list[i].entry)
-          );
+          const entry = list[i].entry;
+          const releaseTail = entry.noteEvent?.soundOff ? 0 : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+          const bakeMix = this.maxTiledNoteDuration < entry.noteDuration + releaseTail ? true : this.simpleBakeChannelMixForNote(entry);
+          await this.getSimpleNoteBuffer(entry, bakeMix);
         } catch {
         }
       }
@@ -13377,8 +13620,9 @@ var Player = class _Player extends BasePlayer {
         usedWorker: false
       };
       const liveRealtime = this.isPlaying && !this.chunkPrerollActive && !forAudioOffline;
+      const liveMixOnMain = liveRealtime && !this.preferWorkerMixDuringLive;
       let buffer2;
-      if (liveRealtime) {
+      if (liveMixOnMain) {
         buffer2 = this.mixEntriesToBufferSync(
           allEntries,
           2,
@@ -13476,6 +13720,7 @@ var Player = class _Player extends BasePlayer {
           mixOfflineRenderActive: mixDetail.offlineRenderActive,
           mixDeferredBakes: mixDetail.deferredBakes
         });
+        const mixAddMs = mixDetail.usedWorker ? mixDetail.workerMs : mixDetail.mainMs;
         this.maybeLogTileBakeDetail({
           chunkStart: chunk.chunkStart,
           notes: notesLen,
@@ -13491,7 +13736,10 @@ var Player = class _Player extends BasePlayer {
           workMs,
           usedWorker: mixDetail.usedWorker === true,
           pureTa: pureTaPath,
-          cost: chunk.cost
+          cost: chunk.cost,
+          mixAddMs,
+          mixEntryCount: mixDetail.entryCount ?? allEntries.length,
+          mixSrcSamplesSum: mixDetail.srcSamplesSum
         });
       }
       return buffer2;
@@ -14264,6 +14512,10 @@ var Player = class _Player extends BasePlayer {
     );
     if (entries.length === 0) return buffer2;
     this.chunkMixEntriesSum += entries.length;
+    let srcSamplesSum = 0;
+    for (let i = 0; i < entries.length; i++) {
+      srcSamplesSum += entries[i].buffer.getChannelData(0).length;
+    }
     const tMain0 = performance.now();
     this.mixSimpleBuffersTypedArray(buffer2, entries, sampleRate2, gain);
     const mainMs = performance.now() - tMain0;
@@ -14272,6 +14524,9 @@ var Player = class _Player extends BasePlayer {
     if (detailOut) {
       detailOut.mainMs = mainMs;
       detailOut.usedWorker = false;
+      detailOut.entryCount = entries.length;
+      detailOut.destSamples = bufferLength;
+      detailOut.srcSamplesSum = srcSamplesSum;
     }
     return buffer2;
   }
@@ -14285,14 +14540,17 @@ var Player = class _Player extends BasePlayer {
     );
     const allocMs = performance.now() - tAlloc0;
     if (entries.length === 0) return buffer2;
-    this.chunkMixEntriesSum += entries.length;
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
     let mixPathReason = "worker";
-    if (liveRealtime) mixPathReason = "liveRealtime";
-    else if (!this.useWorkerTypedArrayMix) mixPathReason = "disabled";
-    else if (entries.length < this.workerMixMinEntries) {
+    if (liveRealtime && !this.preferWorkerMixDuringLive) {
+      mixPathReason = "liveRealtime";
+    } else if (!this.useWorkerTypedArrayMix) {
+      mixPathReason = "disabled";
+    } else if (entries.length < this.workerMixMinEntries) {
       mixPathReason = `minEntries(${entries.length}<${this.workerMixMinEntries})`;
-    } else if (typeof Worker === "undefined") mixPathReason = "noWorker";
+    } else if (typeof Worker === "undefined") {
+      mixPathReason = "noWorker";
+    }
     const useWorker = mixPathReason === "worker";
     if (this.debug && this.mixPathLogCount < this.mixPathLogMax) {
       this.mixPathLogCount++;
@@ -14301,6 +14559,7 @@ var Player = class _Player extends BasePlayer {
       );
     }
     if (!useWorker) {
+      this.chunkMixEntriesSum += entries.length;
       const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer2, entries, sampleRate2, gain);
       const mainMs = performance.now() - tMain0;
@@ -14309,6 +14568,7 @@ var Player = class _Player extends BasePlayer {
       if (detailOut) {
         detailOut.mainMs = mainMs;
         detailOut.usedWorker = false;
+        detailOut.entryCount = entries.length;
       }
       const bodyMs = performance.now() - tBody0;
       if (bodyMs >= 100 || allocMs >= 50) {
@@ -14324,46 +14584,54 @@ var Player = class _Player extends BasePlayer {
       const transferable = this.useWorkerTransferable;
       const tPrep0 = performance.now();
       let srcSamplesSum = 0;
-      const mixEntries = new Array(entries.length);
+      const mixEntries = [];
       for (let i = 0; i < entries.length; i++) {
         const ent = entries[i];
         const src = ent.buffer;
         const offset = ent.offset;
         const startSample = Math.round(offset * sampleRate2);
+        if (startSample >= bufferLength) continue;
         const left = src.getChannelData(0);
         const right = src.numberOfChannels > 1 ? src.getChannelData(1) : void 0;
-        srcSamplesSum += left.length;
+        const copyLen = Math.min(left.length, bufferLength - startSample);
+        if (copyLen <= 0) continue;
+        srcSamplesSum += copyLen;
         const gLAbs = ent.gainL != null ? ent.gainL * gain : gain;
         const gRAbs = ent.gainR != null ? ent.gainR * gain : gLAbs;
         const gainCurve = ent.gainCurve;
-        if (transferable) {
-          mixEntries[i] = {
-            left: left.slice(),
-            right: right ? right.slice() : void 0,
+        const trim = transferable || copyLen < left.length;
+        if (trim) {
+          mixEntries.push({
+            left: left.slice(0, copyLen),
+            right: right ? right.slice(0, copyLen) : void 0,
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
-            gainCurve: gainCurve ? gainCurve.slice() : void 0
-          };
+            gainCurve: gainCurve ? gainCurve.slice(0, Math.min(gainCurve.length, copyLen)) : void 0
+          });
         } else {
-          mixEntries[i] = {
+          mixEntries.push({
             left,
             right,
             startSample,
             gain: gLAbs,
             gainRight: gRAbs,
             gainCurve
-          };
+          });
+        }
+        if ((i & 15) === 15 && performance.now() - tPrep0 > 4) {
+          await this.yieldToMain();
         }
       }
       const prepareMs = performance.now() - tPrep0;
       this.chunkMixPrepareSumMs += prepareMs;
+      this.chunkMixEntriesSum += mixEntries.length;
       const concurrentSnap = {
         chunkBakeActive: this.chunkBakeActive,
         offlineRenderActive: this.offlineRenderActive,
         deferredBakes: this.deferredChunkBakes.length
       };
-      await Promise.resolve();
+      await this.yieldToMain();
       const pool = this.getBakeWorkerPool();
       const tAwait0 = performance.now();
       const result = await pool.mix(
@@ -14401,7 +14669,7 @@ var Player = class _Player extends BasePlayer {
         detailOut.residualMs = residualMs;
         detailOut.copyBackMs = copyBackMs;
         detailOut.usedWorker = true;
-        detailOut.entryCount = entries.length;
+        detailOut.entryCount = mixEntries.length;
         detailOut.destSamples = bufferLength;
         detailOut.srcSamplesSum = srcSamplesSum;
         detailOut.transferable = transferable;
@@ -14410,10 +14678,10 @@ var Player = class _Player extends BasePlayer {
         detailOut.offlineRenderActive = concurrentSnap.offlineRenderActive;
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
       }
-      if (residualMs >= 500) {
+      if (residualMs >= 40) {
         if (this.debug) {
           console.warn(
-            `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms afterAwait=${afterAwaitMs.toFixed(1)}ms prepare=${prepareMs.toFixed(0)}ms copyBack=${copyBackMs.toFixed(0)}ms | entries=${entries.length} destSamples=${bufferLength} srcSamplesSum=${srcSamplesSum} transferable=${transferable} | concurrent: chunkBake=${concurrentSnap.chunkBakeActive} offline=${concurrentSnap.offlineRenderActive} deferred=${concurrentSnap.deferredBakes}`
+            `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms afterAwait=${afterAwaitMs.toFixed(1)}ms prepare=${prepareMs.toFixed(0)}ms copyBack=${copyBackMs.toFixed(0)}ms | entries=${mixEntries.length} destSamples=${bufferLength} srcSamplesSum=${srcSamplesSum} transferable=${transferable} | concurrent: chunkBake=${concurrentSnap.chunkBakeActive} offline=${concurrentSnap.offlineRenderActive} deferred=${concurrentSnap.deferredBakes}`
           );
         }
       }
@@ -14885,7 +15153,7 @@ var Player = class _Player extends BasePlayer {
   async renderSampleTypedArrayMaybeWorker(srcBuffer, dest, playbackRate, isLoop, loopStartSrc, loopEndSrc, startOffsetSrc, gains, filterFreqs, filterQ, rateMultipliers = null) {
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
     const longBend = rateMultipliers != null && dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER;
-    const useWorker = (!liveRealtime || longBend) && this.useWorkerSimpleNoteBake && dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER && typeof Worker !== "undefined";
+    const useWorker = (!liveRealtime || longBend || this.preferWorkerBakeDuringLive) && this.useWorkerSimpleNoteBake && dest.length >= BakeWorkerPool.MIN_SAMPLES_FOR_RENDER && typeof Worker !== "undefined";
     if (!useWorker) {
       this.renderSampleTypedArray(
         srcBuffer,
@@ -15183,6 +15451,11 @@ var Player = class _Player extends BasePlayer {
     this.chunkMixWorkerTiles = 0;
     this.chunkMixMainTiles = 0;
     this.chunkMixEntriesSum = 0;
+    this.chunkMixSamplesMs = [];
+    this.chunkMixEntryCountSum = 0;
+    this.chunkMixDestSamplesSum = 0;
+    this.chunkMixSrcSamplesSum = 0;
+    this.chunkMixMaxMs = 0;
     this.tileBakeDetailCount = 0;
     this.complexOneLogCount = 0;
     this.lastBacklogLogMs = 0;
@@ -15194,18 +15467,30 @@ var Player = class _Player extends BasePlayer {
     this.chunkBakeSumCost = 0;
   }
   /**
-   * [diag B] Per-tile bake breakdown. Always logs when workMs is high or the
-   * tile has complex notes; otherwise every tileBakeDetailEveryN-th tile.
+   * [diag B] Per-tile bake breakdown. Always logs when workMs is high, the
+   * tile has complex notes, or mixMs >= mixDetailMinMs; otherwise every
+   * tileBakeDetailEveryN-th tile.
+   *
+   * Mix appendix is intentionally minimal: pure add vs everything else, plus
+   * sample volume (the only scaling that should matter for += loops).
    */
   maybeLogTileBakeDetail(d) {
     if (!this.debug) return;
     this.tileBakeDetailCount++;
     const every = Math.max(1, this.tileBakeDetailEveryN | 0);
-    const heavy = d.workMs >= this.tileBakeDetailMinMs || d.complex > 0 || d.oacMs != null && d.oacMs > 0;
+    const mixHeavy = d.mixMs >= this.mixDetailMinMs;
+    const heavy = d.workMs >= this.tileBakeDetailMinMs || d.complex > 0 || d.oacMs != null && d.oacMs > 0 || mixHeavy;
     if (!heavy && this.tileBakeDetailCount % every !== 0) return;
-    console.warn(
-      `[midy] tile-bake-detail | start=${d.chunkStart.toFixed(2)}s notes=${d.notes} simple=${d.simple} complex=${d.complex} missBakes=${d.missBakes} missDirect=${d.missDirect} bufSec=${d.bufSec.toFixed(2)} cost=${d.cost.toFixed(1)} simpleMs=${d.simpleMs.toFixed(1)} complexMs=${d.complexMs.toFixed(1)} mixMs=${d.mixMs.toFixed(1)} oacMs=${(d.oacMs ?? 0).toFixed(1)} gateWait=${d.gateWaitMs.toFixed(1)} workMs=${d.workMs.toFixed(1)} workerMix=${d.usedWorker} path=${d.pureTa ? "pureTA" : "oac"} n=${this.tileBakeDetailCount}`
-    );
+    let line = `[midy] tile-bake-detail | start=${d.chunkStart.toFixed(2)}s notes=${d.notes} simple=${d.simple} complex=${d.complex} missBakes=${d.missBakes} missDirect=${d.missDirect} bufSec=${d.bufSec.toFixed(2)} cost=${d.cost.toFixed(1)} simpleMs=${d.simpleMs.toFixed(1)} complexMs=${d.complexMs.toFixed(1)} mixMs=${d.mixMs.toFixed(1)} oacMs=${(d.oacMs ?? 0).toFixed(1)} gateWait=${d.gateWaitMs.toFixed(1)} workMs=${d.workMs.toFixed(1)} workerMix=${d.usedWorker} path=${d.pureTa ? "pureTA" : "oac"} n=${this.tileBakeDetailCount}`;
+    if (d.mixAddMs != null) {
+      const add = d.mixAddMs;
+      const overhead = Math.max(0, d.mixMs - add);
+      const entries = d.mixEntryCount ?? 0;
+      const src = d.mixSrcSamplesSum ?? 0;
+      const msPerMSrc = src > 0 ? add / src * 1e6 : 0;
+      line += ` | mix: add=${add.toFixed(1)} overhead=${overhead.toFixed(1)} entries=${entries} srcSum=${src} ms/Msrc=${msPerMSrc.toFixed(2)}`;
+    }
+    console.warn(line);
   }
   recordChunkBake(ms, pureTa, parts) {
     this.chunkBakeCount++;
@@ -15226,6 +15511,24 @@ var Player = class _Player extends BasePlayer {
       this.chunkBakeComplexCountSum += parts.complexCount ?? 0;
       this.chunkBakeSumNoteDuration += parts.sumNoteDuration ?? 0;
       this.chunkBakeSumCost += parts.cost ?? 0;
+      const mixMs = parts.mixMs ?? 0;
+      if (mixMs > this.chunkMixMaxMs) this.chunkMixMaxMs = mixMs;
+      const mixSamples = this.chunkMixSamplesMs;
+      if (mixSamples.length < _Player.CHUNK_BAKE_SAMPLE_CAP) {
+        mixSamples.push(mixMs);
+      } else {
+        const j = Math.random() * this.chunkBakeCount | 0;
+        if (j < mixSamples.length) mixSamples[j] = mixMs;
+      }
+      if (parts.mixEntryCount != null) {
+        this.chunkMixEntryCountSum += parts.mixEntryCount;
+      }
+      if (parts.mixDestSamples != null) {
+        this.chunkMixDestSamplesSum += parts.mixDestSamples;
+      }
+      if (parts.mixSrcSamplesSum != null) {
+        this.chunkMixSrcSamplesSum += parts.mixSrcSamplesSum;
+      }
     }
     const samples2 = this.chunkBakeSamplesMs;
     if (samples2.length < _Player.CHUNK_BAKE_SAMPLE_CAP) {
@@ -15278,7 +15581,12 @@ var Player = class _Player extends BasePlayer {
     }
   }
   chunkBakePercentile(p) {
-    const samples2 = this.chunkBakeSamplesMs;
+    return this.percentileOf(this.chunkBakeSamplesMs, p);
+  }
+  chunkMixPercentile(p) {
+    return this.percentileOf(this.chunkMixSamplesMs, p);
+  }
+  percentileOf(samples2, p) {
     if (samples2.length === 0) return 0;
     const sorted = samples2.slice().sort((a, b) => a - b);
     const idx = Math.min(
@@ -15907,7 +16215,7 @@ var Player = class _Player extends BasePlayer {
     const sampleRate2 = this.audioContext.sampleRate;
     const maxPer = BakeWorkerPool.MAX_NOTES_PER_BATCH;
     const liveRealtime = this.isPlaying && !this.chunkPrerollActive;
-    const useWorker = !liveRealtime && this.useWorkerSimpleNoteBake && typeof Worker !== "undefined";
+    const useWorker = (!liveRealtime || this.preferWorkerBakeDuringLive) && this.useWorkerSimpleNoteBake && typeof Worker !== "undefined";
     const resolveMap = /* @__PURE__ */ new Map();
     const assignOut = (key, entryIdx, buffer2) => {
       out[entryIdx] = buffer2;
@@ -16774,11 +17082,14 @@ var Player = class _Player extends BasePlayer {
       if (cacheMode === "note") {
         const exclusiveClass = note.voiceParams?.exclusiveClass ?? 0;
         const isExclDrum = this.isSegmentExcludedDrum(channel2, noteNumber);
-        if (exclusiveClass === 0 && !isExclDrum) {
+        const isExcl = exclusiveClass !== 0 || isExclDrum;
+        if (!isExcl || note.timelineIndex != null && this.longNoteBakedSet.has(note.timelineIndex)) {
           return await this.getNoteModeBuffer(channel2, note, audioBufferId);
         }
       } else if (cacheMode === "adsr") {
         return await this.getAdsrCachedBuffer(channel2, note, audioBufferId);
+      } else if (isTiledCacheMode(cacheMode) && note.timelineIndex != null && this.longNoteBakedSet.has(note.timelineIndex)) {
+        return await this.getNoteModeBuffer(channel2, note, audioBufferId);
       }
     }
     if (cacheMode === "none") {
@@ -16902,19 +17213,23 @@ var Player = class _Player extends BasePlayer {
     if (!voiceParams) return void 0;
     const timelineIndex = note.timelineIndex;
     const noteEvent = timelineIndex != null ? this.noteOnEvents[timelineIndex] : void 0;
-    const noteDuration = noteEvent?.duration ?? 0;
-    const releaseEndDuration = noteEvent?.soundOff ? 0 : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const naturalDuration = noteEvent?.duration ?? 0;
+    const bakeOverride = timelineIndex != null ? this.noteBakeDurations[timelineIndex] : void 0;
+    const choked = bakeOverride != null && bakeOverride < naturalDuration - 1e-4;
+    const noteDuration = bakeOverride ?? naturalDuration;
+    const releaseEndDuration = noteEvent?.soundOff ? 0 : choked ? _Player.EXCLUSIVE_CHOKE_FADE_SEC : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const bakeNoteEvent = choked && noteEvent ? { ...noteEvent, duration: noteDuration, soundOff: true } : noteEvent;
     if (this.isSimpleNote({
       timelineIndex: timelineIndex ?? void 0,
       noteEvent
-    })) {
+    }) || choked && noteEvent && !this.hasWaveformAutomation(noteEvent)) {
       const buffer2 = await this.getSimpleNoteBuffer({
         channelNumber: channel2.channelNumber,
         audioBufferId,
         noteNumber: note.noteNumber,
         velocity: note.velocity,
         noteDuration,
-        noteEvent,
+        noteEvent: bakeNoteEvent,
         channelDetune: channel2.detune,
         channelStateArray: channel2.state.array.slice(),
         programNumber: channel2.programNumber,
@@ -16935,7 +17250,7 @@ var Player = class _Player extends BasePlayer {
       noteNumber: note.noteNumber,
       velocity: note.velocity,
       noteDuration,
-      noteEvent,
+      noteEvent: bakeNoteEvent,
       channelDetune: channel2.detune,
       channelStateArray: channel2.state.array.slice(),
       programNumber: channel2.programNumber,
@@ -18561,6 +18876,12 @@ var MidyGM2 = class _MidyGM2 extends Player {
     const kitTable = drumExclusiveClassesByKit[channel2.programNumber];
     return kitTable !== void 0 && kitTable[noteNumber] !== 0;
   }
+  /** Per-kit exclusive class for scheduled exclusive note-bake. */
+  exclusiveClassForDrumKit(programNumber, noteNumber) {
+    const kitTable = drumExclusiveClassesByKit[programNumber];
+    if (kitTable) return kitTable[noteNumber] ?? 0;
+    return super.exclusiveClassForDrumKit(programNumber, noteNumber);
+  }
   onCacheTimelineEvent(event) {
     if (event.type !== "controller") return;
     const channel2 = this.channels[event.channel];
@@ -18685,8 +19006,14 @@ var MidyGM2 = class _MidyGM2 extends Player {
             const dur = this.noteOnDurations[queueIndex] ?? 0;
             const vp = this.tiledVoiceParams[queueIndex];
             const releaseTail = vp ? (vp.releaseVolEnv ?? 0) * envelopeCurve * 5 : -1;
+            const excl = vp?.exclusiveClass ?? 0;
+            const inLong = this.longNoteBakedSet.has(queueIndex);
+            const path = inLong ? "noteBake" : excl !== 0 || this.isSegmentExcludedDrum(
+              channel2,
+              event2.noteNumber
+            ) ? "realtimeExcl" : "realtime";
             console.warn(
-              `[midy] non-tiled noteOn | ch=${event2.channel} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s dur=${dur.toFixed(2)}s releaseTail=${releaseTail < 0 ? "?" : releaseTail.toFixed(2)}s sum=${releaseTail < 0 ? "?" : (dur + releaseTail).toFixed(2)}s excl=${vp?.exclusiveClass ?? "?"} inSet=${this.tiledBakedSet.has(queueIndex)} maxTiled=${this.maxTiledNoteDuration}`
+              `[midy] non-tiled noteOn | ch=${event2.channel} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s dur=${dur.toFixed(2)}s releaseTail=${releaseTail < 0 ? "?" : releaseTail.toFixed(2)}s sum=${releaseTail < 0 ? "?" : (dur + releaseTail).toFixed(2)}s excl=${vp?.exclusiveClass ?? "?"} inSet=${this.tiledBakedSet.has(queueIndex)} inLong=${inLong} path=${path} maxTiled=${this.maxTiledNoteDuration}`
             );
           }
           channel2.noteOn(
