@@ -104,11 +104,7 @@ export type RenderSamplesBatchResult = {
   results: RenderSampleResult[];
 };
 
-type AnyResult =
-  | MixResult
-  | MixBatchResult
-  | RenderSampleResult
-  | RenderSamplesBatchResult;
+type AnyResult = MixResult | MixBatchResult | RenderSampleResult | RenderSamplesBatchResult;
 
 type Pending = {
   resolve: (r: AnyResult) => void;
@@ -199,51 +195,150 @@ function biquadLowpassCoeffs(freq, q, sampleRate) {
   };
 }
 
-function handleMix(msg) {
-  var t0 = performance.now();
-  var destLen = msg.destLen;
-  var destLeft = new Float32Array(destLen);
-  var destRight = msg.destChCount > 1 ? new Float32Array(destLen) : null;
-  var entries = msg.entries;
+function mixEntriesInto(destLeft, destRight, destLen, entries) {
   for (var ei = 0; ei < entries.length; ei++) {
     var e = entries[ei];
     var start = e.startSample | 0;
     if (start >= destLen) continue;
-    var gL = e.gain;
-    var gR = e.gainRight != null ? e.gainRight : e.gain;
-    var curve = e.gainCurve;
     var srcLeft = e.left;
     var srcLen = srcLeft.length;
     var copyLen = Math.min(srcLen, destLen - start);
     if (copyLen <= 0) continue;
+    var curve = e.gainCurve;
+    var gL = e.gain;
+    var gR = e.gainRight != null ? e.gainRight : e.gain;
+    var i = 0;
+    var di = start;
     if (destRight === null) {
       // Equal-power mono: center pan (0.707,0.707) → gain 1, not -3 dB.
       var gMono = (e.gainRight != null) ? Math.sqrt(gL * gL + gR * gR) : gL;
       if (curve) {
-        for (var i = 0; i < copyLen; i++) {
-          destLeft[start + i] += srcLeft[i] * gMono * curve[i];
+        if (gMono === 1) {
+          while (i < copyLen) {
+            destLeft[di] += srcLeft[i] * curve[i];
+            i++; di++;
+          }
+        } else {
+          while (i < copyLen) {
+            destLeft[di] += srcLeft[i] * gMono * curve[i];
+            i++; di++;
+          }
+        }
+      } else if (gMono === 1) {
+        // Hot: mono unity gain — no mul, running dest index
+        var n = copyLen - 3;
+        while (i < n) {
+          destLeft[di] += srcLeft[i];
+          destLeft[di + 1] += srcLeft[i + 1];
+          destLeft[di + 2] += srcLeft[i + 2];
+          destLeft[di + 3] += srcLeft[i + 3];
+          i += 4; di += 4;
+        }
+        while (i < copyLen) {
+          destLeft[di] += srcLeft[i];
+          i++; di++;
         }
       } else {
-        for (var i = 0; i < copyLen; i++) {
-          destLeft[start + i] += srcLeft[i] * gMono;
+        var n2 = copyLen - 3;
+        while (i < n2) {
+          destLeft[di] += srcLeft[i] * gMono;
+          destLeft[di + 1] += srcLeft[i + 1] * gMono;
+          destLeft[di + 2] += srcLeft[i + 2] * gMono;
+          destLeft[di + 3] += srcLeft[i + 3] * gMono;
+          i += 4; di += 4;
+        }
+        while (i < copyLen) {
+          destLeft[di] += srcLeft[i] * gMono;
+          i++; di++;
         }
       }
     } else {
       var srcRight = e.right || srcLeft;
       if (curve) {
-        for (var i = 0; i < copyLen; i++) {
-          var cg = curve[i];
-          destLeft[start + i] += srcLeft[i] * gL * cg;
-          destRight[start + i] += srcRight[i] * gR * cg;
+        if (gL === 1 && gR === 1) {
+          while (i < copyLen) {
+            var cg0 = curve[i];
+            destLeft[di] += srcLeft[i] * cg0;
+            destRight[di] += srcRight[i] * cg0;
+            i++; di++;
+          }
+        } else {
+          while (i < copyLen) {
+            var cg = curve[i];
+            destLeft[di] += srcLeft[i] * gL * cg;
+            destRight[di] += srcRight[i] * gR * cg;
+            i++; di++;
+          }
+        }
+      } else if (gL === 1 && gR === 1) {
+        // Hottest path: stereo, no curve, unity gain
+        var n3 = copyLen - 3;
+        while (i < n3) {
+          destLeft[di] += srcLeft[i];
+          destRight[di] += srcRight[i];
+          destLeft[di + 1] += srcLeft[i + 1];
+          destRight[di + 1] += srcRight[i + 1];
+          destLeft[di + 2] += srcLeft[i + 2];
+          destRight[di + 2] += srcRight[i + 2];
+          destLeft[di + 3] += srcLeft[i + 3];
+          destRight[di + 3] += srcRight[i + 3];
+          i += 4; di += 4;
+        }
+        while (i < copyLen) {
+          destLeft[di] += srcLeft[i];
+          destRight[di] += srcRight[i];
+          i++; di++;
+        }
+      } else if (gL === gR) {
+        // Common: same gain both channels (no pan split)
+        var g = gL;
+        var n4 = copyLen - 3;
+        while (i < n4) {
+          destLeft[di] += srcLeft[i] * g;
+          destRight[di] += srcRight[i] * g;
+          destLeft[di + 1] += srcLeft[i + 1] * g;
+          destRight[di + 1] += srcRight[i + 1] * g;
+          destLeft[di + 2] += srcLeft[i + 2] * g;
+          destRight[di + 2] += srcRight[i + 2] * g;
+          destLeft[di + 3] += srcLeft[i + 3] * g;
+          destRight[di + 3] += srcRight[i + 3] * g;
+          i += 4; di += 4;
+        }
+        while (i < copyLen) {
+          destLeft[di] += srcLeft[i] * g;
+          destRight[di] += srcRight[i] * g;
+          i++; di++;
         }
       } else {
-        for (var i = 0; i < copyLen; i++) {
-          destLeft[start + i] += srcLeft[i] * gL;
-          destRight[start + i] += srcRight[i] * gR;
+        // Stereo pan: different L/R gains
+        var n5 = copyLen - 3;
+        while (i < n5) {
+          destLeft[di] += srcLeft[i] * gL;
+          destRight[di] += srcRight[i] * gR;
+          destLeft[di + 1] += srcLeft[i + 1] * gL;
+          destRight[di + 1] += srcRight[i + 1] * gR;
+          destLeft[di + 2] += srcLeft[i + 2] * gL;
+          destRight[di + 2] += srcRight[i + 2] * gR;
+          destLeft[di + 3] += srcLeft[i + 3] * gL;
+          destRight[di + 3] += srcRight[i + 3] * gR;
+          i += 4; di += 4;
+        }
+        while (i < copyLen) {
+          destLeft[di] += srcLeft[i] * gL;
+          destRight[di] += srcRight[i] * gR;
+          i++; di++;
         }
       }
     }
   }
+}
+
+function handleMix(msg) {
+  var t0 = performance.now();
+  var destLen = msg.destLen;
+  var destLeft = new Float32Array(destLen);
+  var destRight = msg.destChCount > 1 ? new Float32Array(destLen) : null;
+  mixEntriesInto(destLeft, destRight, destLen, msg.entries);
   var workerMs = performance.now() - t0;
   var transfer = [destLeft.buffer];
   if (destRight) transfer.push(destRight.buffer);
@@ -263,45 +358,7 @@ function handleMixBatch(msg) {
     var destLen = job.destLen;
     var destLeft = new Float32Array(destLen);
     var destRight = job.destChCount > 1 ? new Float32Array(destLen) : null;
-    var entries = job.entries;
-    for (var ei = 0; ei < entries.length; ei++) {
-      var e = entries[ei];
-      var start = e.startSample | 0;
-      if (start >= destLen) continue;
-      var gL = e.gain;
-      var gR = e.gainRight != null ? e.gainRight : e.gain;
-      var curve = e.gainCurve;
-      var srcLeft = e.left;
-      var srcLen = srcLeft.length;
-      var copyLen = Math.min(srcLen, destLen - start);
-      if (copyLen <= 0) continue;
-      if (destRight === null) {
-        var gMono = (e.gainRight != null) ? Math.sqrt(gL * gL + gR * gR) : gL;
-        if (curve) {
-          for (var i = 0; i < copyLen; i++) {
-            destLeft[start + i] += srcLeft[i] * gMono * curve[i];
-          }
-        } else {
-          for (var i = 0; i < copyLen; i++) {
-            destLeft[start + i] += srcLeft[i] * gMono;
-          }
-        }
-      } else {
-        var srcRight = e.right || srcLeft;
-        if (curve) {
-          for (var i = 0; i < copyLen; i++) {
-            var cg = curve[i];
-            destLeft[start + i] += srcLeft[i] * gL * cg;
-            destRight[start + i] += srcRight[i] * gR * cg;
-          }
-        } else {
-          for (var i = 0; i < copyLen; i++) {
-            destLeft[start + i] += srcLeft[i] * gL;
-            destRight[start + i] += srcRight[i] * gR;
-          }
-        }
-      }
-    }
+    mixEntriesInto(destLeft, destRight, destLen, job.entries);
     transfer.push(destLeft.buffer);
     if (destRight) transfer.push(destRight.buffer);
     results.push({ left: destLeft, right: destRight || undefined });
@@ -549,7 +606,42 @@ self.onmessage = function(ev) {
   }
 
   /**
+   * Collect ArrayBuffers that appear exactly once among mix entries so they
+   * can be transferred. Buffers referenced 2+ times (in-tile shared slices)
+   * must stay on the structured-clone path — transferring the first ref would
+   * detach the rest in the same postMessage payload.
+   */
+  private static collectUniqueTransferables(
+    entries: MixSourceEntry[],
+  ): Transferable[] {
+    // Float32Array.buffer is ArrayBufferLike (ArrayBuffer | SharedArrayBuffer).
+    // Only plain ArrayBuffers are transferable; skip SharedArrayBuffer.
+    const counts = new Map<ArrayBuffer, number>();
+    const bump = (buf: ArrayBufferLike | undefined) => {
+      if (!buf || buf.byteLength === 0) return;
+      if (!(buf instanceof ArrayBuffer)) return;
+      counts.set(buf, (counts.get(buf) ?? 0) + 1);
+    };
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      bump(e.left.buffer);
+      if (e.right) bump(e.right.buffer);
+      if (e.gainCurve) bump(e.gainCurve.buffer);
+    }
+    const transfer: Transferable[] = [];
+    for (const [buf, n] of counts) {
+      if (n === 1) transfer.push(buf);
+    }
+    return transfer;
+  }
+
+  /**
    * Mix source PCM entries into a new destination of length destLen.
+   *
+   * When useTransferable is true, only ArrayBuffers that appear once in the
+   * entry list are transferred (zero-copy). Shared in-tile slices (same
+   * buffer on multiple entries) are structured-cloned so multi-ref payloads
+   * stay valid.
    */
   async mix(
     entries: MixSourceEntry[],
@@ -560,7 +652,6 @@ self.onmessage = function(ev) {
     const id = this.nextId++;
     // deno-lint-ignore no-explicit-any
     const msgEntries: any[] = new Array(entries.length);
-    const transfer: Transferable[] = [];
 
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -572,22 +663,11 @@ self.onmessage = function(ev) {
         gainRight: e.gainRight,
         gainCurve: e.gainCurve,
       };
-      if (useTransferable) {
-        if (e.left.buffer.byteLength > 0) transfer.push(e.left.buffer);
-        if (
-          e.right && e.right.buffer !== e.left.buffer &&
-          e.right.buffer.byteLength > 0
-        ) {
-          transfer.push(e.right.buffer);
-        }
-        if (
-          e.gainCurve && e.gainCurve.buffer.byteLength > 0 &&
-          e.gainCurve.buffer !== e.left.buffer
-        ) {
-          transfer.push(e.gainCurve.buffer);
-        }
-      }
     }
+
+    const transfer = useTransferable
+      ? BakeWorkerPool.collectUniqueTransferables(entries)
+      : [];
 
     const result = await this.enqueue(
       {
@@ -614,6 +694,9 @@ self.onmessage = function(ev) {
    * are ready so structured-clone / queue overhead is paid once.
    * Single-tile callers should keep using {@link mix} (no coalesce delay).
    * Returns results in the same order as jobs.
+   *
+   * Transferable selection is across the whole batch: only ArrayBuffers that
+   * appear once among all jobs' entries are transferred.
    */
   async mixBatch(
     jobs: MixBatchJob[],
@@ -635,7 +718,8 @@ self.onmessage = function(ev) {
     const id = this.nextId++;
     // deno-lint-ignore no-explicit-any
     const msgJobs: any[] = new Array(jobs.length);
-    const transfer: Transferable[] = [];
+    // Flatten for unique-transferable scan across the whole batch.
+    const allEntries: MixSourceEntry[] = [];
 
     for (let j = 0; j < jobs.length; j++) {
       const job = jobs[j];
@@ -652,21 +736,7 @@ self.onmessage = function(ev) {
           gainRight: e.gainRight,
           gainCurve: e.gainCurve,
         };
-        if (useTransferable) {
-          if (e.left.buffer.byteLength > 0) transfer.push(e.left.buffer);
-          if (
-            e.right && e.right.buffer !== e.left.buffer &&
-            e.right.buffer.byteLength > 0
-          ) {
-            transfer.push(e.right.buffer);
-          }
-          if (
-            e.gainCurve && e.gainCurve.buffer.byteLength > 0 &&
-            e.gainCurve.buffer !== e.left.buffer
-          ) {
-            transfer.push(e.gainCurve.buffer);
-          }
-        }
+        allEntries.push(e);
       }
       msgJobs[j] = {
         destLen: job.destLen,
@@ -674,6 +744,10 @@ self.onmessage = function(ev) {
         entries: msgEntries,
       };
     }
+
+    const transfer = useTransferable
+      ? BakeWorkerPool.collectUniqueTransferables(allEntries)
+      : [];
 
     const result = await this.enqueue(
       {

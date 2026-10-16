@@ -290,6 +290,24 @@ export class Player<
   chunkMixResidualSumMs: number = 0;
   chunkMixCopyBackSumMs: number = 0;
   chunkMixMainSumMs: number = 0;
+  /** Ms spent in Float32Array.slice during prepare. */
+  chunkMixPrepareSliceSumMs: number = 0;
+  /** Ms spent assembling MixSourceEntry objects (excl. slice). */
+  chunkMixPrepareAssemblySumMs: number = 0;
+  /** Entries that took the slice/trim path. */
+  chunkMixPrepareSliceEntries: number = 0;
+  /** Entries that reused the live channel view (no slice). */
+  chunkMixPrepareViewEntries: number = 0;
+  /** Total bytes allocated by slice (left+right+gainCurve). */
+  chunkMixPrepareSliceBytes: number = 0;
+  /** Sum of copyLen across prepared entries (sample-frames). */
+  chunkMixPrepareCopySamples: number = 0;
+  /** Sum of full source channel lengths for prepared entries. */
+  chunkMixPrepareSrcSamplesFull: number = 0;
+  /** Sum over tiles of unique AudioBuffers referenced in prepare. */
+  chunkMixPrepareUniqueBufSum: number = 0;
+  /** Entries whose AudioBuffer appeared more than once in the same tile. */
+  chunkMixPrepareDupEntries: number = 0;
   chunkMixWorkerTiles: number = 0;
   chunkMixMainTiles: number = 0;
   chunkMixEntriesSum: number = 0;
@@ -3422,6 +3440,44 @@ export class Player<
               `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
               `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
           );
+          // prepare breakdown: is slice the dominant cost? buffer reuse?
+          const prepTiles = mw;
+          const sliceAvg = prepTiles > 0
+            ? this.chunkMixPrepareSliceSumMs / prepTiles
+            : 0;
+          const asmAvg = prepTiles > 0
+            ? this.chunkMixPrepareAssemblySumMs / prepTiles
+            : 0;
+          const sliceEntryN = this.chunkMixPrepareSliceEntries;
+          const viewEntryN = this.chunkMixPrepareViewEntries;
+          const entryN = sliceEntryN + viewEntryN;
+          const sliceBytes = this.chunkMixPrepareSliceBytes;
+          const copySamp = this.chunkMixPrepareCopySamples;
+          const srcFull = this.chunkMixPrepareSrcSamplesFull;
+          const trimRatio = srcFull > 0 ? copySamp / srcFull : 0;
+          const uniqueBufAvg = prepTiles > 0
+            ? this.chunkMixPrepareUniqueBufSum / prepTiles
+            : 0;
+          const dupEntryN = this.chunkMixPrepareDupEntries;
+          const slicePct = prepAvg > 0 ? (100 * sliceAvg / prepAvg) : 0;
+          // sliceEntries counts actual Float32Array.slice calls (unique
+          // buffers + one per shared buffer), not per-entry. With in-tile
+          // ref coalescing, sliceEntries << entryN when dupEntries is high.
+          console.log(
+            `[midy] chunk-mix-prepare | ` +
+              `prepareAvg=${prepAvg.toFixed(1)}ms ` +
+              `sliceAvg=${sliceAvg.toFixed(1)}ms (${slicePct.toFixed(0)}%) ` +
+              `assemblyAvg=${asmAvg.toFixed(1)}ms | ` +
+              `sliceCallShare=${
+                entryN > 0 ? (100 * sliceEntryN / entryN).toFixed(0) : "0"
+              }% | ` +
+              `sliceBytes=${(sliceBytes / 1e6).toFixed(2)}MB ` +
+              `trimRatio=${trimRatio.toFixed(3)} ` +
+              `uniqueBufAvg=${uniqueBufAvg.toFixed(1)} ` +
+              `dupEntries=${dupEntryN} (${
+                entryN > 0 ? (100 * dupEntryN / entryN).toFixed(0) : "0"
+              }% of entries share a buffer in-tile)`,
+          );
           // Minimal cost model: pure add (+= loop) vs overhead (prep/await/copy),
           // scaled by source sample volume (the only thing the loop should care about).
           const mixSum = this.chunkBakeMixSumMs;
@@ -6201,9 +6257,9 @@ export class Player<
             j.resolve(result);
           } else {
             // Closed tiles / preroll: up to 4 tiles in one postMessage.
-            // Transferable only when every job opted in (shared note PCM
-            // across tiles must not be detached out from under others).
-            const useTransferable = batch.every((j) => j.transferable);
+            // Hybrid transfer: pool only moves ArrayBuffers that appear once
+            // across the whole batch; multi-ref (shared slices) stay cloned.
+            const useTransferable = batch.some((j) => j.transferable);
             const jobs: MixBatchJob[] = batch.map((j) => ({
               entries: j.entries,
               destLen: j.destLen,
@@ -6603,14 +6659,41 @@ export class Player<
     }
 
     try {
-      const transferable = this.useWorkerTransferable;
       const tPrep0 = performance.now();
       let srcSamplesSum = 0;
-      // Only the samples that the worker loop will actually touch
-      // (copyLen = min(srcLen, destLen - start)). Full-buffer slice was
-      // the dominant main-thread cost for long note buffers placed into
-      // short tiles (prep + transfer size both scaled with full release).
+      // Per-tile prepare: count in-tile buffer refs first, then
+      //   - unique (ref==1): slice once (owned copy). Live cache AudioBuffers
+      //     must not be transferred raw; the slice is transferred zero-copy
+      //     by the pool when it appears only once in the message.
+      //   - shared (ref>=2): slice once to max copyLen and reuse the same
+      //     Float32Arrays across entries. Pool skips transfer for buffers
+      //     referenced 2+ times (structured-clone dedupe) so multi-ref
+      //     payloads stay valid — hybrid unique-transfer + shared-clone.
+      // Full per-entry slice was the dominant main-thread cost (see
+      // chunk-mix-prepare sliceBytes / sliceShare) when dry simple notes
+      // reuse the same AudioBuffer many times inside one tile.
       const mixEntries: MixSourceEntry[] = [];
+      // Per-tile prepare diagnostics (aggregated into chunkMixPrepare* sums).
+      let sliceMs = 0;
+      let sliceEntries = 0;
+      let sliceBytes = 0;
+      let copySamples = 0;
+      let srcSamplesFull = 0;
+
+      // --- Pass 1: resolve channel views + ref counts + max copyLen ---
+      type PrepRow = {
+        startSample: number;
+        copyLen: number;
+        left: Float32Array;
+        right?: Float32Array;
+        gLAbs: number;
+        gRAbs: number;
+        gainCurve?: Float32Array;
+        src: AudioBuffer;
+      };
+      const prepRows: PrepRow[] = [];
+      const bufSeen = new Map<AudioBuffer, number>();
+      const bufMaxCopy = new Map<AudioBuffer, number>();
       for (let i = 0; i < entries.length; i++) {
         const ent = entries[i];
         const src = ent.buffer;
@@ -6624,36 +6707,106 @@ export class Player<
         const copyLen = Math.min(left.length, bufferLength - startSample);
         if (copyLen <= 0) continue;
         srcSamplesSum += copyLen;
+        copySamples += copyLen;
+        srcSamplesFull += left.length;
+        bufSeen.set(src, (bufSeen.get(src) ?? 0) + 1);
+        const prevMax = bufMaxCopy.get(src) ?? 0;
+        if (copyLen > prevMax) bufMaxCopy.set(src, copyLen);
         const gLAbs = ent.gainL != null ? ent.gainL * gain : gain;
         const gRAbs = ent.gainR != null ? ent.gainR * gain : gLAbs;
-        const gainCurve = ent.gainCurve;
-        // Transferable detaches the underlying ArrayBuffer — must copy so
-        // live AudioBuffers stay usable. Slice only [0, copyLen) so main
-        // allocate + postMessage size track mixed samples, not full release.
-        // Non-transferable: still pass a trimmed copy when the source is
-        // much longer than copyLen (avoids structured-clone of unused tail).
-        const trim = transferable || copyLen < left.length;
-        if (trim) {
+        prepRows.push({
+          startSample,
+          copyLen,
+          left,
+          right,
+          gLAbs,
+          gRAbs,
+          gainCurve: ent.gainCurve,
+          src,
+        });
+      }
+
+      // Hybrid transfer is always on when the flag is set: the pool only
+      // transfers ArrayBuffers that appear once in the message. Shared
+      // slices (multi-ref) stay on structured-clone; unique slices transfer.
+      const transferable = this.useWorkerTransferable;
+
+      // Shared-buffer slice cache: one trimmed copy per AudioBuffer.
+      const sharedSlices = new Map<AudioBuffer, {
+        left: Float32Array;
+        right?: Float32Array;
+      }>();
+
+      // --- Pass 2: build MixSourceEntry list ---
+      for (let i = 0; i < prepRows.length; i++) {
+        const row = prepRows[i];
+        const count = bufSeen.get(row.src) ?? 1;
+        const gainCurve = row.gainCurve;
+
+        if (count === 1) {
+          // Unique buffer: always slice so the live cache is not detached
+          // when the pool transfers this owned copy.
+          const tSlice0 = performance.now();
+          const leftS = row.left.slice(0, row.copyLen);
+          const rightS = row.right
+            ? row.right.slice(0, row.copyLen)
+            : undefined;
+          const curveS = gainCurve
+            ? gainCurve.slice(0, Math.min(gainCurve.length, row.copyLen))
+            : undefined;
+          sliceMs += performance.now() - tSlice0;
+          sliceEntries++;
+          sliceBytes += leftS.byteLength;
+          if (rightS) sliceBytes += rightS.byteLength;
+          if (curveS) sliceBytes += curveS.byteLength;
           mixEntries.push({
-            left: left.slice(0, copyLen),
-            right: right ? right.slice(0, copyLen) : undefined,
-            startSample,
-            gain: gLAbs,
-            gainRight: gRAbs,
-            gainCurve: gainCurve
-              ? gainCurve.slice(0, Math.min(gainCurve.length, copyLen))
-              : undefined,
+            left: leftS,
+            right: rightS,
+            startSample: row.startSample,
+            gain: row.gLAbs,
+            gainRight: row.gRAbs,
+            gainCurve: curveS,
           });
         } else {
+          // Shared buffer: slice once to the tile's max copyLen, reuse.
+          // Multi-ref → pool will structured-clone (not transfer) this
+          // ArrayBuffer; unique siblings in the same tile still transfer.
+          let sliced = sharedSlices.get(row.src);
+          if (!sliced) {
+            const maxLen = bufMaxCopy.get(row.src) ?? row.copyLen;
+            const tSlice0 = performance.now();
+            const leftS = row.left.slice(0, maxLen);
+            const rightS = row.right ? row.right.slice(0, maxLen) : undefined;
+            sliceMs += performance.now() - tSlice0;
+            sliceEntries++;
+            sliceBytes += leftS.byteLength;
+            if (rightS) sliceBytes += rightS.byteLength;
+            sliced = { left: leftS, right: rightS };
+            sharedSlices.set(row.src, sliced);
+          }
+          // gainCurve is per-entry (expression trajectory), not per-buffer.
+          let curveOut = gainCurve;
+          if (gainCurve) {
+            // Always own the curve so unique curves can transfer even when
+            // the PCM buffer is shared (multi-ref).
+            const tSlice0 = performance.now();
+            const cLen = Math.min(gainCurve.length, row.copyLen);
+            curveOut = gainCurve.length > cLen
+              ? gainCurve.slice(0, cLen)
+              : gainCurve.slice();
+            sliceMs += performance.now() - tSlice0;
+            sliceBytes += curveOut.byteLength;
+          }
           mixEntries.push({
-            left,
-            right,
-            startSample,
-            gain: gLAbs,
-            gainRight: gRAbs,
-            gainCurve,
+            left: sliced.left,
+            right: sliced.right,
+            startSample: row.startSample,
+            gain: row.gLAbs,
+            gainRight: row.gRAbs,
+            gainCurve: curveOut,
           });
         }
+
         // Cooperative yield during large prepares so worker onmessage /
         // audio callbacks are not stalled for the whole entries loop.
         if ((i & 15) === 15 && performance.now() - tPrep0 > 4) {
@@ -6661,7 +6814,20 @@ export class Player<
         }
       }
       const prepareMs = performance.now() - tPrep0;
+      const assemblyMs = Math.max(0, prepareMs - sliceMs);
       this.chunkMixPrepareSumMs += prepareMs;
+      this.chunkMixPrepareSliceSumMs += sliceMs;
+      this.chunkMixPrepareAssemblySumMs += assemblyMs;
+      this.chunkMixPrepareSliceEntries += sliceEntries;
+      this.chunkMixPrepareSliceBytes += sliceBytes;
+      this.chunkMixPrepareCopySamples += copySamples;
+      this.chunkMixPrepareSrcSamplesFull += srcSamplesFull;
+      this.chunkMixPrepareUniqueBufSum += bufSeen.size;
+      let dupEntries = 0;
+      for (const c of bufSeen.values()) {
+        if (c > 1) dupEntries += c;
+      }
+      this.chunkMixPrepareDupEntries += dupEntries;
       this.chunkMixEntriesSum += mixEntries.length;
 
       const concurrentSnap = {
@@ -7730,6 +7896,15 @@ export class Player<
     this.chunkMixWorkerTiles = 0;
     this.chunkMixMainTiles = 0;
     this.chunkMixEntriesSum = 0;
+    this.chunkMixPrepareSliceSumMs = 0;
+    this.chunkMixPrepareAssemblySumMs = 0;
+    this.chunkMixPrepareSliceEntries = 0;
+    this.chunkMixPrepareViewEntries = 0;
+    this.chunkMixPrepareSliceBytes = 0;
+    this.chunkMixPrepareCopySamples = 0;
+    this.chunkMixPrepareSrcSamplesFull = 0;
+    this.chunkMixPrepareUniqueBufSum = 0;
+    this.chunkMixPrepareDupEntries = 0;
     this.chunkMixSamplesMs = [];
     this.chunkMixEntryCountSum = 0;
     this.chunkMixDestSamplesSum = 0;
