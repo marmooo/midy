@@ -52,6 +52,8 @@ import {
 import {
   BakeWorkerPool,
   getSharedBakeWorkerPool,
+  type MixBatchJob,
+  type MixResult,
   type MixSourceEntry,
   type RenderSampleParams,
 } from "./bake-worker-pool.ts";
@@ -471,6 +473,20 @@ export class Player<
   useWorkerSimpleNoteBake: boolean = true;
 
   private bakeWorkerPool: BakeWorkerPool | null = null;
+  /**
+   * Pending tile-level mix jobs waiting for mixBatch (up to
+   * BakeWorkerPool.MAX_TILES_PER_MIX_BATCH). Single-job path flushes
+   * immediately via pool.mix — never setTimeout(0) coalesce.
+   */
+  private mixBatchQueue: {
+    entries: MixSourceEntry[];
+    destLen: number;
+    destChCount: 1 | 2;
+    transferable: boolean;
+    resolve: (r: MixResult) => void;
+    reject: (e: Error) => void;
+  }[] = [];
+  private mixBatchFlushing: boolean = false;
 
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
@@ -3863,6 +3879,9 @@ export class Player<
       }
     }
 
+    // Flush any short mixBatch remainder (explicit preroll batch, not coalesce).
+    await this.flushPendingMixBatches();
+
     // Await every in-flight offline bake before arming the clock.
     const bufferPromises: Promise<AudioBuffer | null>[] = [];
     if (isChunkMode) {
@@ -6128,13 +6147,108 @@ export class Player<
   }
 
   /**
+   * Enqueue one tile mix. Policy (residual-safe, no setTimeout(0) coalesce):
+   * - Always start a flush immediately (no timer).
+   * - Flush takes up to MAX_TILES_PER_MIX_BATCH (4) jobs per postMessage.
+   * - Queue length 1 → pool.mix (single, no batch overhead).
+   * - Queue length 2..4 (concurrent closes / preroll) → pool.mixBatch.
+   * Preroll end also calls flushPendingMixBatches() to drain races.
+   */
+  protected workerMix(
+    entries: MixSourceEntry[],
+    destLen: number,
+    destChCount: 1 | 2,
+    transferable: boolean,
+  ): Promise<MixResult> {
+    return new Promise<MixResult>((resolve, reject) => {
+      this.mixBatchQueue.push({
+        entries,
+        destLen,
+        destChCount,
+        transferable,
+        resolve,
+        reject,
+      });
+      // Immediate flush — never setTimeout(0). Concurrent enqueues before
+      // the first splice land in the same mixBatch of up to 4.
+      void this.flushPendingMixBatches();
+    });
+  }
+
+  /**
+   * Drain mixBatchQueue in groups of up to MAX_TILES_PER_MIX_BATCH.
+   * Single job → pool.mix; several → one mixBatch postMessage.
+   */
+  protected async flushPendingMixBatches(): Promise<void> {
+    if (this.mixBatchFlushing) return;
+    this.mixBatchFlushing = true;
+    const max = BakeWorkerPool.MAX_TILES_PER_MIX_BATCH;
+    try {
+      while (this.mixBatchQueue.length > 0) {
+        const take = Math.min(max, this.mixBatchQueue.length);
+        const batch = this.mixBatchQueue.splice(0, take);
+        const pool = this.getBakeWorkerPool();
+        try {
+          if (batch.length === 1) {
+            // Single-tile: immediate pool.mix (no batch wrapper).
+            const j = batch[0];
+            const result = await pool.mix(
+              j.entries,
+              j.destLen,
+              j.destChCount,
+              j.transferable,
+            );
+            j.resolve(result);
+          } else {
+            // Closed tiles / preroll: up to 4 tiles in one postMessage.
+            // Transferable only when every job opted in (shared note PCM
+            // across tiles must not be detached out from under others).
+            const useTransferable = batch.every((j) => j.transferable);
+            const jobs: MixBatchJob[] = batch.map((j) => ({
+              entries: j.entries,
+              destLen: j.destLen,
+              destChCount: j.destChCount,
+            }));
+            const batchResult = await pool.mixBatch(jobs, useTransferable);
+            const results = batchResult.results;
+            for (let i = 0; i < batch.length; i++) {
+              const r = results[i] ?? {
+                left: new Float32Array(batch[i].destLen),
+                right: batch[i].destChCount > 1
+                  ? new Float32Array(batch[i].destLen)
+                  : undefined,
+              };
+              if (batchResult.queueMs != null && r.queueMs == null) {
+                r.queueMs = batchResult.queueMs;
+              }
+              if (batchResult.postMs != null && r.postMs == null) {
+                r.postMs = batchResult.postMs;
+              }
+              batch[i].resolve(r);
+            }
+          }
+        } catch (err) {
+          const e = err instanceof Error ? err : new Error(String(err));
+          for (const j of batch) j.reject(e);
+        }
+      }
+    } finally {
+      this.mixBatchFlushing = false;
+      // Jobs enqueued while we held the lock.
+      if (this.mixBatchQueue.length > 0) {
+        void this.flushPendingMixBatches();
+      }
+    }
+  }
+
+  /**
    * Build an AudioBuffer by mixing pre-baked note buffers (tile-level).
    *
-   * Primary worker path for segment / chunk: one serial mix job per tile
-   * (pool.mix, not mixParallel). Parallel partial mixes were measured to
-   * monopolise the whole worker pool and inflate queue wait; worker loop
-   * itself is ~20ms/tile so serial is enough. Per-note sample bake is not
-   * involved here — callers already hold AudioBuffers.
+   * Primary worker path for segment / chunk: tile mix via {@link workerMix}
+   * (single → pool.mix immediately; concurrent closes / preroll → up to 4
+   * tiles per mixBatch postMessage). Not mixParallel — parallel partial
+   * mixes monopolised the pool and inflated queue wait. Per-note sample
+   * bake is not involved here — callers already hold AudioBuffers.
    *
    * Uses a Web Worker pool when useWorkerTypedArrayMix is enabled and the
    * entry count is large enough; otherwise falls back to the main-thread
@@ -6561,11 +6675,11 @@ export class Player<
       // when main is in a long microtask chain (schedule + multi-tile bake).
       await this.yieldToMain();
 
-      const pool = this.getBakeWorkerPool();
       const tAwait0 = performance.now();
-      // Serial mix only: mixParallel was monopolising all pool workers per
-      // tile and turning await into queue-wait (overheadAvg ≫ workerAvg).
-      const result = await pool.mix(
+      // Serial tile mix via batch coordinator: single → pool.mix immediately;
+      // preroll / multi-close → up to MAX_TILES_PER_MIX_BATCH per postMessage.
+      // Never setTimeout(0) coalesce (worsens residual).
+      const result = await this.workerMix(
         mixEntries,
         bufferLength,
         destChCount,

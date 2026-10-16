@@ -55,6 +55,22 @@ export type MixResult = {
   postMs?: number;
 };
 
+/** One tile mix job for {@link BakeWorkerPool.mixBatch}. */
+export type MixBatchJob = {
+  entries: MixSourceEntry[];
+  destLen: number;
+  destChCount: 1 | 2;
+};
+
+export type MixBatchResult = {
+  /** One result per input job, same order. */
+  results: MixResult[];
+  /** Time from enqueue until postMessage is called (pool queue wait, ms). */
+  queueMs?: number;
+  /** Duration of the main-thread postMessage call itself (clone/transfer, ms). */
+  postMs?: number;
+};
+
 export type RenderSampleParams = {
   /** Source PCM channels (mono or stereo). */
   srcChannels: Float32Array[];
@@ -88,7 +104,11 @@ export type RenderSamplesBatchResult = {
   results: RenderSampleResult[];
 };
 
-type AnyResult = MixResult | RenderSampleResult | RenderSamplesBatchResult;
+type AnyResult =
+  | MixResult
+  | MixBatchResult
+  | RenderSampleResult
+  | RenderSamplesBatchResult;
 
 type Pending = {
   resolve: (r: AnyResult) => void;
@@ -233,6 +253,71 @@ function handleMix(msg) {
   );
 }
 
+function handleMixBatch(msg) {
+  var t0 = performance.now();
+  var jobs = msg.jobs;
+  var results = [];
+  var transfer = [];
+  for (var j = 0; j < jobs.length; j++) {
+    var job = jobs[j];
+    var destLen = job.destLen;
+    var destLeft = new Float32Array(destLen);
+    var destRight = job.destChCount > 1 ? new Float32Array(destLen) : null;
+    var entries = job.entries;
+    for (var ei = 0; ei < entries.length; ei++) {
+      var e = entries[ei];
+      var start = e.startSample | 0;
+      if (start >= destLen) continue;
+      var gL = e.gain;
+      var gR = e.gainRight != null ? e.gainRight : e.gain;
+      var curve = e.gainCurve;
+      var srcLeft = e.left;
+      var srcLen = srcLeft.length;
+      var copyLen = Math.min(srcLen, destLen - start);
+      if (copyLen <= 0) continue;
+      if (destRight === null) {
+        var gMono = (e.gainRight != null) ? Math.sqrt(gL * gL + gR * gR) : gL;
+        if (curve) {
+          for (var i = 0; i < copyLen; i++) {
+            destLeft[start + i] += srcLeft[i] * gMono * curve[i];
+          }
+        } else {
+          for (var i = 0; i < copyLen; i++) {
+            destLeft[start + i] += srcLeft[i] * gMono;
+          }
+        }
+      } else {
+        var srcRight = e.right || srcLeft;
+        if (curve) {
+          for (var i = 0; i < copyLen; i++) {
+            var cg = curve[i];
+            destLeft[start + i] += srcLeft[i] * gL * cg;
+            destRight[start + i] += srcRight[i] * gR * cg;
+          }
+        } else {
+          for (var i = 0; i < copyLen; i++) {
+            destLeft[start + i] += srcLeft[i] * gL;
+            destRight[start + i] += srcRight[i] * gR;
+          }
+        }
+      }
+    }
+    transfer.push(destLeft.buffer);
+    if (destRight) transfer.push(destRight.buffer);
+    results.push({ left: destLeft, right: destRight || undefined });
+  }
+  var workerMs = performance.now() - t0;
+  // Attribute total worker time evenly so per-tile residual math stays sane.
+  var per = jobs.length > 0 ? workerMs / jobs.length : 0;
+  for (var r = 0; r < results.length; r++) {
+    results[r].workerMs = per;
+  }
+  self.postMessage(
+    { type: "mix-batch-result", id: msg.id, results: results, workerMs: workerMs },
+    transfer
+  );
+}
+
 function renderOneSample(p) {
   var srcChannels = p.srcChannels;
   var srcRate = p.srcRate;
@@ -330,6 +415,8 @@ self.onmessage = function(ev) {
   try {
     if (msg.type === "mix") {
       handleMix(msg);
+    } else if (msg.type === "mixBatch") {
+      handleMixBatch(msg);
     } else if (msg.type === "renderSample") {
       handleRenderSample(msg);
     } else if (msg.type === "renderSamplesBatch") {
@@ -365,7 +452,12 @@ self.onmessage = function(ev) {
       left?: Float32Array;
       right?: Float32Array;
       channels?: Float32Array[];
-      results?: { channels: Float32Array[] }[];
+      results?: {
+        channels?: Float32Array[];
+        left?: Float32Array;
+        right?: Float32Array;
+        workerMs?: number;
+      }[];
       workerMs?: number;
       message?: string;
     };
@@ -386,10 +478,26 @@ self.onmessage = function(ev) {
         queueMs: pending.queueMs,
         postMs: pending.postMs,
       });
+    } else if (data.type === "mix-batch-result") {
+      const batchResults = (data.results ?? []).map((r) => ({
+        left: r.left!,
+        right: r.right,
+        workerMs: r.workerMs,
+        queueMs: pending.queueMs,
+        postMs: pending.postMs,
+      }));
+      pending.resolve({
+        results: batchResults,
+        queueMs: pending.queueMs,
+        postMs: pending.postMs,
+      });
     } else if (data.type === "render-result") {
       pending.resolve({ channels: data.channels! });
     } else if (data.type === "render-batch-result") {
-      pending.resolve({ results: data.results! });
+      const renderResults: RenderSampleResult[] = (data.results ?? []).map(
+        (r) => ({ channels: r.channels! }),
+      );
+      pending.resolve({ results: renderResults });
     } else {
       pending.reject(new Error(`unknown worker response: ${data.type}`));
     }
@@ -492,6 +600,90 @@ self.onmessage = function(ev) {
       transfer,
     );
     return result as MixResult;
+  }
+
+  /**
+   * Soft cap on tiles per single mixBatch postMessage. Matches
+   * MAX_NOTES_PER_BATCH spirit: amortize postMessage without monopolising
+   * one worker for too long.
+   */
+  static readonly MAX_TILES_PER_MIX_BATCH = 4;
+
+  /**
+   * Mix several tiles in one postMessage. Prefer this when 2+ closed tiles
+   * are ready so structured-clone / queue overhead is paid once.
+   * Single-tile callers should keep using {@link mix} (no coalesce delay).
+   * Returns results in the same order as jobs.
+   */
+  async mixBatch(
+    jobs: MixBatchJob[],
+    useTransferable = false,
+  ): Promise<MixBatchResult> {
+    if (jobs.length === 0) {
+      return { results: [] };
+    }
+    if (jobs.length === 1) {
+      const one = await this.mix(
+        jobs[0].entries,
+        jobs[0].destLen,
+        jobs[0].destChCount,
+        useTransferable,
+      );
+      return { results: [one], queueMs: one.queueMs, postMs: one.postMs };
+    }
+
+    const id = this.nextId++;
+    // deno-lint-ignore no-explicit-any
+    const msgJobs: any[] = new Array(jobs.length);
+    const transfer: Transferable[] = [];
+
+    for (let j = 0; j < jobs.length; j++) {
+      const job = jobs[j];
+      const entries = job.entries;
+      // deno-lint-ignore no-explicit-any
+      const msgEntries: any[] = new Array(entries.length);
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        msgEntries[i] = {
+          left: e.left,
+          right: e.right,
+          startSample: e.startSample,
+          gain: e.gain,
+          gainRight: e.gainRight,
+          gainCurve: e.gainCurve,
+        };
+        if (useTransferable) {
+          if (e.left.buffer.byteLength > 0) transfer.push(e.left.buffer);
+          if (
+            e.right && e.right.buffer !== e.left.buffer &&
+            e.right.buffer.byteLength > 0
+          ) {
+            transfer.push(e.right.buffer);
+          }
+          if (
+            e.gainCurve && e.gainCurve.buffer.byteLength > 0 &&
+            e.gainCurve.buffer !== e.left.buffer
+          ) {
+            transfer.push(e.gainCurve.buffer);
+          }
+        }
+      }
+      msgJobs[j] = {
+        destLen: job.destLen,
+        destChCount: job.destChCount,
+        entries: msgEntries,
+      };
+    }
+
+    const result = await this.enqueue(
+      {
+        type: "mixBatch",
+        id,
+        jobs: msgJobs,
+      },
+      transfer,
+    );
+    return result as MixBatchResult;
   }
 
   /**
