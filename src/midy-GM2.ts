@@ -1477,36 +1477,51 @@ export class MidyGM2 extends Player<Note, Channel> {
             // Diagnose non-tiled path: long non-exclusive → noteBake
             // (Player.getAudioBuffer → getNoteModeBuffer); exclusive stays
             // realtime for choke; other exclusions stay realtime ADS.
-            const dur = this.noteOnDurations[queueIndex] ?? 0;
+            // Classification uses effective = midiDur + releaseTail.
+            // "midiDur" is MIDI noteOn→noteOff only; it can look short even
+            // when the note is treated as long for tiling (long release/pad).
+            const midiDur = this.noteOnDurations[queueIndex] ?? 0;
             const vp = this.tiledVoiceParams[queueIndex];
             const releaseTail = vp
               ? (vp.releaseVolEnv ?? 0) * envelopeCurve * 5
               : -1;
             const excl = vp?.exclusiveClass ?? 0;
             const inLong = this.longNoteBakedSet.has(queueIndex);
+            const isExcl = excl !== 0 || this.isSegmentExcludedDrum(
+              channel,
+              event.noteNumber!,
+            );
+            const effective = releaseTail < 0 ? -1 : midiDur + releaseTail;
             const path = inLong
               ? "noteBake"
-              : (excl !== 0 || this.isSegmentExcludedDrum(
-                  channel,
-                  event.noteNumber!,
-                )
+              : (isExcl
                 ? "realtimeExcl"
-                : "realtime");
+                : (effective > this.maxTiledNoteDuration ? "ads" : "realtime"));
+            let reason: string;
+            if (isExcl) {
+              reason = `exclusiveClass=${excl || "?"}`;
+            } else if (effective > this.maxTiledNoteDuration) {
+              reason = inLong
+                ? `effective>${this.maxTiledNoteDuration}s→noteBake(≤${
+                  this.maxNoteBakeDuration || "inf"
+                }s)`
+                : `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`;
+            } else {
+              reason = "other(notInTiledSet)";
+            }
             console.warn(
               `[midy] non-tiled noteOn | ch=${event.channel} note=${event.noteNumber} ` +
-                `idx=${queueIndex} songT=${t.toFixed(2)}s dur=${
-                  dur.toFixed(2)
-                }s ` +
+                `idx=${queueIndex} songT=${t.toFixed(2)}s ` +
+                `midiDur=${midiDur.toFixed(2)}s ` +
                 `releaseTail=${
                   releaseTail < 0 ? "?" : releaseTail.toFixed(2)
                 }s ` +
-                `sum=${
-                  releaseTail < 0 ? "?" : (dur + releaseTail).toFixed(2)
-                }s ` +
+                `effective=${effective < 0 ? "?" : effective.toFixed(2)}s ` +
+                `reason=${reason} ` +
                 `excl=${vp?.exclusiveClass ?? "?"} ` +
-                `inSet=${this.tiledBakedSet.has(queueIndex)} ` +
                 `inLong=${inLong} path=${path} ` +
-                `maxTiled=${this.maxTiledNoteDuration}`,
+                `maxTiled=${this.maxTiledNoteDuration} ` +
+                `maxNoteBake=${this.maxNoteBakeDuration}`,
             );
           }
           channel.noteOn(

@@ -104,7 +104,11 @@ export type RenderSamplesBatchResult = {
   results: RenderSampleResult[];
 };
 
-type AnyResult = MixResult | MixBatchResult | RenderSampleResult | RenderSamplesBatchResult;
+type AnyResult =
+  | MixResult
+  | MixBatchResult
+  | RenderSampleResult
+  | RenderSamplesBatchResult;
 
 type Pending = {
   resolve: (r: AnyResult) => void;

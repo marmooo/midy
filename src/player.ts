@@ -2824,20 +2824,39 @@ export class Player<
               ? 0
               : releaseVolEnv * envelopeCurve * 5;
             const inLong = this.longNoteBakedSet.has(queueIndex);
-            const sum = duration + releaseTail;
+            // Classification uses effective = midiDur + releaseTail (the
+            // value that would size a tile buffer). "midiDur" alone is the
+            // MIDI noteOn→noteOff length and can look short even when the
+            // note is treated as long for tiling (long release or pad).
+            const effective = duration + releaseTail;
             const path = inLong
               ? "noteBake"
               : (excl !== 0
                 ? "realtimeExcl"
-                : (sum > this.maxTiledNoteDuration ? "ads" : "realtime"));
+                : (effective > this.maxTiledNoteDuration ? "ads" : "realtime"));
+            // Human-readable reason for being outside tiledBakedSet.
+            let reason: string;
+            if (excl !== 0) {
+              reason = `exclusiveClass=${excl}`;
+            } else if (effective > this.maxTiledNoteDuration) {
+              reason = inLong
+                ? `effective>${this.maxTiledNoteDuration}s→noteBake(≤${
+                  this.maxNoteBakeDuration || "inf"
+                }s)`
+                : `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`;
+            } else {
+              reason = "other(notInTiledSet)";
+            }
             console.warn(
               `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
                 `note=${event.noteNumber!} idx=${queueIndex} ` +
-                `songT=${t.toFixed(2)}s dur=${duration.toFixed(2)}s ` +
+                `songT=${t.toFixed(2)}s ` +
+                `midiDur=${duration.toFixed(2)}s ` +
                 `releaseTail=${releaseTail.toFixed(2)}s ` +
-                `sum=${sum.toFixed(2)}s ` +
-                `excl=${excl} inSet=false inLong=${inLong} ` +
-                `path=${path} maxTiled=${this.maxTiledNoteDuration} ` +
+                `effective=${effective.toFixed(2)}s ` +
+                `reason=${reason} ` +
+                `excl=${excl} inLong=${inLong} path=${path} ` +
+                `maxTiled=${this.maxTiledNoteDuration} ` +
                 `maxNoteBake=${this.maxNoteBakeDuration}`,
             );
           }
