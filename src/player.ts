@@ -215,6 +215,36 @@ export class Player<
    * Must be >= maxTiledNoteDuration. 0 = no cap (legacy: all long notes bake).
    */
   maxNoteBakeDuration: number = 12;
+  /**
+   * Ceiling (seconds) for extreme SF2 release tails used in classification
+   * (and optionally playback). Units match `releaseVolEnv * envelopeCurve * 5`
+   * (the same "releaseTail" used by tile cost / segment-classify).
+   * Aligned with maxTiledNoteDuration so short MIDI notes with huge SF2
+   * releases land cleanly in noteBake rather than adsFallback.
+   * 0 = disable the numeric ceiling (classifyReleaseCap / playReleaseCap
+   * become no-ops for the cap itself).
+   */
+  maxReleaseTailSec: number = 8;
+  /**
+   * When true, segment/chunk classification and tile cost estimates use
+   * min(rawReleaseTail, maxReleaseTailSec). Sound is unchanged.
+   * Default true — main lever against adsFallback from long SF2 releases.
+   */
+  classifyReleaseCap: boolean = true;
+  /**
+   * When true, offline ADSR buffers and related release curves also cap
+   * wall-clock release to maxReleaseTailSec, then apply a short kill fade
+   * (releaseKillMs). Can shorten intentionally long pad tails. Default false.
+   */
+  playReleaseCap: boolean = false;
+  /**
+   * When playReleaseCap is true, if release level is still above this
+   * (dB relative to full scale) at the cap, force a rapid fade. Also used
+   * as an early-exit target when the natural curve is already this quiet.
+   */
+  releaseFloorDb: number = -70;
+  /** Duration of the rapid fade when playReleaseCap ends a release (ms). */
+  releaseKillMs: number = 10;
   tiledBakedSet: Set<number> = new Set();
   /**
    * Timeline indices played via full-note offline bake (getNoteModeBuffer)
@@ -1334,6 +1364,53 @@ export class Player<
   // Cheap (no voice resolution for the non-exclusive pass), so tempoChange()
   // can call this again after buildNoteOnDurations() without a full re-walk.
 
+  /**
+   * Raw classification releaseTail (seconds): releaseVolEnv * envelopeCurve * 5.
+   * SF2 releaseVolEnv is the time for a 100dB drop; the product is a
+   * conservative "practically done" estimate used by tile cost / classify.
+   */
+  protected rawReleaseTailSec(
+    releaseVolEnv: number,
+    soundOff = false,
+  ): number {
+    if (soundOff) return 0;
+    return releaseVolEnv * envelopeCurve * 5;
+  }
+
+  /**
+   * ReleaseTail for segment/chunk classification and tile cost.
+   * When classifyReleaseCap is on, clamps extreme SF2 releases to
+   * maxReleaseTailSec so short MIDI notes with huge release generators
+   * do not all fall into adsFallback.
+   */
+  protected classifyReleaseTailSec(
+    releaseVolEnv: number,
+    soundOff = false,
+  ): number {
+    const raw = this.rawReleaseTailSec(releaseVolEnv, soundOff);
+    if (!this.classifyReleaseCap || this.maxReleaseTailSec <= 0) return raw;
+    return Math.min(raw, this.maxReleaseTailSec);
+  }
+
+  /**
+   * Wall-clock release duration (seconds) for offline ADSR buffer length
+   * and gain curves. SF2 uses releaseVolEnv as the 100dB-time buffer extent.
+   * When playReleaseCap is on, caps to maxReleaseTailSec and adds the kill
+   * fade so the buffer ends after a short ramp to zero.
+   */
+  protected playReleaseDurationSec(releaseVolEnv: number): number {
+    if (!this.playReleaseCap || this.maxReleaseTailSec <= 0) {
+      return releaseVolEnv;
+    }
+    // releaseVolEnv is SF2 100dB-time (seconds of buffer after note-off).
+    // Cap wall-clock release to maxReleaseTailSec; only then append kill fade.
+    if (releaseVolEnv <= this.maxReleaseTailSec) {
+      return releaseVolEnv;
+    }
+    const kill = Math.max(0, this.releaseKillMs) / 1000;
+    return this.maxReleaseTailSec + kill;
+  }
+
   finalizeSegmentClassification(): void {
     const {
       noteOnDurations,
@@ -1349,6 +1426,7 @@ export class Player<
     const bakedSet = new Set<number>();
     const longSet = new Set<number>();
     let adsFallback = 0;
+    let releaseCapped = 0;
     for (let i = 0; i < tiledVoiceParams.length; i++) {
       const voiceParams = tiledVoiceParams[i];
       if (!voiceParams) continue;
@@ -1356,9 +1434,16 @@ export class Player<
       if ((voiceParams.exclusiveClass ?? 0) !== 0) continue;
       const duration = noteOnDurations[i] ?? 0;
       // All Sound Off ends the voice with no release tail.
-      const releaseTail = noteOnEvents[i]?.soundOff
-        ? 0
-        : voiceParams.releaseVolEnv * envelopeCurve * 5;
+      const soundOff = !!noteOnEvents[i]?.soundOff;
+      const rawTail = this.rawReleaseTailSec(
+        voiceParams.releaseVolEnv,
+        soundOff,
+      );
+      const releaseTail = this.classifyReleaseTailSec(
+        voiceParams.releaseVolEnv,
+        soundOff,
+      );
+      if (releaseTail < rawTail) releaseCapped++;
       const sum = duration + releaseTail;
       if (sum <= maxTiledNoteDuration) {
         bakedSet.add(i);
@@ -1379,11 +1464,13 @@ export class Player<
         `[midy] segment-classify | tiled=${this.tiledBakedSet.size} ` +
           `noteBake=${this.longNoteBakedSet.size} ` +
           `adsFallback=${adsFallback} ` +
+          `releaseCapped=${releaseCapped} ` +
           `exclBake=${
             this.noteBakeDurations.filter((d) => d !== undefined).length
           } maxTiled=${maxTiledNoteDuration} maxNoteBake=${
             maxNoteBakeDuration > 0 ? maxNoteBakeDuration : "inf"
-          }`,
+          } maxReleaseTail=${this.maxReleaseTailSec} ` +
+          `classifyReleaseCap=${this.classifyReleaseCap}`,
       );
     }
   }
@@ -2820,9 +2907,15 @@ export class Player<
                 excl = this.drumExclusiveClasses[event.noteNumber!] ?? 1;
               }
             }
-            const releaseTail = this.noteOnEvents[queueIndex]?.soundOff
-              ? 0
-              : releaseVolEnv * envelopeCurve * 5;
+            const soundOff = !!this.noteOnEvents[queueIndex]?.soundOff;
+            const releaseTailRaw = this.rawReleaseTailSec(
+              releaseVolEnv,
+              soundOff,
+            );
+            const releaseTail = this.classifyReleaseTailSec(
+              releaseVolEnv,
+              soundOff,
+            );
             const inLong = this.longNoteBakedSet.has(queueIndex);
             // Classification uses effective = midiDur + releaseTail (the
             // value that would size a tile buffer). "midiDur" alone is the
@@ -2847,17 +2940,21 @@ export class Player<
             } else {
               reason = "other(notInTiledSet)";
             }
+            const capNote = releaseTail < releaseTailRaw
+              ? ` rawRelease=${releaseTailRaw.toFixed(2)}s`
+              : "";
             console.warn(
               `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
                 `note=${event.noteNumber!} idx=${queueIndex} ` +
                 `songT=${t.toFixed(2)}s ` +
                 `midiDur=${duration.toFixed(2)}s ` +
-                `releaseTail=${releaseTail.toFixed(2)}s ` +
+                `releaseTail=${releaseTail.toFixed(2)}s${capNote} ` +
                 `effective=${effective.toFixed(2)}s ` +
                 `reason=${reason} ` +
                 `excl=${excl} inLong=${inLong} path=${path} ` +
                 `maxTiled=${this.maxTiledNoteDuration} ` +
-                `maxNoteBake=${this.maxNoteBakeDuration}`,
+                `maxNoteBake=${this.maxNoteBakeDuration} ` +
+                `maxReleaseTail=${this.maxReleaseTailSec}`,
             );
           }
           channel.noteOn(
@@ -3733,9 +3830,10 @@ export class Player<
         try {
           const entry = list[i].entry;
           // Match key used above: long notes always bake with channel mix.
-          const releaseTail = entry.noteEvent?.soundOff
-            ? 0
-            : entry.voiceParams.releaseVolEnv * envelopeCurve * 5;
+          const releaseTail = this.classifyReleaseTailSec(
+            entry.voiceParams.releaseVolEnv,
+            !!entry.noteEvent?.soundOff,
+          );
           const bakeMix =
             this.maxTiledNoteDuration < entry.noteDuration + releaseTail
               ? true
@@ -4494,9 +4592,10 @@ export class Player<
     noteEvent: NoteOnEventEntry | undefined,
     isComplex: boolean,
   ): number {
-    const releaseTail = noteEvent?.soundOff
-      ? 0
-      : voiceParams.releaseVolEnv * envelopeCurve * 5;
+    const releaseTail = this.classifyReleaseTailSec(
+      voiceParams.releaseVolEnv,
+      !!noteEvent?.soundOff,
+    );
     const base = noteDuration + releaseTail;
     return isComplex ? base * this.chunkComplexCostWeight : base;
   }
@@ -7284,6 +7383,21 @@ export class Player<
       gainAtNoteOff = sustainVolume;
     }
     const timeConstant = releaseDur * envelopeCurve;
+    // playReleaseCap: follow the natural exponential until maxReleaseTailSec
+    // (or until releaseFloorDb), then linear-kill over releaseKillMs.
+    const capPlay = this.playReleaseCap && this.maxReleaseTailSec > 0;
+    const killSec = Math.max(0, this.releaseKillMs) / 1000;
+    const floorRatio = Math.pow(10, this.releaseFloorDb / 20);
+    const floorGain = Math.max(1e-7, floorRatio); // absolute-ish floor
+    let capEnd = noteOffTime + this.maxReleaseTailSec;
+    if (capPlay && timeConstant > 0 && gainAtNoteOff > 0) {
+      // Early kill if natural curve already below floor before the time cap.
+      const tFloor = noteOffTime +
+        timeConstant * Math.log(Math.max(gainAtNoteOff, 1e-12) / floorGain);
+      if (tFloor < capEnd) capEnd = tFloor;
+    }
+    const killStart = capPlay ? Math.max(noteOffTime, capEnd) : Infinity;
+    const killEnd = killStart + killSec;
     for (let i = 0; i < length; i++) {
       const t = i * invSr;
       if (t < noteOffTime) {
@@ -7301,6 +7415,16 @@ export class Player<
             Math.pow(sustainVolume / attackVolume, frac);
         } else {
           gains[i] = sustainVolume;
+        }
+      } else if (capPlay && t >= killStart) {
+        if (t >= killEnd || killSec <= 0) {
+          gains[i] = 0;
+        } else {
+          const g0 = (timeConstant <= 0 || gainAtNoteOff === 0)
+            ? 0
+            : gainAtNoteOff *
+              Math.exp(-(killStart - noteOffTime) / timeConstant);
+          gains[i] = g0 * (1 - (t - killStart) / killSec);
         }
       } else {
         if (timeConstant <= 0 || gainAtNoteOff === 0) {
@@ -7792,7 +7916,9 @@ export class Player<
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
     const decayDuration = voiceParams.decayVolEnv;
     const adsDuration = holdVolEnvTime + decayDuration;
-    const releaseDuration = voiceParams.releaseVolEnv;
+    const releaseDuration = this.playReleaseDurationSec(
+      voiceParams.releaseVolEnv,
+    );
     const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
     const loopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -7804,6 +7930,8 @@ export class Player<
     // release and drove late levels to -80dB+.
     // Sample playback still loops inside renderSampleTypedArray for the full
     // buffer length; only the gain timeline follows MIDI.
+    // When playReleaseCap is on, releaseDuration is capped to
+    // maxReleaseTailSec + releaseKillMs/1000 (see playReleaseDurationSec).
     const noteOffTime = Math.max(0, noteDuration);
     const totalDuration = noteOffTime + releaseDuration;
     const sampleRate = this.audioContext.sampleRate;

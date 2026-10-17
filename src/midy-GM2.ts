@@ -9,7 +9,6 @@ import {
   Channel as BaseChannel,
   ControllerState as BaseControllerState,
   DEFAULT_SF2_VOLUME_EXPR_GAIN,
-  envelopeCurve,
   filterEnvelopeKeySet,
   FULLY_OPEN_FILTER_CENTS,
   getVoiceParams,
@@ -1482,8 +1481,11 @@ export class MidyGM2 extends Player<Note, Channel> {
             // when the note is treated as long for tiling (long release/pad).
             const midiDur = this.noteOnDurations[queueIndex] ?? 0;
             const vp = this.tiledVoiceParams[queueIndex];
+            const releaseTailRaw = vp
+              ? this.rawReleaseTailSec(vp.releaseVolEnv ?? 0, false)
+              : -1;
             const releaseTail = vp
-              ? (vp.releaseVolEnv ?? 0) * envelopeCurve * 5
+              ? this.classifyReleaseTailSec(vp.releaseVolEnv ?? 0, false)
               : -1;
             const excl = vp?.exclusiveClass ?? 0;
             const inLong = this.longNoteBakedSet.has(queueIndex);
@@ -1509,19 +1511,23 @@ export class MidyGM2 extends Player<Note, Channel> {
             } else {
               reason = "other(notInTiledSet)";
             }
+            const capNote = releaseTail >= 0 && releaseTailRaw > releaseTail
+              ? ` rawRelease=${releaseTailRaw.toFixed(2)}s`
+              : "";
             console.warn(
               `[midy] non-tiled noteOn | ch=${event.channel} note=${event.noteNumber} ` +
                 `idx=${queueIndex} songT=${t.toFixed(2)}s ` +
                 `midiDur=${midiDur.toFixed(2)}s ` +
                 `releaseTail=${
                   releaseTail < 0 ? "?" : releaseTail.toFixed(2)
-                }s ` +
+                }s${capNote} ` +
                 `effective=${effective < 0 ? "?" : effective.toFixed(2)}s ` +
                 `reason=${reason} ` +
                 `excl=${vp?.exclusiveClass ?? "?"} ` +
                 `inLong=${inLong} path=${path} ` +
                 `maxTiled=${this.maxTiledNoteDuration} ` +
-                `maxNoteBake=${this.maxNoteBakeDuration}`,
+                `maxNoteBake=${this.maxNoteBakeDuration} ` +
+                `maxReleaseTail=${this.maxReleaseTailSec}`,
             );
           }
           channel.noteOn(
