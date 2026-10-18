@@ -216,6 +216,16 @@ export class Player<
    */
   maxNoteBakeDuration: number = 12;
   /**
+   * Upper bound (seconds) for ADS offline bake length
+   * (`delay+attack+hold+decay` of the volume envelope).
+   * When a note's natural ADS duration exceeds this, the bake is capped:
+   * decay is compressed so the envelope still reaches sustain inside the
+   * buffer. Pitch stays baked into the PCM (ADS lean path unchanged).
+   * 0 = no cap (legacy: always bake full ADS length).
+   * Default 4s — avoids multi-MB bakes from extreme SF2 decays.
+   */
+  maxAdsBakeDuration: number = 4;
+  /**
    * Ceiling (seconds) for extreme SF2 release tails used in classification
    * (and optionally playback). Units match `releaseVolEnv * envelopeCurve * 5`
    * (the same "releaseTail" used by tile cost / segment-classify).
@@ -7815,6 +7825,26 @@ export class Player<
     await Promise.all(tasks);
   }
 
+  /**
+   * ADS volume-envelope length in seconds (delay + attack + hold + decay).
+   * Same formula as createAdsRenderedBuffer / createAdsrRenderedBuffer.
+   */
+  computeAdsDuration(voiceParams: VoiceParams): number {
+    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
+    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
+    return holdVolEnvTime + voiceParams.decayVolEnv;
+  }
+
+  /**
+   * True when natural ADS length exceeds maxAdsBakeDuration (bake will be
+   * capped). maxAdsBakeDuration <= 0 disables the cap.
+   */
+  shouldCapAdsBake(voiceParams: VoiceParams): boolean {
+    const cap = this.maxAdsBakeDuration;
+    if (!(cap > 0)) return false;
+    return this.computeAdsDuration(voiceParams) > cap;
+  }
+
   createAdsRenderedBuffer(
     channel: TChannel,
     note: TNote,
@@ -7828,8 +7858,26 @@ export class Player<
       : (voiceParams.sampleModes % 2 !== 0);
     const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    const decayDuration = voiceParams.decayVolEnv;
-    const adsDuration = holdVolEnvTime + decayDuration;
+    let decayDuration = voiceParams.decayVolEnv;
+    let adsDuration = this.computeAdsDuration(voiceParams);
+    // Cap extreme SF2 decays so bake stays bounded. Compress decay so the
+    // envelope still reaches sustain within the cap (lean path keeps working
+    // with pitch baked into PCM — no raw-buffer pitch bug).
+    const adsCap = this.maxAdsBakeDuration;
+    if (adsCap > 0 && adsDuration > adsCap) {
+      if (this.debug) {
+        console.log(
+          `[midy] ads-bake-cap | note=${note.noteNumber} ` +
+            `adsDur=${adsDuration.toFixed(3)}s→${adsCap.toFixed(3)}s ` +
+            `decay=${decayDuration.toFixed(3)}s ` +
+            `atk=${voiceParams.attackVolEnv.toFixed(3)}s ` +
+            `hold=${voiceParams.holdVolEnv.toFixed(3)}s`,
+        );
+      }
+      adsDuration = adsCap;
+      // Keep a tiny decay so sustain level is reached inside the buffer.
+      decayDuration = Math.max(0.001, adsCap - holdVolEnvTime);
+    }
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop
       ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
@@ -7879,15 +7927,20 @@ export class Player<
       filterQ = qDc.q;
       filterDcGain = qDc.dcGain;
     }
+    // When decay was compressed for maxAdsBakeDuration, gains/filter must
+    // use the same capped decay so the buffer ends at sustain level.
+    const envParams = decayDuration === voiceParams.decayVolEnv
+      ? voiceParams
+      : { ...voiceParams, decayVolEnv: decayDuration };
     const gains = this.computeAdsVolumeGains(
-      voiceParams,
+      envParams,
       length,
       sampleRate,
       filterDcGain,
     );
     // ADS buffer has no note-off; filter holds at sustain (noteOffTime=null)
     const filterFreqs = this.computeFilterFreqCurve(
-      voiceParams,
+      envParams,
       length,
       sampleRate,
       null,
@@ -10363,6 +10416,12 @@ export class Player<
       BigInt((note.velocity & 0x7f) * 128 + (note.noteNumber & 0x7f));
     const voiceParams = note.voiceParams;
     if (!voiceParams) return undefined;
+
+    // Long SF2 decay/hold is capped inside createAdsRenderedBuffer
+    // (maxAdsBakeDuration) so we still return a pitch-baked RenderedBuffer
+    // and keep the ADS lean graph. Returning raw here previously broke pitch
+    // when cacheMode stayed "ads"/segment/chunk (lean path assumes baked rate).
+
     if (realtime) {
       const cached = this.realtimeVoiceCache.get(cacheKey);
       if (cached) return cached;
@@ -10616,7 +10675,14 @@ export class Player<
     // Detect via flag (preferred) or OfflineAudioContext (renderEntry etc.).
     const isOfflineBake = this.offlineRenderOnly ||
       this.audioContext instanceof OfflineAudioContext;
-    if (cacheMode === "none") {
+    // Full realtime graph when:
+    // - cacheMode is "none", or
+    // - the buffer is raw (not a RenderedBuffer) — e.g. ADS bake skipped by
+    //   maxAdsBakeDuration fallback. ADS lean path assumes pitch+volume are
+    //   already baked into PCM; applying it to a raw sample leaves notes at
+    //   root-key pitch (broken intervals).
+    const useRealtimeEnvelope = cacheMode === "none" || !isRendered;
+    if (useRealtimeEnvelope) {
       // Offline: drive envelope on volumeNode itself (one fewer GainNode per
       // note). Realtime keeps a separate envelope gain so channel bus /
       // modulation can still tap volumeNode independently.
@@ -10675,8 +10741,10 @@ export class Player<
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-    } else { // "ads" / "adsr" mode
+    } else { // "ads" / "adsr" mode (RenderedBuffer, pitch already baked)
       // Lean graph: ADS/ADSR PCM already has pitched sample + volume curve.
+      // Only reached when isRendered && !isFull. Raw-buffer ADS fallbacks
+      // take useRealtimeEnvelope above so root-key pitch is never left bare.
       // No per-note filter / envelope GainNode. Detune is a single static
       // write (channel pitch wheel / coarse tune at onset). LFO nodes only
       // when the voice actually routes mod LFO and the wheel is up — avoids
