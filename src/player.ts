@@ -7837,7 +7837,8 @@ export class Player<
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    const loopCount = isLoop && adsDuration > outputLoopStart
+    const loopCount = isLoop && adsDuration > outputLoopStart &&
+        outputLoopDuration > 1e-9
       ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration)
       : 0;
     const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
@@ -7846,6 +7847,20 @@ export class Player<
       : audioBuffer.duration / playbackRate;
     const sampleRate = this.audioContext.sampleRate;
     const length = Math.ceil(renderDuration * sampleRate);
+    // [diag] How large is this ADS bake? Long decayVolEnv → large loopCount.
+    if (this.debug) {
+      const bytes = length * audioBuffer.numberOfChannels * 4;
+      console.log(
+        `[midy] ads-bake-size | note=${note.noteNumber} ` +
+          `adsDur=${adsDuration.toFixed(3)}s ` +
+          `decay=${voiceParams.decayVolEnv.toFixed(3)}s ` +
+          `atk=${voiceParams.attackVolEnv.toFixed(3)}s ` +
+          `hold=${voiceParams.holdVolEnv.toFixed(3)}s ` +
+          `loop=${isLoop} loopDur=${outputLoopDuration.toFixed(3)}s ` +
+          `loopCount=${loopCount} renderDur=${renderDuration.toFixed(3)}s ` +
+          `samples=${length} ~${(bytes / 1024 / 1024).toFixed(2)}MB`,
+      );
+    }
     const buffer = this.createEmptyBuffer(
       audioBuffer.numberOfChannels,
       length,
