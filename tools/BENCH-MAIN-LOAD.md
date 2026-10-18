@@ -39,7 +39,7 @@ deno run -A tools/bench-main-load.ts \
 
 ```bash
 deno run -A tools/bench-main-load.ts \
-  --midi ./tools/op1a.mid \
+  --midi ./tools/bar.mid \
   --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
   --set cacheMode=chunk \
   --set prerollSec=20 \

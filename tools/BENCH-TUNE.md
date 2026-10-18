@@ -7,7 +7,7 @@ One-song batch of midy knobs that affect hitching / main load. Uses existing
 
 ```bash
 deno run -A tools/bench-main-load.ts \
-  --midi ./tools/shk_mid_215.mid \
+  --midi ./path/to/song.mid \
   --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
   --configs ./tools/bench-configs.tune.json \
   --max-play-sec 200 \
@@ -22,7 +22,7 @@ deno run -A tools/bench-summarize.ts ./bench-logs-tune --csv > tune.csv
 
 ```bash
 deno run -A tools/bench-main-load.ts \
-  --midi ./tools/shk_mid_215.mid \
+  --midi ./path/to/song.mid \
   --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
   --configs ./tools/bench-configs.tune.json \
   --max-play-sec 60 \
