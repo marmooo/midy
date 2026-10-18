@@ -10661,13 +10661,30 @@ export class Player<
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
     } else { // "ads" / "adsr" mode
+      // Lean graph: ADS/ADSR PCM already has pitched sample + volume curve.
+      // No per-note filter / envelope GainNode. Detune is a single static
+      // write (channel pitch wheel / coarse tune at onset). LFO nodes only
+      // when the voice actually routes mod LFO and the wheel is up — avoids
+      // OscillatorNode+GainNode*3 per sustained pad under polyphony.
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
-      this.setDetune(channel, note, now);
-      if (0 < state.modulationDepthMSB) {
+      const src = note.bufferSource;
+      if (src) {
+        if (this.audioContext instanceof OfflineAudioContext) {
+          // Offline: keep setDetune (playbackRate fold; detune param unreliable).
+          this.setDetune(channel, note, now);
+        } else {
+          // Realtime: static .value — no cancelAndHold/setTarget chain.
+          src.detune.value = this.calcNoteDetune(channel, note);
+        }
+      }
+      const modLfoIsAudible = voiceParams.modLfoToPitch !== 0 ||
+        voiceParams.modLfoToFilterFc !== 0 ||
+        voiceParams.modLfoToVolume !== 0;
+      if (modLfoIsAudible && state.modulationDepthMSB > 0) {
         this.startModulation(channel, note, now);
       }
-      note.bufferSource.connect(note.volumeNode);
+      note.bufferSource!.connect(note.volumeNode);
     }
     // Offline bake has no realtime deadline; skip the miss warning noise.
     if (!realtime && !isOfflineBake) {
