@@ -58,6 +58,8 @@ import {
   type RenderSampleParams,
 } from "./bake-worker-pool.ts";
 
+import { MixPcmCache } from "./mix-pcm-cache.ts";
+
 /** Per-tile mix phase timings filled by mixEntriesToBuffer (chunk-heavy logs). */
 type MixTileDetail = {
   prepareMs: number;
@@ -133,6 +135,8 @@ export class Player<
   simpleNoteSet: Set<number> = new Set();
   simpleNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
+  /** Pre-sliced PCM for worker tile mix (see MixPcmCache). */
+  mixPcmCache: MixPcmCache = new MixPcmCache();
   /**
    * Cap on simpleNoteBufferCache entries. Dense songs can fill 1000+ full
    * note AudioBuffers; peak RSS then triggers multi-second main-thread GC
@@ -973,6 +977,7 @@ export class Player<
     this.noteBakeDurations = [];
     this.simpleNoteSet.clear();
     this.simpleNoteBufferCache.clear();
+    this.mixPcmCache.clear();
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
     this.complexNoteBufferCache.clear();
@@ -3904,6 +3909,7 @@ export class Player<
     ) {
       this.finalizeSimpleNoteClassification();
       this.simpleNoteBufferCache.clear();
+      this.mixPcmCache.clear();
       this.complexNoteBufferCache.clear();
       this.buildSimpleNoteCounts();
       this.buildComplexNoteCounts();
@@ -6647,6 +6653,7 @@ export class Player<
 
     if (this.simpleNoteCache && cacheKey) {
       this.simpleNoteBufferCache.set(cacheKey, out);
+      this.mixPcmCache.ensure(out);
       this.noteCacheTouchPeakSizes();
     }
     this.noteCacheRecordSimpleMiss();
@@ -6854,13 +6861,13 @@ export class Player<
         });
       }
 
-      // Hybrid transfer is always on when the flag is set: the pool only
-      // transfers ArrayBuffers that appear once in the message. Shared
-      // slices (multi-ref) stay on structured-clone; unique slices transfer.
+      // Hybrid transfer + MixPcmCache: unique full-length transfers without
+      // re-slice on the prepare critical path; shared still one slice/tile.
       const transferable = this.useWorkerTransferable;
 
-      // Shared-buffer slice cache: one trimmed copy per AudioBuffer.
-      const sharedSlices = new Map<AudioBuffer, {
+      const transferredBufs: AudioBuffer[] = [];
+
+      const sharedViews = new Map<AudioBuffer, {
         left: Float32Array;
         right?: Float32Array;
       }>();
@@ -6872,13 +6879,29 @@ export class Player<
         const gainCurve = row.gainCurve;
 
         if (count === 1) {
-          // Unique buffer: always slice so the live cache is not detached
-          // when the pool transfers this owned copy.
           const tSlice0 = performance.now();
-          const leftS = row.left.slice(0, row.copyLen);
-          const rightS = row.right
-            ? row.right.slice(0, row.copyLen)
-            : undefined;
+          let leftS: Float32Array;
+          let rightS: Float32Array | undefined;
+          if (transferable) {
+            const taken = this.mixPcmCache.takeForTransfer(
+              row.src,
+              row.copyLen,
+            );
+            leftS = taken.left;
+            rightS = taken.right;
+            if (row.copyLen >= row.left.length) {
+              transferredBufs.push(row.src);
+            }
+          } else {
+            const pcm = this.mixPcmCache.ensure(row.src);
+            if (row.copyLen >= pcm.left.length) {
+              leftS = pcm.left.slice();
+              rightS = pcm.right ? pcm.right.slice() : undefined;
+            } else {
+              leftS = pcm.left.slice(0, row.copyLen);
+              rightS = pcm.right ? pcm.right.slice(0, row.copyLen) : undefined;
+            }
+          }
           const curveS = gainCurve
             ? gainCurve.slice(0, Math.min(gainCurve.length, row.copyLen))
             : undefined;
@@ -6896,27 +6919,31 @@ export class Player<
             gainCurve: curveS,
           });
         } else {
-          // Shared buffer: slice once to the tile's max copyLen, reuse.
-          // Multi-ref → pool will structured-clone (not transfer) this
-          // ArrayBuffer; unique siblings in the same tile still transfer.
-          let sliced = sharedSlices.get(row.src);
+          let sliced = sharedViews.get(row.src);
           if (!sliced) {
             const maxLen = bufMaxCopy.get(row.src) ?? row.copyLen;
             const tSlice0 = performance.now();
-            const leftS = row.left.slice(0, maxLen);
-            const rightS = row.right ? row.right.slice(0, maxLen) : undefined;
+            if (this.mixPcmCache.has(row.src)) {
+              const view = this.mixPcmCache.viewForShared(row.src, maxLen);
+              sliced = {
+                left: view.left.slice(),
+                right: view.right ? view.right.slice() : undefined,
+              };
+            } else {
+              sliced = {
+                left: row.left.slice(0, maxLen),
+                right: row.right ? row.right.slice(0, maxLen) : undefined,
+              };
+              this.mixPcmCache.ensure(row.src);
+            }
             sliceMs += performance.now() - tSlice0;
             sliceEntries++;
-            sliceBytes += leftS.byteLength;
-            if (rightS) sliceBytes += rightS.byteLength;
-            sliced = { left: leftS, right: rightS };
-            sharedSlices.set(row.src, sliced);
+            sliceBytes += sliced.left.byteLength;
+            if (sliced.right) sliceBytes += sliced.right.byteLength;
+            sharedViews.set(row.src, sliced);
           }
-          // gainCurve is per-entry (expression trajectory), not per-buffer.
           let curveOut = gainCurve;
           if (gainCurve) {
-            // Always own the curve so unique curves can transfer even when
-            // the PCM buffer is shared (multi-ref).
             const tSlice0 = performance.now();
             const cLen = Math.min(gainCurve.length, row.copyLen);
             curveOut = gainCurve.length > cLen
@@ -6935,12 +6962,11 @@ export class Player<
           });
         }
 
-        // Cooperative yield during large prepares so worker onmessage /
-        // audio callbacks are not stalled for the whole entries loop.
         if ((i & 15) === 15 && performance.now() - tPrep0 > 4) {
           await this.yieldToMain();
         }
       }
+
       const prepareMs = performance.now() - tPrep0;
       const assemblyMs = Math.max(0, prepareMs - sliceMs);
       this.chunkMixPrepareSumMs += prepareMs;
@@ -7004,6 +7030,13 @@ export class Player<
       const copyBackMs = performance.now() - tCopy0;
       this.chunkMixCopyBackSumMs += copyBackMs;
       this.chunkMixWorkerTiles++;
+      if (transferredBufs.length > 0) {
+        const bufs = transferredBufs;
+        const pcmCache = this.mixPcmCache;
+        queueMicrotask(() => {
+          pcmCache.restoreAfterTransfer(bufs);
+        });
+      }
       if (detailOut) {
         detailOut.prepareMs = prepareMs;
         detailOut.awaitMs = awaitMs;
@@ -8512,6 +8545,7 @@ export class Player<
             `n=${this.simpleCacheEvictLogCount} key=${keyPreview}`,
         );
       }
+      this.mixPcmCache.delete(val);
       cache.delete(key);
       evicted++;
     }
@@ -9080,6 +9114,7 @@ export class Player<
         ? await this.renderEntryAudioBufferUngated(n, bakeChannelMix)
         : await this.renderEntryAudioBuffer(n, bakeChannelMix);
       this.simpleNoteBufferCache.set(key, buffer);
+      this.mixPcmCache.ensure(buffer);
       this.noteCacheTouchPeakSizes();
       return buffer;
     })();
@@ -9242,6 +9277,7 @@ export class Player<
 
     const finishJob = (job: Job, buffer: AudioBuffer) => {
       this.simpleNoteBufferCache.set(job.miss.key, buffer);
+      this.mixPcmCache.ensure(buffer);
       this.noteCacheTouchPeakSizes();
       const waiters = resolveMap.get(job.miss.key);
       if (waiters) waiters.resolve(buffer);

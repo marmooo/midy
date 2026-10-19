@@ -691,7 +691,7 @@ self.onmessage = function(ev) {
    * MAX_NOTES_PER_BATCH spirit: amortize postMessage without monopolising
    * one worker for too long.
    */
-  static readonly MAX_TILES_PER_MIX_BATCH = 4;
+  static readonly MAX_TILES_PER_MIX_BATCH = 8;
 
   /**
    * Mix several tiles in one postMessage. Prefer this when 2+ closed tiles
