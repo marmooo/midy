@@ -5208,9 +5208,18 @@ export class Player<
         const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
           !forAudioOffline;
         if (liveRealtime && bakeChunkMiss) {
-          // LIVE: prefer synchronous TypedArray bake when the raw sample is
-          // already in rawAudioBufferCache. Worker-first / parallel awaits
-          // shared the pool with mix and produced simpleMs=400–800ms walls.
+          // LIVE: 1) sync TypedArray when raw is ready (no await).
+          // 2) remaining misses → bakeSimpleNotesBatch (worker chunks), not
+          //    sequential getSimpleNoteBuffer (that serialized simpleMs).
+          type LivePend = {
+            note: (typeof needAsync)[0]["note"];
+            key: string;
+            entry: BakeNoteEntry;
+            bakeMix: boolean;
+            lookupMs: number;
+          };
+          const pending: LivePend[] = [];
+
           for (let ai = 0; ai < needAsync.length; ai++) {
             const item = needAsync[ai];
             const n = item.note;
@@ -5252,30 +5261,12 @@ export class Player<
               voiceParams: n.voiceParams,
               voice: n.voice,
             };
-            const tBake0 = performance.now();
             const bakeMixLive = this.simpleBakeChannelMixForNote(n);
-            let noteBuf: AudioBuffer | null = this.tryBakeSimpleNoteSync(
+            const noteBuf = this.tryBakeSimpleNoteSync(
               entry,
               bakeMixLive,
               item.key,
             );
-            // Sync bake failed (raw not ready / mod / non-TA). Prefer awaiting
-            // a single-note TypedArray bake over leaving missCount>0, which
-            // forces the entire tile onto the OAC+gate path.
-            if (!noteBuf && bakeChunkMiss) {
-              try {
-                noteBuf = await this.getSimpleNoteBuffer(
-                  entry,
-                  bakeMixLive,
-                  false,
-                );
-              } catch {
-                noteBuf = null;
-              }
-            }
-            const missBakeMs = performance.now() - tBake0;
-            simpleMissBakeMs += missBakeMs;
-            simpleLookupMs += item.lookupMs;
             if (noteBuf) {
               const gains = this.chunkNoteMixParams(
                 n,
@@ -5290,9 +5281,57 @@ export class Player<
                 gainCurve: gains.gainCurve,
               });
               simpleMissesBaked++;
-            } else {
-              simpleMisses[missCount++] = n;
+              simpleLookupMs += item.lookupMs;
+              continue;
             }
+            pending.push({
+              note: n,
+              key: item.key,
+              entry,
+              bakeMix: bakeMixLive,
+              lookupMs: item.lookupMs,
+            });
+          }
+
+          if (pending.length > 0) {
+            const tBake0 = performance.now();
+            // Group by bakeChannelMix (batch API is one flag for the batch).
+            for (const mixFlag of [true, false]) {
+              const group = pending.filter((p) => p.bakeMix === mixFlag);
+              if (group.length === 0) continue;
+              let bufs: AudioBuffer[];
+              try {
+                bufs = await this.bakeSimpleNotesBatch(
+                  group.map((p) => p.entry),
+                  mixFlag,
+                );
+              } catch {
+                bufs = [];
+              }
+              for (let gi = 0; gi < group.length; gi++) {
+                const p = group[gi];
+                simpleLookupMs += p.lookupMs;
+                const noteBuf = bufs[gi] ?? null;
+                if (noteBuf) {
+                  const gains = this.chunkNoteMixParams(
+                    p.note,
+                    noteBuf.length,
+                    sampleRate,
+                  );
+                  simpleHits.push({
+                    buffer: noteBuf,
+                    offset: p.note.offset,
+                    gainL: gains.gainL,
+                    gainR: gains.gainR,
+                    gainCurve: gains.gainCurve,
+                  });
+                  simpleMissesBaked++;
+                } else {
+                  simpleMisses[missCount++] = p.note;
+                }
+              }
+            }
+            simpleMissBakeMs += performance.now() - tBake0;
           }
           simpleMisses.length = missCount;
         } else {
@@ -9246,10 +9285,8 @@ export class Player<
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      const key = this.makeSimpleNoteKey(
-        entry,
-        this.simpleBakeChannelMixForNote(entry),
-      );
+      // Use the batch-wide bakeChannelMix so key matches cache writes below.
+      const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
       const cached = this.simpleNoteBufferCache.get(key);
       if (cached instanceof AudioBuffer) {
         this.noteCacheRecordSimpleHit();

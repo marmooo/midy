@@ -936,7 +936,7 @@ self.onmessage = function(ev) {
    * ~4 entries/worker split: large batches serialize on one worker and miss
    * the realtime deadline. Parallel split uses this as the target chunk size.
    */
-  static readonly MAX_NOTES_PER_BATCH = 4;
+  static readonly MAX_NOTES_PER_BATCH = 8;
 
   /**
    * Batch-render many simple-note bodies in a single postMessage.
