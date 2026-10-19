@@ -140,11 +140,12 @@ export class Player<
   /**
    * Cap on simpleNoteBufferCache entries. Dense songs can fill 1000+ full
    * note AudioBuffers; peak RSS then triggers multi-second main-thread GC
-   * pauses at the preroll boundary (observed: mix main=7ms but wall≈9s with
-   * setTimeout0 lag matching wall). 0 = unlimited (legacy). 256–512 is a
-   * good default for realtime chunk.
+   * pauses at the preroll boundary. 0 = unlimited (legacy).
+   * 2048: logs showed ~1400 unique simple keys with maxSize=1024 → peak at
+   * cap and mid-song eviction of prewarmed entries (miss≈1472). Prefer a
+   * size that holds the song working set; eviction remains playhead-aware.
    */
-  simpleNoteCacheMaxSize: number = 1024;
+  simpleNoteCacheMaxSize: number = 2048;
   // Pre-playback occurrence counts for simple-note cache keys (same key as
   // makeSimpleNoteKey). Keys that appear more than once are worth a separate
   // OfflineAudioContext bake + cache fill on first miss; unique keys stay on
@@ -550,6 +551,13 @@ export class Player<
   }[] = [];
   private mixBatchFlushing: boolean = false;
 
+  /**
+   * In-flight worker tile mixes (awaiting onmessage). While > 0, defer starting
+   * new chunk bakes so long main-thread bake work does not starve mix replies
+   * (residual = await - queue - post - worker).
+   */
+  private mixAwaitingCount: number = 0;
+
   // Simple-note prewarm budget (start() before playNotes).
   // Phase 1: keys whose earliest onset falls in the song-head window
   // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
@@ -718,6 +726,9 @@ export class Player<
     // Offline / not-playing paths similarly expect immediate bake-now.
     if (this.chunkPrerollActive) return true;
     if (!this.isPlaying) return true;
+    // Mix onmessage residual: do not start another tile bake while a worker
+    // mix reply is outstanding — main bake assembly steals the event loop.
+    if (this.mixAwaitingCount > 0) return false;
     const max = this.maxChunkBakeStartsPerPass | 0;
     if (max <= 0) return true;
     return this.chunkBakeStartsThisPass < max;
@@ -829,7 +840,17 @@ export class Player<
     if (sched && typeof sched.yield === "function") {
       return sched.yield();
     }
-    return new Promise((resolve) => setTimeout(resolve, 0));
+    // MessageChannel macrotask runs ahead of setTimeout(0) in Chromium and
+    // returns to waiting mix onmessage sooner under main congestion.
+    return new Promise((resolve) => {
+      if (typeof MessageChannel !== "undefined") {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => resolve();
+        ch.port2.postMessage(null);
+        return;
+      }
+      setTimeout(resolve, 0);
+    });
   }
 
   /**
@@ -840,6 +861,12 @@ export class Player<
   protected pumpDeferredChunkBakes(): void {
     const deferred = this.deferredChunkBakes;
     if (deferred.length === 0) return;
+    // Hold promotions while mix replies are in flight (see mixAwaitingCount).
+    if (
+      this.mixAwaitingCount > 0 && this.isPlaying && !this.chunkPrerollActive
+    ) {
+      return;
+    }
     // Stable: process earliest chunkStart first.
     deferred.sort((a, b) => a.chunkStart - b.chunkStart);
     const still: typeof deferred = [];
@@ -2851,7 +2878,10 @@ export class Player<
     // spend seconds in this sync loop, starving worker onmessage (mix residual)
     // and audio callbacks. 0 = unlimited. Remaining events stay queued for the
     // next play-loop tick (queueIndex is preserved).
-    const scheduleBudgetMs = isChunkMode ? 6 : 0;
+    // Tighter budget while mix replies pending so schedule passes yield sooner.
+    const scheduleBudgetMs = isChunkMode
+      ? (this.mixAwaitingCount > 0 ? 3 : 6)
+      : 0;
     let budgetHit = false;
     while (queueIndex < timeline.length) {
       const event = timeline[queueIndex];
@@ -3835,34 +3865,72 @@ export class Player<
 
     const t0 = performance.now();
     let stoppedEarly = false;
+    let bakedOk = 0;
+    let bakedFail = 0;
+
+    // Parallel prewarm: sequential await left most of the 3s budget idle while
+    // one worker ran. Cap concurrency to pool size (or 4) so we fill the cache
+    // faster without flooding main.
+    // Start pool so parallel getSimpleNoteBuffer can offload sample render.
+    const pool = this.useWorkerSimpleNoteBake
+      ? this.getBakeWorkerPool()
+      : this.bakeWorkerPool;
+    const concurrency = Math.max(
+      1,
+      Math.min(4, pool ? pool.poolSize : 4),
+    );
+
+    const bakeOne = async (c: Cand): Promise<void> => {
+      try {
+        const entry = c.entry;
+        const releaseTail = this.classifyReleaseTailSec(
+          entry.voiceParams.releaseVolEnv,
+          !!entry.noteEvent?.soundOff,
+        );
+        const bakeMix =
+          this.maxTiledNoteDuration < entry.noteDuration + releaseTail
+            ? true
+            : this.simpleBakeChannelMixForNote(entry);
+        await this.getSimpleNoteBuffer(entry, bakeMix);
+        bakedOk++;
+      } catch {
+        bakedFail++;
+      }
+    };
 
     const bakeList = async (list: Cand[]): Promise<void> => {
-      for (let i = 0; i < list.length; i++) {
-        if (maxMs > 0 && performance.now() - t0 >= maxMs) {
-          stoppedEarly = true;
-          break;
+      let next = 0;
+      const workers: Promise<void>[] = [];
+      const run = async (): Promise<void> => {
+        while (next < list.length) {
+          if (maxMs > 0 && performance.now() - t0 >= maxMs) {
+            stoppedEarly = true;
+            return;
+          }
+          const i = next++;
+          await bakeOne(list[i]);
         }
-        try {
-          const entry = list[i].entry;
-          // Match key used above: long notes always bake with channel mix.
-          const releaseTail = this.classifyReleaseTailSec(
-            entry.voiceParams.releaseVolEnv,
-            !!entry.noteEvent?.soundOff,
-          );
-          const bakeMix =
-            this.maxTiledNoteDuration < entry.noteDuration + releaseTail
-              ? true
-              : this.simpleBakeChannelMixForNote(entry);
-          await this.getSimpleNoteBuffer(entry, bakeMix);
-        } catch {
-          // Skip failed keys; playback will bake on demand.
-        }
-      }
+      };
+      const n = Math.min(concurrency, Math.max(1, list.length));
+      for (let w = 0; w < n; w++) workers.push(run());
+      await Promise.all(workers);
     };
 
     await bakeList(head);
     if (!stoppedEarly && rest.length > 0) {
       await bakeList(rest);
+    }
+
+    const wallMs = performance.now() - t0;
+    if (this.debug || bakedOk > 0) {
+      console.warn(
+        `[midy] simple-prewarm | head=${head.length} rest=${rest.length} ` +
+          `allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} ` +
+          `wall=${wallMs.toFixed(0)}ms budget=${maxMs}ms ` +
+          `stoppedEarly=${stoppedEarly} concurrency=${concurrency} ` +
+          `cacheSize=${this.simpleNoteBufferCache.size} ` +
+          `maxSize=${this.simpleNoteCacheMaxSize}`,
+      );
     }
   }
 
@@ -6988,6 +7056,7 @@ export class Player<
         chunkBakeActive: this.chunkBakeActive,
         offlineRenderActive: this.offlineRenderActive,
         deferredBakes: this.deferredChunkBakes.length,
+        mixAwaiting: this.mixAwaitingCount,
       };
 
       // Macrotask yield (not just microtask): worker onmessage is a task, so
@@ -6999,12 +7068,24 @@ export class Player<
       // Serial tile mix via batch coordinator: single → pool.mix immediately;
       // preroll / multi-close → up to MAX_TILES_PER_MIX_BATCH per postMessage.
       // Never setTimeout(0) coalesce (worsens residual).
-      const result = await this.workerMix(
-        mixEntries,
-        bufferLength,
-        destChCount,
-        transferable,
-      );
+      // mixAwaitingCount: pause new chunk-bake starts so main stays responsive
+      // to this onmessage (cuts residual under concurrent bake).
+      this.mixAwaitingCount++;
+      let result;
+      try {
+        result = await this.workerMix(
+          mixEntries,
+          bufferLength,
+          destChCount,
+          transferable,
+        );
+      } finally {
+        this.mixAwaitingCount--;
+        // Mix done: allow deferred bakes to resume on next schedule tick.
+        if (this.mixAwaitingCount === 0 && this.deferredChunkBakes.length > 0) {
+          this.pumpDeferredChunkBakes();
+        }
+      }
       const tAwaitDone = performance.now();
       const awaitMs = tAwaitDone - tAwait0;
       this.chunkMixAwaitSumMs += awaitMs;

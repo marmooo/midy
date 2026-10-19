@@ -127,7 +127,19 @@ type QueuedJob = {
   request: any;
   transfer: Transferable[];
   pending: Pending;
+  /**
+   * Lower runs first. Mix/mixBatch are 0 (playback-critical); sample bake
+   * (renderSample / renderSamplesBatch) is 1. Prevents long note-bakes from
+   * starving tile mix and inflating awaitAvg / residual.
+   */
+  priority: number;
 };
+
+function jobPriority(request: { type?: string }): number {
+  const t = request?.type;
+  if (t === "mix" || t === "mixBatch") return 0;
+  return 1;
+}
 
 /**
  * Pool of dedicated workers for TypedArray mix + simple-note sample render.
@@ -579,8 +591,27 @@ self.onmessage = function(ev) {
     pending.postMs = performance.now() - t0;
   }
 
+  /**
+   * Dequeue the oldest highest-priority job (mix before bake).
+   * Linear scan is fine: queue depth is typically single-digit.
+   */
+  private dequeueNext(): QueuedJob | undefined {
+    const q = this.queue;
+    if (q.length === 0) return undefined;
+    let best = 0;
+    let bestPri = q[0].priority;
+    for (let i = 1; i < q.length; i++) {
+      if (q[i].priority < bestPri) {
+        best = i;
+        bestPri = q[i].priority;
+        if (bestPri === 0) break; // cannot beat mix priority
+      }
+    }
+    return q.splice(best, 1)[0];
+  }
+
   private releaseWorker(worker: Worker): void {
-    const next = this.queue.shift();
+    const next = this.dequeueNext();
     if (next) {
       next.worker = worker;
       this.postToWorker(worker, next.request, next.transfer, next.pending);
@@ -604,7 +635,12 @@ self.onmessage = function(ev) {
       if (free) {
         this.postToWorker(free, request, transfer, pending);
       } else {
-        this.queue.push({ request, transfer, pending });
+        this.queue.push({
+          request,
+          transfer,
+          pending,
+          priority: jobPriority(request),
+        });
       }
     });
   }
@@ -690,8 +726,11 @@ self.onmessage = function(ev) {
    * Soft cap on tiles per single mixBatch postMessage. Matches
    * MAX_NOTES_PER_BATCH spirit: amortize postMessage without monopolising
    * one worker for too long.
+   * 6 is a compromise: 4 under-amortizes postMessage; 8 can hold a worker
+   * long enough to inflate awaitAvg when bake jobs also queue (priority
+   * helps, but shorter batches still reduce tail latency).
    */
-  static readonly MAX_TILES_PER_MIX_BATCH = 8;
+  static readonly MAX_TILES_PER_MIX_BATCH = 4;
 
   /**
    * Mix several tiles in one postMessage. Prefer this when 2+ closed tiles
