@@ -310,6 +310,30 @@ export class Player<
   chunkGateWaitSumMs: number = 0;
   chunkGateWaitMaxMs: number = 0;
   chunkWorkSumMs: number = 0;
+  // --- diag: gateWait breakdown ---
+  chunkGateWaitEnterCount: number = 0;
+  chunkGateWaitDepthSum: number = 0;
+  chunkGateWaitDepthMax: number = 0;
+  chunkGateReasonActiveFull: number = 0;
+  chunkGateReasonMixAwaiting: number = 0;
+  chunkGateReasonHorizon: number = 0;
+  chunkGateReasonPassBudget: number = 0;
+  private chunkGateWaitSamplesMs: number[] = [];
+  private static readonly GATE_WAIT_SAMPLE_CAP = 256;
+  // --- diag: mix overhead ---
+  chunkMixOverheadSumMs: number = 0;
+  chunkMixOverheadMaxMs: number = 0;
+  chunkMixHighOverheadTiles: number = 0;
+  // --- diag: noteBake / drum path ---
+  noteBakePathCount: number = 0;
+  noteBakeAdsPathCount: number = 0;
+  noteBakeRealtimeExclCount: number = 0;
+  noteBakeDrumCount: number = 0;
+  noteBakeDrumExclusiveCount: number = 0;
+  noteBakeReleaseCappedCount: number = 0;
+  noteBakeDrumReleaseCappedCount: number = 0;
+  noteBakeEffectiveSum: number = 0;
+  noteBakeDrumEffectiveSum: number = 0;
   // Bake-phase breakdown (sums over all tiles; realtime only).
   chunkBakeSimpleSumMs: number = 0;
   chunkBakeComplexSumMs: number = 0;
@@ -384,6 +408,15 @@ export class Player<
   // 0 = unlimited (legacy). 2 overlaps ~30–70ms pureTA tiles so deferred
   // drains faster than the playhead after dense schedule passes.
   maxConcurrentChunkBakes: number = 2;
+  /**
+   * Extra gate waiters allowed beyond maxConcurrentChunkBakes.
+   * 0 = never block on the bake gate during live play: only start a bake
+   * when an active slot is free; otherwise stay on deferredChunkBakes.
+   * This prevents depthAvg 20–60 multi-second gateWait convoys when the
+   * pump promotes faster than tiles finish. Preroll/offline still use the
+   * gate (awaited) and may queue. Default 0 (bounded).
+   */
+  maxChunkBakeWaiters: number = 0;
   private chunkBakeActive: number = 0;
   // Waiters woken in chunkStart ascending order (near playhead first).
   private chunkBakeWaiters: Array<{ chunkStart: number; resolve: () => void }> =
@@ -489,6 +522,17 @@ export class Player<
   // 1 = offload almost every pureTA tile mix (entriesAvg ~10–15). Was 4,
   // which still left most short tiles on the main thread (mainTiles ≫ workerTiles).
   workerMixMinEntries: number = 1;
+
+  /**
+   * During live playback, only offload tile mix to the worker when the tile
+   * has at least this many entries. Smaller tiles mix on main (sync).
+   * 0 = fall back to workerMixMinEntries. Default 12.
+   */
+  workerMixMinEntriesLive: number = 24;
+  /** Diag: live mix path decisions this run. */
+  liveMixOnMainCount: number = 0;
+  liveMixWorkerCount: number = 0;
+  liveMixSkipNotRealtime: number = 0;
 
   /**
    * When true, allow tile-level TypedArray mix to use the worker pool even
@@ -685,17 +729,78 @@ export class Player<
   ): Promise<T> {
     const max = this.maxConcurrentChunkBakes | 0;
     if (max <= 0) return await fn();
+
+    const tEnter = performance.now();
+    let blocked = false;
+    let depthAtEnter = 0;
+
     while (this.chunkBakeActive >= max) {
+      if (!blocked) {
+        blocked = true;
+        depthAtEnter = this.chunkBakeWaiters.length;
+        this.chunkGateWaitEnterCount++;
+        this.chunkGateReasonActiveFull++;
+        this.chunkGateWaitDepthSum += depthAtEnter;
+        if (depthAtEnter > this.chunkGateWaitDepthMax) {
+          this.chunkGateWaitDepthMax = depthAtEnter;
+        }
+        if (this.debug && depthAtEnter >= 1) {
+          let oldest = chunkStart;
+          for (let i = 0; i < this.chunkBakeWaiters.length; i++) {
+            const s = this.chunkBakeWaiters[i].chunkStart;
+            if (s < oldest) oldest = s;
+          }
+          console.warn(
+            `[midy] gate-wait-enter | chunkStart=${chunkStart.toFixed(2)}s ` +
+              `active=${this.chunkBakeActive}/${max} ` +
+              `waiters=${depthAtEnter} ` +
+              `oldestWaiter=${oldest.toFixed(2)}s ` +
+              `mixAwaiting=${this.mixAwaitingCount} ` +
+              `priorityByStart=${this.chunkBakePriorityByStart}`,
+          );
+        }
+      }
       await new Promise<void>((resolve) => {
         this.chunkBakeWaiters.push({ chunkStart, resolve });
       });
     }
+
+    const waited = blocked ? performance.now() - tEnter : 0;
+    if (blocked) {
+      if (this.chunkGateWaitSamplesMs.length < Player.GATE_WAIT_SAMPLE_CAP) {
+        this.chunkGateWaitSamplesMs.push(waited);
+      }
+      if (this.debug && waited >= 30) {
+        console.warn(
+          `[midy] gate-wait-exit | chunkStart=${chunkStart.toFixed(2)}s ` +
+            `waited=${waited.toFixed(1)}ms ` +
+            `depthAtEnter=${depthAtEnter} ` +
+            `activeNow=${this.chunkBakeActive}/${max} ` +
+            `waitersLeft=${this.chunkBakeWaiters.length} ` +
+            `mixAwaiting=${this.mixAwaitingCount}`,
+        );
+      }
+    }
+
     this.chunkBakeActive++;
     try {
       return await fn();
     } finally {
       this.chunkBakeActive--;
       this.wakeNextChunkBakeWaiter();
+      // Prefer promoting deferred over growing an in-gate waiter queue.
+      // queueMicrotask so the current stack finishes before pump runs.
+      if (
+        this.deferredChunkBakes.length > 0 &&
+        this.canAcceptChunkBakeSlot() &&
+        this.canStartChunkBakeThisPass()
+      ) {
+        queueMicrotask(() => {
+          if (this.deferredChunkBakes.length > 0) {
+            this.pumpDeferredChunkBakes();
+          }
+        });
+      }
     }
   }
 
@@ -720,22 +825,36 @@ export class Player<
 
   /** Whether this pass may still kick another bake-now / deferred promotion. */
   protected canStartChunkBakeThisPass(): boolean {
-    // Preroll awaits every pending.bufferPromise before arming the clock.
-    // Rate-limiting there would leave deferred promises unresolved forever
-    // (pump does not run during that await) → silent hang / no audio.
-    // Offline / not-playing paths similarly expect immediate bake-now.
     if (this.chunkPrerollActive) return true;
     if (!this.isPlaying) return true;
-    // Mix onmessage residual: do not start another tile bake while a worker
-    // mix reply is outstanding — main bake assembly steals the event loop.
-    if (this.mixAwaitingCount > 0) return false;
+    if (this.mixAwaitingCount > 0) {
+      this.chunkGateReasonMixAwaiting++;
+      return false;
+    }
     const max = this.maxChunkBakeStartsPerPass | 0;
     if (max <= 0) return true;
-    return this.chunkBakeStartsThisPass < max;
+    if (this.chunkBakeStartsThisPass >= max) {
+      this.chunkGateReasonPassBudget++;
+      return false;
+    }
+    return true;
   }
 
   protected recordChunkBakeStartThisPass(): void {
     this.chunkBakeStartsThisPass++;
+  }
+
+  /**
+   * Whether a new bake may enter the gate without exceeding the waiter cap.
+   * With maxChunkBakeWaiters=0 this is simply chunkBakeActive < maxConcurrent.
+   * maxConcurrentChunkBakes <= 0 → unlimited (legacy).
+   */
+  protected canAcceptChunkBakeSlot(): boolean {
+    const max = this.maxConcurrentChunkBakes | 0;
+    if (max <= 0) return true;
+    const waitCap = Math.max(0, this.maxChunkBakeWaiters | 0);
+    return (this.chunkBakeActive + this.chunkBakeWaiters.length) <
+      (max + waitCap);
   }
 
   /**
@@ -755,10 +874,16 @@ export class Player<
     } catch {
       return true;
     }
-    if (chunkStart > now + this.chunkBakeHorizonSec) return false;
+    if (chunkStart > now + this.chunkBakeHorizonSec) {
+      this.chunkGateReasonHorizon++;
+      return false;
+    }
     const near = this.chunkBakeNearSec;
     // near <= 0 → any tile inside horizon is bake-now (legacy).
-    if (near > 0 && chunkStart > now + near) return false;
+    if (near > 0 && chunkStart > now + near) {
+      this.chunkGateReasonHorizon++;
+      return false;
+    }
     return true;
   }
 
@@ -861,7 +986,8 @@ export class Player<
   protected pumpDeferredChunkBakes(): void {
     const deferred = this.deferredChunkBakes;
     if (deferred.length === 0) return;
-    // Hold promotions while mix replies are in flight (see mixAwaitingCount).
+    // Hold promotions while mix replies are in flight so main stays free
+    // for onmessage (cuts residual). Preroll/offline never wait.
     if (
       this.mixAwaitingCount > 0 && this.isPlaying && !this.chunkPrerollActive
     ) {
@@ -877,8 +1003,21 @@ export class Player<
         continue;
       }
       if (!this.shouldBakeChunkNow(d.chunkStart)) {
+        // Sorted by chunkStart: once one is beyond near/horizon, the rest are too.
         still.push(d);
-        continue;
+        for (let j = i + 1; j < deferred.length; j++) {
+          still.push(deferred[j]);
+        }
+        break;
+      }
+      // Do not push into an unbounded in-gate waiter queue. Stay deferred
+      // until an active slot is free (maxChunkBakeWaiters caps extras).
+      if (!this.canAcceptChunkBakeSlot()) {
+        still.push(d);
+        for (let j = i + 1; j < deferred.length; j++) {
+          still.push(deferred[j]);
+        }
+        break;
       }
       // Rate-limit promotions so one pump cannot drain the whole deferred
       // queue into the gate (same budget as closeChunk bake-now).
@@ -910,6 +1049,68 @@ export class Player<
     this.deferredChunkBakes = still;
   }
 
+  /**
+   * Preroll: keep promoting deferred tiles up to maxConcurrentChunkBakes
+   * until the deferred queue is empty. Yields on each completed bake so the
+   * gate never grows an unbounded waiter list (maxChunkBakeWaiters=0).
+   */
+  protected async drainDeferredChunkBakesForPreroll(): Promise<void> {
+    const t0 = performance.now();
+    let spins = 0;
+    for (;;) {
+      this.beginChunkBakePass();
+      this.pumpDeferredChunkBakes();
+      if (this.deferredChunkBakes.length === 0) {
+        if (this.chunkBakeActive === 0 && this.chunkBakeWaiters.length === 0) {
+          break;
+        }
+        // Deferred empty but work still in flight — wait for a slot to free.
+      }
+      const pending = this.chunkState.pending;
+      const inflight: Promise<AudioBuffer | null>[] = [];
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        if (!p.bufferReady) inflight.push(p.bufferPromise);
+      }
+      if (inflight.length === 0) {
+        // No promises in flight. If deferred remains, force another pump;
+        // otherwise we are done.
+        if (this.deferredChunkBakes.length === 0) break;
+        this.beginChunkBakePass();
+        this.pumpDeferredChunkBakes();
+        spins++;
+        if (spins > 10000) {
+          console.warn(
+            `[midy] preroll drain: abort spins=${spins} ` +
+              `deferred=${this.deferredChunkBakes.length} ` +
+              `active=${this.chunkBakeActive}`,
+          );
+          break;
+        }
+        await new Promise<void>((r) => queueMicrotask(r));
+        continue;
+      }
+      await Promise.race(inflight);
+      spins++;
+      if (spins > 10000) {
+        console.warn(
+          `[midy] preroll drain: abort spins=${spins} ` +
+            `deferred=${this.deferredChunkBakes.length} ` +
+            `active=${this.chunkBakeActive}`,
+        );
+        break;
+      }
+    }
+    if (this.debug) {
+      console.log(
+        `[midy] preroll drain | spins=${spins} ` +
+          `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+          `deferredLeft=${this.deferredChunkBakes.length} ` +
+          `active=${this.chunkBakeActive}`,
+      );
+    }
+  }
+
   protected startDeferredChunkBake(d: {
     chunkStart: number;
     chunk: OpenChunk;
@@ -919,6 +1120,11 @@ export class Player<
     reject: (err: unknown) => void;
   }): void {
     const { chunk, pending, state, resolve } = d;
+    // Race: slot may have filled between pump check and here.
+    if (!this.canAcceptChunkBakeSlot()) {
+      this.deferredChunkBakes.push(d);
+      return;
+    }
     const generation = pending.generation;
     const tEnqueue = performance.now();
     this.runWithChunkBakeGate(() => {
@@ -2988,6 +3194,46 @@ export class Player<
             const capNote = releaseTail < releaseTailRaw
               ? ` rawRelease=${releaseTailRaw.toFixed(2)}s`
               : "";
+            if (path === "noteBake") {
+              this.noteBakePathCount++;
+              this.noteBakeEffectiveSum += effective;
+            } else if (path === "ads") {
+              this.noteBakeAdsPathCount++;
+            } else if (path === "realtimeExcl") {
+              this.noteBakeRealtimeExclCount++;
+            }
+            const isDrum = channel.channelNumber === 9 ||
+              channel.channelNumber === 10;
+            if (isDrum && path === "noteBake") {
+              this.noteBakeDrumCount++;
+              this.noteBakeDrumEffectiveSum += effective;
+              if (excl !== 0) this.noteBakeDrumExclusiveCount++;
+            }
+            if (releaseTail < releaseTailRaw) {
+              this.noteBakeReleaseCappedCount++;
+              if (isDrum) this.noteBakeDrumReleaseCappedCount++;
+            }
+            if (
+              this.debug && isDrum && path === "noteBake" &&
+              (this.noteBakeDrumCount <= 8 ||
+                this.noteBakeDrumCount % 32 === 0)
+            ) {
+              console.warn(
+                `[midy] noteBake-drum | ch=${channel.channelNumber} ` +
+                  `note=${event.noteNumber!} idx=${queueIndex} ` +
+                  `songT=${t.toFixed(2)}s ` +
+                  `midiDur=${duration.toFixed(2)}s ` +
+                  `releaseTail=${releaseTail.toFixed(2)}s ` +
+                  `rawRelease=${releaseTailRaw.toFixed(2)}s ` +
+                  `effective=${effective.toFixed(2)}s ` +
+                  `excl=${excl} ` +
+                  `capped=${releaseTail < releaseTailRaw} ` +
+                  `inLong=${inLong} ` +
+                  `maxTiled=${this.maxTiledNoteDuration} ` +
+                  `maxNoteBake=${this.maxNoteBakeDuration} ` +
+                  `maxReleaseTail=${this.maxReleaseTailSec}`,
+              );
+            }
             console.warn(
               `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
                 `note=${event.noteNumber!} idx=${queueIndex} ` +
@@ -3502,6 +3748,7 @@ export class Player<
             `transferable=${this.useWorkerTransferable} ` +
             `poolSize=${poolSize} ` +
             `mixMinEntries=${this.workerMixMinEntries} ` +
+            `mixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
             `preferLiveMix=${this.preferWorkerMixDuringLive} ` +
             `preferLiveBake=${this.preferWorkerBakeDuringLive} ` +
             `poolStarted=${!!this.bakeWorkerPool}`,
@@ -3547,6 +3794,74 @@ export class Player<
             `prerollPeak=${this.prerollUntilPeak.toFixed(2)}s ` +
             `prerollSec=${this.prerollSec}`,
         );
+        // diag: gate / mix-overhead / noteBake summaries
+        {
+          const gwSamples = this.chunkGateWaitSamplesMs.slice().sort((a, b) =>
+            a - b
+          );
+          const pct = (q: number) => {
+            if (gwSamples.length === 0) return 0;
+            const i = Math.min(
+              gwSamples.length - 1,
+              Math.floor(q * (gwSamples.length - 1)),
+            );
+            return gwSamples[i];
+          };
+          console.log(
+            `[midy] gate-summary | enters=${this.chunkGateWaitEnterCount} ` +
+              `depthAvg=${
+                this.chunkGateWaitEnterCount > 0
+                  ? (this.chunkGateWaitDepthSum /
+                    this.chunkGateWaitEnterCount).toFixed(1)
+                  : "0"
+              } depthMax=${this.chunkGateWaitDepthMax} ` +
+              `waitP50=${pct(0.5).toFixed(1)}ms ` +
+              `waitP95=${pct(0.95).toFixed(1)}ms ` +
+              `reasons: activeFull=${this.chunkGateReasonActiveFull} ` +
+              `mixAwaiting=${this.chunkGateReasonMixAwaiting} ` +
+              `horizon=${this.chunkGateReasonHorizon} ` +
+              `passBudget=${this.chunkGateReasonPassBudget} ` +
+              `maxConcurrent=${this.maxConcurrentChunkBakes} ` +
+              `maxWaiters=${this.maxChunkBakeWaiters} ` +
+              `priorityByStart=${this.chunkBakePriorityByStart}`,
+          );
+          const mixTiles = this.chunkMixWorkerTiles + this.chunkMixMainTiles;
+          console.log(
+            `[midy] mix-overhead-sum | tiles=${mixTiles} ` +
+              `overheadSum=${this.chunkMixOverheadSumMs.toFixed(0)}ms ` +
+              `overheadMax=${this.chunkMixOverheadMaxMs.toFixed(1)}ms ` +
+              `highOverheadTiles=${this.chunkMixHighOverheadTiles} ` +
+              `overheadAvg=${
+                mixTiles > 0
+                  ? (this.chunkMixOverheadSumMs / mixTiles).toFixed(1)
+                  : "0"
+              }ms`,
+          );
+          console.log(
+            `[midy] noteBake-summary | pathNoteBake=${this.noteBakePathCount} ` +
+              `pathAds=${this.noteBakeAdsPathCount} ` +
+              `pathRealtimeExcl=${this.noteBakeRealtimeExclCount} ` +
+              `drumNoteBake=${this.noteBakeDrumCount} ` +
+              `drumExclusive=${this.noteBakeDrumExclusiveCount} ` +
+              `releaseCapped=${this.noteBakeReleaseCappedCount} ` +
+              `drumReleaseCapped=${this.noteBakeDrumReleaseCappedCount} ` +
+              `noteBakeEffAvg=${
+                this.noteBakePathCount > 0
+                  ? (this.noteBakeEffectiveSum / this.noteBakePathCount)
+                    .toFixed(2)
+                  : "0"
+              }s ` +
+              `drumEffAvg=${
+                this.noteBakeDrumCount > 0
+                  ? (this.noteBakeDrumEffectiveSum / this.noteBakeDrumCount)
+                    .toFixed(2)
+                  : "0"
+              }s ` +
+              `maxReleaseTail=${this.maxReleaseTailSec} ` +
+              `maxNoteBake=${this.maxNoteBakeDuration} ` +
+              `maxTiled=${this.maxTiledNoteDuration}`,
+          );
+        }
       }
       const notesAvg = cb > 0 ? this.chunkBakeNoteCountSum / cb : 0;
       const complexNotesAvg = cb > 0 ? this.chunkBakeComplexCountSum / cb : 0;
@@ -3691,6 +4006,14 @@ export class Player<
             `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
             `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
             `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
+        );
+        console.log(
+          `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
+            `worker=${this.liveMixWorkerCount} ` +
+            `notRealtime=${this.liveMixSkipNotRealtime} ` +
+            `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
+            `workerMixMinEntries=${this.workerMixMinEntries} ` +
+            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
         );
         // Offload summary (same numbers, easy to grep alongside older logs).
         console.log(
@@ -4138,6 +4461,13 @@ export class Player<
 
     // Flush any short mixBatch remainder (explicit preroll batch, not coalesce).
     await this.flushPendingMixBatches();
+
+    // Drain deferred under the concurrent slot limit. Without this, preroll
+    // closeChunk would either flood the gate (old) or hang on unresolved
+    // deferred bufferPromises (bounded closeChunk).
+    if (isChunkMode) {
+      await this.drainDeferredChunkBakesForPreroll();
+    }
 
     // Await every in-flight offline bake before arming the clock.
     const bufferPromises: Promise<AudioBuffer | null>[] = [];
@@ -4808,8 +5138,12 @@ export class Player<
     // canStartChunkBakeThisPass / shouldBakeChunkNow which already treat
     // !isPlaying and chunkPrerollActive as immediate-bake.
     const liveDeferAll = this.isPlaying && !this.chunkPrerollActive;
+    // Preroll/offline used to flood runWithChunkBakeGate (depth 30–60).
+    // Require a free slot; overflow stays on deferredChunkBakes and is
+    // drained by pumpDeferredChunkBakes (preroll body drains explicitly).
     const bakeNow = !liveDeferAll && inNearWindow &&
-      this.canStartChunkBakeThisPass();
+      this.canStartChunkBakeThisPass() &&
+      this.canAcceptChunkBakeSlot();
 
     if (!bakeNow) {
       // Throttle: full stack traces per tile can stall DevTools for seconds
@@ -4819,6 +5153,8 @@ export class Player<
           ? "live-defer"
           : !inNearWindow
           ? (this.chunkBakeNearSec > 0 ? "near/horizon" : "horizon")
+          : !this.canAcceptChunkBakeSlot()
+          ? "slot-full"
           : "rate-limit";
         if (this.debug) {
           console.warn(
@@ -5598,7 +5934,40 @@ export class Player<
       // Dry-simple gainL/gainR still apply via mixSimpleBuffersTypedArray.
       const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
         !forAudioOffline;
-      const liveMixOnMain = liveRealtime && !this.preferWorkerMixDuringLive;
+      // Prefer worker only for denser live tiles. Small tiles: sync main mix
+      // is cheaper than postMessage + await residual (often > add cost).
+      const liveMinEntries = this.workerMixMinEntriesLive > 0
+        ? this.workerMixMinEntriesLive
+        : this.workerMixMinEntries;
+      const liveMixOnMain = liveRealtime && (
+        !this.preferWorkerMixDuringLive ||
+        allEntries.length < liveMinEntries
+      );
+      if (!liveRealtime) {
+        this.liveMixSkipNotRealtime++;
+      } else if (liveMixOnMain) {
+        this.liveMixOnMainCount++;
+      } else {
+        this.liveMixWorkerCount++;
+      }
+      if (
+        this.debug &&
+        (this.liveMixOnMainCount + this.liveMixWorkerCount +
+            this.liveMixSkipNotRealtime) <= 12
+      ) {
+        console.warn(
+          `[midy] live-mix-decision | onMain=${liveMixOnMain} ` +
+            `liveRealtime=${liveRealtime} ` +
+            `entries=${allEntries.length} ` +
+            `liveMinEntries=${liveMinEntries} ` +
+            `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
+            `workerMixMinEntries=${this.workerMixMinEntries} ` +
+            `preferWorker=${this.preferWorkerMixDuringLive} ` +
+            `isPlaying=${this.isPlaying} preroll=${this.chunkPrerollActive} ` +
+            `offline=${forAudioOffline} ` +
+            `chunkStart=${chunk.chunkStart.toFixed(2)}s`,
+        );
+      }
       let buffer: AudioBuffer;
       if (liveMixOnMain) {
         buffer = this.mixEntriesToBufferSync(
@@ -5646,6 +6015,42 @@ export class Player<
                 `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
                 `entries=${allEntries.length} ` +
                 `chunkBake=${this.chunkBakeActive}`,
+            );
+          }
+        }
+      }
+      // diag: mix overhead breakdown (worker path)
+      if (!forAudioOffline && mixDetail.usedWorker) {
+        const addMs = mixDetail.workerMs;
+        const overheadMs = Math.max(0, mixMs - addMs);
+        this.chunkMixOverheadSumMs += overheadMs;
+        if (overheadMs > this.chunkMixOverheadMaxMs) {
+          this.chunkMixOverheadMaxMs = overheadMs;
+        }
+        const ratio = mixMs > 0 ? overheadMs / mixMs : 0;
+        if (overheadMs >= 50 || ratio >= 0.6) {
+          this.chunkMixHighOverheadTiles++;
+          if (this.debug) {
+            console.warn(
+              `[midy] mix-overhead | chunkStart=${
+                chunk.chunkStart.toFixed(2)
+              }s ` +
+                `mixMs=${mixMs.toFixed(1)} ` +
+                `overhead=${overheadMs.toFixed(1)} ` +
+                `ratio=${(ratio * 100).toFixed(0)}% ` +
+                `prepare=${mixDetail.prepareMs.toFixed(1)} ` +
+                `await=${mixDetail.awaitMs.toFixed(1)} ` +
+                `queue=${mixDetail.queueMs.toFixed(1)} ` +
+                `post=${mixDetail.postMs.toFixed(1)} ` +
+                `worker=${mixDetail.workerMs.toFixed(1)} ` +
+                `residual=${mixDetail.residualMs.toFixed(1)} ` +
+                `copyBack=${mixDetail.copyBackMs.toFixed(1)} ` +
+                `afterAwait=${(mixDetail.afterAwaitMs ?? 0).toFixed(1)} ` +
+                `entries=${mixDetail.entryCount ?? allEntries.length} ` +
+                `srcSum=${mixDetail.srcSamplesSum ?? 0} ` +
+                `transferable=${mixDetail.transferable} ` +
+                `chunkBake=${this.chunkBakeActive} ` +
+                `mixAwaiting=${this.mixAwaitingCount}`,
             );
           }
         }
@@ -6181,6 +6586,8 @@ export class Player<
     offlinePlayer.chunkCostBudget = this.chunkCostBudget;
     offlinePlayer.chunkComplexCostWeight = this.chunkComplexCostWeight;
     offlinePlayer.maxConcurrentChunkBakes = this.maxConcurrentChunkBakes;
+    offlinePlayer.maxChunkBakeWaiters = this.maxChunkBakeWaiters;
+    offlinePlayer.workerMixMinEntriesLive = this.workerMixMinEntriesLive;
     offlinePlayer.maxChunkNotes = this.maxChunkNotes;
     offlinePlayer.maxTiledNoteDuration = this.maxTiledNoteDuration;
     offlinePlayer.lookAhead = this.lookAhead;
@@ -6300,6 +6707,7 @@ export class Player<
     if (isChunkMode) {
       const state = offlinePlayer.chunkState;
       if (state.openChunk) offlinePlayer.closeChunk(state);
+      await offlinePlayer.drainDeferredChunkBakesForPreroll();
       await Promise.allSettled(state.pending.map((p) => p.bufferPromise));
       for (let i = 0; i < state.pending.length; i++) {
         const p = state.pending[i];
@@ -7101,8 +7509,8 @@ export class Player<
       // Macrotask yield (not just microtask): worker onmessage is a task, so
       // Promise.resolve() alone can leave residuals of tens–hundreds of ms
       // when main is in a long microtask chain (schedule + multi-tile bake).
-      await this.yieldToMain();
-
+      // No yieldToMain before postMessage: it delayed worker start and
+      // inflated awaitMs. Residual is handled by mixAwaiting coordination.
       const tAwait0 = performance.now();
       // Serial tile mix via batch coordinator: single → pool.mix immediately;
       // preroll / multi-close → up to MAX_TILES_PER_MIX_BATCH per postMessage.
@@ -7120,9 +7528,13 @@ export class Player<
         );
       } finally {
         this.mixAwaitingCount--;
-        // Mix done: allow deferred bakes to resume on next schedule tick.
+        // Mix done: yield so sibling worker messages can land, then promote.
         if (this.mixAwaitingCount === 0 && this.deferredChunkBakes.length > 0) {
-          this.pumpDeferredChunkBakes();
+          void this.yieldToMain().then(() => {
+            if (this.deferredChunkBakes.length > 0) {
+              this.pumpDeferredChunkBakes();
+            }
+          });
         }
       }
       const tAwaitDone = performance.now();
@@ -8249,6 +8661,29 @@ export class Player<
     this.chunkGateWaitSumMs = 0;
     this.chunkGateWaitMaxMs = 0;
     this.chunkWorkSumMs = 0;
+    this.chunkGateWaitEnterCount = 0;
+    this.chunkGateWaitDepthSum = 0;
+    this.chunkGateWaitDepthMax = 0;
+    this.chunkGateReasonActiveFull = 0;
+    this.chunkGateReasonMixAwaiting = 0;
+    this.chunkGateReasonHorizon = 0;
+    this.chunkGateReasonPassBudget = 0;
+    this.chunkGateWaitSamplesMs = [];
+    this.chunkMixOverheadSumMs = 0;
+    this.chunkMixOverheadMaxMs = 0;
+    this.chunkMixHighOverheadTiles = 0;
+    this.noteBakePathCount = 0;
+    this.noteBakeAdsPathCount = 0;
+    this.noteBakeRealtimeExclCount = 0;
+    this.noteBakeDrumCount = 0;
+    this.noteBakeDrumExclusiveCount = 0;
+    this.noteBakeReleaseCappedCount = 0;
+    this.noteBakeDrumReleaseCappedCount = 0;
+    this.noteBakeEffectiveSum = 0;
+    this.noteBakeDrumEffectiveSum = 0;
+    this.liveMixOnMainCount = 0;
+    this.liveMixWorkerCount = 0;
+    this.liveMixSkipNotRealtime = 0;
     this.chunkBakeSimpleSumMs = 0;
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
