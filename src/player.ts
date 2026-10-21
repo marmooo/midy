@@ -209,7 +209,7 @@ export class Player<
   // Typical single-note cost is often ~1–2 (duration + release tail). Dense
   // 1s windows can sum to 50+. Budget ~12–24 splits outliers without
   // one-note tiles. Tune from [midy] chunk-tile-shape costAvg / notesAvg.
-  chunkCostBudget: number = 12;
+  chunkCostBudget: number = 16;
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight: number = 1.75;
   maxTiledNoteDuration: number = 8;
@@ -4587,8 +4587,7 @@ export class Player<
    * bulk path in startReadyTiledSources (bypass this gate).
    */
   protected shouldStartChunkSourceNow(chunkStart: number): boolean {
-    // Reuse bake horizon (default 6s): enough for Web Audio schedule-ahead.
-    const horizon = Math.max(2, this.chunkBakeHorizonSec || 6);
+    const horizon = Math.max(2, this.chunkBakeHorizonSec);
     let songT = 0;
     try {
       songT = this.currentTime();
