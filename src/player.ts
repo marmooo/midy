@@ -1228,6 +1228,9 @@ export class Player<
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
+    // SMFs often pad a huge delta to endOfTrack after the last noteOff.
+    // Drop that trailing silence so the scheduler does not wait for it.
+    this.trimTrailingSilence();
     this.totalTime = this.calcTotalTime();
     if (this.cacheMode === "audio") {
       await this.render();
@@ -3093,6 +3096,12 @@ export class Player<
       const event = timeline[queueIndex];
       const t = event.startTime * inverseTempo;
       if (lookAheadCheckTime < t) break;
+      // Do not schedule past totalTime (last noteOff + startDelay). Consume
+      // any remaining trailing events so the end condition can fire.
+      if (this.totalTime > 0 && t > this.totalTime) {
+        queueIndex = timeline.length;
+        break;
+      }
       if (
         scheduleBudgetMs > 0 &&
         queueIndex > qi0 &&
@@ -3505,10 +3514,13 @@ export class Player<
     while (true) {
       const now = audioContext.currentTime;
       const tLoop0 = performance.now();
-      if (
-        this.totalTime < this.currentTime() &&
-        this.timeline.length <= queueIndex
-      ) {
+      // End as soon as we pass totalTime (last noteOff + startDelay).
+      // Trailing silence / meta events after the last noteOff must not block
+      // song end — force the queue to the end so we do not wait for them.
+      if (this.totalTime < this.currentTime()) {
+        if (queueIndex < this.timeline.length) {
+          queueIndex = this.timeline.length;
+        }
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
         // Interruptible + grace-bounded wait (see BasePlayer.waitNotePromisesInterruptible).
@@ -3534,7 +3546,9 @@ export class Player<
             this.dispatchEvent(new Event("looped"));
             continue;
           } else {
-            await this.drainTiledPipeline();
+            // Force-stop tiled sources instead of drain-wait: trailing tile
+            // buffers may still be "playing" silence past the last noteOff.
+            this.stopTiledSources();
             await this.stopNotes(now);
             await this.suspendAudioContext();
             exitReason = "ended";
@@ -3585,9 +3599,14 @@ export class Player<
       const tAfterSched = performance.now();
       if (isTiledCacheMode(this.cacheMode)) {
         const timeOffset = this.resumeTime - this.startTime;
-        this.updateTiledPipeline(
-          now + timeOffset + this.lookAhead + this.maxTiledNoteDuration,
-        );
+        // Cap tiled pipeline horizon at totalTime so trailing silence does not
+        // keep chunk/segment work (and backlog logs) running past the song end.
+        let horizon = now + timeOffset + this.lookAhead +
+          this.maxTiledNoteDuration;
+        if (this.totalTime > 0 && horizon > this.totalTime) {
+          horizon = this.totalTime;
+        }
+        this.updateTiledPipeline(horizon);
       }
       const tAfterPipe = performance.now();
       // Verbose loop log near preroll boundary or when a cycle is slow.

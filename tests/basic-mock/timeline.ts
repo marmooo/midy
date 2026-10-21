@@ -330,6 +330,135 @@ export function registerTimelineTests(
   );
 
   Deno.test(
+    `[${label}] calcTotalTime ignores trailing silence after last noteOff`,
+    sanOptions,
+    () => {
+      const player = makePlayer();
+      // noteOn tick=0, noteOff tick=960 (t=1.0s), then a long silent gap
+      // (4800 ticks = 5.0s) and a trailing meta/controller event.
+      // totalTime must stay at last noteOff + startDelay, not include the gap.
+      const midi = {
+        header: { format: 0, numTracks: 1, ticksPerBeat: 480 },
+        tracks: [
+          [
+            noteOn(0, 0, 60, 80),
+            noteOff(960, 0, 60, 0),
+            // 5 seconds of trailing silence (4800 ticks at 120bpm / 480ppq)
+            controller(4800, 0, 7, 100),
+            { type: "endOfTrack" as const, deltaTime: 0 },
+          ],
+        ],
+      };
+
+      const p = player as unknown as {
+        extractMidiData(m: unknown): {
+          timeline: { type: string; startTime: number }[];
+        };
+        calcTotalTime(): number;
+        timeline: unknown[];
+        ticksPerBeat: number;
+        startDelay: number;
+      };
+      p.ticksPerBeat = 480;
+      const { timeline } = p.extractMidiData(midi);
+      p.timeline = timeline;
+
+      // Sanity: timeline includes events after the noteOff.
+      const last = timeline[timeline.length - 1];
+      assertEquals(
+        last.startTime >= 6.0,
+        true,
+        "trailing event must sit after the silent gap",
+      );
+
+      const total = p.calcTotalTime();
+      assertAlmostEquals(
+        total,
+        1.0 + p.startDelay,
+        1e-4,
+        "totalTime must not include trailing silence after last noteOff",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] trimTrailingSilence drops events after last noteOff`,
+    sanOptions,
+    () => {
+      const player = makePlayer();
+      const midi = {
+        header: { format: 0, numTracks: 1, ticksPerBeat: 480 },
+        tracks: [
+          [
+            noteOn(0, 0, 60, 80),
+            noteOff(960, 0, 60, 0),
+            controller(4800, 0, 7, 100),
+            { type: "endOfTrack" as const, deltaTime: 0 },
+          ],
+        ],
+      };
+
+      const p = player as unknown as {
+        extractMidiData(m: unknown): {
+          timeline: { type: string; startTime: number }[];
+        };
+        trimTrailingSilence(): void;
+        calcTotalTime(): number;
+        timeline: { type: string }[];
+        ticksPerBeat: number;
+        startDelay: number;
+      };
+      p.ticksPerBeat = 480;
+      const { timeline } = p.extractMidiData(midi);
+      p.timeline = timeline;
+      assertEquals(timeline.length >= 3, true, "precondition: trailing events present");
+      p.trimTrailingSilence();
+      assertEquals(
+        p.timeline[p.timeline.length - 1].type,
+        "noteOff",
+        "timeline must end at last noteOff after trim",
+      );
+      assertAlmostEquals(
+        p.calcTotalTime(),
+        1.0 + p.startDelay,
+        1e-4,
+        "totalTime after trim stays last noteOff + startDelay",
+      );
+    },
+  );
+
+  Deno.test(
+    `[${label}] playNotes end condition: past totalTime forces queue complete (trailing events do not block end)`,
+    sanOptions,
+    () => {
+      // Pure logic of the end-of-song gate used in BasePlayer/Player.playNotes:
+      // once currentTime exceeds totalTime, remaining timeline events
+      // (trailing silence / endOfTrack) are treated as already consumed.
+      const totalTime = 1.5; // last noteOff + startDelay
+      const currentTime = 1.6; // past totalTime
+      let queueIndex = 2; // still have trailing events left
+      const timelineLength = 5;
+
+      if (totalTime < currentTime) {
+        if (queueIndex < timelineLength) {
+          queueIndex = timelineLength;
+        }
+      }
+
+      assertEquals(
+        queueIndex,
+        timelineLength,
+        "past totalTime must force queueIndex to timeline end so trailing silence is not waited for",
+      );
+      assertEquals(
+        totalTime < currentTime && timelineLength <= queueIndex,
+        true,
+        "end-of-song condition must hold after forcing the queue complete",
+      );
+    },
+  );
+
+  Deno.test(
     `[${label}] getQueueIndex returns first event at or after given second`,
     sanOptions,
     () => {

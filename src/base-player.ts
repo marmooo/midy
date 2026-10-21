@@ -1491,6 +1491,9 @@ export class BasePlayer<
     const midiData = this.extractMidiData(midi);
     this.instruments = midiData.instruments;
     this.timeline = midiData.timeline;
+    // SMFs often pad a huge delta to endOfTrack after the last noteOff.
+    // Drop that trailing silence so the scheduler does not wait for it.
+    this.trimTrailingSilence();
     this.totalTime = this.calcTotalTime();
   }
 
@@ -1893,6 +1896,12 @@ export class BasePlayer<
       const event = timeline[queueIndex];
       const t = event.startTime * inverseTempo;
       if (lookAheadCheckTime < t) break;
+      // Do not schedule past totalTime (last noteOff + startDelay). Consume
+      // any remaining trailing events so the end condition can fire.
+      if (this.totalTime > 0 && t > this.totalTime) {
+        queueIndex = timeline.length;
+        break;
+      }
       const startTime = t + schedulingOffset;
       this.processTimelineEvent(event, startTime, {
         onNoteOn: (channel, event, startTime) => {
@@ -2150,10 +2159,13 @@ export class BasePlayer<
     this.notePromises = [];
     while (true) {
       const now = audioContext.currentTime;
-      if (
-        this.totalTime < this.currentTime() &&
-        this.timeline.length <= queueIndex
-      ) {
+      // End as soon as we pass totalTime (last noteOff + startDelay).
+      // Trailing silence / meta events after the last noteOff must not block
+      // song end — force the queue to the end so we do not wait for them.
+      if (this.totalTime < this.currentTime()) {
+        if (queueIndex < this.timeline.length) {
+          queueIndex = this.timeline.length;
+        }
         const pendingPromises = this.notePromises.slice();
         this.notePromises = [];
         const result = await this.waitNotePromisesInterruptible(
@@ -2598,6 +2610,24 @@ export class BasePlayer<
     this.totalTime = this.calcTotalTime();
     this.seekTo(this.currentTime() * timeScale);
     this.dispatchEvent(new Event("tempoChanged"));
+  }
+
+  /**
+   * Remove timeline events after the last noteOff (or other
+   * {@link totalTimeEventTypes}). Many SMFs leave a long empty gap before
+   * endOfTrack; keeping those events makes the player sit in silence until
+   * the padded end even though every note has already finished.
+   */
+  trimTrailingSilence(): void {
+    const types = this.totalTimeEventTypes;
+    const timeline = this.timeline;
+    let last = -1;
+    for (let i = 0; i < timeline.length; i++) {
+      if (types.has(timeline[i].type)) last = i;
+    }
+    if (last >= 0 && last < timeline.length - 1) {
+      timeline.length = last + 1;
+    }
   }
 
   calcTotalTime(): number {
