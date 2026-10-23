@@ -11402,8 +11402,6 @@ export class Player<
     }
   }
 
-
-
   override soundOffNote(note: TNote, scheduleTime: number): Promise<void> {
     if (note.workletVoiceId != null) {
       note.ending = true;
@@ -11421,22 +11419,91 @@ export class Player<
   // Worklet mode (cacheMode === "worklet")
   // ---------------------------------------------------------------------------
 
-  /** Lazily create WorkletEngine and connect to masterVolume. */
+  /**
+   * Lazily create WorkletEngine and connect to masterVolume (dry) plus
+   * post-stage effect inputs when available (GM2 reverb/chorus, Midy delay).
+   */
   async ensureWorkletEngine(): Promise<WorkletEngine> {
-    if (this.workletEngine) return this.workletEngine;
+    const effects = this.getWorkletEffectInputs();
+    if (this.workletEngine) {
+      // Effect graph may have been rebuilt (setReverbEffect etc.).
+      this.workletEngine.setEffectInputs(effects);
+      return this.workletEngine;
+    }
     const ctx = this.audioContext;
     if (ctx instanceof OfflineAudioContext) {
       throw new Error("worklet mode is not supported on OfflineAudioContext");
     }
     const engine = new WorkletEngine(ctx);
-    await engine.ensureStarted(this.masterVolume);
+    await engine.ensureStarted(this.masterVolume, effects);
     this.workletEngine = engine;
     return engine;
   }
 
   /**
-   * Phase-1 worklet note path: upload sample PCM, snapshot gain/pan/env,
-   * start a worklet voice. No Web Audio per-note graph.
+   * Resolve post-stage effect inputs via duck typing so Player stays free of
+   * GM2/Midy imports. Subclasses that own reverbEffect / chorusEffect /
+   * delayEffect are picked up automatically.
+   */
+  protected getWorkletEffectInputs(): {
+    reverbInput?: AudioNode | null;
+    chorusInput?: AudioNode | null;
+    delayInput?: AudioNode | null;
+  } {
+    const self = this as unknown as {
+      reverbEffect?: { input?: AudioNode };
+      chorusEffect?: { input?: AudioNode };
+      delayEffect?: { input?: AudioNode };
+    };
+    return {
+      reverbInput: self.reverbEffect?.input ?? null,
+      chorusInput: self.chorusEffect?.input ?? null,
+      delayInput: self.delayEffect?.input ?? null,
+    };
+  }
+
+  /**
+   * Approximate per-note effect send levels for the post-mix worklet bus.
+   * GM2 overrides use key-based controllers; base uses channel CC × SF2 amount.
+   */
+  protected calcWorkletEffectSends(
+    channel: TChannel,
+    note: TNote,
+  ): { reverb: number; chorus: number; delay: number } {
+    const vp = note.voiceParams;
+    if (!vp) return { reverb: 0, chorus: 0, delay: 0 };
+    const state = channel.state as {
+      reverbSendLevel?: number;
+      chorusSendLevel?: number;
+      delaySendLevel?: number;
+    };
+    // Prefer subclass calc when present (MidyGM2 / Midy).
+    const self = this as unknown as {
+      calcReverbSendLevel?: (c: TChannel, n: TNote) => number;
+      calcChorusSendLevel?: (c: TChannel, n: TNote) => number;
+      calcDelaySendLevel?: (c: TChannel, n: TNote) => number;
+    };
+    const reverb = self.calcReverbSendLevel
+      ? self.calcReverbSendLevel(channel, note)
+      : (vp.reverbEffectsSend ?? 0) * (state.reverbSendLevel ?? 0);
+    const chorus = self.calcChorusSendLevel
+      ? self.calcChorusSendLevel(channel, note)
+      : (vp.chorusEffectsSend ?? 0) * (state.chorusSendLevel ?? 0);
+    const delay = self.calcDelaySendLevel
+      ? self.calcDelaySendLevel(channel, note)
+      : (state.delaySendLevel ?? 0);
+    return {
+      reverb: Math.max(0, Math.min(1, reverb)),
+      chorus: Math.max(0, Math.min(1, chorus)),
+      delay: Math.max(0, Math.min(1, delay)),
+    };
+  }
+
+  /**
+   * Worklet note path (Phase 2): upload sample PCM, pass filter / LFO /
+   * modEnv / volume envelope, start a worklet voice. No Web Audio
+   * per-note graph. Channel vol/expr/pan can be updated live via
+   * setVoiceParams.
    */
   protected async setNoteAudioNodeWorklet(
     channel: TChannel,
@@ -11456,7 +11523,10 @@ export class Player<
 
     const sampleId = audioBufferId;
     if (!engine.hasSample(sampleId)) {
-      const audioBuffer = await this.getRawAudioBuffer(audioBufferId, voiceParams);
+      const audioBuffer = await this.getRawAudioBuffer(
+        audioBufferId,
+        voiceParams,
+      );
       if (note.ending || !audioBuffer) return;
       const pcmL = audioBuffer.getChannelData(0);
       const pcmR = audioBuffer.numberOfChannels > 1
@@ -11465,14 +11535,9 @@ export class Player<
       const sr = audioBuffer.sampleRate;
       const loop = (voiceParams.sampleModes & 1) === 1 &&
         voiceParams.loopEnd > voiceParams.loopStart;
-      // voiceParams loop points are in sample frames of the original sample
-      // relative to start offset already applied in createAudioBuffer.
       let loopStart = 0;
       let loopEnd = audioBuffer.length;
       if (loop) {
-        // Approximate: loop points in the sliced buffer space.
-        // createAudioBuffer already sliced [start, end); loop is relative
-        // to original — for Phase 1 use full buffer loop when modes say loop.
         loopStart = Math.max(0, Math.min(audioBuffer.length - 1, 0));
         loopEnd = audioBuffer.length;
       }
@@ -11487,30 +11552,40 @@ export class Player<
       );
     }
 
-    // Snapshot channel volume/expression (relative to SF2 default modulators)
-    // and zone+channel pan. Dynamic CC updates are Phase 2.
     const gainFromCC = sf2VolumeExprGain(
       channel.state.volumeMSB,
       channel.state.expressionMSB,
     ) / DEFAULT_SF2_VOLUME_EXPR_GAIN;
     const atten = cbToRatio(-voiceParams.initialAttenuation);
     const gain = Math.max(0, atten * gainFromCC);
+    // Stash zone attenuation so updateChannelVolume can recompute gain.
+    (note as TNote & { workletBaseAtten?: number }).workletBaseAtten = atten;
+    (note as TNote & { workletZonePan?: number }).workletZonePan =
+      voiceParams.pan;
 
-    const zonePan = voiceParams.pan; // SF2 pan generator scaled to ~[-0.5, 0.5]
-    const chPan = channel.state.panMSB; // 0..1, center 0.5
+    const zonePan = voiceParams.pan;
+    const chPan = channel.state.panMSB;
     const pan = Math.max(-1, Math.min(1, zonePan * 2 + (chPan - 0.5) * 2));
 
-    // playbackRate includes key scaling; add channel detune (cents)
     const detuneCents = channel.detune + (voiceParams.detune || 0);
     const playbackRate = voiceParams.playbackRate *
       Math.pow(2, detuneCents / 1200);
 
     const sustainLin = cbToRatio(-1000 * voiceParams.sustainVolEnv);
 
+    // Filter Q (linear) + DC gain compensation, same as TypedArray bake path.
+    const { q: filterQ, dcGain: filterDcGain } = sf2FilterQ(
+      voiceParams.initialFilterQ,
+    );
+
+    // Mod-env sustain: SF2 sustainModEnv is 0=full / 1=off → linear level.
+    const modSustainLevel = Math.max(
+      0,
+      Math.min(1, 1 - (voiceParams.sustainModEnv ?? 0)),
+    );
+
     const voiceId = engine.allocVoiceId();
     note.workletVoiceId = voiceId;
-    // Mark as "has audio" so soundingNotes / release paths keep the note
-    // without requiring bufferSource.
     this.soundingNotes.add(note);
 
     engine.noteOn(voiceId, {
@@ -11525,7 +11600,34 @@ export class Player<
       decay: Math.max(1e-4, voiceParams.decayVolEnv),
       sustain: Math.max(0, Math.min(1, sustainLin / Math.max(atten, 1e-6))),
       release: Math.max(1e-4, voiceParams.releaseVolEnv),
+      // Filter
+      filterFcCents: voiceParams.initialFilterFc,
+      filterQ,
+      filterDcGain,
+      // Mod envelope
+      delayModEnv: voiceParams.delayModEnv,
+      attackModEnv: Math.max(1e-4, voiceParams.attackModEnv),
+      holdModEnv: voiceParams.holdModEnv,
+      decayModEnv: Math.max(1e-4, voiceParams.decayModEnv),
+      sustainModEnv: modSustainLevel,
+      releaseModEnv: Math.max(1e-4, voiceParams.releaseModEnv),
+      modEnvToPitch: voiceParams.modEnvToPitch,
+      modEnvToFilterFc: voiceParams.modEnvToFilterFc,
+      // Mod LFO (freq is in absolute cents in SF2 → Hz)
+      delayModLFO: voiceParams.delayModLFO,
+      freqModLFO: this.centToHz(voiceParams.freqModLFO),
+      modLfoToPitch: voiceParams.modLfoToPitch,
+      modLfoToFilterFc: voiceParams.modLfoToFilterFc,
+      modLfoToVolume: voiceParams.modLfoToVolume,
+      // Vib LFO
+      delayVibLFO: voiceParams.delayVibLFO,
+      freqVibLFO: this.centToHz(voiceParams.freqVibLFO),
+      vibLfoToPitch: voiceParams.vibLfoToPitch,
     });
+
+    // Post-stage effect sends (reverb / chorus / delay buses).
+    const sends = this.calcWorkletEffectSends(channel, note);
+    engine.setVoiceEffectSends(voiceId, sends);
   }
 
   protected releaseNoteWorklet(

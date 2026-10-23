@@ -4,7 +4,7 @@
 /** Processor registration name for AudioWorkletNode. */
 export const MIDY_WORKLET_NAME = "midy-synth-processor";
 
-/** Max concurrent voices inside the worklet (Phase 1). */
+/** Max concurrent voices inside the worklet. */
 export const WORKLET_MAX_VOICES = 64;
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,10 @@ export type WorkletLoadSampleMsg = {
   loop: boolean;
 };
 
+/**
+ * Phase-2 noteOn: volume envelope + filter + modEnv + LFOs.
+ * All times are seconds; depths are SF2 units (cents / cB as noted).
+ */
 export type WorkletNoteOnMsg = {
   type: "noteOn";
   voiceId: number;
@@ -46,6 +50,42 @@ export type WorkletNoteOnMsg = {
   /** Sustain level in linear amplitude relative to peak (0–1). */
   sustain: number;
   release: number;
+
+  // --- Filter (Phase 2.1) ---
+  /** Base cutoff in absolute cents (SF2 initialFilterFc). */
+  filterFcCents: number;
+  /** Linear Q (after sf2FilterQ conversion). */
+  filterQ: number;
+  /** DC gain compensation 1/√Q. */
+  filterDcGain: number;
+
+  // --- Modulation envelope (Phase 2.3) ---
+  delayModEnv: number;
+  attackModEnv: number;
+  holdModEnv: number;
+  decayModEnv: number;
+  /** Sustain as 0–1 fraction of full scale (1 - sustainModEnv in SF2). */
+  sustainModEnv: number;
+  releaseModEnv: number;
+  /** Pitch depth in cents (modEnvToPitch). */
+  modEnvToPitch: number;
+  /** Filter Fc depth in cents (modEnvToFilterFc). */
+  modEnvToFilterFc: number;
+
+  // --- Mod LFO (Phase 2.2) ---
+  delayModLFO: number;
+  /** Frequency in Hz. */
+  freqModLFO: number;
+  modLfoToPitch: number;
+  modLfoToFilterFc: number;
+  /** Depth in centibels (SF2 modLfoToVolume). */
+  modLfoToVolume: number;
+
+  // --- Vib LFO (Phase 2.2) ---
+  delayVibLFO: number;
+  /** Frequency in Hz. */
+  freqVibLFO: number;
+  vibLfoToPitch: number;
 };
 
 export type WorkletNoteOffMsg = {
@@ -70,13 +110,26 @@ export type WorkletSetMasterGainMsg = {
   value: number;
 };
 
+/** Dynamic per-voice gain / pan (channel volume / expression / pan). */
+export type WorkletSetVoiceParamsMsg = {
+  type: "setVoiceParams";
+  voiceId: number;
+  /** Absolute linear gain (replaces noteOn.gain). */
+  gain?: number;
+  /** Absolute pan in [-1, 1]. */
+  pan?: number;
+  /** Absolute playback rate (includes key + detune + pitch bend). */
+  playbackRate?: number;
+};
+
 export type WorkletMainToProcessorMsg =
   | WorkletLoadSampleMsg
   | WorkletNoteOnMsg
   | WorkletNoteOffMsg
   | WorkletStopMsg
   | WorkletAllSoundOffMsg
-  | WorkletSetMasterGainMsg;
+  | WorkletSetMasterGainMsg
+  | WorkletSetVoiceParamsMsg;
 
 // ---------------------------------------------------------------------------
 // Worklet → Main (optional diagnostics)

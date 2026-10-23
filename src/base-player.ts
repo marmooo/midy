@@ -3877,12 +3877,49 @@ export class BasePlayer<
   }
 
   updateChannelVolume(channel: TChannel, scheduleTime: number): void {
-    if (!channel.gainL) return;
     const state = channel.state;
     // Relative square-law vs GM default. Absolute onset lives in modulators;
     // at default volume this factor is 1 (no double application).
     const abs = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB);
     const gain = abs / DEFAULT_SF2_VOLUME_EXPR_GAIN;
+
+    // Worklet mode: push gain/pan into each active worklet voice on this channel.
+    // Channel gain nodes are not in the path (worklet → masterVolume).
+    const engine = (this as unknown as {
+      workletEngine?: {
+        setVoiceParams: (
+          id: number,
+          p: { gain?: number; pan?: number },
+        ) => void;
+      } | null;
+    }).workletEngine;
+    if (engine) {
+      const chPan = state.panMSB;
+      const stacks = channel.activeNotes;
+      for (let i = 0; i < stacks.length; i++) {
+        const stack = stacks[i];
+        if (!stack) continue;
+        for (let j = 0; j < stack.length; j++) {
+          const note = stack[j] as {
+            workletVoiceId?: number | null;
+            workletBaseAtten?: number;
+            workletZonePan?: number;
+          };
+          const voiceId = note.workletVoiceId;
+          if (voiceId == null) continue;
+          const baseAtten = note.workletBaseAtten ?? 1;
+          const zonePan = note.workletZonePan ?? 0;
+          const voiceGain = Math.max(0, baseAtten * gain);
+          const pan = Math.max(
+            -1,
+            Math.min(1, zonePan * 2 + (chPan - 0.5) * 2),
+          );
+          engine.setVoiceParams(voiceId, { gain: voiceGain, pan });
+        }
+      }
+    }
+
+    if (!channel.gainL) return;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel.gainL.gain

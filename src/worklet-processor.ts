@@ -1,8 +1,14 @@
-// AudioWorkletProcessor for midy "worklet" cacheMode (Phase 1).
+// AudioWorkletProcessor for midy "worklet" cacheMode (Phase 2).
 //
 // Self-contained source string is used via Blob URL so the library does not
 // require a separate worklet file at a known path. Keep protocol field names
 // in sync with worklet-protocol.ts.
+//
+// Phase 2 adds:
+//   1. Lowpass filter (initialFilterFc / Q + modEnv / modLFO)
+//   2. Mod LFO + Vib LFO → pitch / filter / volume
+//   3. Modulation envelope → pitch / filter
+//   4. Dynamic per-voice gain / pan / playbackRate (channel vol/expr/pan)
 
 export const MIDY_WORKLET_NAME = "midy-synth-processor";
 export const WORKLET_MAX_VOICES = 64;
@@ -14,6 +20,8 @@ export const WORKLET_MAX_VOICES = 64;
 export const WORKLET_PROCESSOR_SOURCE = `
 const MAX_VOICES = ${WORKLET_MAX_VOICES};
 const NAME = ${JSON.stringify(MIDY_WORKLET_NAME)};
+const TWO_PI = Math.PI * 2;
+const FULLY_OPEN_CENTS = 13500;
 
 class SampleEntry {
   constructor(pcmL, pcmR, sampleRate, loopStart, loopEnd, loop) {
@@ -27,7 +35,7 @@ class SampleEntry {
   }
 }
 
-// Envelope stages
+// Envelope stages (shared by vol + mod)
 const ENV_IDLE = 0;
 const ENV_DELAY = 1;
 const ENV_ATTACK = 2;
@@ -37,8 +45,38 @@ const ENV_SUSTAIN = 5;
 const ENV_RELEASE = 6;
 const ENV_DONE = 7;
 
+function centToHz(cents) {
+  return 8.176 * Math.pow(2, cents / 1200);
+}
+
+function clampFc(hz, nyquist) {
+  if (hz < 20) return 20;
+  const max = nyquist * 0.99;
+  return hz > max ? max : hz;
+}
+
+// RBJ lowpass coefficients. q is linear Q.
+function lowpassCoeffs(freq, q, sr) {
+  const w0 = TWO_PI * freq / sr;
+  const cosw = Math.cos(w0);
+  const sinw = Math.sin(w0);
+  const alpha = sinw / (2 * Math.max(0.001, q));
+  const b0 = (1 - cosw) * 0.5;
+  const b1 = 1 - cosw;
+  const b2 = b0;
+  const a0 = 1 + alpha;
+  const a1 = -2 * cosw;
+  const a2 = 1 - alpha;
+  const invA0 = 1 / a0;
+  return [b0 * invA0, b1 * invA0, b2 * invA0, a1 * invA0, a2 * invA0];
+}
+
 class Voice {
   constructor() {
+    this.reset();
+  }
+
+  reset() {
     this.active = false;
     this.voiceId = -1;
     this.sample = null;
@@ -47,6 +85,8 @@ class Voice {
     this.gain = 1;
     this.panL = 0.7071;
     this.panR = 0.7071;
+
+    // Volume envelope
     this.envStage = ENV_IDLE;
     this.envLevel = 0;
     this.envTime = 0;
@@ -56,19 +96,49 @@ class Voice {
     this.decay = 0.01;
     this.sustain = 1;
     this.release = 0.05;
-    this.startFrame = 0;
     this.releasing = false;
-  }
 
-  reset() {
-    this.active = false;
-    this.voiceId = -1;
-    this.sample = null;
-    this.phase = 0;
-    this.envStage = ENV_IDLE;
-    this.envLevel = 0;
-    this.envTime = 0;
-    this.releasing = false;
+    // Mod envelope
+    this.modStage = ENV_IDLE;
+    this.modLevel = 0;
+    this.modTime = 0;
+    this.delayModEnv = 0;
+    this.attackModEnv = 0.001;
+    this.holdModEnv = 0;
+    this.decayModEnv = 0.01;
+    this.sustainModEnv = 0;
+    this.releaseModEnv = 0.05;
+    this.modEnvToPitch = 0;
+    this.modEnvToFilterFc = 0;
+
+    // Filter
+    this.filterFcCents = FULLY_OPEN_CENTS;
+    this.filterQ = 0.7071;
+    this.filterDcGain = 1;
+    this.filterEnabled = false;
+    this.z1L = 0; this.z2L = 0;
+    this.z1R = 0; this.z2R = 0;
+    this.b0 = 1; this.b1 = 0; this.b2 = 0;
+    this.a1 = 0; this.a2 = 0;
+    this.lastFc = -1;
+
+    // Mod LFO
+    this.modLfoPhase = 0;
+    this.modLfoDelay = 0;
+    this.modLfoFreq = 5;
+    this.modLfoToPitch = 0;
+    this.modLfoToFilterFc = 0;
+    this.modLfoToVolume = 0; // cB
+    this.modLfoAge = 0;
+
+    // Vib LFO
+    this.vibLfoPhase = 0;
+    this.vibLfoDelay = 0;
+    this.vibLfoFreq = 5;
+    this.vibLfoToPitch = 0;
+    this.vibLfoAge = 0;
+
+    this.startFrame = 0;
   }
 }
 
@@ -115,6 +185,24 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       case "setMasterGain":
         this.masterGain = Math.max(0, Math.min(2, +msg.value || 0));
         break;
+      case "setVoiceParams":
+        this.handleSetVoiceParams(msg);
+        break;
+    }
+  }
+
+  handleSetVoiceParams(msg) {
+    const v = this.voiceById.get(msg.voiceId | 0);
+    if (!v || !v.active) return;
+    if (msg.gain != null) v.gain = Math.max(0, +msg.gain);
+    if (msg.pan != null) {
+      const pan = Math.max(-1, Math.min(1, +msg.pan));
+      const angle = (pan + 1) * 0.25 * Math.PI;
+      v.panL = Math.cos(angle);
+      v.panR = Math.sin(angle);
+    }
+    if (msg.playbackRate != null) {
+      v.playbackRate = Math.max(1e-6, +msg.playbackRate);
     }
   }
 
@@ -122,7 +210,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < MAX_VOICES; i++) {
       if (!this.voices[i].active) return this.voices[i];
     }
-    // Steal oldest (lowest startFrame among active)
     let best = this.voices[0];
     for (let i = 1; i < MAX_VOICES; i++) {
       const v = this.voices[i];
@@ -137,7 +224,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     const sample = this.samples.get(msg.sampleId);
     if (!sample) return;
 
-    // Replace existing same voiceId
     const existing = this.voiceById.get(msg.voiceId);
     if (existing) {
       existing.reset();
@@ -152,10 +238,11 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.playbackRate = Math.max(1e-6, +msg.playbackRate || 1);
     v.gain = Math.max(0, +msg.gain || 0);
     const pan = Math.max(-1, Math.min(1, +msg.pan || 0));
-    // Constant-power pan
     const angle = (pan + 1) * 0.25 * Math.PI;
     v.panL = Math.cos(angle);
     v.panR = Math.sin(angle);
+
+    // Vol env
     v.delay = Math.max(0, +msg.delay || 0);
     v.attack = Math.max(1e-4, +msg.attack || 1e-4);
     v.hold = Math.max(0, +msg.hold || 0);
@@ -166,7 +253,49 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.envLevel = 0;
     v.envTime = 0;
     v.releasing = false;
-    // Schedule relative to currentTime
+
+    // Filter
+    v.filterFcCents = msg.filterFcCents != null ? +msg.filterFcCents : FULLY_OPEN_CENTS;
+    v.filterQ = Math.max(0.001, +msg.filterQ || 0.7071);
+    v.filterDcGain = msg.filterDcGain != null ? +msg.filterDcGain : 1;
+    v.modEnvToFilterFc = +msg.modEnvToFilterFc || 0;
+    v.modLfoToFilterFc = +msg.modLfoToFilterFc || 0;
+    v.filterEnabled =
+      v.filterFcCents < FULLY_OPEN_CENTS ||
+      v.modEnvToFilterFc !== 0 ||
+      v.modLfoToFilterFc !== 0 ||
+      v.filterQ > 1.01;
+    v.z1L = v.z2L = v.z1R = v.z2R = 0;
+    v.lastFc = -1;
+
+    // Mod env
+    v.delayModEnv = Math.max(0, +msg.delayModEnv || 0);
+    v.attackModEnv = Math.max(1e-4, +msg.attackModEnv || 1e-4);
+    v.holdModEnv = Math.max(0, +msg.holdModEnv || 0);
+    v.decayModEnv = Math.max(1e-4, +msg.decayModEnv || 1e-4);
+    // sustainModEnv here is the linear sustain level of the envelope (0=full, SF2 sustain is inverted)
+    v.sustainModEnv = Math.max(0, Math.min(1, +msg.sustainModEnv || 0));
+    v.releaseModEnv = Math.max(1e-4, +msg.releaseModEnv || 0.05);
+    v.modEnvToPitch = +msg.modEnvToPitch || 0;
+    v.modStage = ENV_DELAY;
+    v.modLevel = 0;
+    v.modTime = 0;
+
+    // Mod LFO
+    v.modLfoDelay = Math.max(0, +msg.delayModLFO || 0);
+    v.modLfoFreq = Math.max(0, +msg.freqModLFO || 0);
+    v.modLfoToPitch = +msg.modLfoToPitch || 0;
+    v.modLfoToVolume = +msg.modLfoToVolume || 0;
+    v.modLfoPhase = 0;
+    v.modLfoAge = 0;
+
+    // Vib LFO
+    v.vibLfoDelay = Math.max(0, +msg.delayVibLFO || 0);
+    v.vibLfoFreq = Math.max(0, +msg.freqVibLFO || 0);
+    v.vibLfoToPitch = +msg.vibLfoToPitch || 0;
+    v.vibLfoPhase = 0;
+    v.vibLfoAge = 0;
+
     const when = +msg.when || currentTime;
     v.startFrame = Math.max(currentFrame, Math.floor(when * sampleRate));
     this.voiceById.set(v.voiceId, v);
@@ -177,9 +306,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     if (!v || !v.active || v.releasing) return;
     v.releasing = true;
     if (msg.release != null) v.release = Math.max(1e-4, +msg.release);
-    // Enter release from current level
     v.envStage = ENV_RELEASE;
     v.envTime = 0;
+    // Mod env also enters release
+    if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+      v.modStage = ENV_RELEASE;
+      v.modTime = 0;
+    }
   }
 
   stopVoice(voiceId) {
@@ -189,8 +322,12 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.voiceById.delete(voiceId | 0);
   }
 
-  processEnvelope(v, dt) {
-    // Advance envelope by dt seconds; returns linear env level 0–1 (peak=1)
+  // Advance a generic AHDSR; mutates stage/time/level. Returns current level.
+  advanceEnv(stageRef, timeRef, levelRef, delay, attack, hold, decay, sustain, release, dt, releasing) {
+    // We mutate via object to keep JS simple inside the string
+  }
+
+  processVolEnv(v, dt) {
     switch (v.envStage) {
       case ENV_DELAY:
         v.envTime += dt;
@@ -205,8 +342,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       case ENV_ATTACK: {
         v.envTime += dt;
         const t = Math.min(1, v.envTime / v.attack);
-        // Approximate log attack: start near silence
-        v.envLevel = Math.max(1e-5, Math.exp(Math.log(1e-5) + t * (0 - Math.log(1e-5))));
+        v.envLevel = t;
         if (v.envTime >= v.attack) {
           v.envStage = ENV_HOLD;
           v.envTime = 0;
@@ -225,12 +361,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       case ENV_DECAY: {
         v.envTime += dt;
         const t = Math.min(1, v.envTime / v.decay);
-        const logStart = 0; // log(1)
-        const logEnd = Math.log(Math.max(v.sustain, 1e-5));
-        v.envLevel = Math.exp(logStart + t * (logEnd - logStart));
+        v.envLevel = 1 + (v.sustain - 1) * t;
         if (v.envTime >= v.decay) {
           v.envStage = ENV_SUSTAIN;
-          v.envTime = 0;
           v.envLevel = v.sustain;
         }
         break;
@@ -240,42 +373,101 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         break;
       case ENV_RELEASE: {
         v.envTime += dt;
-        const start = Math.max(v.envLevel, 1e-5);
-        // On first release sample, freeze start level into envLevel as peak for ramp
-        if (v.envTime <= dt) {
-          v._releaseStart = start;
+        // Exponential-ish linear fall from current release start level
+        if (v.envTime <= 0) {
+          // capture start level on first release sample
         }
-        const rs = v._releaseStart || start;
+        const startLevel = v._relStart != null ? v._relStart : (v._relStart = v.envLevel || 1e-6);
         const t = Math.min(1, v.envTime / v.release);
-        const logStart = Math.log(Math.max(rs, 1e-5));
-        const logEnd = Math.log(1e-5);
-        v.envLevel = Math.exp(logStart + t * (logEnd - logStart));
-        if (v.envTime >= v.release || v.envLevel <= 1e-5) {
+        v.envLevel = startLevel * (1 - t);
+        if (v.envTime >= v.release || v.envLevel < 1e-5) {
           v.envStage = ENV_DONE;
           v.envLevel = 0;
         }
         break;
       }
-      default:
+      case ENV_DONE:
         v.envLevel = 0;
         break;
     }
     return v.envLevel;
   }
 
-  readSample(sample, phase) {
+  processModEnv(v, dt) {
+    switch (v.modStage) {
+      case ENV_DELAY:
+        v.modTime += dt;
+        if (v.modTime >= v.delayModEnv) {
+          v.modStage = ENV_ATTACK;
+          v.modTime = 0;
+          v.modLevel = 0;
+        } else {
+          v.modLevel = 0;
+        }
+        break;
+      case ENV_ATTACK: {
+        v.modTime += dt;
+        const t = Math.min(1, v.modTime / v.attackModEnv);
+        v.modLevel = t;
+        if (v.modTime >= v.attackModEnv) {
+          v.modStage = ENV_HOLD;
+          v.modTime = 0;
+          v.modLevel = 1;
+        }
+        break;
+      }
+      case ENV_HOLD:
+        v.modTime += dt;
+        v.modLevel = 1;
+        if (v.modTime >= v.holdModEnv) {
+          v.modStage = ENV_DECAY;
+          v.modTime = 0;
+        }
+        break;
+      case ENV_DECAY: {
+        v.modTime += dt;
+        const t = Math.min(1, v.modTime / v.decayModEnv);
+        // sustainModEnv is already the target level (0–1)
+        v.modLevel = 1 + (v.sustainModEnv - 1) * t;
+        if (v.modTime >= v.decayModEnv) {
+          v.modStage = ENV_SUSTAIN;
+          v.modLevel = v.sustainModEnv;
+        }
+        break;
+      }
+      case ENV_SUSTAIN:
+        v.modLevel = v.sustainModEnv;
+        break;
+      case ENV_RELEASE: {
+        v.modTime += dt;
+        const startLevel = v._modRelStart != null ? v._modRelStart : (v._modRelStart = v.modLevel || 0);
+        const t = Math.min(1, v.modTime / v.releaseModEnv);
+        v.modLevel = startLevel * (1 - t);
+        if (v.modTime >= v.releaseModEnv) {
+          v.modStage = ENV_DONE;
+          v.modLevel = 0;
+        }
+        break;
+      }
+      case ENV_DONE:
+        v.modLevel = 0;
+        break;
+    }
+    return v.modLevel;
+  }
+
+  readSample(sample, p) {
     const len = sample.length;
-    if (len <= 0) return [0, 0];
-    let p = phase;
-    if (sample.loop && sample.loopEnd > sample.loopStart) {
+    if (sample.loop) {
       const ls = sample.loopStart;
       const le = sample.loopEnd;
       if (p >= le) {
         const loopLen = le - ls;
+        if (loopLen <= 0) return null;
         p = ls + ((p - ls) % loopLen);
       }
     } else if (p >= len - 1) {
-      return null; // ended
+      return null;
     }
     const i0 = Math.floor(p);
     const i1 = Math.min(i0 + 1, len - 1);
@@ -292,6 +484,30 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     return [left, right, p];
   }
 
+  updateFilter(v, fcHz, sr) {
+    // Recompute coeffs only when Fc moves enough
+    if (Math.abs(fcHz - v.lastFc) < 0.5) return;
+    v.lastFc = fcHz;
+    const c = lowpassCoeffs(fcHz, v.filterQ, sr);
+    v.b0 = c[0]; v.b1 = c[1]; v.b2 = c[2];
+    v.a1 = c[3]; v.a2 = c[4];
+  }
+
+  processFilter(v, left, right) {
+    // Transposed Direct Form II
+    const xL = left;
+    const outL = v.b0 * xL + v.z1L;
+    v.z1L = v.b1 * xL - v.a1 * outL + v.z2L;
+    v.z2L = v.b2 * xL - v.a2 * outL;
+
+    const xR = right;
+    const outR = v.b0 * xR + v.z1R;
+    v.z1R = v.b1 * xR - v.a1 * outR + v.z2R;
+    v.z2R = v.b2 * xR - v.a2 * outR;
+
+    return [outL * v.filterDcGain, outR * v.filterDcGain];
+  }
+
   process(_inputs, outputs) {
     const output = outputs[0];
     if (!output || output.length === 0) return true;
@@ -300,6 +516,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     const n = outL.length;
     const sr = sampleRate;
     const invSr = 1 / sr;
+    const nyquist = sr * 0.5;
     const mg = this.masterGain;
 
     for (let i = 0; i < n; i++) {
@@ -314,17 +531,53 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       if (!v.active || !v.sample) continue;
 
       const sample = v.sample;
-      const rateScale = v.playbackRate * (sample.sampleRate / sr);
       let ended = false;
 
       for (let i = 0; i < n; i++) {
         const absFrame = frame0 + i;
         if (absFrame < v.startFrame) continue;
 
-        const env = this.processEnvelope(v, invSr);
+        const env = this.processVolEnv(v, invSr);
         if (v.envStage === ENV_DONE) {
           ended = true;
           break;
+        }
+
+        const modEnv = this.processModEnv(v, invSr);
+
+        // LFO ages
+        v.modLfoAge += invSr;
+        v.vibLfoAge += invSr;
+
+        let modLfo = 0;
+        if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0) {
+          modLfo = Math.sin(v.modLfoPhase);
+          v.modLfoPhase += TWO_PI * v.modLfoFreq * invSr;
+          if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+        }
+
+        let vibLfo = 0;
+        if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0) {
+          vibLfo = Math.sin(v.vibLfoPhase);
+          v.vibLfoPhase += TWO_PI * v.vibLfoFreq * invSr;
+          if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+        }
+
+        // Pitch modulation in cents → rate scale
+        const pitchCents =
+          modEnv * v.modEnvToPitch +
+          modLfo * v.modLfoToPitch +
+          vibLfo * v.vibLfoToPitch;
+        const rateScale = v.playbackRate *
+          (sample.sampleRate / sr) *
+          (pitchCents !== 0 ? Math.pow(2, pitchCents / 1200) : 1);
+
+        // Volume LFO (centibels → linear)
+        let volLfo = 1;
+        if (v.modLfoToVolume !== 0 && modLfo !== 0) {
+          // modLfoToVolume is in cB; bipolar LFO → ±depth
+          const cb = modLfo * v.modLfoToVolume;
+          volLfo = Math.pow(10, cb / 200); // cB/10 = dB; 10^(dB/20) = 10^(cB/200)
         }
 
         const result = this.readSample(sample, v.phase);
@@ -332,11 +585,23 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           ended = true;
           break;
         }
-        const left = result[0];
-        const right = result[1];
+        let left = result[0];
+        let right = result[1];
         v.phase = result[2] + rateScale;
 
-        const amp = v.gain * env * mg;
+        if (v.filterEnabled) {
+          const fcCents =
+            v.filterFcCents +
+            modEnv * v.modEnvToFilterFc +
+            modLfo * v.modLfoToFilterFc;
+          const fcHz = clampFc(centToHz(fcCents), nyquist);
+          this.updateFilter(v, fcHz, sr);
+          const filtered = this.processFilter(v, left, right);
+          left = filtered[0];
+          right = filtered[1];
+        }
+
+        const amp = v.gain * env * volLfo * mg;
         outL[i] += left * amp * v.panL;
         outR[i] += right * amp * v.panR;
       }

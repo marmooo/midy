@@ -933,6 +933,12 @@ export class Midy extends MidyGM2 {
 
   setDelaySend(channel: Channel, note: Note, scheduleTime: number): void {
     const level = this.calcDelaySendLevel(channel, note);
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        delay: level,
+      });
+      return;
+    }
     note.delaySend = this.updateNoteSendGain(
       note,
       note.delaySend,

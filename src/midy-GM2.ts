@@ -1882,6 +1882,11 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (this.reverbEffect) this.reverbEffect.output.disconnect();
     this.reverbEffect = this.createReverbEffect(algorithm);
     this.reverb.algorithm = algorithm;
+    this.reverbEffect.output.connect(this.masterVolume);
+    // Keep worklet post-stage send wired to the new effect input.
+    this.workletEngine?.setEffectInputs({
+      reverbInput: this.reverbEffect.input,
+    });
   }
 
   createReverbEffect(algorithm: ReverbAlgorithm): ReverbEffect {
@@ -3187,6 +3192,13 @@ export class MidyGM2 extends Player<Note, Channel> {
 
   setReverbSend(channel: Channel, note: Note, scheduleTime: number): void {
     const level = this.calcReverbSendLevel(channel, note);
+    // Worklet path: update post-mix effect bus instead of per-note GainNode.
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        reverb: level,
+      });
+      return;
+    }
     note.reverbSend = this.updateNoteSendGain(
       note,
       note.reverbSend,
@@ -3198,6 +3210,12 @@ export class MidyGM2 extends Player<Note, Channel> {
 
   setChorusSend(channel: Channel, note: Note, scheduleTime: number): void {
     const level = this.calcChorusSendLevel(channel, note);
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        chorus: level,
+      });
+      return;
+    }
     note.chorusSend = this.updateNoteSendGain(
       note,
       note.chorusSend,
