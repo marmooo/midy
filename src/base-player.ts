@@ -455,6 +455,8 @@ export class Note {
   // FIFO across groups (stacked same-pitch noteOns) but releases every
   // non-ending layer of the oldest group together.
   noteGroupId: number = 0;
+  /** Voice id inside WorkletEngine when cacheMode === "worklet". */
+  workletVoiceId: number | null = null;
 
   constructor(noteNumber: number, velocity: number, startTime: number) {
     this.noteNumber = noteNumber;

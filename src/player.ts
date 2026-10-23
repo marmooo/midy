@@ -36,6 +36,7 @@ import {
   isChunkCacheMode,
   isSegmentCacheMode,
   isTiledCacheMode,
+  isWorkletCacheMode,
   needsNoteOnDurations,
   type NoteOnEntry,
   type NoteOnEventEntry,
@@ -59,6 +60,7 @@ import {
 } from "./bake-worker-pool.ts";
 
 import { MixPcmCache } from "./mix-pcm-cache.ts";
+import { WorkletEngine } from "./worklet-engine.ts";
 
 /** Per-tile mix phase timings filled by mixEntriesToBuffer (chunk-heavy logs). */
 type MixTileDetail = {
@@ -98,6 +100,7 @@ export {
   isRealtimeCacheMode,
   isSegmentCacheMode,
   isTiledCacheMode,
+  isWorkletCacheMode,
   needsNoteOnDurations,
   type NoteOnEntry,
   type NoteOnEventEntry,
@@ -116,6 +119,8 @@ export class Player<
   TChannel extends Channel<TNote> = Channel<TNote>,
 > extends BasePlayer<TNote, TChannel> {
   cacheMode: CacheMode = DEFAULT_CACHE_MODE;
+  /** AudioWorklet bridge when cacheMode === "worklet". */
+  workletEngine: WorkletEngine | null = null;
   // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
   // One-level Map (no nesting). bigint avoids Number precision loss when
   // audioBufferId is large after the non-overlapping getVoiceId packing.
@@ -11252,6 +11257,10 @@ export class Player<
       (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
+    if (this.cacheMode === "worklet") {
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
+      return;
+    }
     if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound
       // comes from the combined segment buffer, baked and scheduled
@@ -11393,12 +11402,165 @@ export class Player<
     }
   }
 
+
+
+  override soundOffNote(note: TNote, scheduleTime: number): Promise<void> {
+    if (note.workletVoiceId != null) {
+      note.ending = true;
+      const engine = this.workletEngine;
+      const voiceId = note.workletVoiceId;
+      if (engine) engine.stop(voiceId);
+      this.soundingNotes.delete(note);
+      note.workletVoiceId = null;
+      return Promise.resolve();
+    }
+    return super.soundOffNote(note, scheduleTime);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worklet mode (cacheMode === "worklet")
+  // ---------------------------------------------------------------------------
+
+  /** Lazily create WorkletEngine and connect to masterVolume. */
+  async ensureWorkletEngine(): Promise<WorkletEngine> {
+    if (this.workletEngine) return this.workletEngine;
+    const ctx = this.audioContext;
+    if (ctx instanceof OfflineAudioContext) {
+      throw new Error("worklet mode is not supported on OfflineAudioContext");
+    }
+    const engine = new WorkletEngine(ctx);
+    await engine.ensureStarted(this.masterVolume);
+    this.workletEngine = engine;
+    return engine;
+  }
+
+  /**
+   * Phase-1 worklet note path: upload sample PCM, snapshot gain/pan/env,
+   * start a worklet voice. No Web Audio per-note graph.
+   */
+  protected async setNoteAudioNodeWorklet(
+    channel: TChannel,
+    note: TNote,
+    _realtime: boolean,
+  ): Promise<void> {
+    const voiceParams = note.voiceParams;
+    if (!voiceParams) return;
+
+    const engine = await this.ensureWorkletEngine();
+    if (note.ending) return;
+
+    const audioBufferId = note.audioBufferId !== undefined
+      ? note.audioBufferId
+      : this.getVoiceId(channel, note.noteNumber, note.velocity);
+    if (audioBufferId === undefined) return;
+
+    const sampleId = audioBufferId;
+    if (!engine.hasSample(sampleId)) {
+      const audioBuffer = await this.getRawAudioBuffer(audioBufferId, voiceParams);
+      if (note.ending || !audioBuffer) return;
+      const pcmL = audioBuffer.getChannelData(0);
+      const pcmR = audioBuffer.numberOfChannels > 1
+        ? audioBuffer.getChannelData(1)
+        : null;
+      const sr = audioBuffer.sampleRate;
+      const loop = (voiceParams.sampleModes & 1) === 1 &&
+        voiceParams.loopEnd > voiceParams.loopStart;
+      // voiceParams loop points are in sample frames of the original sample
+      // relative to start offset already applied in createAudioBuffer.
+      let loopStart = 0;
+      let loopEnd = audioBuffer.length;
+      if (loop) {
+        // Approximate: loop points in the sliced buffer space.
+        // createAudioBuffer already sliced [start, end); loop is relative
+        // to original — for Phase 1 use full buffer loop when modes say loop.
+        loopStart = Math.max(0, Math.min(audioBuffer.length - 1, 0));
+        loopEnd = audioBuffer.length;
+      }
+      engine.loadSample(
+        sampleId,
+        pcmL,
+        pcmR,
+        sr,
+        loopStart,
+        loopEnd,
+        loop,
+      );
+    }
+
+    // Snapshot channel volume/expression (relative to SF2 default modulators)
+    // and zone+channel pan. Dynamic CC updates are Phase 2.
+    const gainFromCC = sf2VolumeExprGain(
+      channel.state.volumeMSB,
+      channel.state.expressionMSB,
+    ) / DEFAULT_SF2_VOLUME_EXPR_GAIN;
+    const atten = cbToRatio(-voiceParams.initialAttenuation);
+    const gain = Math.max(0, atten * gainFromCC);
+
+    const zonePan = voiceParams.pan; // SF2 pan generator scaled to ~[-0.5, 0.5]
+    const chPan = channel.state.panMSB; // 0..1, center 0.5
+    const pan = Math.max(-1, Math.min(1, zonePan * 2 + (chPan - 0.5) * 2));
+
+    // playbackRate includes key scaling; add channel detune (cents)
+    const detuneCents = channel.detune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate *
+      Math.pow(2, detuneCents / 1200);
+
+    const sustainLin = cbToRatio(-1000 * voiceParams.sustainVolEnv);
+
+    const voiceId = engine.allocVoiceId();
+    note.workletVoiceId = voiceId;
+    // Mark as "has audio" so soundingNotes / release paths keep the note
+    // without requiring bufferSource.
+    this.soundingNotes.add(note);
+
+    engine.noteOn(voiceId, {
+      sampleId,
+      when: note.startTime,
+      playbackRate,
+      gain,
+      pan,
+      delay: voiceParams.delayVolEnv,
+      attack: Math.max(1e-4, voiceParams.attackVolEnv),
+      hold: voiceParams.holdVolEnv,
+      decay: Math.max(1e-4, voiceParams.decayVolEnv),
+      sustain: Math.max(0, Math.min(1, sustainLin / Math.max(atten, 1e-6))),
+      release: Math.max(1e-4, voiceParams.releaseVolEnv),
+    });
+  }
+
+  protected releaseNoteWorklet(
+    note: TNote,
+    endTime: number,
+  ): Promise<void> {
+    const engine = this.workletEngine;
+    const voiceId = note.workletVoiceId;
+    if (!engine || voiceId == null) {
+      this.soundingNotes.delete(note);
+      note.workletVoiceId = null;
+      return Promise.resolve();
+    }
+    const release = note.voiceParams?.releaseVolEnv ?? 0.05;
+    engine.noteOff(voiceId, endTime, release);
+    const waitMs = Math.max(30, release * 1000 + 30);
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        engine.stop(voiceId);
+        this.soundingNotes.delete(note);
+        note.workletVoiceId = null;
+        resolve();
+      }, waitMs);
+    });
+  }
+
   override releaseNote(
     _channel: TChannel,
     note: TNote,
     endTime: number,
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
+    if (note.workletVoiceId != null) {
+      return this.releaseNoteWorklet(note, endTime);
+    }
     const now = this.audioContext.currentTime;
     const tRel = Math.max(0, endTime - note.startTime);
     const heldFromEnvelope = note.volumeEnvelopeNode

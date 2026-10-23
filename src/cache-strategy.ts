@@ -9,6 +9,7 @@
 // - `"segment"` Per-channel tiled offline buffers; channel vol/pan stay live.
 // - `"chunk"`   All-channel tiled offline mix; vol/pan snapshotted into buffer.
 // - `"audio"`   Entire song pre-rendered to one buffer. Lowest CPU.
+// - `"worklet"` Real-time sample synthesis in AudioWorklet (none-equivalent).
 //
 // Simple vs complex notes (note / segment / chunk / audio)
 // -----
@@ -41,7 +42,8 @@ export type CacheMode =
   | "note"
   | "segment"
   | "chunk"
-  | "audio";
+  | "audio"
+  | "worklet";
 
 // Modes that tile notes into offline buffers (per-channel or all-channel).
 export function isTiledCacheMode(mode: CacheMode): boolean {
@@ -86,7 +88,12 @@ export function bakeChannelMixForMode(mode: CacheMode): boolean {
 
 // Modes that primarily schedule Web Audio nodes in real time (not full bake).
 export function isRealtimeCacheMode(mode: CacheMode): boolean {
-  return mode === "none" || mode === "ads" || mode === "adsr";
+  return mode === "none" || mode === "ads" || mode === "adsr" ||
+    mode === "worklet";
+}
+
+export function isWorkletCacheMode(mode: CacheMode): boolean {
+  return mode === "worklet";
 }
 
 // Modes that only work for MIDI-file playback (not live MIDI input).
