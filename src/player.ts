@@ -6656,7 +6656,7 @@ export class Player<
       // it's already true, skips setNoteRouting() entirely -- the note gets
       // built but never connected to any output, i.e. silently dropped.
       let pending: Promise<unknown> | undefined;
-      offlinePlayer.processTimelineEvent(event, t, {
+      const ctrlPending = offlinePlayer.processTimelineEvent(event, t, {
         channels,
         onNoteOn: (channel, ev) => {
           const note = offlinePlayer.createNoteInstance(
@@ -6697,6 +6697,7 @@ export class Player<
           pending = channel.noteOff(ev.noteNumber!, ev.velocity!, t, false);
         },
       });
+      if (ctrlPending) await ctrlPending;
       if (pending) await pending;
     }
 
@@ -8445,25 +8446,20 @@ export class Player<
       : (voiceParams.sampleModes % 2 !== 0);
     const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
     const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    let decayDuration = voiceParams.decayVolEnv;
-    let adsDuration = this.computeAdsDuration(voiceParams);
-    // Cap extreme SF2 decays so bake stays bounded. Compress decay so the
-    // envelope still reaches sustain within the cap (lean path keeps working
-    // with pitch baked into PCM — no raw-buffer pitch bug).
+    const decayDuration = voiceParams.decayVolEnv;
+    const naturalAdsDuration = this.computeAdsDuration(voiceParams);
+    // Cap only the *baked buffer length*, never the envelope time constants.
+    // Compressing decayVolEnv to fit maxAdsBakeDuration made piano body ~6dB
+    // quieter and inflated CC7/CC11 drops (+11–15dB) because the gain curve
+    // reached sustain far earlier than none/realtime / fluidsynth.
     const adsCap = this.maxAdsBakeDuration;
-    if (adsCap > 0 && adsDuration > adsCap) {
-      if (this.debug) {
-        console.log(
-          `[midy] ads-bake-cap | note=${note.noteNumber} ` +
-            `adsDur=${adsDuration.toFixed(3)}s→${adsCap.toFixed(3)}s ` +
-            `decay=${decayDuration.toFixed(3)}s ` +
-            `atk=${voiceParams.attackVolEnv.toFixed(3)}s ` +
-            `hold=${voiceParams.holdVolEnv.toFixed(3)}s`,
-        );
-      }
-      adsDuration = adsCap;
-      // Keep a tiny decay so sustain level is reached inside the buffer.
-      decayDuration = Math.max(0.001, adsCap - holdVolEnvTime);
+    const adsDuration = naturalAdsDuration;
+    if (adsCap > 0 && naturalAdsDuration > adsCap && this.debug) {
+      console.log(
+        `[midy] ads-bake-cap | note=${note.noteNumber} ` +
+          `envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan capped ` +
+          `decay kept=${decayDuration.toFixed(3)}s`,
+      );
     }
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop
@@ -8472,14 +8468,33 @@ export class Player<
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    const loopCount = isLoop && adsDuration > outputLoopStart &&
+    // Buffer time span: follow real envelope progress (not accelerated).
+    // For looped voices, also tile enough cycles for offline sustain so we
+    // do not depend only on AudioBufferSourceNode.loop (none-mode parity).
+    const expandSec = (typeof this.loopExpandDurationSec === "number" &&
+        this.loopExpandDurationSec > 0)
+      ? this.loopExpandDurationSec
+      : 8;
+    // Physical bake length: min(natural needs, cap) but always ≥ one loop
+    // cycle when looping. Envelope gains still use full natural timebase.
+    let targetSpan = isLoop
+      ? Math.max(Math.min(naturalAdsDuration, adsCap > 0 ? adsCap : naturalAdsDuration), expandSec)
+      : Math.min(
+        audioBuffer.duration / playbackRate,
+        adsCap > 0 ? Math.max(adsCap, naturalAdsDuration) : (audioBuffer.duration / playbackRate),
+      );
+    // Non-loop one-shots: keep full pitched duration (do not cut sample).
+    if (!isLoop) {
+      targetSpan = audioBuffer.duration / playbackRate;
+    }
+    const loopCount = isLoop && targetSpan > outputLoopStart &&
         outputLoopDuration > 1e-9
-      ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration)
+      ? Math.ceil((targetSpan - outputLoopStart) / outputLoopDuration)
       : 0;
     const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
     const renderDuration = isLoop
       ? alignedLoopStart + outputLoopDuration
-      : audioBuffer.duration / playbackRate;
+      : targetSpan;
     const sampleRate = this.audioContext.sampleRate;
     const length = Math.ceil(renderDuration * sampleRate);
     // [diag] How large is this ADS bake? Long decayVolEnv → large loopCount.
@@ -8514,20 +8529,18 @@ export class Player<
       filterQ = qDc.q;
       filterDcGain = qDc.dcGain;
     }
-    // When decay was compressed for maxAdsBakeDuration, gains/filter must
-    // use the same capped decay so the buffer ends at sustain level.
-    const envParams = decayDuration === voiceParams.decayVolEnv
-      ? voiceParams
-      : { ...voiceParams, decayVolEnv: decayDuration };
+    // Always use the natural envelope time constants (never a compressed
+    // decay). Buffer may be shorter than full ADS; lean playback loops the
+    // tail at whatever level the true envelope has reached.
     const gains = this.computeAdsVolumeGains(
-      envParams,
+      voiceParams,
       length,
       sampleRate,
       filterDcGain,
     );
-    // ADS buffer has no note-off; filter holds at sustain (noteOffTime=null)
+    // ADS buffer has no note-off; filter holds at mod-sustain (noteOffTime=null)
     const filterFreqs = this.computeFilterFreqCurve(
-      envParams,
+      voiceParams,
       length,
       sampleRate,
       null,

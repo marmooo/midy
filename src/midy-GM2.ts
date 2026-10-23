@@ -646,7 +646,8 @@ export class Channel extends BaseChannel<Note> {
       }
     } else {
       const t: number = scheduleTime ?? player.audioContext.currentTime;
-      player.releaseSustainPedal(this, value, t);
+      const rel = player.releaseSustainPedal(this, value, t);
+      await Promise.all(rel.map((p) => Promise.resolve(p)));
     }
   }
 
@@ -3003,23 +3004,42 @@ export class MidyGM2 extends Player<Note, Channel> {
     halfVelocity: number,
     scheduleTime: number,
   ): (Promise<void> | void)[] {
-    const velocity = halfVelocity * 2;
     const promises: (Promise<void> | void)[] = [];
-    for (let i = 0; i < channel.sustainNotes.length; i++) {
-      const note = channel.sustainNotes[i];
+    const released = new Set<Note>();
+    const forceRelease = (note: Note) => {
+      if (!note || note.ending || released.has(note)) return;
       const heldBySostenuto = channel.sostenutoNotes.some(
         (n) => n === note && !n.ending,
       );
-      if (heldBySostenuto) continue;
-      const promise = channel.noteOff(
-        note.noteNumber,
-        velocity,
-        scheduleTime,
-        true,
-      );
-      promises.push(promise);
+      if (heldBySostenuto) return;
+      released.add(note);
+      note.ending = true;
+      note.heldByPedal = false;
+      const stack = channel.activeNotes[note.noteNumber];
+      if (stack) {
+        channel.activeNotes[note.noteNumber] = stack.filter((n) => n !== note);
+        if (channel.activeNotes[note.noteNumber]!.length === 0) {
+          delete channel.activeNotes[note.noteNumber];
+        }
+      }
+      const p = Promise.resolve(note.ready).then(() => {
+        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
+        return this.releaseNote(channel, note, scheduleTime);
+      });
+      promises.push(p);
+    };
+    for (let i = 0; i < channel.sustainNotes.length; i++) {
+      forceRelease(channel.sustainNotes[i]);
     }
     channel.sustainNotes = [];
+    for (let nn = 0; nn < 128; nn++) {
+      const stack = channel.activeNotes[nn];
+      if (!stack) continue;
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
+        if (n && !n.ending && n.heldByPedal) forceRelease(n);
+      }
+    }
     return promises;
   }
 

@@ -603,13 +603,18 @@ export class Channel<TNote extends Note = Note> {
     controllerType: number,
     value: number,
     scheduleTime?: number,
-  ): void {
+  ): void | Promise<void> {
     const player = this.typedPlayer;
     const t: number = scheduleTime ?? player.audioContext.currentTime;
     const handler = player.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(player, this, value, t);
+      const ret = handler.call(player, this, value, t) as unknown;
       player.applyVoiceParams(this, controllerType + 128, t);
+      // setSustainPedal / setSostenutoPedal are async — offline timeline must
+      // await so pedal-up release runs before subsequent events / render.
+      if (ret != null && typeof (ret as Promise<void>).then === "function") {
+        return ret as Promise<void>;
+      }
     } else {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
@@ -659,7 +664,8 @@ export class Channel<TNote extends Note = Note> {
       }
     } else {
       const t: number = scheduleTime ?? player.audioContext.currentTime;
-      player.releaseSustainPedal(this, value, t);
+      const rel = player.releaseSustainPedal(this, value, t);
+      await Promise.all(rel.map((p) => Promise.resolve(p)));
     }
   }
 
@@ -1770,9 +1776,16 @@ export class BasePlayer<
     let loopStartSec = 0;
     let loopEndSec = audioBuffer.duration;
     if (wantsLoop) {
-      if (isRendered && renderedOrRaw.adsDuration != null) {
-        loopStartSec = renderedOrRaw.loopStart!;
-        loopEndSec = renderedOrRaw.loopStart! + renderedOrRaw.loopDuration!;
+      if (isRendered && renderedOrRaw.loopStart != null &&
+        renderedOrRaw.loopDuration != null &&
+        renderedOrRaw.loopDuration > 1e-9) {
+        loopStartSec = renderedOrRaw.loopStart;
+        loopEndSec = renderedOrRaw.loopStart + renderedOrRaw.loopDuration;
+      } else if (isRendered && renderedOrRaw.adsDuration != null) {
+        // Legacy meta shape
+        loopStartSec = renderedOrRaw.loopStart ?? 0;
+        loopEndSec = (renderedOrRaw.loopStart ?? 0) +
+          (renderedOrRaw.loopDuration ?? 0);
       } else {
         // Prefer the buffer's sample rate (decoded OGG may differ from header).
         const srcRate = audioBuffer.sampleRate || voiceParams.sampleRate || 1;
@@ -1866,12 +1879,11 @@ export class BasePlayer<
         onNoteOff?.(channel, event, scheduleTime);
         break;
       case "controller":
-        channel.setControlChange(
+        return channel.setControlChange(
           event.controllerType!,
           event.value!,
           scheduleTime,
         );
-        break;
       case "programChange":
         channel.setProgramChange(event.programNumber!);
         break;
@@ -3614,18 +3626,43 @@ export class BasePlayer<
     halfVelocity: number,
     scheduleTime: number,
   ): (Promise<void> | void)[] {
-    const velocity = halfVelocity * 2;
     const promises: (Promise<void> | void)[] = [];
+    const released = new Set<TNote>();
+    const forceRelease = (note: TNote) => {
+      if (!note || note.ending || released.has(note)) return;
+      released.add(note);
+      note.ending = true;
+      note.heldByPedal = false;
+      // Drop from activeNotes stack
+      const stack = channel.activeNotes[note.noteNumber];
+      if (stack) {
+        channel.activeNotes[note.noteNumber] = stack.filter((n) => n !== note);
+        if (channel.activeNotes[note.noteNumber]!.length === 0) {
+          delete channel.activeNotes[note.noteNumber];
+        }
+      }
+      // Schedule volume release immediately — do not go through noteOff()
+      // which may no-op if the note was already removed from activeNotes or
+      // if ready/ending races with offline timeline scheduling.
+      const p = Promise.resolve(note.ready).then(() => {
+        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
+        return this.releaseNote(channel, note, scheduleTime);
+      });
+      promises.push(p);
+    };
     for (let i = 0; i < channel.sustainNotes.length; i++) {
-      const promise = channel.noteOff(
-        channel.sustainNotes[i].noteNumber,
-        velocity,
-        scheduleTime,
-        true,
-      );
-      promises.push(promise);
+      forceRelease(channel.sustainNotes[i]);
     }
     channel.sustainNotes = [];
+    // Array-indexed activeNotes (0..127)
+    for (let nn = 0; nn < 128; nn++) {
+      const stack = channel.activeNotes[nn];
+      if (!stack) continue;
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
+        if (n && !n.ending && n.heldByPedal) forceRelease(n);
+      }
+    }
     return promises;
   }
 

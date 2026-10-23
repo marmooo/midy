@@ -218,7 +218,12 @@ Deno.test("note length: long piano sustain across cache modes", async (t) => {
   await t.step("none vs note: last-active parity", () => {
     const none = reports.find((r) => r.cacheMode === "none");
     const note = reports.find((r) => r.cacheMode === "note");
+    // When MIDY_CACHE_MODES excludes "note", skip this cross-mode check.
     if (!none || !note) {
+      if (!CACHE_MODES.includes("note") || !CACHE_MODES.includes("none")) {
+        console.log("  skip none vs note parity (modes not both enabled)");
+        return;
+      }
       throw new Error("missing none or note mode report");
     }
     const delta = Math.abs(none.lastActiveSec - note.lastActiveSec);
