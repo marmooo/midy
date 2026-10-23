@@ -10,6 +10,26 @@ import {
 } from "./worklet-protocol.ts";
 import { createWorkletModuleURL } from "./worklet-processor.ts";
 
+/**
+ * addModule + registerProcessor is once-per-AudioContext. A second Blob URL
+ * would re-run registerProcessor and throw NotSupportedError. Cache the load
+ * promise (and keep the blob URL alive for the context lifetime).
+ */
+const workletModuleByContext = new WeakMap<AudioContext, Promise<string>>();
+
+function ensureWorkletModule(ctx: AudioContext): Promise<string> {
+  let pending = workletModuleByContext.get(ctx);
+  if (!pending) {
+    pending = (async () => {
+      const url = createWorkletModuleURL();
+      await ctx.audioWorklet.addModule(url);
+      return url;
+    })();
+    workletModuleByContext.set(ctx, pending);
+  }
+  return pending;
+}
+
 export type WorkletNoteOnParams = {
   sampleId: number;
   when: number;
@@ -110,8 +130,8 @@ export class WorkletEngine {
     if (!(ctx.audioWorklet)) {
       throw new Error("AudioWorklet is not supported in this environment");
     }
-    this.moduleURL = createWorkletModuleURL();
-    await ctx.audioWorklet.addModule(this.moduleURL);
+    // Shared per AudioContext — never revoke; worklet scope keeps the processor.
+    this.moduleURL = await ensureWorkletModule(ctx);
     const node = new AudioWorkletNode(ctx, MIDY_WORKLET_NAME, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -419,12 +439,9 @@ export class WorkletEngine {
     this.reverbSendGain = null;
     this.chorusSendGain = null;
     this.delaySendGain = null;
-    if (this.moduleURL) {
-      try {
-        URL.revokeObjectURL(this.moduleURL);
-      } catch { /* ignore */ }
-      this.moduleURL = null;
-    }
+    // Do not revoke moduleURL: it is shared for the AudioContext lifetime
+    // via workletModuleByContext. Revoking would break other WorkletEngines.
+    this.moduleURL = null;
     this.loadedSamples.clear();
     this.activeVoices.clear();
     this.voiceReverb.clear();

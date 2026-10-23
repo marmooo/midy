@@ -666,7 +666,12 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor(NAME, MidySynthProcessor);
+try {
+  registerProcessor(NAME, MidySynthProcessor);
+} catch (_) {
+  // Already registered on this AudioWorkletGlobalScope (second Midy instance,
+  // HMR, or dispose+recreate on the same AudioContext).
+}
 `;
 
 /** Create a blob: URL suitable for audioWorklet.addModule(). */
