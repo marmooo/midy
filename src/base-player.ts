@@ -1255,7 +1255,11 @@ export class BasePlayer<
   isPaused: boolean = false;
   isStopping: boolean = false;
   isSeeking: boolean = false;
-  totalTimeEventTypes: Set<string> = new Set(["noteOff"]);
+  // noteOff alone is not enough: sustain/sostenuto pedal-up (CC64/66) and
+  // all-sound/notes-off (CC120/123) often arrive *after* the last noteOff and
+  // must still run. Including "controller" keeps those events in the timeline
+  // and extends totalTime so scheduleTimelineEvents does not skip them.
+  totalTimeEventTypes: Set<string> = new Set(["noteOff", "controller"]);
   tempo: number = 1;
   loop: boolean = false;
   playPromise?: Promise<void>;
@@ -1776,9 +1780,11 @@ export class BasePlayer<
     let loopStartSec = 0;
     let loopEndSec = audioBuffer.duration;
     if (wantsLoop) {
-      if (isRendered && renderedOrRaw.loopStart != null &&
+      if (
+        isRendered && renderedOrRaw.loopStart != null &&
         renderedOrRaw.loopDuration != null &&
-        renderedOrRaw.loopDuration > 1e-9) {
+        renderedOrRaw.loopDuration > 1e-9
+      ) {
         loopStartSec = renderedOrRaw.loopStart;
         loopEndSec = renderedOrRaw.loopStart + renderedOrRaw.loopDuration;
       } else if (isRendered && renderedOrRaw.adsDuration != null) {
@@ -2627,10 +2633,11 @@ export class BasePlayer<
   }
 
   /**
-   * Remove timeline events after the last noteOff (or other
-   * {@link totalTimeEventTypes}). Many SMFs leave a long empty gap before
+   * Remove timeline events after the last {@link totalTimeEventTypes} event
+   * (noteOff and controller). Many SMFs leave a long empty gap before
    * endOfTrack; keeping those events makes the player sit in silence until
-   * the padded end even though every note has already finished.
+   * the padded end even though every note has already finished. Controllers
+   * are kept so sustain pedal-up after the last noteOff still releases.
    */
   trimTrailingSilence(): void {
     const types = this.totalTimeEventTypes;
@@ -3623,7 +3630,7 @@ export class BasePlayer<
 
   releaseSustainPedal(
     channel: TChannel,
-    halfVelocity: number,
+    _halfVelocity: number,
     scheduleTime: number,
   ): (Promise<void> | void)[] {
     const promises: (Promise<void> | void)[] = [];

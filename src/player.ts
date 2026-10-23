@@ -8444,8 +8444,6 @@ export class Player<
       ? (this.isLoopDrum(channel, note.noteNumber) &&
         voiceParams.sampleModes % 2 !== 0)
       : (voiceParams.sampleModes % 2 !== 0);
-    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
-    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
     const decayDuration = voiceParams.decayVolEnv;
     const naturalAdsDuration = this.computeAdsDuration(voiceParams);
     // Cap only the *baked buffer length*, never the envelope time constants.
@@ -8478,10 +8476,15 @@ export class Player<
     // Physical bake length: min(natural needs, cap) but always ≥ one loop
     // cycle when looping. Envelope gains still use full natural timebase.
     let targetSpan = isLoop
-      ? Math.max(Math.min(naturalAdsDuration, adsCap > 0 ? adsCap : naturalAdsDuration), expandSec)
+      ? Math.max(
+        Math.min(naturalAdsDuration, adsCap > 0 ? adsCap : naturalAdsDuration),
+        expandSec,
+      )
       : Math.min(
         audioBuffer.duration / playbackRate,
-        adsCap > 0 ? Math.max(adsCap, naturalAdsDuration) : (audioBuffer.duration / playbackRate),
+        adsCap > 0
+          ? Math.max(adsCap, naturalAdsDuration)
+          : (audioBuffer.duration / playbackRate),
       );
     // Non-loop one-shots: keep full pitched duration (do not cut sample).
     if (!isLoop) {

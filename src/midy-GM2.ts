@@ -2910,13 +2910,31 @@ export class MidyGM2 extends Player<Note, Channel> {
       // Defer release while sustain is down. Mark as pedal residual so
       // maxPedalVoices can drop the oldest when the sustain pile grows.
       if (0.5 <= state.sustainPedal) {
-        const deferred = this.findNoteForOff(channel, noteNumber);
-        if (deferred && !deferred.heldByPedal) {
-          deferred.heldByPedal = true;
-          if (channel.sustainNotes.indexOf(deferred) < 0) {
-            channel.sustainNotes.push(deferred);
+        const stack = channel.activeNotes[noteNumber];
+        if (stack && stack.length > 0) {
+          let targetGroupId: number | undefined;
+          for (let i = 0; i < stack.length; i++) {
+            const n = stack[i];
+            if (n && !n.ending) {
+              targetGroupId = n.noteGroupId;
+              break;
+            }
           }
-          this.enforceMaxPedalVoices(endTime);
+          if (targetGroupId !== undefined) {
+            let marked = false;
+            for (let i = 0; i < stack.length; i++) {
+              const n = stack[i];
+              if (!n || n.ending || n.noteGroupId !== targetGroupId) continue;
+              if (!n.heldByPedal) {
+                n.heldByPedal = true;
+                marked = true;
+              }
+              if (channel.sustainNotes.indexOf(n) < 0) {
+                channel.sustainNotes.push(n);
+              }
+            }
+            if (marked) this.enforceMaxPedalVoices(endTime);
+          }
         }
         return;
       }
@@ -2926,10 +2944,28 @@ export class MidyGM2 extends Player<Note, Channel> {
         (n) => n.noteNumber === noteNumber && !n.ending,
       );
       if (0.5 <= state.sostenutoPedal && heldBySostenuto) {
-        const deferred = this.findNoteForOff(channel, noteNumber);
-        if (deferred && !deferred.heldByPedal) {
-          deferred.heldByPedal = true;
-          this.enforceMaxPedalVoices(endTime);
+        const stack = channel.activeNotes[noteNumber];
+        if (stack && stack.length > 0) {
+          let targetGroupId: number | undefined;
+          for (let i = 0; i < stack.length; i++) {
+            const n = stack[i];
+            if (n && !n.ending) {
+              targetGroupId = n.noteGroupId;
+              break;
+            }
+          }
+          if (targetGroupId !== undefined) {
+            let marked = false;
+            for (let i = 0; i < stack.length; i++) {
+              const n = stack[i];
+              if (!n || n.ending || n.noteGroupId !== targetGroupId) continue;
+              if (!n.heldByPedal) {
+                n.heldByPedal = true;
+                marked = true;
+              }
+            }
+            if (marked) this.enforceMaxPedalVoices(endTime);
+          }
         }
         return;
       }
@@ -3004,41 +3040,59 @@ export class MidyGM2 extends Player<Note, Channel> {
     halfVelocity: number,
     scheduleTime: number,
   ): (Promise<void> | void)[] {
+    // Prefer noteOff(force=true): same path as normal key-up, releases full
+    // noteGroupId. Direct releaseNote-only left residual after pedal-up in
+    // none mode (~-31dB) while piano release-curve tests passed.
+    const velocity = Math.min(127, Math.max(0, halfVelocity * 2));
     const promises: (Promise<void> | void)[] = [];
-    const released = new Set<Note>();
-    const forceRelease = (note: Note) => {
-      if (!note || note.ending || released.has(note)) return;
-      const heldBySostenuto = channel.sostenutoNotes.some(
-        (n) => n === note && !n.ending,
-      );
-      if (heldBySostenuto) return;
-      released.add(note);
-      note.ending = true;
-      note.heldByPedal = false;
-      const stack = channel.activeNotes[note.noteNumber];
-      if (stack) {
-        channel.activeNotes[note.noteNumber] = stack.filter((n) => n !== note);
-        if (channel.activeNotes[note.noteNumber]!.length === 0) {
-          delete channel.activeNotes[note.noteNumber];
-        }
-      }
-      const p = Promise.resolve(note.ready).then(() => {
-        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
-        return this.releaseNote(channel, note, scheduleTime);
-      });
-      promises.push(p);
+    const releasedNums = new Set<number>();
+    const releaseKey = (noteNumber: number) => {
+      if (releasedNums.has(noteNumber)) return;
+      releasedNums.add(noteNumber);
+      const p = channel.noteOff(noteNumber, velocity, scheduleTime, true);
+      if (p) promises.push(p);
     };
-    for (let i = 0; i < channel.sustainNotes.length; i++) {
-      forceRelease(channel.sustainNotes[i]);
-    }
+    const pending = channel.sustainNotes.slice();
     channel.sustainNotes = [];
+    for (let i = 0; i < pending.length; i++) {
+      const n = pending[i];
+      if (!n || n.ending) continue;
+      const heldBySostenuto = channel.sostenutoNotes.some(
+        (s) => s === n && !s.ending,
+      );
+      if (heldBySostenuto) continue;
+      releaseKey(n.noteNumber);
+    }
     for (let nn = 0; nn < 128; nn++) {
       const stack = channel.activeNotes[nn];
       if (!stack) continue;
       for (let i = 0; i < stack.length; i++) {
         const n = stack[i];
-        if (n && !n.ending && n.heldByPedal) forceRelease(n);
+        if (!n || n.ending || !n.heldByPedal) continue;
+        const heldBySostenuto = channel.sostenutoNotes.some(
+          (s) => s === n && !s.ending,
+        );
+        if (heldBySostenuto) continue;
+        releaseKey(nn);
       }
+    }
+    // Fallback for notes already removed from activeNotes.
+    for (let i = 0; i < pending.length; i++) {
+      const note = pending[i];
+      if (!note || note.ending) continue;
+      const heldBySostenuto = channel.sostenutoNotes.some(
+        (s) => s === note && !s.ending,
+      );
+      if (heldBySostenuto) continue;
+      if (!note.voice && !note.bufferSource && !note.volumeNode) continue;
+      note.ending = true;
+      note.heldByPedal = false;
+      const p = Promise.resolve(note.ready).then(() => {
+        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
+        return this.releaseNote(channel, note, scheduleTime);
+      });
+      promises.push(p);
+      this.notePromises.push(p);
     }
     return promises;
   }
