@@ -36,7 +36,6 @@ import {
   isChunkCacheMode,
   isSegmentCacheMode,
   isTiledCacheMode,
-  isWorkletCacheMode,
   needsNoteOnDurations,
   type NoteOnEntry,
   type NoteOnEventEntry,
@@ -11514,7 +11513,9 @@ export class Player<
     if (!voiceParams) return;
 
     const engine = await this.ensureWorkletEngine();
-    if (note.ending) return;
+    // Do not return on note.ending: lookAhead may have already fired noteOff
+    // (sets ending) while we await sample load. releaseNote waits on note.ready
+    // and will schedule worklet noteOff at endTime after workletVoiceId is set.
 
     const audioBufferId = note.audioBufferId !== undefined
       ? note.audioBufferId
@@ -11527,7 +11528,7 @@ export class Player<
         audioBufferId,
         voiceParams,
       );
-      if (note.ending || !audioBuffer) return;
+      if (!audioBuffer) return;
       const pcmL = audioBuffer.getChannelData(0);
       const pcmR = audioBuffer.numberOfChannels > 1
         ? audioBuffer.getChannelData(1)
@@ -11643,7 +11644,13 @@ export class Player<
     }
     const release = note.voiceParams?.releaseVolEnv ?? 0.05;
     engine.noteOff(voiceId, endTime, release);
-    const waitMs = Math.max(30, release * 1000 + 30);
+    // Wait until scheduled end + release, not just release from now
+    // (noteOff may arrive early while lookAhead covers the whole note).
+    const now = this.audioContext.currentTime;
+    const waitMs = Math.max(
+      30,
+      (Math.max(0, endTime - now) + release) * 1000 + 50,
+    );
     return new Promise((resolve) => {
       setTimeout(() => {
         engine.stop(voiceId);

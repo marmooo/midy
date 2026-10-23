@@ -2393,6 +2393,11 @@ export class MidyGM2 extends Player<Note, Channel> {
       (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
+    // Worklet path lives on Player; MidyGM2 must not skip it.
+    if (this.cacheMode === "worklet") {
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
+      return;
+    }
     if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound
       // comes from the combined segment buffer, baked and scheduled
@@ -2782,6 +2787,9 @@ export class MidyGM2 extends Player<Note, Channel> {
     endTime: number,
   ): Promise<void> | void {
     if (note.isTiledGhost) return;
+    if (note.workletVoiceId != null) {
+      return this.releaseNoteWorklet(note, endTime);
+    }
     const now = this.audioContext.currentTime;
     const tRel = Math.max(0, endTime - note.startTime);
     const heldFromEnvelope = note.volumeEnvelopeNode

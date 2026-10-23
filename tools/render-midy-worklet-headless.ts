@@ -8,21 +8,16 @@
 //   deno run -A tools/render-midy-worklet-headless.ts \
 //     --midi /tmp/note.mid --sf2 tools/GeneralUser_GS_v1.472.sf3 \
 //     --out /tmp/worklet.wav
-//
-// Library:
-//   import { renderMidyWorklet } from "./render-midy-worklet-headless.ts";
 
 // deno-lint-ignore-file no-import-prefix
 import puppeteer from "npm:puppeteer@25.10.0";
 
 export interface RenderMidyWorkletOptions {
-  /** Directory with worklet-harness.html (usually "tools"). */
   harnessDir?: string;
   rootDir?: string;
   midiPath: string;
   soundFontPath: string;
   sampleRate?: number;
-  /** Extra seconds after song end for release tails. Default 0.4. */
   tailSec?: number;
   headed?: boolean;
   executablePath?: string;
@@ -34,7 +29,6 @@ function toBase64(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
-  // btoa in Deno
   return btoa(binary);
 }
 
@@ -81,9 +75,8 @@ async function startStaticServer(
   });
   const addr = server.addr;
   if (!("port" in addr)) throw new Error("expected TCP addr");
-  const url = `http://127.0.0.1:${addr.port}`;
   return {
-    url,
+    url: `http://127.0.0.1:${addr.port}`,
     close: () => {
       try {
         server.shutdown();
@@ -92,17 +85,13 @@ async function startStaticServer(
   };
 }
 
-/**
- * Render a MIDI file with midy cacheMode="worklet" and return WAV bytes
- * (IEEE float32 PCM).
- */
 export async function renderMidyWorklet(
   options: RenderMidyWorkletOptions,
 ): Promise<Uint8Array> {
   const rootDir = options.rootDir ?? ".";
   const harnessDir = options.harnessDir ?? "tools";
   const sampleRate = options.sampleRate ?? 48000;
-  const tailSec = options.tailSec ?? 0.4;
+  const tailSec = options.tailSec ?? 0.5;
 
   const midiBytes = await Deno.readFile(options.midiPath);
   const sfBytes = await Deno.readFile(options.soundFontPath);
@@ -125,9 +114,7 @@ export async function renderMidyWorklet(
     page.setDefaultTimeout(120_000);
 
     const pageErrors: string[] = [];
-    page.on("pageerror", (err) => {
-      pageErrors.push(String(err));
-    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
     page.on("console", (msg) => {
       if (msg.type() === "error") pageErrors.push(msg.text());
     });
@@ -136,12 +123,10 @@ export async function renderMidyWorklet(
       waitUntil: "load",
     });
 
-    // Wait for harness module to expose the global
     await page.waitForFunction(
       () =>
-        typeof (globalThis as unknown as {
-          __renderMidyWorklet?: unknown;
-        }).__renderMidyWorklet === "function",
+        typeof (globalThis as unknown as { __renderMidyWorklet?: unknown })
+          .__renderMidyWorklet === "function",
       { timeout: 30_000 },
     );
 
@@ -169,8 +154,13 @@ export async function renderMidyWorklet(
     console.log(
       `[render-midy-worklet] frames=${result.frames} ` +
         `captureSec=${result.captureSec?.toFixed?.(3)} ` +
-        `sr=${result.sampleRate}`,
+        `sr=${result.sampleRate} peak=${result.peak} selfPeak=${result.selfPeak}`,
     );
+    if (Array.isArray(result.logs)) {
+      for (const line of result.logs) {
+        console.log(`  [harness] ${line}`);
+      }
+    }
 
     return fromBase64(result.wavBase64);
   } finally {
@@ -180,10 +170,6 @@ export async function renderMidyWorklet(
     close();
   }
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 if (import.meta.main) {
   const args = Deno.args;

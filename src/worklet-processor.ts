@@ -139,6 +139,7 @@ class Voice {
     this.vibLfoAge = 0;
 
     this.startFrame = 0;
+    this.releaseFrame = -1; // absolute frame to enter release; -1 = none
   }
 }
 
@@ -157,16 +158,26 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   onMessage(msg) {
     if (!msg || typeof msg.type !== "string") return;
     switch (msg.type) {
-      case "loadSample":
+      case "loadSample": {
+        const pcmL = msg.pcmL;
+        const len = pcmL ? pcmL.length : 0;
         this.samples.set(msg.sampleId, new SampleEntry(
-          msg.pcmL,
+          pcmL,
           msg.pcmR || null,
           msg.sampleRate,
           msg.loopStart | 0,
           msg.loopEnd | 0,
           !!msg.loop,
         ));
+        try {
+          this.port.postMessage({
+            type: "debug",
+            message: "loadSample id=" + msg.sampleId + " len=" + len +
+              " sr=" + msg.sampleRate,
+          });
+        } catch (_) {}
         break;
+      }
       case "noteOn":
         this.handleNoteOn(msg);
         break;
@@ -222,7 +233,16 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
   handleNoteOn(msg) {
     const sample = this.samples.get(msg.sampleId);
-    if (!sample) return;
+    if (!sample) {
+      try {
+        this.port.postMessage({
+          type: "debug",
+          message: "noteOn missing sampleId=" + msg.sampleId +
+            " samples=" + this.samples.size,
+        });
+      } catch (_) {}
+      return;
+    }
 
     const existing = this.voiceById.get(msg.voiceId);
     if (existing) {
@@ -234,6 +254,14 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.active = true;
     v.voiceId = msg.voiceId | 0;
     v.sample = sample;
+    try {
+      this.port.postMessage({
+        type: "debug",
+        message: "noteOn id=" + v.voiceId + " sampleLen=" + sample.length +
+          " gain=" + (+msg.gain || 0) + " when=" + (+msg.when || 0) +
+          " rate=" + (+msg.playbackRate || 1),
+      });
+    } catch (_) {}
     v.phase = 0;
     v.playbackRate = Math.max(1e-6, +msg.playbackRate || 1);
     v.gain = Math.max(0, +msg.gain || 0);
@@ -253,6 +281,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.envLevel = 0;
     v.envTime = 0;
     v.releasing = false;
+    v.releaseFrame = -1;
 
     // Filter
     v.filterFcCents = msg.filterFcCents != null ? +msg.filterFcCents : FULLY_OPEN_CENTS;
@@ -304,14 +333,20 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   handleNoteOff(msg) {
     const v = this.voiceById.get(msg.voiceId | 0);
     if (!v || !v.active || v.releasing) return;
-    v.releasing = true;
     if (msg.release != null) v.release = Math.max(1e-4, +msg.release);
-    v.envStage = ENV_RELEASE;
-    v.envTime = 0;
-    // Mod env also enters release
-    if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
-      v.modStage = ENV_RELEASE;
-      v.modTime = 0;
+    const when = +msg.when;
+    // Defer release until absolute context time "when" (AudioContext seconds).
+    // Early noteOff messages (lookAhead) must not cut the attack.
+    if (Number.isFinite(when) && when > 0) {
+      v.releaseFrame = Math.max(v.startFrame, Math.floor(when * sampleRate));
+    } else {
+      v.releasing = true;
+      v.envStage = ENV_RELEASE;
+      v.envTime = 0;
+      if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+        v.modStage = ENV_RELEASE;
+        v.modTime = 0;
+      }
     }
   }
 
@@ -536,6 +571,17 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       for (let i = 0; i < n; i++) {
         const absFrame = frame0 + i;
         if (absFrame < v.startFrame) continue;
+
+        // Scheduled noteOff (from lookAhead) becomes real release here.
+        if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+          v.releasing = true;
+          v.envStage = ENV_RELEASE;
+          v.envTime = 0;
+          if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+            v.modStage = ENV_RELEASE;
+            v.modTime = 0;
+          }
+        }
 
         const env = this.processVolEnv(v, invSr);
         if (v.envStage === ENV_DONE) {

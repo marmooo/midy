@@ -55,6 +55,8 @@ export type WorkletEffectInputs = {
 };
 
 export class WorkletEngine {
+  /** Processor debug lines (for harness). */
+  debugLogs: string[] = [];
   readonly audioContext: AudioContext;
   node: AudioWorkletNode | null = null;
   private moduleURL: string | null = null;
@@ -115,12 +117,24 @@ export class WorkletEngine {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
-    node.port.onmessage = (ev: MessageEvent<WorkletProcessorToMainMsg>) => {
+    node.port.onmessage = (
+      ev: MessageEvent<
+        WorkletProcessorToMainMsg | {
+          type: string;
+          message?: string;
+          voiceId?: number;
+        }
+      >,
+    ) => {
       const msg = ev.data;
       if (!msg) return;
-      if (msg.type === "voiceEnded") {
+      if (msg.type === "voiceEnded" && msg.voiceId != null) {
         this.activeVoices.delete(msg.voiceId);
         this.clearVoiceSends(msg.voiceId);
+      }
+      if (msg.type === "debug" && msg.message) {
+        this.debugLogs.push(msg.message);
+        if (this.debugLogs.length > 50) this.debugLogs.shift();
       }
     };
 
@@ -192,13 +206,13 @@ export class WorkletEngine {
     loopEnd: number,
     loop: boolean,
   ): void {
-    const left = pcmL.slice();
-    const transfer: Transferable[] = [left.buffer];
-    let right: Float32Array | undefined;
-    if (pcmR && pcmR.length === pcmL.length) {
-      right = pcmR.slice();
-      transfer.push(right.buffer);
-    }
+    // Structured-clone only (no Transferable). Transferring channel data
+    // extracted from AudioBuffer has been flaky under headless Chrome and
+    // can yield empty PCM in the processor.
+    const left = new Float32Array(pcmL);
+    const right = (pcmR && pcmR.length === pcmL.length)
+      ? new Float32Array(pcmR)
+      : undefined;
     this.post({
       type: "loadSample",
       sampleId,
@@ -208,7 +222,7 @@ export class WorkletEngine {
       loopStart,
       loopEnd,
       loop,
-    }, transfer);
+    });
     this.loadedSamples.add(sampleId);
   }
 
