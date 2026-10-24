@@ -11,7 +11,8 @@
 //   4. Dynamic per-voice gain / pan / playbackRate (channel vol/expr/pan)
 
 export const MIDY_WORKLET_NAME = "midy-synth-processor";
-export const WORKLET_MAX_VOICES = 64;
+/** Dense SMFs need headroom; 64 was easy to exhaust and mask as "silence". */
+export const WORKLET_MAX_VOICES = 128;
 
 /**
  * Source text registered with audioWorklet.addModule(blobURL).
@@ -171,33 +172,10 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       v.slot = i;
       this.voices[i] = v;
     }
-    // Dense list of currently active voice slots (skip empty MAX_VOICES scan).
-    this.activeSlots = [];
     this.masterGain = 1;
     this.voiceById = new Map();
     this.port.onmessage = (e) => this.onMessage(e.data);
     this.port.postMessage({ type: "ready" });
-  }
-
-  activateVoice(v) {
-    if (v.slot < 0) return;
-    const list = this.activeSlots;
-    for (let i = 0; i < list.length; i++) {
-      if (list[i] === v.slot) return;
-    }
-    list.push(v.slot);
-  }
-
-  deactivateVoice(v) {
-    const list = this.activeSlots;
-    const slot = v.slot;
-    for (let i = 0; i < list.length; i++) {
-      if (list[i] === slot) {
-        list[i] = list[list.length - 1];
-        list.pop();
-        return;
-      }
-    }
   }
 
   onMessage(msg) {
@@ -236,7 +214,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < MAX_VOICES; i++) {
           if (this.voices[i].active) this.voices[i].reset();
         }
-        this.activeSlots.length = 0;
         this.voiceById.clear();
         break;
       case "setMasterGain":
@@ -281,8 +258,14 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         best = v;
       }
     }
-    if (best.voiceId >= 0) this.voiceById.delete(best.voiceId);
-    this.deactivateVoice(best);
+    const stolenId = best.voiceId;
+    if (stolenId >= 0) {
+      this.voiceById.delete(stolenId);
+      // Tell main thread the voice is gone (otherwise it keeps dead ids).
+      try {
+        this.port.postMessage({ type: "voiceEnded", voiceId: stolenId });
+      } catch (_) { /* ignore */ }
+    }
     best.reset();
     return best;
   }
@@ -302,7 +285,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
     const existing = this.voiceById.get(msg.voiceId);
     if (existing) {
-      this.deactivateVoice(existing);
       existing.reset();
       this.voiceById.delete(msg.voiceId);
     }
@@ -397,7 +379,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.rateScale = v.playbackRate * (sample.sampleRate / sampleRate);
     v.volLfo = 1;
     this.voiceById.set(v.voiceId, v);
-    this.activateVoice(v);
   }
 
   handleNoteOff(msg) {
@@ -423,7 +404,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   stopVoice(voiceId) {
     const v = this.voiceById.get(voiceId | 0);
     if (!v) return;
-    this.deactivateVoice(v);
     v.reset();
     this.voiceById.delete(voiceId | 0);
   }
@@ -627,22 +607,18 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     const nyquist = sr * 0.5;
     const mg = this.masterGain;
     const frame0 = currentFrame;
-    const active = this.activeSlots;
     const blockDt = invSr * MOD_BLOCK;
+    // MAX_VOICES is small (≤128); scanning is cheaper than active-list bugs.
+    const voices = this.voices;
 
     for (let i = 0; i < n; i++) {
       outL[i] = 0;
       outR[i] = 0;
     }
 
-    // Iterate a snapshot length so ended voices can be removed mid-quantum.
-    for (let ai = 0; ai < active.length; ) {
-      const v = this.voices[active[ai]];
-      if (!v || !v.active || !v.sample) {
-        active[ai] = active[active.length - 1];
-        active.pop();
-        continue;
-      }
+    for (let vi = 0; vi < MAX_VOICES; vi++) {
+      const v = voices[vi];
+      if (!v.active || !v.sample) continue;
 
       const sample = v.sample;
       const baseRate = v.playbackRate * (sample.sampleRate / sr);
@@ -675,8 +651,8 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         // Block-rate: LFO / pitch / filter Fc (every MOD_BLOCK samples).
         if ((i % MOD_BLOCK) === 0) {
           if (v.needsModEnv) {
-            // Advance mod env for the whole block in one step when possible.
             modEnv = this.processModEnv(v, blockDt);
+            if (modEnv !== modEnv) modEnv = 0; // NaN guard
           } else {
             modEnv = 0;
           }
@@ -705,17 +681,20 @@ class MidySynthProcessor extends AudioWorkletProcessor {
               modEnv * v.modEnvToPitch +
               modLfo * v.modLfoToPitch +
               vibLfo * v.vibLfoToPitch;
-            // exp(x*ln2/1200) is faster than Math.pow(2, x/1200) in V8.
-            v.rateScale = pitchCents !== 0
+            let rs = pitchCents !== 0
               ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
               : baseRate;
+            // Clamp: extreme cents or NaN must not poison the mix bus.
+            if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+            v.rateScale = rs;
           } else {
-            v.rateScale = baseRate;
+            v.rateScale = baseRate > 0 ? baseRate : 1;
           }
 
           if (v.needsVolLfo && modLfo !== 0) {
             const cb = modLfo * v.modLfoToVolume;
-            v.volLfo = Math.exp(cb * (Math.LN10 / 200));
+            const vl = Math.exp(cb * (Math.LN10 / 200));
+            v.volLfo = (vl === vl && vl > 0) ? vl : 1;
           } else {
             v.volLfo = 1;
           }
@@ -728,9 +707,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
             const fcHz = clampFc(centToHz(fcCents), nyquist);
             this.updateFilter(v, fcHz, sr);
           }
-        } else if (v.needsModEnv) {
-          // Keep envelope clock roughly aligned between block updates.
-          // (processModEnv already advanced by blockDt at block starts.)
         }
 
         const newPhase = this.readSampleInto(v, sample, v.phase);
@@ -745,21 +721,20 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         }
 
         const amp = v.gain * env * v.volLfo * mg;
-        outL[i] += v.outL * amp * v.panL;
-        outR[i] += v.outR * amp * v.panR;
+        // Skip non-finite samples — one NaN would poison outL/outR forever.
+        if (amp === amp && v.outL === v.outL && v.outR === v.outR) {
+          outL[i] += v.outL * amp * v.panL;
+          outR[i] += v.outR * amp * v.panR;
+        }
       }
 
       if (ended) {
         const id = v.voiceId;
-        this.deactivateVoice(v);
         v.reset();
         this.voiceById.delete(id);
         try {
           this.port.postMessage({ type: "voiceEnded", voiceId: id });
         } catch (_) { /* ignore */ }
-        // slot already removed; do not advance ai
-      } else {
-        ai++;
       }
     }
 
