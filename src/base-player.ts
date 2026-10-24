@@ -1875,7 +1875,7 @@ export class BasePlayer<
         scheduleTime: number,
       ) => void)
       | null;
-  } = {}): void {
+  } = {}): void | Promise<void> {
     const channel = channels[event.channel!];
     switch (event.type) {
       case "noteOn":
