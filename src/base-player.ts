@@ -615,7 +615,7 @@ export class Channel<TNote extends Note = Note> {
       if (ret != null && typeof (ret as Promise<void>).then === "function") {
         return ret as Promise<void>;
       }
-    } else {
+    } else if (player.debug) {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`,
       );
@@ -696,9 +696,11 @@ export class Channel<TNote extends Note = Note> {
       case 16383: // NULL
         break;
       default:
-        console.warn(
-          `Channel ${this.channelNumber}: Unsupported RPN MSB=${this.rpnMSB} LSB=${this.rpnLSB}`,
-        );
+        if (this.typedPlayer.debug) {
+          console.warn(
+            `Channel ${this.channelNumber}: Unsupported RPN MSB=${this.rpnMSB} LSB=${this.rpnLSB}`,
+          );
+        }
     }
   }
 
@@ -3988,11 +3990,13 @@ export class BasePlayer<
           case 2: // GM System Off
             break;
           default:
-            console.warn(`Unsupported Exclusive Message: ${data}`);
+            if (this.debug) {
+              console.warn(`Unsupported Exclusive Message: ${data}`);
+            }
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message: ${data}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -4029,11 +4033,13 @@ export class BasePlayer<
           case 1:
             return this.handleMasterVolumeSysEx(data, scheduleTime);
           default:
-            console.warn(`Unsupported Exclusive Message: ${data}`);
+            if (this.debug) {
+              console.warn(`Unsupported Exclusive Message: ${data}`);
+            }
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message: ${data}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -4105,7 +4111,7 @@ export class BasePlayer<
       case 127:
         return this.handleUniversalRealTimeExclusiveMessage(data, scheduleTime);
       default:
-        console.warn(`Unsupported Exclusive Message: ${data}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data}`);
     }
   }
 
@@ -4140,9 +4146,11 @@ export class BasePlayer<
       }
       if (allDone) break;
       if (Date.now() > deadline) {
-        console.warn(
-          `${label}: timed out waiting for sources to end; forcing stop`,
-        );
+        if (this.debug) {
+          console.warn(
+            `${label}: timed out waiting for sources to end; forcing stop`,
+          );
+        }
         for (let i = 0; i < pending.length; i++) {
           const p = pending[i];
           if (p.source) {

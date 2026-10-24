@@ -1084,11 +1084,13 @@ export class Player<
         this.pumpDeferredChunkBakes();
         spins++;
         if (spins > 10000) {
-          console.warn(
-            `[midy] preroll drain: abort spins=${spins} ` +
-              `deferred=${this.deferredChunkBakes.length} ` +
-              `active=${this.chunkBakeActive}`,
-          );
+          if (this.debug) {
+            console.warn(
+              `[midy] preroll drain: abort spins=${spins} ` +
+                `deferred=${this.deferredChunkBakes.length} ` +
+                `active=${this.chunkBakeActive}`,
+            );
+          }
           break;
         }
         await new Promise<void>((r) => queueMicrotask(r));
@@ -1097,11 +1099,13 @@ export class Player<
       await Promise.race(inflight);
       spins++;
       if (spins > 10000) {
-        console.warn(
-          `[midy] preroll drain: abort spins=${spins} ` +
-            `deferred=${this.deferredChunkBakes.length} ` +
-            `active=${this.chunkBakeActive}`,
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] preroll drain: abort spins=${spins} ` +
+              `deferred=${this.deferredChunkBakes.length} ` +
+              `active=${this.chunkBakeActive}`,
+          );
+        }
         break;
       }
     }
@@ -1149,7 +1153,7 @@ export class Player<
         resolve(buffer);
       })
       .catch((err) => {
-        console.warn("chunk render failed", err);
+        if (this.debug) console.warn("chunk render failed", err);
         pending.buffer = null;
         pending.bufferReady = true;
         resolve(null);
@@ -2671,6 +2675,7 @@ export class Player<
       (q) => `q${q}=${durKeysAtQuant.get(q)}`,
     ).join(" ");
 
+    if (!this.debug) return;
     console.log(
       `[midy] simple-key coarsen | notes=${noteCount} fullKeys=${fullKeys.size} | ` +
         `velocity: groups=${velGroupCount} splitGroups=${velSplitGroups} ` +
@@ -3247,19 +3252,21 @@ export class Player<
                   `maxReleaseTail=${this.maxReleaseTailSec}`,
               );
             }
-            console.warn(
-              `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
-                `note=${event.noteNumber!} idx=${queueIndex} ` +
-                `songT=${t.toFixed(2)}s ` +
-                `midiDur=${duration.toFixed(2)}s ` +
-                `releaseTail=${releaseTail.toFixed(2)}s${capNote} ` +
-                `effective=${effective.toFixed(2)}s ` +
-                `reason=${reason} ` +
-                `excl=${excl} inLong=${inLong} path=${path} ` +
-                `maxTiled=${this.maxTiledNoteDuration} ` +
-                `maxNoteBake=${this.maxNoteBakeDuration} ` +
-                `maxReleaseTail=${this.maxReleaseTailSec}`,
-            );
+            if (this.debug) {
+              console.warn(
+                `[midy] non-tiled noteOn | ch=${channel.channelNumber} ` +
+                  `note=${event.noteNumber!} idx=${queueIndex} ` +
+                  `songT=${t.toFixed(2)}s ` +
+                  `midiDur=${duration.toFixed(2)}s ` +
+                  `releaseTail=${releaseTail.toFixed(2)}s${capNote} ` +
+                  `effective=${effective.toFixed(2)}s ` +
+                  `reason=${reason} ` +
+                  `excl=${excl} inLong=${inLong} path=${path} ` +
+                  `maxTiled=${this.maxTiledNoteDuration} ` +
+                  `maxNoteBake=${this.maxNoteBakeDuration} ` +
+                  `maxReleaseTail=${this.maxReleaseTailSec}`,
+              );
+            }
           }
           channel.noteOn(
             event.noteNumber!,
@@ -4564,15 +4571,17 @@ export class Player<
         this.totalTime > 0 ? this.totalTime : songStart + this.prerollSec,
         songStart + this.prerollSec,
       );
-      console.warn(
-        `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s ` +
-          `readyUntil=${readyUntil.toFixed(2)}s ` +
-          `gap=${(targetEnd - readyUntil).toFixed(2)}s ` +
-          `readyN=${readyN}/${sorted.length} ` +
-          `bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} ` +
-          `deferredBakes=${this.deferredChunkBakes.length} ` +
-          `chunkBakeActive=${this.chunkBakeActive}`,
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s ` +
+            `readyUntil=${readyUntil.toFixed(2)}s ` +
+            `gap=${(targetEnd - readyUntil).toFixed(2)}s ` +
+            `readyN=${readyN}/${sorted.length} ` +
+            `bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} ` +
+            `deferredBakes=${this.deferredChunkBakes.length} ` +
+            `chunkBakeActive=${this.chunkBakeActive}`,
+        );
+      }
     }
   }
 
@@ -4885,7 +4894,7 @@ export class Player<
         return buffer;
       })
       .catch((err) => {
-        console.warn("segment render failed", err);
+        if (this.debug) console.warn("segment render failed", err);
         pending.buffer = null;
         pending.bufferReady = true;
         return null;
@@ -5237,7 +5246,7 @@ export class Player<
         return buffer;
       })
       .catch((err) => {
-        console.warn("chunk render failed", err);
+        if (this.debug) console.warn("chunk render failed", err);
         pending.buffer = null;
         pending.bufferReady = true;
         return null;
@@ -9226,19 +9235,21 @@ export class Player<
       const hasWf = entry.noteEvent
         ? this.hasWaveformAutomation(entry.noteEvent)
         : false;
-      console.warn(
-        `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} ` +
-          `dur=${entry.noteDuration.toFixed(3)}s ms=${
-            (performance.now() - tComplexOne0).toFixed(1)
-          } ` +
-          `events=${events} types=${types} count=${count} ` +
-          `fromCache=${fromCache} path=${path} ` +
-          `mix=${bakeChannelMix ? "stereo" : "dry"} | ` +
-          `almostBend=${this.useAlmostSimplePitchBend} ` +
-          `almostPan=${this.useAlmostSimplePan} ` +
-          `hasWaveform=${hasWf} bendNeedsCx=${bendNeedsCx} ` +
-          `modEnvToPitch=${modEnv} modLfoToPitch=${modLfo}`,
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} ` +
+            `dur=${entry.noteDuration.toFixed(3)}s ms=${
+              (performance.now() - tComplexOne0).toFixed(1)
+            } ` +
+            `events=${events} types=${types} count=${count} ` +
+            `fromCache=${fromCache} path=${path} ` +
+            `mix=${bakeChannelMix ? "stereo" : "dry"} | ` +
+            `almostBend=${this.useAlmostSimplePitchBend} ` +
+            `almostPan=${this.useAlmostSimplePan} ` +
+            `hasWaveform=${hasWf} bendNeedsCx=${bendNeedsCx} ` +
+            `modEnvToPitch=${modEnv} modLfoToPitch=${modLfo}`,
+        );
+      }
     };
     if (count <= 1) {
       this.noteCacheRecordComplexUnique();
