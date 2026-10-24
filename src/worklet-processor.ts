@@ -11,8 +11,8 @@
 //   4. Dynamic per-voice gain / pan / playbackRate (channel vol/expr/pan)
 
 export const MIDY_WORKLET_NAME = "midy-synth-processor";
-/** Dense SMFs need headroom; 64 was easy to exhaust and mask as "silence". */
-export const WORKLET_MAX_VOICES = 128;
+/** Hard ceiling; keep in sync with worklet-protocol.ts. */
+export const WORKLET_MAX_VOICES = 1024;
 
 /**
  * Source text registered with audioWorklet.addModule(blobURL).
@@ -174,8 +174,51 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     }
     this.masterGain = 1;
     this.voiceById = new Map();
+    this.debug = false;
+    // Cumulative counters (reset only on allSoundOff / explicit request).
+    this.statNoteOn = 0;
+    this.statNoteOff = 0;
+    this.statStop = 0;
+    this.statSteal = 0;
+    this.statMissing = 0;
+    this.statLoad = 0;
+    this.statEnded = 0;
+    this.statQuantums = 0;
+    this.lastStatsFrame = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
     this.port.postMessage({ type: "ready" });
+  }
+
+  dbg(message) {
+    if (!this.debug) return;
+    // Skip routine loadSample spam; keep MISSING / steal / setDebug.
+    if (message.indexOf("loadSample ") === 0) return;
+    try {
+      this.port.postMessage({ type: "debug", message: message });
+    } catch (_) { /* ignore */ }
+  }
+
+  postStats() {
+    let active = 0;
+    for (let i = 0; i < MAX_VOICES; i++) {
+      if (this.voices[i].active) active++;
+    }
+    try {
+      this.port.postMessage({
+        type: "stats",
+        active: active,
+        samples: this.samples.size,
+        noteOn: this.statNoteOn,
+        noteOff: this.statNoteOff,
+        stop: this.statStop,
+        steal: this.statSteal,
+        missingSample: this.statMissing,
+        loadSample: this.statLoad,
+        ended: this.statEnded,
+        quantums: this.statQuantums,
+      });
+    } catch (_) { /* ignore */ }
+    this.statQuantums = 0;
   }
 
   onMessage(msg) {
@@ -192,22 +235,22 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           msg.loopEnd | 0,
           !!msg.loop,
         ));
-        try {
-          this.port.postMessage({
-            type: "debug",
-            message: "loadSample id=" + msg.sampleId + " len=" + len +
-              " sr=" + msg.sampleRate,
-          });
-        } catch (_) {}
+        this.statLoad++;
+        this.dbg(
+          "loadSample id=" + msg.sampleId + " len=" + len +
+            " sr=" + msg.sampleRate + " totalSamples=" + this.samples.size,
+        );
         break;
       }
       case "noteOn":
         this.handleNoteOn(msg);
         break;
       case "noteOff":
+        this.statNoteOff++;
         this.handleNoteOff(msg);
         break;
       case "stop":
+        this.statStop++;
         this.stopVoice(msg.voiceId);
         break;
       case "allSoundOff":
@@ -215,12 +258,18 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           if (this.voices[i].active) this.voices[i].reset();
         }
         this.voiceById.clear();
+        this.dbg("allSoundOff");
         break;
       case "setMasterGain":
         this.masterGain = Math.max(0, Math.min(2, +msg.value || 0));
         break;
       case "setVoiceParams":
         this.handleSetVoiceParams(msg);
+        break;
+      case "setDebug":
+        this.debug = !!msg.enabled;
+        this.dbg("setDebug " + this.debug);
+        if (this.debug) this.postStats();
         break;
     }
   }
@@ -259,27 +308,34 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       }
     }
     const stolenId = best.voiceId;
+    this.statSteal++;
     if (stolenId >= 0) {
       this.voiceById.delete(stolenId);
       // Tell main thread the voice is gone (otherwise it keeps dead ids).
       try {
         this.port.postMessage({ type: "voiceEnded", voiceId: stolenId });
       } catch (_) { /* ignore */ }
+      this.dbg(
+        "steal voiceId=" + stolenId + " totalSteals=" + this.statSteal +
+          " env=" + (best.envLevel || 0).toFixed(3) +
+          " releasing=" + !!best.releasing,
+      );
     }
     best.reset();
     return best;
   }
 
   handleNoteOn(msg) {
+    this.statNoteOn++;
     const sample = this.samples.get(msg.sampleId);
     if (!sample) {
-      try {
-        this.port.postMessage({
-          type: "debug",
-          message: "noteOn missing sampleId=" + msg.sampleId +
-            " samples=" + this.samples.size,
-        });
-      } catch (_) {}
+      this.statMissing++;
+      this.dbg(
+        "MISSING sampleId=" + msg.sampleId +
+          " voiceId=" + (msg.voiceId | 0) +
+          " samples=" + this.samples.size +
+          " missingTotal=" + this.statMissing,
+      );
       return;
     }
 
@@ -293,14 +349,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.active = true;
     v.voiceId = msg.voiceId | 0;
     v.sample = sample;
-    try {
-      this.port.postMessage({
-        type: "debug",
-        message: "noteOn id=" + v.voiceId + " sampleLen=" + sample.length +
-          " gain=" + (+msg.gain || 0) + " when=" + (+msg.when || 0) +
-          " rate=" + (+msg.playbackRate || 1),
-      });
-    } catch (_) {}
     v.phase = 0;
     v.playbackRate = Math.max(1e-6, +msg.playbackRate || 1);
     v.gain = Math.max(0, +msg.gain || 0);
@@ -379,6 +427,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.rateScale = v.playbackRate * (sample.sampleRate / sampleRate);
     v.volLfo = 1;
     this.voiceById.set(v.voiceId, v);
+    // Per-note dbg intentionally omitted (flood). See stats / MISSING / steal.
   }
 
   handleNoteOff(msg) {
@@ -611,6 +660,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     // MAX_VOICES is small (≤128); scanning is cheaper than active-list bugs.
     const voices = this.voices;
 
+    this.statQuantums++;
+    // ~4 stats/sec at 128-frame quantums @ 48kHz
+    if (this.debug && frame0 - this.lastStatsFrame >= (sr >> 2)) {
+      this.lastStatsFrame = frame0;
+      this.postStats();
+    }
+
     for (let i = 0; i < n; i++) {
       outL[i] = 0;
       outR[i] = 0;
@@ -732,6 +788,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         const id = v.voiceId;
         v.reset();
         this.voiceById.delete(id);
+        this.statEnded++;
         try {
           this.port.postMessage({ type: "voiceEnded", voiceId: id });
         } catch (_) { /* ignore */ }

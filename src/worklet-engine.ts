@@ -75,8 +75,23 @@ export type WorkletEffectInputs = {
 };
 
 export class WorkletEngine {
-  /** Processor debug lines (for harness). */
+  /**
+   * Ring buffer of recent diagnostic lines (main + processor).
+   * Inspect via `midy.workletEngine.debugLogs` or `dumpDebug()`.
+   */
   debugLogs: string[] = [];
+  /** Last processor stats snapshot (updated ~4/s when debug is on). */
+  lastStats: Record<string, number> | null = null;
+  /** Main-thread counters for this engine lifetime. */
+  mainStats = {
+    noteOn: 0,
+    noteOff: 0,
+    stop: 0,
+    loadSample: 0,
+    voiceEnded: 0,
+  };
+  /** Mirror logs to console when true (set via setDebug). */
+  debug = false;
   readonly audioContext: AudioContext;
   node: AudioWorkletNode | null = null;
   private moduleURL: string | null = null;
@@ -85,6 +100,7 @@ export class WorkletEngine {
   private loadedSamples = new Set<number>();
   /** voiceId → true while sounding (for local bookkeeping). */
   private activeVoices = new Set<number>();
+  private static readonly LOG_LIMIT = 500;
 
   /** Dry path into masterVolume (or other destination). */
   private dryGain: GainNode | null = null;
@@ -102,6 +118,48 @@ export class WorkletEngine {
 
   constructor(audioContext: AudioContext) {
     this.audioContext = audioContext;
+  }
+
+  /** Append a diagnostic line; always keeps a ring buffer. */
+  log(message: string, opts?: { console?: boolean }): void {
+    const t = this.audioContext.currentTime.toFixed(3);
+    const line = `[${t}] ${message}`;
+    this.debugLogs.push(line);
+    if (this.debugLogs.length > WorkletEngine.LOG_LIMIT) {
+      this.debugLogs.splice(0, this.debugLogs.length - WorkletEngine.LOG_LIMIT);
+    }
+    // Default: only important lines hit console when debug is on.
+    // Pass console:true for high-signal events (stats, MISSING, steal summary).
+    const toConsole = opts?.console ??
+      /^(stats |proc: MISSING|proc: steal|preload|ensure|setDebug|ABORT|LATE|lateUpload)/
+        .test(message);
+    if (this.debug && toConsole) {
+      console.log(`[worklet] ${line}`);
+    }
+  }
+
+  /** Enable processor + console diagnostics. Call when midy.debug is true. */
+  setDebug(enabled: boolean): void {
+    this.debug = enabled;
+    this.post({ type: "setDebug", enabled });
+    this.log(`setDebug ${enabled}`);
+  }
+
+  /** Snapshot for console: stats + last log lines. */
+  dumpDebug(lastN = 40): {
+    mainStats: typeof this.mainStats;
+    lastStats: Record<string, number> | null;
+    loadedSamples: number;
+    activeVoices: number;
+    logs: string[];
+  } {
+    return {
+      mainStats: { ...this.mainStats },
+      lastStats: this.lastStats ? { ...this.lastStats } : null,
+      loadedSamples: this.loadedSamples.size,
+      activeVoices: this.activeVoices.size,
+      logs: this.debugLogs.slice(-lastN),
+    };
   }
 
   /**
@@ -151,10 +209,44 @@ export class WorkletEngine {
       if (msg.type === "voiceEnded" && msg.voiceId != null) {
         this.activeVoices.delete(msg.voiceId);
         this.clearVoiceSends(msg.voiceId);
+        this.mainStats.voiceEnded++;
       }
       if (msg.type === "debug" && msg.message) {
-        this.debugLogs.push(msg.message);
-        if (this.debugLogs.length > 50) this.debugLogs.shift();
+        this.log(`proc: ${msg.message}`);
+      }
+      if (msg.type === "stats") {
+        const s = msg as {
+          active: number;
+          samples: number;
+          noteOn: number;
+          noteOff: number;
+          stop: number;
+          steal: number;
+          missingSample: number;
+          loadSample: number;
+          ended: number;
+          quantums: number;
+        };
+        this.lastStats = {
+          active: s.active,
+          samples: s.samples,
+          noteOn: s.noteOn,
+          noteOff: s.noteOff,
+          stop: s.stop,
+          steal: s.steal,
+          missingSample: s.missingSample,
+          loadSample: s.loadSample,
+          ended: s.ended,
+          quantums: s.quantums,
+        };
+        this.log(
+          `stats active=${s.active}/${WORKLET_MAX_VOICES}` +
+            ` samples=${s.samples}` +
+            ` on=${s.noteOn} off=${s.noteOff} stop=${s.stop}` +
+            ` steal=${s.steal} miss=${s.missingSample}` +
+            ` load=${s.loadSample} ended=${s.ended}` +
+            ` q=${s.quantums}`,
+        );
       }
     };
 
@@ -244,6 +336,12 @@ export class WorkletEngine {
       loop,
     });
     this.loadedSamples.add(sampleId);
+    this.mainStats.loadSample++;
+    this.log(
+      `loadSample id=${sampleId} len=${left.length}` +
+        ` sr=${sampleRate} loop=${loop}` +
+        ` (${loopStart}-${loopEnd}) loaded=${this.loadedSamples.size}`,
+    );
   }
 
   hasSample(sampleId: number): boolean {
@@ -258,6 +356,8 @@ export class WorkletEngine {
 
   noteOn(voiceId: number, params: WorkletNoteOnParams): void {
     this.activeVoices.add(voiceId);
+    this.mainStats.noteOn++;
+    // No per-note console log — dense SMFs were flooding main thread.
     this.post({
       type: "noteOn",
       voiceId,
@@ -295,6 +395,8 @@ export class WorkletEngine {
   }
 
   noteOff(voiceId: number, when: number, release?: number): void {
+    this.mainStats.noteOff++;
+    // Same as noteOn: avoid per-event console flood.
     this.post({
       type: "noteOff",
       voiceId,
@@ -306,6 +408,7 @@ export class WorkletEngine {
   stop(voiceId: number): void {
     this.activeVoices.delete(voiceId);
     this.clearVoiceSends(voiceId);
+    this.mainStats.stop++;
     this.post({ type: "stop", voiceId });
   }
 
@@ -315,6 +418,7 @@ export class WorkletEngine {
     this.voiceChorus.clear();
     this.voiceDelay.clear();
     this.applySendBusLevels();
+    this.log("allSoundOff");
     this.post({ type: "allSoundOff" });
   }
 

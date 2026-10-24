@@ -4,8 +4,12 @@
 /** Processor registration name for AudioWorkletNode. */
 export const MIDY_WORKLET_NAME = "midy-synth-processor";
 
-/** Max concurrent voices inside the worklet. */
-export const WORKLET_MAX_VOICES = 64;
+/**
+ * Hard ceiling inside the AudioWorklet processor (safety valve only).
+ * Artistic / match-other-modes limits are applied on the main thread via
+ * Player.workletVoiceLimit + maxVoices — not by lowering this constant.
+ */
+export const WORKLET_MAX_VOICES = 1024;
 
 // ---------------------------------------------------------------------------
 // Main → Worklet
@@ -122,6 +126,12 @@ export type WorkletSetVoiceParamsMsg = {
   playbackRate?: number;
 };
 
+/** Enable/disable verbose processor→main debug posts. */
+export type WorkletSetDebugMsg = {
+  type: "setDebug";
+  enabled: boolean;
+};
+
 export type WorkletMainToProcessorMsg =
   | WorkletLoadSampleMsg
   | WorkletNoteOnMsg
@@ -129,7 +139,8 @@ export type WorkletMainToProcessorMsg =
   | WorkletStopMsg
   | WorkletAllSoundOffMsg
   | WorkletSetMasterGainMsg
-  | WorkletSetVoiceParamsMsg;
+  | WorkletSetVoiceParamsMsg
+  | WorkletSetDebugMsg;
 
 // ---------------------------------------------------------------------------
 // Worklet → Main (optional diagnostics)
@@ -144,6 +155,29 @@ export type WorkletReadyMsg = {
   type: "ready";
 };
 
+export type WorkletDebugMsg = {
+  type: "debug";
+  message: string;
+};
+
+/** Periodic counters from the processor (always sent when debug is on). */
+export type WorkletStatsMsg = {
+  type: "stats";
+  active: number;
+  samples: number;
+  noteOn: number;
+  noteOff: number;
+  stop: number;
+  steal: number;
+  missingSample: number;
+  loadSample: number;
+  ended: number;
+  /** process() quantums since last stats */
+  quantums: number;
+};
+
 export type WorkletProcessorToMainMsg =
   | WorkletVoiceEndedMsg
-  | WorkletReadyMsg;
+  | WorkletReadyMsg
+  | WorkletDebugMsg
+  | WorkletStatsMsg;

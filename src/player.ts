@@ -60,6 +60,7 @@ import {
 
 import { MixPcmCache } from "./mix-pcm-cache.ts";
 import { WorkletEngine } from "./worklet-engine.ts";
+import { WORKLET_MAX_VOICES } from "./worklet-protocol.ts";
 
 /** Per-tile mix phase timings filled by mixEntriesToBuffer (chunk-heavy logs). */
 type MixTileDetail = {
@@ -113,11 +114,27 @@ export {
   usesSimpleComplexNoteCache,
 } from "./cache-strategy.ts";
 
+/**
+ * How worklet mode applies main-thread polyphony limits.
+ * - "unlimited": only the processor hard ceiling (WORKLET_MAX_VOICES); long
+ *   sustains keep sounding. Default — uses worklet headroom.
+ * - "match": same maxVoices / maxPedalVoices rules and timing as other modes
+ *   (enforceMaxVoices before noteOn). For A/B vs Web Audio paths.
+ * - number: explicit main-thread cap for worklet only (still bounded by the
+ *   processor hard ceiling).
+ */
+export type WorkletVoiceLimit = "unlimited" | "match" | number;
+
 export class Player<
   TNote extends Note = Note,
   TChannel extends Channel<TNote> = Channel<TNote>,
 > extends BasePlayer<TNote, TChannel> {
   cacheMode: CacheMode = DEFAULT_CACHE_MODE;
+  /**
+   * Worklet polyphony policy (see WorkletVoiceLimit).
+   * Only consulted when cacheMode === "worklet".
+   */
+  workletVoiceLimit: WorkletVoiceLimit = "unlimited";
   /** AudioWorklet bridge when cacheMode === "worklet". */
   workletEngine: WorkletEngine | null = null;
   // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
@@ -1519,6 +1536,34 @@ export class Player<
                 seenPreloadIds.add(audioBufferId);
                 preloadEntries.push({ audioBufferId, voiceParams });
               }
+            }
+            // All SF2 layers (not only primary getVoiceId). Secondary zones
+            // used to be uploaded on first noteOn during dense passages and
+            // starved the worklet message queue → audible dropouts.
+            const layers = this.resolveVoices(
+              channel,
+              event.noteNumber!,
+              event.velocity!,
+            );
+            for (let li = 0; li < layers.length; li++) {
+              const layer = layers[li];
+              const instrument = layer.voice.generators.get("instrument") ?? 0;
+              const sampleID = layer.voice.generators.get("sampleID") ?? 0;
+              const layerId = layer.soundFontIndex * (2 ** 31) +
+                instrument * (2 ** 24) + (sampleID << 8);
+              if (seenPreloadIds.has(layerId)) continue;
+              const layerCs = this.getControllerState(
+                channel,
+                event.noteNumber!,
+                event.velocity!,
+                0,
+              );
+              const layerVp = getVoiceParams(layer.voice, layerCs);
+              seenPreloadIds.add(layerId);
+              preloadEntries.push({
+                audioBufferId: layerId,
+                voiceParams: layerVp,
+              });
             }
           }
           break;
@@ -8417,9 +8462,114 @@ export class Player<
         entry.voiceParams,
       );
     }
-    if (taskCount === 0) return;
-    tasks.length = taskCount;
-    await Promise.all(tasks);
+    if (taskCount > 0) {
+      tasks.length = taskCount;
+      await Promise.all(tasks);
+    }
+    // Worklet: push PCM into the processor before play. Loading large samples
+    // mid-song on the worklet thread starves process() and sounds like the
+    // dense passages go silent until traffic thins out.
+    if (this.cacheMode === "worklet") {
+      await this.preloadWorkletSamples();
+    }
+  }
+
+  /**
+   * Upload every preload entry's PCM into WorkletEngine. Safe to call more
+   * than once; already-loaded sampleIds are skipped.
+   */
+  async preloadWorkletSamples(): Promise<void> {
+    const entries = this.preloadEntries;
+    if (entries.length === 0) {
+      if (this.debug) {
+        console.log("[worklet] preloadWorkletSamples: no preloadEntries");
+      }
+      return;
+    }
+    const engine = await this.ensureWorkletEngine();
+    const t0 = performance.now();
+    let uploaded = 0;
+    let skipped = 0;
+    // Sequential posts keep the worklet message queue from exploding with
+    // multi-MB structured clones of every unique sample at once.
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (engine.hasSample(entry.audioBufferId)) {
+        skipped++;
+        continue;
+      }
+      await this.uploadWorkletSample(
+        engine,
+        entry.audioBufferId,
+        entry.voiceParams,
+      );
+      uploaded++;
+      // Yield so decode + clone bursts do not freeze the main thread.
+      if ((i & 7) === 7) {
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
+    }
+    const ms = performance.now() - t0;
+    engine.log(
+      `preloadWorkletSamples entries=${entries.length}` +
+        ` uploaded=${uploaded} skipped=${skipped} ${ms.toFixed(1)}ms`,
+    );
+    if (this.debug) {
+      console.log(
+        `[worklet] preload done entries=${entries.length}` +
+          ` uploaded=${uploaded} skipped=${skipped} ${ms.toFixed(1)}ms`,
+      );
+    }
+  }
+
+  /** In-flight worklet sample uploads (coalesce concurrent noteOns). */
+  private workletSampleUploads = new Map<number, Promise<void>>();
+
+  protected uploadWorkletSample(
+    engine: WorkletEngine,
+    sampleId: number,
+    voiceParams: NonNullable<TNote["voiceParams"]>,
+  ): Promise<void> {
+    if (engine.hasSample(sampleId)) return Promise.resolve();
+    let pending = this.workletSampleUploads.get(sampleId);
+    if (pending) return pending;
+    pending = (async () => {
+      try {
+        const audioBuffer = await this.getRawAudioBuffer(sampleId, voiceParams);
+        if (!audioBuffer || engine.hasSample(sampleId)) return;
+        const pcmL = audioBuffer.getChannelData(0);
+        const pcmR = audioBuffer.numberOfChannels > 1
+          ? audioBuffer.getChannelData(1)
+          : null;
+        const loop = (voiceParams.sampleModes & 1) === 1 &&
+          voiceParams.loopEnd > voiceParams.loopStart;
+        let loopStart = 0;
+        let loopEnd = audioBuffer.length;
+        if (loop) {
+          loopStart = Math.max(
+            0,
+            Math.min(audioBuffer.length - 1, voiceParams.loopStart | 0),
+          );
+          loopEnd = Math.max(
+            loopStart + 1,
+            Math.min(audioBuffer.length, voiceParams.loopEnd | 0),
+          );
+        }
+        engine.loadSample(
+          sampleId,
+          pcmL,
+          pcmR,
+          audioBuffer.sampleRate,
+          loopStart,
+          loopEnd,
+          loop,
+        );
+      } finally {
+        this.workletSampleUploads.delete(sampleId);
+      }
+    })();
+    this.workletSampleUploads.set(sampleId, pending);
+    return pending;
   }
 
   /**
@@ -11445,6 +11595,82 @@ export class Player<
   // ---------------------------------------------------------------------------
 
   /**
+   * Effective main-thread maxVoices while in worklet mode.
+   * <= 0 means unlimited (processor hard ceiling only).
+   */
+  protected resolveWorkletMainMaxVoices(): number {
+    const lim = this.workletVoiceLimit;
+    if (lim === "unlimited") return 0;
+    if (lim === "match") {
+      const m = this.maxVoices | 0;
+      return m <= 0 ? 0 : m;
+    }
+    if (typeof lim === "number" && Number.isFinite(lim)) {
+      const n = lim | 0;
+      return n <= 0 ? 0 : n;
+    }
+    return 0;
+  }
+
+  /**
+   * Effective main-thread maxPedalVoices while in worklet mode.
+   * "match" uses Player.maxPedalVoices; otherwise unlimited on main
+   * (pedal pile is only cut by the worklet hard ceiling / note ends).
+   */
+  protected resolveWorkletMainMaxPedalVoices(): number {
+    const lim = this.workletVoiceLimit;
+    if (lim === "match") {
+      const m = this.maxPedalVoices | 0;
+      return m <= 0 ? 0 : m;
+    }
+    // unlimited | number: do not apply a separate pedal cap on main unless
+    // matching other modes. Numeric workletVoiceLimit already bounds total
+    // sounding notes via enforceMaxVoices.
+    return 0;
+  }
+
+  /**
+   * Apply workletVoiceLimit:
+   * - unlimited: skip main steal (processor WORKLET_MAX_VOICES is the only cap)
+   * - match: identical maxVoices timing/rules as non-worklet modes
+   * - number: temporary maxVoices override for this enforce call only
+   */
+  protected override enforceMaxVoices(
+    scheduleTime: number,
+    reserve = 1,
+  ): void {
+    if (this.cacheMode !== "worklet") {
+      super.enforceMaxVoices(scheduleTime, reserve);
+      return;
+    }
+    const effective = this.resolveWorkletMainMaxVoices();
+    if (effective <= 0) return; // unlimited on main
+    const prev = this.maxVoices;
+    this.maxVoices = effective;
+    try {
+      super.enforceMaxVoices(scheduleTime, reserve);
+    } finally {
+      this.maxVoices = prev;
+    }
+  }
+
+  protected override enforceMaxPedalVoices(scheduleTime: number): void {
+    if (this.cacheMode !== "worklet") {
+      super.enforceMaxPedalVoices(scheduleTime);
+      return;
+    }
+    const effective = this.resolveWorkletMainMaxPedalVoices();
+    if (effective <= 0) return;
+    const prev = this.maxPedalVoices;
+    this.maxPedalVoices = effective;
+    try {
+      super.enforceMaxPedalVoices(scheduleTime);
+    } finally {
+      this.maxPedalVoices = prev;
+    }
+  }
+
+  /**
    * Lazily create WorkletEngine and connect to masterVolume (dry) plus
    * post-stage effect inputs when available (GM2 reverb/chorus, Midy delay).
    */
@@ -11453,6 +11679,9 @@ export class Player<
     if (this.workletEngine) {
       // Effect graph may have been rebuilt (setReverbEffect etc.).
       this.workletEngine.setEffectInputs(effects);
+      if (this.debug !== this.workletEngine.debug) {
+        this.workletEngine.setDebug(this.debug);
+      }
       return this.workletEngine;
     }
     const ctx = this.audioContext;
@@ -11461,6 +11690,13 @@ export class Player<
     }
     const engine = new WorkletEngine(ctx);
     await engine.ensureStarted(this.masterVolume, effects);
+    if (this.debug) engine.setDebug(true);
+    engine.log(
+      `ensureWorkletEngine ok hardMax=${WORKLET_MAX_VOICES}` +
+        ` workletVoiceLimit=${JSON.stringify(this.workletVoiceLimit)}` +
+        ` mainMax=${this.resolveWorkletMainMaxVoices()}` +
+        ` lookAhead=${this.lookAhead} cacheMode=${this.cacheMode}`,
+    );
     this.workletEngine = engine;
     return engine;
   }
@@ -11550,32 +11786,33 @@ export class Player<
 
     const sampleId = audioBufferId;
     if (!engine.hasSample(sampleId)) {
-      const audioBuffer = await this.getRawAudioBuffer(
-        audioBufferId,
-        voiceParams,
-      );
-      if (!audioBuffer) return;
-      const pcmL = audioBuffer.getChannelData(0);
-      const pcmR = audioBuffer.numberOfChannels > 1
-        ? audioBuffer.getChannelData(1)
-        : null;
-      const sr = audioBuffer.sampleRate;
-      const loop = (voiceParams.sampleModes & 1) === 1 &&
-        voiceParams.loopEnd > voiceParams.loopStart;
-      let loopStart = 0;
-      let loopEnd = audioBuffer.length;
-      if (loop) {
-        loopStart = Math.max(0, Math.min(audioBuffer.length - 1, 0));
-        loopEnd = audioBuffer.length;
+      const tLoad = performance.now();
+      await this.uploadWorkletSample(engine, sampleId, voiceParams);
+      if (this.debug) {
+        engine.log(
+          `lateUpload sampleId=${sampleId}` +
+            ` ${(performance.now() - tLoad).toFixed(1)}ms` +
+            ` ok=${engine.hasSample(sampleId)}`,
+        );
       }
-      engine.loadSample(
-        sampleId,
-        pcmL,
-        pcmR,
-        sr,
-        loopStart,
-        loopEnd,
-        loop,
+      if (!engine.hasSample(sampleId)) {
+        if (this.debug) {
+          engine.log(
+            `ABORT noteOn: sampleId=${sampleId} still missing after upload`,
+          );
+        }
+        return;
+      }
+    }
+
+    // Preparation lag relative to scheduled start (same idea as warnIfStartTimeMissed).
+    const now = this.audioContext.currentTime;
+    if (this.debug && note.startTime < now - 0.01) {
+      engine.log(
+        `LATE noteOn sampleId=${sampleId}` +
+          ` scheduled=${note.startTime.toFixed(3)}` +
+          ` now=${now.toFixed(3)}` +
+          ` lateBy=${(now - note.startTime).toFixed(3)}s`,
       );
     }
 
@@ -11670,18 +11907,22 @@ export class Player<
     }
     const release = note.voiceParams?.releaseVolEnv ?? 0.05;
     engine.noteOff(voiceId, endTime, release);
-    // Wait until scheduled end + release, not just release from now
-    // (noteOff may arrive early while lookAhead covers the whole note).
+    // Wait for scheduled end + release. Prefer voiceEnded from the processor;
+    // only force-stop as a safety net after a generous timeout so dense
+    // noteOff storms do not cut releases short via early stop().
     const now = this.audioContext.currentTime;
     const waitMs = Math.max(
-      30,
-      (Math.max(0, endTime - now) + release) * 1000 + 50,
+      80,
+      (Math.max(0, endTime - now) + release) * 1000 + 150,
     );
     return new Promise((resolve) => {
       setTimeout(() => {
-        engine.stop(voiceId);
+        // Force-stop only if main still thinks this id is live.
+        if (note.workletVoiceId === voiceId) {
+          engine.stop(voiceId);
+          note.workletVoiceId = null;
+        }
         this.soundingNotes.delete(note);
-        note.workletVoiceId = null;
         resolve();
       }, waitMs);
     });

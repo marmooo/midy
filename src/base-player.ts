@@ -3327,7 +3327,12 @@ export class BasePlayer<
         } else {
           await this.setNoteAudioNode(channel, layerNote, realtime);
           if (layerNote.ending) {
-            if (layerNote.bufferSource || layerNote.volumeNode) {
+            // Worklet notes have no bufferSource/volumeNode — still must stop.
+            if (
+              layerNote.bufferSource ||
+              layerNote.volumeNode ||
+              layerNote.workletVoiceId != null
+            ) {
               await this.soundOffNote(layerNote, this.audioContext.currentTime);
             }
           } else {
