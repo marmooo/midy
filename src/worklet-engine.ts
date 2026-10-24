@@ -250,6 +250,12 @@ export class WorkletEngine {
           loadSample: number;
           ended: number;
           quantums: number;
+          activeSum?: number;
+          processMs?: number;
+          processMaxMs?: number;
+          simpleVQ?: number;
+          complexVQ?: number;
+          hasPerf?: number;
         };
         this.lastStats = {
           active: s.active,
@@ -263,6 +269,12 @@ export class WorkletEngine {
           loadSample: s.loadSample,
           ended: s.ended,
           quantums: s.quantums,
+          activeSum: s.activeSum ?? 0,
+          processMs: s.processMs ?? 0,
+          processMaxMs: s.processMaxMs ?? 0,
+          simpleVQ: s.simpleVQ ?? 0,
+          complexVQ: s.complexVQ ?? 0,
+          hasPerf: s.hasPerf ?? 0,
         };
         // Ring buffer only — no live console spam.
         this.log(

@@ -3740,12 +3740,28 @@ export class Player<
         const steal = st?.steal ?? 0;
         const miss = st?.missingSample ?? 0;
         const q = st?.quantums ?? 0;
-        // Rough realtime factor: song duration / wall clock ( >1 = faster than RT).
+        const activeSum = st?.activeSum ?? 0;
+        const avgActive = q > 0 ? activeSum / q : 0;
+        const processMs = st?.processMs ?? 0;
+        const processMaxMs = st?.processMaxMs ?? 0;
+        const avgProcUs = q > 0 ? (processMs / q) * 1000 : 0;
+        const simpleVQ = st?.simpleVQ ?? 0;
+        const complexVQ = st?.complexVQ ?? 0;
+        const vq = simpleVQ + complexVQ;
+        const simplePct = vq > 0 ? (100 * simpleVQ) / vq : 0;
         const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
+        // processMs / avgProcUs: audio-thread time in process() — compare these
+        // across runs (wall/rtf stay ≈ song length under realtime playback).
         console.log(
           `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms` +
             ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
             ` peakActive=${peak}/${WORKLET_MAX_VOICES}` +
+            ` avgActive=${avgActive.toFixed(1)}` +
+            ` processMs=${processMs.toFixed(1)}` +
+            ` avgProcUs=${avgProcUs.toFixed(1)}` +
+            ` maxProcMs=${processMaxMs.toFixed(3)}` +
+            ` simpleVQ=${simpleVQ} complexVQ=${complexVQ}` +
+            ` simplePct=${simplePct.toFixed(1)}%` +
             ` noteOn=${on} steal=${steal} miss=${miss}` +
             ` stop=${st?.stop ?? ms.stop} quantums=${q}` +
             ` samples=${

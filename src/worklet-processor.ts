@@ -25,7 +25,8 @@ const TWO_PI = Math.PI * 2;
 const FULLY_OPEN_CENTS = 13500;
 // Update LFO / pitch scale / filter Fc every N samples (block-rate).
 // At 48kHz, N=8 ≈ 0.17ms — inaudible for LFO while cutting sin/pow cost ~8×.
-const MOD_BLOCK = 8;
+// Block-rate for LFO / pitch / filter Fc. 16 ≈ 0.33ms @ 48kHz (still smooth).
+const MOD_BLOCK = 16;
 const LN2_OVER_1200 = Math.LN2 / 1200;
 
 class SampleEntry {
@@ -185,7 +186,14 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.statLoad = 0;
     this.statEnded = 0;
     this.statQuantums = 0;
+    this.statActiveSum = 0;
     this.peakActive = 0;
+    this.statProcessMs = 0;
+    this.statProcessMaxMs = 0;
+    this.statSimpleVQ = 0;
+    this.statComplexVQ = 0;
+    this.hasPerf = typeof performance !== "undefined" &&
+      typeof performance.now === "function";
     this.port.onmessage = (e) => this.onMessage(e.data);
     this.port.postMessage({ type: "ready" });
   }
@@ -235,6 +243,12 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         loadSample: this.statLoad,
         ended: this.statEnded,
         quantums: this.statQuantums,
+        activeSum: this.statActiveSum,
+        processMs: this.statProcessMs,
+        processMaxMs: this.statProcessMaxMs,
+        simpleVQ: this.statSimpleVQ,
+        complexVQ: this.statComplexVQ,
+        hasPerf: this.hasPerf ? 1 : 0,
       });
     } catch (_) { /* ignore */ }
   }
@@ -452,6 +466,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       v.needsPitchMod ||
       v.filterEnabled ||
       v.modEnvToFilterFc !== 0;
+    // Fast path: no filter / LFO / mod-env work in the sample loop.
+    v.simplePath =
+      !v.filterEnabled && !v.needsPitchMod && !v.needsVolLfo && !v.needsModEnv;
     v.rateScale = v.playbackRate * (sample.sampleRate / sampleRate);
     v.volLfo = 1;
     this.voiceById.set(v.voiceId, v);
@@ -695,13 +712,14 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     const activeSlots = this.activeSlots;
 
     this.statQuantums++;
+    this.statActiveSum += activeSlots.length;
+    const tProc0 = this.hasPerf ? performance.now() : 0;
 
     for (let i = 0; i < n; i++) {
       outL[i] = 0;
       outR[i] = 0;
     }
 
-    // Only walk live voices (activeSlots). Free-list keeps this << MAX_VOICES.
     for (let ai = activeSlots.length - 1; ai >= 0; ai--) {
       const v = voices[activeSlots[ai]];
       if (!v.active || !v.sample) {
@@ -712,108 +730,166 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       const sample = v.sample;
       const baseRate = v.playbackRate * (sample.sampleRate / sr);
       let ended = false;
-      let modEnv = v.modLevel;
-      let modLfo = 0;
-      let vibLfo = 0;
 
-      for (let i = 0; i < n; i++) {
-        const absFrame = frame0 + i;
-        if (absFrame < v.startFrame) continue;
-
-        // Scheduled noteOff (from lookAhead) becomes real release here.
-        if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
-          v.releasing = true;
-          v.envStage = ENV_RELEASE;
-          v.envTime = 0;
-          if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
-            v.modStage = ENV_RELEASE;
-            v.modTime = 0;
+      // -------- Simple path: vol env + sample + pan only --------
+      if (v.simplePath) {
+        this.statSimpleVQ++;
+        v.rateScale = baseRate > 0 ? baseRate : 1;
+        const rate = v.rateScale;
+        const gPanL = v.gain * v.panL * mg;
+        const gPanR = v.gain * v.panR * mg;
+        const pcmL = sample.pcmL;
+        const pcmR = sample.pcmR;
+        const len = sample.length;
+        const loop = sample.loop;
+        const ls = sample.loopStart;
+        const le = sample.loopEnd;
+        let phase = v.phase;
+        for (let i = 0; i < n; i++) {
+          const absFrame = frame0 + i;
+          if (absFrame < v.startFrame) continue;
+          if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+            v.releasing = true;
+            v.envStage = ENV_RELEASE;
+            v.envTime = 0;
+          }
+          const env = this.processVolEnv(v, invSr);
+          if (v.envStage === ENV_DONE) {
+            ended = true;
+            break;
+          }
+          // Inline linear interpolation (mono/stereo)
+          let p = phase;
+          if (loop) {
+            if (p >= le) {
+              const loopLen = le - ls;
+              if (loopLen <= 0) {
+                ended = true;
+                break;
+              }
+              p = ls + ((p - ls) % loopLen);
+            }
+          } else if (p >= len - 1) {
+            ended = true;
+            break;
+          }
+          const i0 = p | 0;
+          const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+          const frac = p - i0;
+          const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+          const sR = pcmR
+            ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+            : sL;
+          phase = p + rate;
+          const amp = env * gPanL;
+          const ampR = env * gPanR;
+          if (amp === amp) {
+            outL[i] += sL * amp;
+            outR[i] += sR * ampR;
           }
         }
+        v.phase = phase;
+      } else {
+        // -------- Full path: mod env / LFO / filter --------
+        this.statComplexVQ++;
+        let modEnv = v.modLevel;
+        let modLfo = 0;
+        let vibLfo = 0;
+        for (let i = 0; i < n; i++) {
+          const absFrame = frame0 + i;
+          if (absFrame < v.startFrame) continue;
 
-        const env = this.processVolEnv(v, invSr);
-        if (v.envStage === ENV_DONE) {
-          ended = true;
-          break;
-        }
-
-        // Block-rate: LFO / pitch / filter Fc (every MOD_BLOCK samples).
-        if ((i % MOD_BLOCK) === 0) {
-          if (v.needsModEnv) {
-            modEnv = this.processModEnv(v, blockDt);
-            if (modEnv !== modEnv) modEnv = 0; // NaN guard
-          } else {
-            modEnv = 0;
+          if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+            v.releasing = true;
+            v.envStage = ENV_RELEASE;
+            v.envTime = 0;
+            if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+              v.modStage = ENV_RELEASE;
+              v.modTime = 0;
+            }
           }
 
-          v.modLfoAge += blockDt;
-          v.vibLfoAge += blockDt;
-
-          modLfo = 0;
-          if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
-            (v.needsPitchMod || v.needsVolLfo || v.filterEnabled)) {
-            modLfo = Math.sin(v.modLfoPhase);
-            v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
-            if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+          const env = this.processVolEnv(v, invSr);
+          if (v.envStage === ENV_DONE) {
+            ended = true;
+            break;
           }
 
-          vibLfo = 0;
-          if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
-            v.vibLfoToPitch !== 0) {
-            vibLfo = Math.sin(v.vibLfoPhase);
-            v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
-            if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+          if ((i & (MOD_BLOCK - 1)) === 0) {
+            if (v.needsModEnv) {
+              modEnv = this.processModEnv(v, blockDt);
+              if (modEnv !== modEnv) modEnv = 0;
+            } else {
+              modEnv = 0;
+            }
+
+            v.modLfoAge += blockDt;
+            v.vibLfoAge += blockDt;
+
+            modLfo = 0;
+            if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
+              (v.needsPitchMod || v.needsVolLfo || v.filterEnabled)) {
+              modLfo = Math.sin(v.modLfoPhase);
+              v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
+              if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+            }
+
+            vibLfo = 0;
+            if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
+              v.vibLfoToPitch !== 0) {
+              vibLfo = Math.sin(v.vibLfoPhase);
+              v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
+              if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+            }
+
+            if (v.needsPitchMod) {
+              const pitchCents =
+                modEnv * v.modEnvToPitch +
+                modLfo * v.modLfoToPitch +
+                vibLfo * v.vibLfoToPitch;
+              let rs = pitchCents !== 0
+                ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
+                : baseRate;
+              if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+              v.rateScale = rs;
+            } else {
+              v.rateScale = baseRate > 0 ? baseRate : 1;
+            }
+
+            if (v.needsVolLfo && modLfo !== 0) {
+              const cb = modLfo * v.modLfoToVolume;
+              const vl = Math.exp(cb * (Math.LN10 / 200));
+              v.volLfo = (vl === vl && vl > 0) ? vl : 1;
+            } else {
+              v.volLfo = 1;
+            }
+
+            if (v.filterEnabled) {
+              const fcCents =
+                v.filterFcCents +
+                modEnv * v.modEnvToFilterFc +
+                modLfo * v.modLfoToFilterFc;
+              const fcHz = clampFc(centToHz(fcCents), nyquist);
+              this.updateFilter(v, fcHz, sr);
+            }
           }
 
-          if (v.needsPitchMod) {
-            const pitchCents =
-              modEnv * v.modEnvToPitch +
-              modLfo * v.modLfoToPitch +
-              vibLfo * v.vibLfoToPitch;
-            let rs = pitchCents !== 0
-              ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
-              : baseRate;
-            // Clamp: extreme cents or NaN must not poison the mix bus.
-            if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
-            v.rateScale = rs;
-          } else {
-            v.rateScale = baseRate > 0 ? baseRate : 1;
+          const newPhase = this.readSampleInto(v, sample, v.phase);
+          if (newPhase < 0) {
+            ended = true;
+            break;
           }
-
-          if (v.needsVolLfo && modLfo !== 0) {
-            const cb = modLfo * v.modLfoToVolume;
-            const vl = Math.exp(cb * (Math.LN10 / 200));
-            v.volLfo = (vl === vl && vl > 0) ? vl : 1;
-          } else {
-            v.volLfo = 1;
-          }
+          v.phase = newPhase + v.rateScale;
 
           if (v.filterEnabled) {
-            const fcCents =
-              v.filterFcCents +
-              modEnv * v.modEnvToFilterFc +
-              modLfo * v.modLfoToFilterFc;
-            const fcHz = clampFc(centToHz(fcCents), nyquist);
-            this.updateFilter(v, fcHz, sr);
+            this.processFilterInPlace(v);
           }
-        }
 
-        const newPhase = this.readSampleInto(v, sample, v.phase);
-        if (newPhase < 0) {
-          ended = true;
-          break;
-        }
-        v.phase = newPhase + v.rateScale;
-
-        if (v.filterEnabled) {
-          this.processFilterInPlace(v);
-        }
-
-        const amp = v.gain * env * v.volLfo * mg;
-        // Skip non-finite samples — one NaN would poison outL/outR forever.
-        if (amp === amp && v.outL === v.outL && v.outR === v.outR) {
-          outL[i] += v.outL * amp * v.panL;
-          outR[i] += v.outR * amp * v.panR;
+          const amp = v.gain * env * v.volLfo * mg;
+          if (amp === amp && v.outL === v.outL && v.outR === v.outR) {
+            outL[i] += v.outL * amp * v.panL;
+            outR[i] += v.outR * amp * v.panR;
+          }
         }
       }
 
@@ -826,6 +902,12 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           this.port.postMessage({ type: "voiceEnded", voiceId: id });
         } catch (_) { /* ignore */ }
       }
+    }
+
+    if (this.hasPerf) {
+      const dt = performance.now() - tProc0;
+      this.statProcessMs += dt;
+      if (dt > this.statProcessMaxMs) this.statProcessMaxMs = dt;
     }
 
     return true;
