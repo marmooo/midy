@@ -8446,16 +8446,21 @@ export class Player<
       : (voiceParams.sampleModes % 2 !== 0);
     const decayDuration = voiceParams.decayVolEnv;
     const naturalAdsDuration = this.computeAdsDuration(voiceParams);
-    // Cap only the *baked buffer length*, never the envelope time constants.
-    // Compressing decayVolEnv to fit maxAdsBakeDuration made piano body ~6dB
-    // quieter and inflated CC7/CC11 drops (+11–15dB) because the gain curve
-    // reached sustain far earlier than none/realtime / fluidsynth.
+    // Cap the baked buffer length and the adsDuration meta. Envelope time
+    // constants (delay/attack/hold/decay) stay natural — gains are sampled
+    // from the true curve up to the cap, then lean playback holds/loops the
+    // level reached at that point. Compressing decayVolEnv itself made piano
+    // body ~6dB quieter and inflated CC7/CC11 drops vs fluidsynth.
     const adsCap = this.maxAdsBakeDuration;
-    const adsDuration = naturalAdsDuration;
+    const adsDuration = adsCap > 0
+      ? Math.min(naturalAdsDuration, adsCap)
+      : naturalAdsDuration;
     if (adsCap > 0 && naturalAdsDuration > adsCap && this.debug) {
       console.log(
         `[midy] ads-bake-cap | note=${note.noteNumber} ` +
-          `envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan capped ` +
+          `envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan=${
+            adsDuration.toFixed(3)
+          }s ` +
           `decay kept=${decayDuration.toFixed(3)}s`,
       );
     }
@@ -8466,28 +8471,22 @@ export class Player<
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    // Buffer time span: follow real envelope progress (not accelerated).
-    // For looped voices, also tile enough cycles for offline sustain so we
-    // do not depend only on AudioBufferSourceNode.loop (none-mode parity).
+    // Buffer time span follows adsDuration (already capped). For uncapped
+    // looped voices, expand to loopExpandDurationSec so offline sustain does
+    // not depend only on AudioBufferSourceNode.loop (none-mode parity).
     const expandSec = (typeof this.loopExpandDurationSec === "number" &&
         this.loopExpandDurationSec > 0)
       ? this.loopExpandDurationSec
       : 8;
-    // Physical bake length: min(natural needs, cap) but always ≥ one loop
-    // cycle when looping. Envelope gains still use full natural timebase.
-    let targetSpan = isLoop
-      ? Math.max(
-        Math.min(naturalAdsDuration, adsCap > 0 ? adsCap : naturalAdsDuration),
-        expandSec,
-      )
-      : Math.min(
-        audioBuffer.duration / playbackRate,
-        adsCap > 0
-          ? Math.max(adsCap, naturalAdsDuration)
-          : (audioBuffer.duration / playbackRate),
-      );
-    // Non-loop one-shots: keep full pitched duration (do not cut sample).
-    if (!isLoop) {
+    let targetSpan: number;
+    if (isLoop) {
+      // When capped, stay at the cap (loop-align may add one period).
+      // When uncapped, expand to at least expandSec for offline sustain.
+      targetSpan = (adsCap > 0 && naturalAdsDuration > adsCap)
+        ? adsDuration
+        : Math.max(adsDuration, expandSec);
+    } else {
+      // Non-loop one-shots: keep full pitched sample duration (do not cut).
       targetSpan = audioBuffer.duration / playbackRate;
     }
     const loopCount = isLoop && targetSpan > outputLoopStart &&

@@ -1255,11 +1255,12 @@ export class BasePlayer<
   isPaused: boolean = false;
   isStopping: boolean = false;
   isSeeking: boolean = false;
-  // noteOff alone is not enough: sustain/sostenuto pedal-up (CC64/66) and
-  // all-sound/notes-off (CC120/123) often arrive *after* the last noteOff and
-  // must still run. Including "controller" keeps those events in the timeline
-  // and extends totalTime so scheduleTimelineEvents does not skip them.
-  totalTimeEventTypes: Set<string> = new Set(["noteOff", "controller"]);
+  // End-of-song is defined by the last noteOff. Trailing controllers that sit
+  // after a long silent gap (common SMF padding before endOfTrack) must not
+  // extend totalTime or block trimTrailingSilence — otherwise the player sits
+  // in silence for seconds after every note has finished. Pedal-up / all-notes
+  // -off that share the last noteOff's time (or arrive earlier) remain.
+  totalTimeEventTypes: Set<string> = new Set(["noteOff"]);
   tempo: number = 1;
   loop: boolean = false;
   playPromise?: Promise<void>;
@@ -2633,11 +2634,10 @@ export class BasePlayer<
   }
 
   /**
-   * Remove timeline events after the last {@link totalTimeEventTypes} event
-   * (noteOff and controller). Many SMFs leave a long empty gap before
-   * endOfTrack; keeping those events makes the player sit in silence until
-   * the padded end even though every note has already finished. Controllers
-   * are kept so sustain pedal-up after the last noteOff still releases.
+   * Remove timeline events after the last noteOff. Many SMFs leave a long
+   * empty gap (and occasional trailing controller / meta events) before
+   * endOfTrack; keeping those makes the player sit in silence after every
+   * note has already finished.
    */
   trimTrailingSilence(): void {
     const types = this.totalTimeEventTypes;
