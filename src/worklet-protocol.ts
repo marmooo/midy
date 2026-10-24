@@ -132,6 +132,11 @@ export type WorkletSetDebugMsg = {
   enabled: boolean;
 };
 
+/** Ask processor to post a one-shot stats snapshot. */
+export type WorkletRequestStatsMsg = {
+  type: "requestStats";
+};
+
 export type WorkletMainToProcessorMsg =
   | WorkletLoadSampleMsg
   | WorkletNoteOnMsg
@@ -140,7 +145,8 @@ export type WorkletMainToProcessorMsg =
   | WorkletAllSoundOffMsg
   | WorkletSetMasterGainMsg
   | WorkletSetVoiceParamsMsg
-  | WorkletSetDebugMsg;
+  | WorkletSetDebugMsg
+  | WorkletRequestStatsMsg;
 
 // ---------------------------------------------------------------------------
 // Worklet → Main (optional diagnostics)

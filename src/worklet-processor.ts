@@ -155,10 +155,8 @@ class Voice {
     this.needsPitchMod = false;
     this.needsVolLfo = false;
     this.needsModEnv = false;
-    // NOTE: do NOT clear this.slot — it is the permanent index in
-    // processor.voices[], set once in the constructor. Clearing it made
-    // activateVoice() no-op after the first release, so recycled voices
-    // never re-entered activeSlots and sound died mid-song.
+    // NOTE: do NOT clear this.slot — permanent index in processor.voices[].
+    // activeIndex is managed by activate/deactivate, not reset().
   }
 }
 
@@ -167,15 +165,18 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     super();
     this.samples = new Map();
     this.voices = new Array(MAX_VOICES);
+    this.activeSlots = [];
+    this.freeSlots = new Array(MAX_VOICES);
     for (let i = 0; i < MAX_VOICES; i++) {
       const v = new Voice();
       v.slot = i;
+      v.activeIndex = -1;
       this.voices[i] = v;
+      this.freeSlots[i] = i;
     }
     this.masterGain = 1;
     this.voiceById = new Map();
     this.debug = false;
-    // Cumulative counters (reset only on allSoundOff / explicit request).
     this.statNoteOn = 0;
     this.statNoteOff = 0;
     this.statStop = 0;
@@ -184,29 +185,47 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.statLoad = 0;
     this.statEnded = 0;
     this.statQuantums = 0;
-    this.lastStatsFrame = 0;
+    this.peakActive = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
     this.port.postMessage({ type: "ready" });
   }
 
+  activateVoice(v) {
+    if (v.activeIndex >= 0) return;
+    v.activeIndex = this.activeSlots.length;
+    this.activeSlots.push(v.slot);
+    if (this.activeSlots.length > this.peakActive) {
+      this.peakActive = this.activeSlots.length;
+    }
+  }
+
+  deactivateVoice(v) {
+    const i = v.activeIndex;
+    if (i < 0) return;
+    const slots = this.activeSlots;
+    const last = slots.length - 1;
+    const lastSlot = slots[last];
+    slots[i] = lastSlot;
+    this.voices[lastSlot].activeIndex = i;
+    slots.pop();
+    v.activeIndex = -1;
+  }
+
   dbg(message) {
     if (!this.debug) return;
-    // Skip routine loadSample spam; keep MISSING / steal / setDebug.
     if (message.indexOf("loadSample ") === 0) return;
     try {
       this.port.postMessage({ type: "debug", message: message });
     } catch (_) { /* ignore */ }
   }
 
+  /** Snapshot for main (no console). Called on requestStats / setDebug. */
   postStats() {
-    let active = 0;
-    for (let i = 0; i < MAX_VOICES; i++) {
-      if (this.voices[i].active) active++;
-    }
     try {
       this.port.postMessage({
         type: "stats",
-        active: active,
+        active: this.activeSlots.length,
+        peakActive: this.peakActive,
         samples: this.samples.size,
         noteOn: this.statNoteOn,
         noteOff: this.statNoteOff,
@@ -218,7 +237,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         quantums: this.statQuantums,
       });
     } catch (_) { /* ignore */ }
-    this.statQuantums = 0;
   }
 
   onMessage(msg) {
@@ -254,9 +272,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         this.stopVoice(msg.voiceId);
         break;
       case "allSoundOff":
-        for (let i = 0; i < MAX_VOICES; i++) {
-          if (this.voices[i].active) this.voices[i].reset();
+        for (let i = 0; i < this.activeSlots.length; i++) {
+          this.voices[this.activeSlots[i]].reset();
+          this.voices[this.activeSlots[i]].activeIndex = -1;
         }
+        this.activeSlots.length = 0;
+        this.freeSlots.length = 0;
+        for (let i = 0; i < MAX_VOICES; i++) this.freeSlots.push(i);
         this.voiceById.clear();
         this.dbg("allSoundOff");
         break;
@@ -269,7 +291,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       case "setDebug":
         this.debug = !!msg.enabled;
         this.dbg("setDebug " + this.debug);
-        if (this.debug) this.postStats();
+        break;
+      case "requestStats":
+        this.postStats();
         break;
     }
   }
@@ -290,15 +314,17 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   }
 
   findFreeVoice() {
-    for (let i = 0; i < MAX_VOICES; i++) {
-      if (!this.voices[i].active) return this.voices[i];
+    // O(1) free-list path when under the hard ceiling.
+    if (this.freeSlots.length > 0) {
+      const slot = this.freeSlots.pop();
+      return this.voices[slot];
     }
-    // Steal: prefer quietest releasing voice, else oldest startFrame.
-    let best = this.voices[0];
+    // Steal among active only (prefer quiet releasing).
+    const slots = this.activeSlots;
+    let best = this.voices[slots[0]];
     let bestScore = Infinity;
-    for (let i = 0; i < MAX_VOICES; i++) {
-      const v = this.voices[i];
-      // Lower score = better steal candidate.
+    for (let i = 0; i < slots.length; i++) {
+      const v = this.voices[slots[i]];
       const score = v.releasing
         ? v.envLevel * 0.25 + v.startFrame * 1e-12
         : 1 + v.envLevel + v.startFrame * 1e-12;
@@ -311,7 +337,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.statSteal++;
     if (stolenId >= 0) {
       this.voiceById.delete(stolenId);
-      // Tell main thread the voice is gone (otherwise it keeps dead ids).
       try {
         this.port.postMessage({ type: "voiceEnded", voiceId: stolenId });
       } catch (_) { /* ignore */ }
@@ -321,7 +346,10 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           " releasing=" + !!best.releasing,
       );
     }
+    // Keep slot in activeSlots; voice is reused in place (activeIndex stays).
+    const keptIndex = best.activeIndex;
     best.reset();
+    best.activeIndex = keptIndex;
     return best;
   }
 
@@ -427,7 +455,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.rateScale = v.playbackRate * (sample.sampleRate / sampleRate);
     v.volLfo = 1;
     this.voiceById.set(v.voiceId, v);
-    // Per-note dbg intentionally omitted (flood). See stats / MISSING / steal.
+    this.activateVoice(v);
   }
 
   handleNoteOff(msg) {
@@ -450,11 +478,17 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     }
   }
 
+  releaseSlot(v) {
+    this.deactivateVoice(v);
+    this.freeSlots.push(v.slot);
+    v.reset();
+  }
+
   stopVoice(voiceId) {
     const v = this.voiceById.get(voiceId | 0);
     if (!v) return;
-    v.reset();
     this.voiceById.delete(voiceId | 0);
+    if (v.active || v.activeIndex >= 0) this.releaseSlot(v);
   }
 
   // Advance a generic AHDSR; mutates stage/time/level. Returns current level.
@@ -657,24 +691,23 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     const mg = this.masterGain;
     const frame0 = currentFrame;
     const blockDt = invSr * MOD_BLOCK;
-    // MAX_VOICES is small (≤128); scanning is cheaper than active-list bugs.
     const voices = this.voices;
+    const activeSlots = this.activeSlots;
 
     this.statQuantums++;
-    // ~4 stats/sec at 128-frame quantums @ 48kHz
-    if (this.debug && frame0 - this.lastStatsFrame >= (sr >> 2)) {
-      this.lastStatsFrame = frame0;
-      this.postStats();
-    }
 
     for (let i = 0; i < n; i++) {
       outL[i] = 0;
       outR[i] = 0;
     }
 
-    for (let vi = 0; vi < MAX_VOICES; vi++) {
-      const v = voices[vi];
-      if (!v.active || !v.sample) continue;
+    // Only walk live voices (activeSlots). Free-list keeps this << MAX_VOICES.
+    for (let ai = activeSlots.length - 1; ai >= 0; ai--) {
+      const v = voices[activeSlots[ai]];
+      if (!v.active || !v.sample) {
+        this.releaseSlot(v);
+        continue;
+      }
 
       const sample = v.sample;
       const baseRate = v.playbackRate * (sample.sampleRate / sr);
@@ -786,8 +819,8 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
       if (ended) {
         const id = v.voiceId;
-        v.reset();
         this.voiceById.delete(id);
+        this.releaseSlot(v);
         this.statEnded++;
         try {
           this.port.postMessage({ type: "voiceEnded", voiceId: id });

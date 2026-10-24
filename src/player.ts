@@ -3726,8 +3726,35 @@ export class Player<
     if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
       await this.prewarmSimpleNoteCache();
     }
+    const workletPerfT0 = this.cacheMode === "worklet" ? performance.now() : 0;
     this.playPromise = this.playNotes();
     await this.playPromise;
+    if (this.cacheMode === "worklet" && this.workletEngine) {
+      try {
+        const wallMs = performance.now() - workletPerfT0;
+        const songSec = this.totalTime > 0 ? this.totalTime : 0;
+        const st = await this.workletEngine.fetchStats(100);
+        const ms = this.workletEngine.mainStats;
+        const peak = st?.peakActive ?? st?.active ?? 0;
+        const on = st?.noteOn ?? ms.noteOn;
+        const steal = st?.steal ?? 0;
+        const miss = st?.missingSample ?? 0;
+        const q = st?.quantums ?? 0;
+        // Rough realtime factor: song duration / wall clock ( >1 = faster than RT).
+        const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
+        console.log(
+          `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms` +
+            ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
+            ` peakActive=${peak}/${WORKLET_MAX_VOICES}` +
+            ` noteOn=${on} steal=${steal} miss=${miss}` +
+            ` stop=${st?.stop ?? ms.stop} quantums=${q}` +
+            ` samples=${
+              st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples
+            }` +
+            ` limit=${JSON.stringify(this.workletVoiceLimit)}`,
+        );
+      } catch (_) { /* ignore */ }
+    }
     // Post-playback cache / complex-breakdown stats.
     try {
       const cx = this.countComplexBreakdown();

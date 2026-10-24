@@ -130,8 +130,9 @@ export class WorkletEngine {
     }
     // Default: only important lines hit console when debug is on.
     // Pass console:true for high-signal events (stats, MISSING, steal summary).
+    // Periodic stats no longer match — end-of-play summary uses console:true.
     const toConsole = opts?.console ??
-      /^(stats |proc: MISSING|proc: steal|preload|ensure|setDebug|ABORT|LATE|lateUpload)/
+      /^(proc: MISSING|proc: steal|preload|ensure|setDebug|ABORT|LATE|lateUpload)/
         .test(message);
     if (this.debug && toConsole) {
       console.log(`[worklet] ${line}`);
@@ -143,6 +144,28 @@ export class WorkletEngine {
     this.debug = enabled;
     this.post({ type: "setDebug", enabled });
     this.log(`setDebug ${enabled}`);
+  }
+
+  /** Request a one-shot stats snapshot from the processor. */
+  requestStats(): void {
+    this.post({ type: "requestStats" });
+  }
+
+  /**
+   * Wait briefly for the next stats message (after requestStats).
+   * Returns lastStats (may be slightly stale if the port is busy).
+   */
+  async fetchStats(timeoutMs = 80): Promise<Record<string, number> | null> {
+    this.requestStats();
+    const start = performance.now();
+    const prev = this.lastStats;
+    while (performance.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 8));
+      if (this.lastStats && this.lastStats !== prev) {
+        return { ...this.lastStats };
+      }
+    }
+    return this.lastStats ? { ...this.lastStats } : null;
   }
 
   /** Snapshot for console: stats + last log lines. */
@@ -217,6 +240,7 @@ export class WorkletEngine {
       if (msg.type === "stats") {
         const s = msg as {
           active: number;
+          peakActive?: number;
           samples: number;
           noteOn: number;
           noteOff: number;
@@ -229,6 +253,7 @@ export class WorkletEngine {
         };
         this.lastStats = {
           active: s.active,
+          peakActive: s.peakActive ?? s.active,
           samples: s.samples,
           noteOn: s.noteOn,
           noteOff: s.noteOff,
@@ -239,13 +264,16 @@ export class WorkletEngine {
           ended: s.ended,
           quantums: s.quantums,
         };
+        // Ring buffer only — no live console spam.
         this.log(
           `stats active=${s.active}/${WORKLET_MAX_VOICES}` +
+            ` peak=${s.peakActive ?? s.active}` +
             ` samples=${s.samples}` +
             ` on=${s.noteOn} off=${s.noteOff} stop=${s.stop}` +
             ` steal=${s.steal} miss=${s.missingSample}` +
             ` load=${s.loadSample} ended=${s.ended}` +
             ` q=${s.quantums}`,
+          { console: false },
         );
       }
     };
