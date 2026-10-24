@@ -1257,12 +1257,18 @@ export class BasePlayer<
   isPaused: boolean = false;
   isStopping: boolean = false;
   isSeeking: boolean = false;
-  // End-of-song is defined by the last noteOff. Trailing controllers that sit
-  // after a long silent gap (common SMF padding before endOfTrack) must not
-  // extend totalTime or block trimTrailingSilence — otherwise the player sits
-  // in silence for seconds after every note has finished. Pedal-up / all-notes
-  // -off that share the last noteOff's time (or arrive earlier) remain.
+  // Primary end marker is noteOff. Release-related controllers after the last
+  // noteOff (sustain/sostenuto up, all-sound/notes-off) still count via
+  // isTotalTimeEvent(); other trailing controllers (e.g. CC7 padding) do not.
   totalTimeEventTypes: Set<string> = new Set(["noteOff"]);
+  /** CC numbers that can release held notes after the last noteOff. */
+  postNoteOffControllerTypes: Set<number> = new Set([
+    64, // sustain
+    66, // sostenuto
+    120, // all sound off
+    121, // reset all controllers
+    123, // all notes off
+  ]);
   tempo: number = 1;
   loop: boolean = false;
   playPromise?: Promise<void>;
@@ -2636,17 +2642,31 @@ export class BasePlayer<
   }
 
   /**
-   * Remove timeline events after the last noteOff. Many SMFs leave a long
-   * empty gap (and occasional trailing controller / meta events) before
+   * True when a timeline event should count toward song end / survive
+   * {@link trimTrailingSilence}: noteOff, or a post-noteOff release controller
+   * (sustain/sostenuto up, all-sound/notes-off, reset-all-controllers).
+   */
+  isTotalTimeEvent(event: TimelineEvent): boolean {
+    if (this.totalTimeEventTypes.has(event.type)) return true;
+    if (event.type === "controller") {
+      const cc = event.controllerType;
+      return cc != null && this.postNoteOffControllerTypes.has(cc);
+    }
+    return false;
+  }
+
+  /**
+   * Remove timeline events after the last noteOff / release controller.
+   * Many SMFs leave a long empty gap and non-release controllers before
    * endOfTrack; keeping those makes the player sit in silence after every
-   * note has already finished.
+   * note has already finished. Sustain/sostenuto pedal-up after the last
+   * noteOff is preserved so held notes still release.
    */
   trimTrailingSilence(): void {
-    const types = this.totalTimeEventTypes;
     const timeline = this.timeline;
     let last = -1;
     for (let i = 0; i < timeline.length; i++) {
-      if (types.has(timeline[i].type)) last = i;
+      if (this.isTotalTimeEvent(timeline[i])) last = i;
     }
     if (last >= 0 && last < timeline.length - 1) {
       timeline.length = last + 1;
@@ -2654,13 +2674,12 @@ export class BasePlayer<
   }
 
   calcTotalTime(): number {
-    const totalTimeEventTypes = this.totalTimeEventTypes;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     let totalTime = 0;
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
-      if (!totalTimeEventTypes.has(event.type)) continue;
+      if (!this.isTotalTimeEvent(event)) continue;
       const t = event.startTime * inverseTempo;
       if (totalTime < t) totalTime = t;
     }
