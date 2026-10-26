@@ -30,6 +30,10 @@ const FULLY_OPEN_CENTS = 13500;
 // polyphony time) and sample-accurate processing only for transient stages.
 const MOD_BLOCK = 32;
 const LN2_OVER_1200 = Math.LN2 / 1200;
+// Inaudible thresholds for simplePath (path selection only; actual depths kept).
+// Pitch < ~2 cents and vol LFO < ~0.1 dB are effectively silent.
+const PITCH_EPS_CENTS = 2;
+const VOL_LFO_EPS_CB = 1;
 
 class SampleEntry {
   constructor(pcmL, pcmR, sampleRate, loopStart, loopEnd, loop) {
@@ -520,16 +524,19 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
     const when = +msg.when || currentTime;
     v.startFrame = Math.max(currentFrame, Math.floor(when * sampleRate));
-    // Feature flags: skip sin/pow/modEnv work when depths are zero.
+    // Feature flags: skip sin/pow/modEnv work when depths are inaudible
+    // or LFO freq is zero (cannot modulate). Thresholds allow more voices
+    // onto simplePath without audible change.
+    const modLfoLive = v.modLfoFreq > 0;
+    const vibLfoLive = v.vibLfoFreq > 0;
     v.needsPitchMod =
-      v.modEnvToPitch !== 0 ||
-      v.modLfoToPitch !== 0 ||
-      v.vibLfoToPitch !== 0;
-    v.needsVolLfo = v.modLfoToVolume !== 0;
-    v.needsModEnv =
-      v.needsPitchMod ||
-      v.filterEnabled ||
-      v.modEnvToFilterFc !== 0;
+      Math.abs(v.modEnvToPitch) >= PITCH_EPS_CENTS ||
+      (modLfoLive && Math.abs(v.modLfoToPitch) >= PITCH_EPS_CENTS) ||
+      (vibLfoLive && Math.abs(v.vibLfoToPitch) >= PITCH_EPS_CENTS);
+    v.needsVolLfo =
+      modLfoLive && Math.abs(v.modLfoToVolume) >= VOL_LFO_EPS_CB;
+    // needsModEnv only if pitch-mod or filter actually consumes it.
+    v.needsModEnv = v.needsPitchMod || v.filterEnabled;
     // Fast path: no filter / LFO / mod-env work in the sample loop.
     v.simplePath =
       !v.filterEnabled && !v.needsPitchMod && !v.needsVolLfo && !v.needsModEnv;
