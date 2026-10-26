@@ -994,15 +994,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         }
         v.phase = phase;
       } else {
-        // -------- Full path: mod env / LFO / filter --------
+        // -------- Full path: mod env / LFO / filter (flattened) --------
         this.statComplexVQ++;
         let modEnv = v.modLevel;
         let modLfo = 0;
         let vibLfo = 0;
 
-        // SUSTAIN-only: vol env is constant; skip processVolEnv + release check
-        // for the entire quantum when no release falls inside this block.
-        // (Majority of polyphony time after attack/decay.)
+        // SUSTAIN-only: vol env is constant for the whole quantum.
         const cxSustainOnly = v.envStage === ENV_SUSTAIN &&
           (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
         const envSustain = v.sustain;
@@ -1015,6 +1013,25 @@ class MidySynthProcessor extends AudioWorkletProcessor {
             continue;
           }
         }
+
+        // Hoist sample / pan / filter locals (avoid property lookups in the sample loop).
+        const pcmL = sample.pcmL;
+        const pcmR = sample.pcmR;
+        const len = sample.length;
+        const loop = sample.loop;
+        const ls = sample.loopStart;
+        const le = sample.loopEnd;
+        const loopLen = loop ? (le - ls) : 0;
+        let phase = v.phase;
+        const basePanL = v.gain * v.panL * mg;
+        const basePanR = v.gain * v.panR * mg;
+        const filtOn = v.filterEnabled;
+        const filtGain = v.filterDcGain;
+        // Filter state as locals; written back after the loop if filtOn.
+        let z1L = v.z1L, z2L = v.z2L, z1R = v.z1R, z2R = v.z2R;
+        let b0 = v.b0, b1 = v.b1, b2 = v.b2, a1 = v.a1, a2 = v.a2;
+        let rate = v.rateScale > 0 ? v.rateScale : (baseRate > 0 ? baseRate : 1);
+        let volLfo = v.volLfo;
 
         for (let i = iStartCx; i < n; i++) {
           const absFrame = frame0 + i;
@@ -1035,12 +1052,10 @@ class MidySynthProcessor extends AudioWorkletProcessor {
               }
             }
 
-            // SUSTAIN / HOLD are constant; only transient stages need sample-accurate env.
             if (v.envStage === ENV_SUSTAIN) {
               env = v.sustain;
             } else if (v.envStage === ENV_HOLD) {
               env = 1;
-              // Block-rate time advance so we leave HOLD correctly.
               if ((i & (MOD_BLOCK - 1)) === 0) {
                 this.processVolEnv(v, blockDt);
                 env = v.envLevel;
@@ -1067,7 +1082,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
             modLfo = 0;
             if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
-              (v.needsPitchMod || v.needsVolLfo || v.filterEnabled)) {
+              (v.needsPitchMod || v.needsVolLfo || filtOn)) {
               modLfo = Math.sin(v.modLfoPhase);
               v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
               if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
@@ -1090,45 +1105,80 @@ class MidySynthProcessor extends AudioWorkletProcessor {
                 ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
                 : baseRate;
               if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+              rate = rs;
               v.rateScale = rs;
             } else {
-              v.rateScale = baseRate > 0 ? baseRate : 1;
+              rate = baseRate > 0 ? baseRate : 1;
+              v.rateScale = rate;
             }
 
             if (v.needsVolLfo && modLfo !== 0) {
               const cb = modLfo * v.modLfoToVolume;
               const vl = Math.exp(cb * (Math.LN10 / 200));
-              v.volLfo = (vl === vl && vl > 0) ? vl : 1;
+              volLfo = (vl === vl && vl > 0) ? vl : 1;
+              v.volLfo = volLfo;
             } else {
+              volLfo = 1;
               v.volLfo = 1;
             }
 
-            if (v.filterEnabled) {
+            if (filtOn) {
               const fcCents =
                 v.filterFcCents +
                 modEnv * v.modEnvToFilterFc +
                 modLfo * v.modLfoToFilterFc;
               const fcHz = clampFc(centToHz(fcCents), nyquist);
               this.updateFilter(v, fcHz, sr);
+              // Refresh coeff locals after possible recompute.
+              b0 = v.b0; b1 = v.b1; b2 = v.b2; a1 = v.a1; a2 = v.a2;
             }
           }
 
-          const newPhase = this.readSampleInto(v, sample, v.phase);
-          if (newPhase < 0) {
+          // ---- Inlined sample read (was readSampleInto) ----
+          let p = phase;
+          if (loop) {
+            if (p >= le) {
+              if (loopLen <= 0) { ended = true; break; }
+              p = ls + (p - ls);
+              while (p >= le) p -= loopLen;
+            }
+          } else if (p >= len - 1) {
             ended = true;
             break;
           }
-          v.phase = newPhase + v.rateScale;
+          const i0 = p | 0;
+          const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+          const frac = p - i0;
+          let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+          let sR = pcmR
+            ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+            : sL;
+          phase = p + rate;
 
-          if (v.filterEnabled) {
-            this.processFilterInPlace(v);
+          // ---- Inlined DF2 filter (was processFilterInPlace) ----
+          if (filtOn) {
+            const yL = b0 * sL + z1L;
+            z1L = b1 * sL - a1 * yL + z2L;
+            z2L = b2 * sL - a2 * yL;
+            const yR = b0 * sR + z1R;
+            z1R = b1 * sR - a1 * yR + z2R;
+            z2R = b2 * sR - a2 * yR;
+            sL = yL * filtGain;
+            sR = yR * filtGain;
           }
 
-          const amp = v.gain * env * v.volLfo * mg;
-          if (amp === amp && v.outL === v.outL && v.outR === v.outR) {
-            outL[i] += v.outL * amp * v.panL;
-            outR[i] += v.outR * amp * v.panR;
+          // Combined amp: env * volLfo * (gain * pan * master)
+          const aL = env * volLfo * basePanL;
+          const aR = env * volLfo * basePanR;
+          if (aL === aL) {
+            outL[i] += sL * aL;
+            outR[i] += sR * aR;
           }
+        }
+
+        v.phase = phase;
+        if (filtOn) {
+          v.z1L = z1L; v.z2L = z2L; v.z1R = z1R; v.z2R = z2R;
         }
       }
 
