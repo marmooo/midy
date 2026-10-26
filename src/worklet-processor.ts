@@ -470,11 +470,23 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.filterDcGain = msg.filterDcGain != null ? +msg.filterDcGain : 1;
     v.modEnvToFilterFc = +msg.modEnvToFilterFc || 0;
     v.modLfoToFilterFc = +msg.modLfoToFilterFc || 0;
-    // Match main-thread isFilterAudible intent: skip fully-open with no mod.
-    v.filterEnabled =
-      v.filterFcCents < FULLY_OPEN_CENTS - 1 ||
-      v.modEnvToFilterFc !== 0 ||
-      v.modLfoToFilterFc !== 0;
+    // Skip filter when effectively transparent:
+    //  1) SF2 fully-open sentinel (13500¢) with no downward mod, or
+    //  2) lowest reachable Fc still ≥ ~0.95 * nyquist (inaudible roll-off).
+    // modEnv ∈ [0,1], modLfo ∈ [-1,1].
+    {
+      const lowestCents =
+        v.filterFcCents +
+        Math.min(0, v.modEnvToFilterFc) -
+        Math.abs(v.modLfoToFilterFc);
+      const lowestHz = centToHz(lowestCents);
+      const nyq = sampleRate * 0.5;
+      // Keep original sentinel so 13500¢ / no-mod stays simplePath.
+      // Hz gate catches "almost open" (e.g. 13400¢) that the sentinel misses.
+      v.filterEnabled =
+        lowestCents < FULLY_OPEN_CENTS - 1 &&
+        lowestHz < nyq * 0.95;
+    }
     v.z1L = v.z2L = v.z1R = v.z2R = 0;
     v.lastFc = -1;
 
@@ -980,32 +992,59 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         let modEnv = v.modLevel;
         let modLfo = 0;
         let vibLfo = 0;
-        for (let i = 0; i < n; i++) {
+
+        // SUSTAIN-only: vol env is constant; skip processVolEnv + release check
+        // for the entire quantum when no release falls inside this block.
+        // (Majority of polyphony time after attack/decay.)
+        const cxSustainOnly = v.envStage === ENV_SUSTAIN &&
+          (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
+        const envSustain = v.sustain;
+
+        // Skip leading silence before note start (within this quantum).
+        let iStartCx = 0;
+        if (frame0 < v.startFrame) {
+          iStartCx = v.startFrame - frame0;
+          if (iStartCx >= n) {
+            continue;
+          }
+        }
+
+        for (let i = iStartCx; i < n; i++) {
           const absFrame = frame0 + i;
-          if (absFrame < v.startFrame) continue;
 
-          if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
-            v.releasing = true;
-            v.envStage = ENV_RELEASE;
-            v.envTime = 0;
-            v._relStart = undefined;
-            if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
-              v.modStage = ENV_RELEASE;
-              v.modTime = 0;
-              v._modRelStart = undefined;
-            }
-          }
-
-          // SUSTAIN is constant; avoid switch overhead on the common path.
           let env;
-          if (v.envStage === ENV_SUSTAIN) {
-            env = v.sustain;
+          if (cxSustainOnly) {
+            env = envSustain;
           } else {
-            env = this.processVolEnv(v, invSr);
-          }
-          if (v.envStage === ENV_DONE) {
-            ended = true;
-            break;
+            if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+              v.releasing = true;
+              v.envStage = ENV_RELEASE;
+              v.envTime = 0;
+              v._relStart = undefined;
+              if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+                v.modStage = ENV_RELEASE;
+                v.modTime = 0;
+                v._modRelStart = undefined;
+              }
+            }
+
+            // SUSTAIN / HOLD are constant; only transient stages need sample-accurate env.
+            if (v.envStage === ENV_SUSTAIN) {
+              env = v.sustain;
+            } else if (v.envStage === ENV_HOLD) {
+              env = 1;
+              // Block-rate time advance so we leave HOLD correctly.
+              if ((i & (MOD_BLOCK - 1)) === 0) {
+                this.processVolEnv(v, blockDt);
+                env = v.envLevel;
+              }
+            } else {
+              env = this.processVolEnv(v, invSr);
+            }
+            if (v.envStage === ENV_DONE) {
+              ended = true;
+              break;
+            }
           }
 
           if ((i & (MOD_BLOCK - 1)) === 0) {
