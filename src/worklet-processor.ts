@@ -185,6 +185,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       this.freeSlots[i] = i;
     }
     this.masterGain = 1;
+    // Soft polyphony cap from main (0 = unlimited → hard MAX_VOICES only).
+    // Caps activeSlots.length (peakActive); steal prefers future/releasing.
+    this.voiceLimit = 0;
     this.voiceById = new Map();
     this.debug = false;
     this.statNoteOn = 0;
@@ -355,6 +358,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       case "setMasterGain":
         this.masterGain = Math.max(0, Math.min(2, +msg.value || 0));
         break;
+      case "setVoiceLimit": {
+        // 0 or invalid → unlimited (processor hard ceiling only).
+        const n = msg.value | 0;
+        this.voiceLimit = n > 0 ? Math.min(n, MAX_VOICES) : 0;
+        this.dbg("setVoiceLimit " + this.voiceLimit);
+        break;
+      }
       case "setVoiceParams":
         this.handleSetVoiceParams(msg);
         break;
@@ -383,26 +393,46 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     }
   }
 
-  findFreeVoice() {
-    // O(1) free-list path when under the hard ceiling.
-    if (this.freeSlots.length > 0) {
-      const slot = this.freeSlots.pop();
-      return this.voices[slot];
+  /**
+   * Allocate a processor slot. Artistic polyphony is enforced on main (note
+   * groups, same as other modes). Here only the hard ceiling applies
+   * (MAX_VOICES / optional voiceLimit). Prefer future & releasing steals.
+   */
+  findFreeVoice(_newStartFrame) {
+    const cap = this.voiceLimit > 0 ? this.voiceLimit : MAX_VOICES;
+    if (this.activeSlots.length < cap && this.freeSlots.length > 0) {
+      return this.voices[this.freeSlots.pop()];
     }
-    // Steal among active only (prefer quiet releasing).
+
     const slots = this.activeSlots;
+    const now = currentFrame;
+    if (slots.length === 0) {
+      if (this.freeSlots.length > 0) {
+        return this.voices[this.freeSlots.pop()];
+      }
+      return null;
+    }
+
     let best = this.voices[slots[0]];
     let bestScore = Infinity;
     for (let i = 0; i < slots.length; i++) {
       const v = this.voices[slots[i]];
-      const score = v.releasing
-        ? v.envLevel * 0.25 + v.startFrame * 1e-12
-        : 1 + v.envLevel + v.startFrame * 1e-12;
+      let score;
+      if (!v.active || !v.sample) {
+        score = 0.0001;
+      } else if (v.startFrame > now) {
+        score = 0.001 + (v.startFrame - now) * 1e-9;
+      } else if (v.releasing) {
+        score = 0.25 + v.envLevel * 0.25 + v.startFrame * 1e-12;
+      } else {
+        score = 1 + v.envLevel + v.startFrame * 1e-12;
+      }
       if (score < bestScore) {
         bestScore = score;
         best = v;
       }
     }
+
     const stolenId = best.voiceId;
     this.statSteal++;
     if (stolenId >= 0) {
@@ -410,13 +440,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       try {
         this.port.postMessage({ type: "voiceEnded", voiceId: stolenId });
       } catch (_) { /* ignore */ }
-      this.dbg(
-        "steal voiceId=" + stolenId + " totalSteals=" + this.statSteal +
-          " env=" + (best.envLevel || 0).toFixed(3) +
-          " releasing=" + !!best.releasing,
-      );
     }
-    // Keep slot in activeSlots; voice is reused in place (activeIndex stays).
     const keptIndex = best.activeIndex;
     best.reset();
     best.activeIndex = keptIndex;
@@ -443,7 +467,14 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       this.voiceById.delete(msg.voiceId);
     }
 
-    const v = this.findFreeVoice();
+    // Resolve start frame before alloc (soft cap + lookAhead-safe steal).
+    const when0 = +msg.when || currentTime;
+    const startFrame0 = Math.max(currentFrame, Math.floor(when0 * sampleRate));
+    const v = this.findFreeVoice(startFrame0);
+    if (!v) {
+      // Soft cap full and only live victims — refuse lookAhead overbook.
+      return;
+    }
     v.active = true;
     v.voiceId = msg.voiceId | 0;
     v.sample = sample;
@@ -522,8 +553,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     v.vibLfoPhase = 0;
     v.vibLfoAge = 0;
 
-    const when = +msg.when || currentTime;
-    v.startFrame = Math.max(currentFrame, Math.floor(when * sampleRate));
+    v.startFrame = startFrame0;
     // Feature flags: skip sin/pow/modEnv work when depths are inaudible
     // or LFO freq is zero (cannot modulate). Thresholds allow more voices
     // onto simplePath without audible change.
@@ -994,18 +1024,16 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         }
         v.phase = phase;
       } else {
-        // -------- Full path: mod env / LFO / filter (flattened) --------
+        // -------- Full path: split filter-on / filter-off loops --------
         this.statComplexVQ++;
         let modEnv = v.modLevel;
         let modLfo = 0;
         let vibLfo = 0;
 
-        // SUSTAIN-only: vol env is constant for the whole quantum.
         const cxSustainOnly = v.envStage === ENV_SUSTAIN &&
           (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
         const envSustain = v.sustain;
 
-        // Skip leading silence before note start (within this quantum).
         let iStartCx = 0;
         if (frame0 < v.startFrame) {
           iStartCx = v.startFrame - frame0;
@@ -1014,7 +1042,6 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           }
         }
 
-        // Hoist sample / pan / filter locals (avoid property lookups in the sample loop).
         const pcmL = sample.pcmL;
         const pcmR = sample.pcmR;
         const isStereo = !!pcmR;
@@ -1027,170 +1054,267 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         const basePanL = v.gain * v.panL * mg;
         const basePanR = v.gain * v.panR * mg;
         const filtOn = v.filterEnabled;
-        const filtGain = v.filterDcGain;
-        // Filter state as locals; written back after the loop if filtOn.
-        // Mono samples only need L-channel DF2 (R mirrors L after filter).
-        let z1L = v.z1L, z2L = v.z2L, z1R = v.z1R, z2R = v.z2R;
-        let b0 = v.b0, b1 = v.b1, b2 = v.b2, a1 = v.a1, a2 = v.a2;
         let rate = v.rateScale > 0 ? v.rateScale : (baseRate > 0 ? baseRate : 1);
         let volLfo = v.volLfo;
 
-        for (let i = iStartCx; i < n; i++) {
-          const absFrame = frame0 + i;
+        // Shared: advance vol-env for one sample (or sustain constant).
+        // Inlined in both loops below to keep them monomorphic.
 
-          let env;
-          if (cxSustainOnly) {
-            env = envSustain;
-          } else {
-            if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
-              v.releasing = true;
-              v.envStage = ENV_RELEASE;
-              v.envTime = 0;
-              v._relStart = undefined;
-              if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
-                v.modStage = ENV_RELEASE;
-                v.modTime = 0;
-                v._modRelStart = undefined;
-              }
-            }
-
-            if (v.envStage === ENV_SUSTAIN) {
-              env = v.sustain;
-            } else if (v.envStage === ENV_HOLD) {
-              env = 1;
-              if ((i & (MOD_BLOCK - 1)) === 0) {
-                this.processVolEnv(v, blockDt);
-                env = v.envLevel;
-              }
+        if (!filtOn) {
+          // ---- Almost-simple: pitch / vol LFO only, no filter ----
+          for (let i = iStartCx; i < n; i++) {
+            const absFrame = frame0 + i;
+            let env;
+            if (cxSustainOnly) {
+              env = envSustain;
             } else {
-              env = this.processVolEnv(v, invSr);
+              if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+                v.releasing = true;
+                v.envStage = ENV_RELEASE;
+                v.envTime = 0;
+                v._relStart = undefined;
+                if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+                  v.modStage = ENV_RELEASE;
+                  v.modTime = 0;
+                  v._modRelStart = undefined;
+                }
+              }
+              if (v.envStage === ENV_SUSTAIN) {
+                env = v.sustain;
+              } else if (v.envStage === ENV_HOLD) {
+                env = 1;
+                if ((i & (MOD_BLOCK - 1)) === 0) {
+                  this.processVolEnv(v, blockDt);
+                  env = v.envLevel;
+                }
+              } else {
+                env = this.processVolEnv(v, invSr);
+              }
+              if (v.envStage === ENV_DONE) {
+                ended = true;
+                break;
+              }
             }
-            if (v.envStage === ENV_DONE) {
+
+            if ((i & (MOD_BLOCK - 1)) === 0) {
+              if (v.needsModEnv) {
+                modEnv = this.processModEnv(v, blockDt);
+                if (modEnv !== modEnv) modEnv = 0;
+              } else {
+                modEnv = 0;
+              }
+              v.modLfoAge += blockDt;
+              v.vibLfoAge += blockDt;
+              modLfo = 0;
+              if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
+                (v.needsPitchMod || v.needsVolLfo)) {
+                modLfo = Math.sin(v.modLfoPhase);
+                v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
+                if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+              }
+              vibLfo = 0;
+              if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
+                v.vibLfoToPitch !== 0) {
+                vibLfo = Math.sin(v.vibLfoPhase);
+                v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
+                if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+              }
+              if (v.needsPitchMod) {
+                const pitchCents =
+                  modEnv * v.modEnvToPitch +
+                  modLfo * v.modLfoToPitch +
+                  vibLfo * v.vibLfoToPitch;
+                let rs = pitchCents !== 0
+                  ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
+                  : baseRate;
+                if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+                rate = rs;
+                v.rateScale = rs;
+              } else {
+                rate = baseRate > 0 ? baseRate : 1;
+                v.rateScale = rate;
+              }
+              if (v.needsVolLfo && modLfo !== 0) {
+                const cb = modLfo * v.modLfoToVolume;
+                const vl = Math.exp(cb * (Math.LN10 / 200));
+                volLfo = (vl === vl && vl > 0) ? vl : 1;
+                v.volLfo = volLfo;
+              } else {
+                volLfo = 1;
+                v.volLfo = 1;
+              }
+            }
+
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
               ended = true;
               break;
             }
-          }
-
-          if ((i & (MOD_BLOCK - 1)) === 0) {
-            if (v.needsModEnv) {
-              modEnv = this.processModEnv(v, blockDt);
-              if (modEnv !== modEnv) modEnv = 0;
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            phase = p + rate;
+            const aL = env * volLfo * basePanL;
+            const aR = env * volLfo * basePanR;
+            if (!(aL === aL)) continue;
+            if (isStereo) {
+              const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              const sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
+              outL[i] += sL * aL;
+              outR[i] += sR * aR;
             } else {
-              modEnv = 0;
-            }
-
-            v.modLfoAge += blockDt;
-            v.vibLfoAge += blockDt;
-
-            modLfo = 0;
-            if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
-              (v.needsPitchMod || v.needsVolLfo || filtOn)) {
-              modLfo = Math.sin(v.modLfoPhase);
-              v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
-              if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
-            }
-
-            vibLfo = 0;
-            if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
-              v.vibLfoToPitch !== 0) {
-              vibLfo = Math.sin(v.vibLfoPhase);
-              v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
-              if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
-            }
-
-            if (v.needsPitchMod) {
-              const pitchCents =
-                modEnv * v.modEnvToPitch +
-                modLfo * v.modLfoToPitch +
-                vibLfo * v.vibLfoToPitch;
-              let rs = pitchCents !== 0
-                ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
-                : baseRate;
-              if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
-              rate = rs;
-              v.rateScale = rs;
-            } else {
-              rate = baseRate > 0 ? baseRate : 1;
-              v.rateScale = rate;
-            }
-
-            if (v.needsVolLfo && modLfo !== 0) {
-              const cb = modLfo * v.modLfoToVolume;
-              const vl = Math.exp(cb * (Math.LN10 / 200));
-              volLfo = (vl === vl && vl > 0) ? vl : 1;
-              v.volLfo = volLfo;
-            } else {
-              volLfo = 1;
-              v.volLfo = 1;
-            }
-
-            if (filtOn) {
-              const fcCents =
-                v.filterFcCents +
-                modEnv * v.modEnvToFilterFc +
-                modLfo * v.modLfoToFilterFc;
-              const fcHz = clampFc(centToHz(fcCents), nyquist);
-              this.updateFilter(v, fcHz, sr);
-              // Refresh coeff locals after possible recompute.
-              b0 = v.b0; b1 = v.b1; b2 = v.b2; a1 = v.a1; a2 = v.a2;
+              const s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              outL[i] += s * aL;
+              outR[i] += s * aR;
             }
           }
+          v.phase = phase;
+        } else {
+          // ---- Filter path: mono/stereo DF2 ----
+          const filtGain = v.filterDcGain;
+          let z1L = v.z1L, z2L = v.z2L, z1R = v.z1R, z2R = v.z2R;
+          let b0 = v.b0, b1 = v.b1, b2 = v.b2, a1 = v.a1, a2 = v.a2;
 
-          // ---- Inlined sample read + filter + pan ----
-          let p = phase;
-          if (loop) {
-            if (p >= le) {
-              if (loopLen <= 0) { ended = true; break; }
-              p = ls + (p - ls);
-              while (p >= le) p -= loopLen;
+          for (let i = iStartCx; i < n; i++) {
+            const absFrame = frame0 + i;
+            let env;
+            if (cxSustainOnly) {
+              env = envSustain;
+            } else {
+              if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+                v.releasing = true;
+                v.envStage = ENV_RELEASE;
+                v.envTime = 0;
+                v._relStart = undefined;
+                if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+                  v.modStage = ENV_RELEASE;
+                  v.modTime = 0;
+                  v._modRelStart = undefined;
+                }
+              }
+              if (v.envStage === ENV_SUSTAIN) {
+                env = v.sustain;
+              } else if (v.envStage === ENV_HOLD) {
+                env = 1;
+                if ((i & (MOD_BLOCK - 1)) === 0) {
+                  this.processVolEnv(v, blockDt);
+                  env = v.envLevel;
+                }
+              } else {
+                env = this.processVolEnv(v, invSr);
+              }
+              if (v.envStage === ENV_DONE) {
+                ended = true;
+                break;
+              }
             }
-          } else if (p >= len - 1) {
-            ended = true;
-            break;
-          }
-          const i0 = p | 0;
-          const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
-          const frac = p - i0;
-          phase = p + rate;
 
-          const aL = env * volLfo * basePanL;
-          const aR = env * volLfo * basePanR;
-          if (!(aL === aL)) continue;
+            if ((i & (MOD_BLOCK - 1)) === 0) {
+              if (v.needsModEnv) {
+                modEnv = this.processModEnv(v, blockDt);
+                if (modEnv !== modEnv) modEnv = 0;
+              } else {
+                modEnv = 0;
+              }
+              v.modLfoAge += blockDt;
+              v.vibLfoAge += blockDt;
+              modLfo = 0;
+              if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0) {
+                modLfo = Math.sin(v.modLfoPhase);
+                v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
+                if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+              }
+              vibLfo = 0;
+              if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
+                v.vibLfoToPitch !== 0) {
+                vibLfo = Math.sin(v.vibLfoPhase);
+                v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
+                if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+              }
+              if (v.needsPitchMod) {
+                const pitchCents =
+                  modEnv * v.modEnvToPitch +
+                  modLfo * v.modLfoToPitch +
+                  vibLfo * v.vibLfoToPitch;
+                let rs = pitchCents !== 0
+                  ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
+                  : baseRate;
+                if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+                rate = rs;
+                v.rateScale = rs;
+              } else {
+                rate = baseRate > 0 ? baseRate : 1;
+                v.rateScale = rate;
+              }
+              if (v.needsVolLfo && modLfo !== 0) {
+                const cb = modLfo * v.modLfoToVolume;
+                const vl = Math.exp(cb * (Math.LN10 / 200));
+                volLfo = (vl === vl && vl > 0) ? vl : 1;
+                v.volLfo = volLfo;
+              } else {
+                volLfo = 1;
+                v.volLfo = 1;
+              }
+              {
+                const fcCents =
+                  v.filterFcCents +
+                  modEnv * v.modEnvToFilterFc +
+                  modLfo * v.modLfoToFilterFc;
+                const fcHz = clampFc(centToHz(fcCents), nyquist);
+                this.updateFilter(v, fcHz, sr);
+                b0 = v.b0; b1 = v.b1; b2 = v.b2; a1 = v.a1; a2 = v.a2;
+              }
+            }
 
-          if (isStereo) {
-            // Stereo sample: independent L/R read + optional stereo DF2.
-            let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
-            let sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
-            if (filtOn) {
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
+              ended = true;
+              break;
+            }
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            phase = p + rate;
+            const aL = env * volLfo * basePanL;
+            const aR = env * volLfo * basePanR;
+            if (!(aL === aL)) continue;
+
+            if (isStereo) {
+              let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              let sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
               const yL = b0 * sL + z1L;
               z1L = b1 * sL - a1 * yL + z2L;
               z2L = b2 * sL - a2 * yL;
               const yR = b0 * sR + z1R;
               z1R = b1 * sR - a1 * yR + z2R;
               z2R = b2 * sR - a2 * yR;
-              sL = yL * filtGain;
-              sR = yR * filtGain;
-            }
-            outL[i] += sL * aL;
-            outR[i] += sR * aR;
-          } else {
-            // Mono sample: one read, one DF2; pan splits to L/R.
-            let s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
-            if (filtOn) {
+              outL[i] += (yL * filtGain) * aL;
+              outR[i] += (yR * filtGain) * aR;
+            } else {
+              let s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
               const y = b0 * s + z1L;
               z1L = b1 * s - a1 * y + z2L;
               z2L = b2 * s - a2 * y;
               s = y * filtGain;
+              outL[i] += s * aL;
+              outR[i] += s * aR;
             }
-            outL[i] += s * aL;
-            outR[i] += s * aR;
           }
-        }
 
-        v.phase = phase;
-        if (filtOn) {
+          v.phase = phase;
           v.z1L = z1L; v.z2L = z2L;
-          // R-state only meaningful for stereo samples.
           if (isStereo) {
             v.z1R = z1R; v.z2R = z2R;
           }

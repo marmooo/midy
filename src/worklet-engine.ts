@@ -466,6 +466,15 @@ export class WorkletEngine {
     this.post({ type: "setMasterGain", value });
   }
 
+  /**
+   * Soft polyphony cap for the processor (0 = unlimited).
+   * When active voices reach this count, further noteOns steal.
+   */
+  setVoiceLimit(value: number): void {
+    const n = value | 0;
+    this.post({ type: "setVoiceLimit", value: n > 0 ? n : 0 });
+  }
+
   /** Dynamic gain / pan / playbackRate update (channel CC). */
   setVoiceParams(
     voiceId: number,

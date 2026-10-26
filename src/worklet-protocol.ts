@@ -114,6 +114,12 @@ export type WorkletSetMasterGainMsg = {
   value: number;
 };
 
+/** Soft polyphony cap inside the processor (0 = unlimited / hard ceiling only). */
+export type WorkletSetVoiceLimitMsg = {
+  type: "setVoiceLimit";
+  value: number;
+};
+
 /** Dynamic per-voice gain / pan (channel volume / expression / pan). */
 export type WorkletSetVoiceParamsMsg = {
   type: "setVoiceParams";
@@ -144,6 +150,7 @@ export type WorkletMainToProcessorMsg =
   | WorkletStopMsg
   | WorkletAllSoundOffMsg
   | WorkletSetMasterGainMsg
+  | WorkletSetVoiceLimitMsg
   | WorkletSetVoiceParamsMsg
   | WorkletSetDebugMsg
   | WorkletRequestStatsMsg;

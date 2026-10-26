@@ -137,6 +137,17 @@ export class Player<
   workletVoiceLimit: WorkletVoiceLimit = "unlimited";
   /** AudioWorklet bridge when cacheMode === "worklet". */
   workletEngine: WorkletEngine | null = null;
+  /**
+   * Voices reserved between enforceMaxVoices and soundingNotes.add
+   * (async sample upload window). Prevents parallel noteOn races from
+   * exceeding workletVoiceLimit on the main-thread counter.
+   */
+  /** In-flight note groups (noteGroupId) between enforce and soundingNotes.add */
+  workletPendingGroups: Set<number> = new Set();
+  /** Main-thread polyphony diagnostics for worklet-perf log. */
+  workletMainSteal = 0;
+  workletPeakGroups = 0;
+  workletPeakLayers = 0;
   // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
   // One-level Map (no nesting). bigint avoids Number precision loss when
   // audioBufferId is large after the non-overlapping getVoiceId packing.
@@ -3727,6 +3738,11 @@ export class Player<
       await this.prewarmSimpleNoteCache();
     }
     const workletPerfT0 = this.cacheMode === "worklet" ? performance.now() : 0;
+    if (this.cacheMode === "worklet") {
+      this.workletMainSteal = 0;
+      this.workletPeakGroups = 0;
+      this.workletPeakLayers = 0;
+    }
     this.playPromise = this.playNotes();
     await this.playPromise;
     if (this.cacheMode === "worklet" && this.workletEngine) {
@@ -3762,12 +3778,18 @@ export class Player<
             ` maxProcMs=${processMaxMs.toFixed(3)}` +
             ` simpleVQ=${simpleVQ} complexVQ=${complexVQ}` +
             ` simplePct=${simplePct.toFixed(1)}%` +
-            ` noteOn=${on} steal=${steal} miss=${miss}` +
+            ` noteOn=${on}` +
+            ` stealWorklet=${steal} stealMain=${this.workletMainSteal}` +
+            ` miss=${miss}` +
             ` stop=${st?.stop ?? ms.stop} quantums=${q}` +
             ` samples=${
               st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples
             }` +
-            ` limit=${JSON.stringify(this.workletVoiceLimit)}`,
+            ` limit=${JSON.stringify(this.workletVoiceLimit)}` +
+            ` mainMax=${this.resolveWorkletMainMaxVoices()}` +
+            ` peakGroups=${this.workletPeakGroups}` +
+            ` peakLayers=${this.workletPeakLayers}` +
+            ` (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`,
         );
       } catch (_) { /* ignore */ }
     }
@@ -11638,6 +11660,98 @@ export class Player<
   // ---------------------------------------------------------------------------
 
   /**
+   * Worklet polyphony counts MIDI note groups (one noteOn), not SF2 layers.
+   * Multi-zone stacks share noteGroupId and count as 1 toward maxVoices —
+   * same musical budget users expect from non-worklet modes.
+   */
+  protected override countSoundingVoices(): number {
+    if (this.cacheMode !== "worklet") return super.countSoundingVoices();
+    const seen = new Set<number>();
+    let groups = 0;
+    let layers = 0;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      layers++;
+      const g = note.noteGroupId;
+      if (typeof g === "number") {
+        if (seen.has(g)) continue;
+        seen.add(g);
+      }
+      groups++;
+    }
+    groups += this.workletPendingGroups.size;
+    if (groups > this.workletPeakGroups) this.workletPeakGroups = groups;
+    if (layers > this.workletPeakLayers) this.workletPeakLayers = layers;
+    return groups;
+  }
+
+  /**
+   * Steal a whole note group (all SF2 layers of one noteOn) so layer stacks
+   * do not leave orphan voices after polyphony pressure.
+   */
+  protected override stealOldestVoice(
+    scheduleTime: number,
+    pedalOnly = false,
+  ): boolean {
+    if (this.cacheMode !== "worklet") {
+      return super.stealOldestVoice(scheduleTime, pedalOnly);
+    }
+    let target: TNote | null = null;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      if (pedalOnly && !note.heldByPedal) continue;
+      target = note;
+      break;
+    }
+    if (!target) return false;
+    const groupId = target.noteGroupId;
+    const toStop: TNote[] = [];
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      if (typeof groupId === "number") {
+        if (note.noteGroupId === groupId) toStop.push(note);
+      } else if (note === target) {
+        toStop.push(note);
+      }
+    }
+    for (let i = 0; i < toStop.length; i++) {
+      this.forceStopVoice(toStop[i], scheduleTime);
+    }
+    if (toStop.length > 0) this.workletMainSteal++;
+    return toStop.length > 0;
+  }
+
+  /**
+   * Main-thread maxVoices is authoritative (same policy as other cache modes).
+   * Processor soft-cap stays off so multi-layer groups are not double-limited
+   * by raw slot count; WORKLET_MAX_VOICES remains the safety ceiling.
+   */
+  protected syncWorkletVoiceLimit(engine: WorkletEngine): void {
+    engine.setVoiceLimit(0);
+  }
+
+  /** Update peakGroups / peakLayers for worklet-perf (call on noteOn path). */
+  protected sampleWorkletPolyPeaks(): void {
+    if (this.cacheMode !== "worklet") return;
+    const seen = new Set<number>();
+    let groups = 0;
+    let layers = 0;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      layers++;
+      const g = note.noteGroupId;
+      if (typeof g === "number") {
+        if (seen.has(g)) continue;
+        seen.add(g);
+      }
+      groups++;
+    }
+    groups += this.workletPendingGroups.size;
+    if (groups > this.workletPeakGroups) this.workletPeakGroups = groups;
+    if (layers > this.workletPeakLayers) this.workletPeakLayers = layers;
+  }
+
+  /**
    * Effective main-thread maxVoices while in worklet mode.
    * <= 0 means unlimited (processor hard ceiling only).
    */
@@ -11673,10 +11787,13 @@ export class Player<
   }
 
   /**
-   * Apply workletVoiceLimit:
-   * - unlimited: skip main steal (processor WORKLET_MAX_VOICES is the only cap)
-   * - match: identical maxVoices timing/rules as non-worklet modes
-   * - number: temporary maxVoices override for this enforce call only
+   * Apply workletVoiceLimit on the main thread (same idea as other modes):
+   * - unlimited: no main steal
+   * - match | number: enforceMaxVoices with effective cap; steal whole groups
+   * Processor soft-cap stays disabled; hard ceiling is WORKLET_MAX_VOICES.
+   *
+   * reserve is layer count from noteOnChannel — for group-based counting,
+   * clamp to 1 so a multi-zone noteOn does not over-steal before it joins.
    */
   protected override enforceMaxVoices(
     scheduleTime: number,
@@ -11687,11 +11804,16 @@ export class Player<
       return;
     }
     const effective = this.resolveWorkletMainMaxVoices();
-    if (effective <= 0) return; // unlimited on main
+    if (this.workletEngine) {
+      this.syncWorkletVoiceLimit(this.workletEngine);
+    }
+    if (effective <= 0) return;
     const prev = this.maxVoices;
     this.maxVoices = effective;
+    // One MIDI noteOn = one group, regardless of SF2 layer count.
+    const groupReserve = Math.min(1, Math.max(0, reserve | 0));
     try {
-      super.enforceMaxVoices(scheduleTime, reserve);
+      super.enforceMaxVoices(scheduleTime, groupReserve);
     } finally {
       this.maxVoices = prev;
     }
@@ -11725,6 +11847,7 @@ export class Player<
       if (this.debug !== this.workletEngine.debug) {
         this.workletEngine.setDebug(this.debug);
       }
+      this.syncWorkletVoiceLimit(this.workletEngine);
       return this.workletEngine;
     }
     const ctx = this.audioContext;
@@ -11734,6 +11857,7 @@ export class Player<
     const engine = new WorkletEngine(ctx);
     await engine.ensureStarted(this.masterVolume, effects);
     if (this.debug) engine.setDebug(true);
+    this.syncWorkletVoiceLimit(engine);
     engine.log(
       `ensureWorkletEngine ok hardMax=${WORKLET_MAX_VOICES}` +
         ` workletVoiceLimit=${JSON.stringify(this.workletVoiceLimit)}` +
@@ -11817,6 +11941,25 @@ export class Player<
     const voiceParams = note.voiceParams;
     if (!voiceParams) return;
 
+    // Reserve this note group during async upload so parallel noteOns cannot
+    // all pass enforceMaxVoices before any lands in soundingNotes.
+    const gid = note.noteGroupId;
+    const track = typeof gid === "number";
+    if (track) this.workletPendingGroups.add(gid);
+    try {
+      await this.setNoteAudioNodeWorkletBody(channel, note);
+    } finally {
+      if (track) this.workletPendingGroups.delete(gid);
+    }
+  }
+
+  protected async setNoteAudioNodeWorkletBody(
+    channel: TChannel,
+    note: TNote,
+  ): Promise<void> {
+    const voiceParams = note.voiceParams;
+    if (!voiceParams) return;
+
     const engine = await this.ensureWorkletEngine();
     // Do not return on note.ending: lookAhead may have already fired noteOff
     // (sets ending) while we await sample load. releaseNote waits on note.ready
@@ -11894,6 +12037,7 @@ export class Player<
     const voiceId = engine.allocVoiceId();
     note.workletVoiceId = voiceId;
     this.soundingNotes.add(note);
+    this.sampleWorkletPolyPeaks();
 
     engine.noteOn(voiceId, {
       sampleId,
