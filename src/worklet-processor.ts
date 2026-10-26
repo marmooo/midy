@@ -1017,6 +1017,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         // Hoist sample / pan / filter locals (avoid property lookups in the sample loop).
         const pcmL = sample.pcmL;
         const pcmR = sample.pcmR;
+        const isStereo = !!pcmR;
         const len = sample.length;
         const loop = sample.loop;
         const ls = sample.loopStart;
@@ -1028,6 +1029,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         const filtOn = v.filterEnabled;
         const filtGain = v.filterDcGain;
         // Filter state as locals; written back after the loop if filtOn.
+        // Mono samples only need L-channel DF2 (R mirrors L after filter).
         let z1L = v.z1L, z2L = v.z2L, z1R = v.z1R, z2R = v.z2R;
         let b0 = v.b0, b1 = v.b1, b2 = v.b2, a1 = v.a1, a2 = v.a2;
         let rate = v.rateScale > 0 ? v.rateScale : (baseRate > 0 ? baseRate : 1);
@@ -1134,7 +1136,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
             }
           }
 
-          // ---- Inlined sample read (was readSampleInto) ----
+          // ---- Inlined sample read + filter + pan ----
           let p = phase;
           if (loop) {
             if (p >= le) {
@@ -1149,36 +1151,49 @@ class MidySynthProcessor extends AudioWorkletProcessor {
           const i0 = p | 0;
           const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
           const frac = p - i0;
-          let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
-          let sR = pcmR
-            ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
-            : sL;
           phase = p + rate;
 
-          // ---- Inlined DF2 filter (was processFilterInPlace) ----
-          if (filtOn) {
-            const yL = b0 * sL + z1L;
-            z1L = b1 * sL - a1 * yL + z2L;
-            z2L = b2 * sL - a2 * yL;
-            const yR = b0 * sR + z1R;
-            z1R = b1 * sR - a1 * yR + z2R;
-            z2R = b2 * sR - a2 * yR;
-            sL = yL * filtGain;
-            sR = yR * filtGain;
-          }
-
-          // Combined amp: env * volLfo * (gain * pan * master)
           const aL = env * volLfo * basePanL;
           const aR = env * volLfo * basePanR;
-          if (aL === aL) {
+          if (!(aL === aL)) continue;
+
+          if (isStereo) {
+            // Stereo sample: independent L/R read + optional stereo DF2.
+            let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+            let sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
+            if (filtOn) {
+              const yL = b0 * sL + z1L;
+              z1L = b1 * sL - a1 * yL + z2L;
+              z2L = b2 * sL - a2 * yL;
+              const yR = b0 * sR + z1R;
+              z1R = b1 * sR - a1 * yR + z2R;
+              z2R = b2 * sR - a2 * yR;
+              sL = yL * filtGain;
+              sR = yR * filtGain;
+            }
             outL[i] += sL * aL;
             outR[i] += sR * aR;
+          } else {
+            // Mono sample: one read, one DF2; pan splits to L/R.
+            let s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+            if (filtOn) {
+              const y = b0 * s + z1L;
+              z1L = b1 * s - a1 * y + z2L;
+              z2L = b2 * s - a2 * y;
+              s = y * filtGain;
+            }
+            outL[i] += s * aL;
+            outR[i] += s * aR;
           }
         }
 
         v.phase = phase;
         if (filtOn) {
-          v.z1L = z1L; v.z2L = z2L; v.z1R = z1R; v.z2R = z2R;
+          v.z1L = z1L; v.z2L = z2L;
+          // R-state only meaningful for stereo samples.
+          if (isStereo) {
+            v.z1R = z1R; v.z2R = z2R;
+          }
         }
       }
 
