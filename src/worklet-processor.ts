@@ -26,7 +26,9 @@ const FULLY_OPEN_CENTS = 13500;
 // Update LFO / pitch scale / filter Fc every N samples (block-rate).
 // At 48kHz, N=8 ≈ 0.17ms — inaudible for LFO while cutting sin/pow cost ~8×.
 // Block-rate for LFO / pitch / filter Fc. 16 ≈ 0.33ms @ 48kHz (still smooth).
-const MOD_BLOCK = 16;
+// Simple-path volume envelope uses a dedicated SUSTAIN fast path (majority of
+// polyphony time) and sample-accurate processing only for transient stages.
+const MOD_BLOCK = 32;
 const LN2_OVER_1200 = Math.LN2 / 1200;
 
 class SampleEntry {
@@ -147,6 +149,8 @@ class Voice {
 
     this.startFrame = 0;
     this.releaseFrame = -1; // absolute frame to enter release; -1 = none
+    this._relStart = undefined;
+    this._modRelStart = undefined;
 
     // Hot-path caches (avoid alloc / recompute)
     this.rateScale = 1;
@@ -156,6 +160,7 @@ class Voice {
     this.needsPitchMod = false;
     this.needsVolLfo = false;
     this.needsModEnv = false;
+    this.simplePath = false;
     // NOTE: do NOT clear this.slot — permanent index in processor.voices[].
     // activeIndex is managed by activate/deactivate, not reset().
   }
@@ -190,12 +195,41 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.peakActive = 0;
     this.statProcessMs = 0;
     this.statProcessMaxMs = 0;
+    this.statProcessCount = 0;
+    this.statProcessOverruns = 0;
     this.statSimpleVQ = 0;
     this.statComplexVQ = 0;
-    this.hasPerf = typeof performance !== "undefined" &&
-      typeof performance.now === "function";
+    // AudioWorkletGlobalScope often lacks Performance API (Chrome/Firefox/Safari
+    // as of 2026; spec still landing). Fall back to Date.now() for coarse timing.
+    // See: https://github.com/WebAudio/web-audio-api/issues/2413
+    this._nowMs = null;
+    this.timerSource = "none";
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      try {
+        const t0 = performance.now();
+        if (typeof t0 === "number" && t0 === t0) {
+          this._nowMs = function () { return performance.now(); };
+          this.timerSource = "perf";
+        }
+      } catch (_) { /* ignore */ }
+    }
+    if (!this._nowMs && typeof Date !== "undefined" && typeof Date.now === "function") {
+      this._nowMs = function () { return Date.now(); };
+      this.timerSource = "date";
+    }
+    this.hasPerf = this.timerSource === "perf";
     this.port.onmessage = (e) => this.onMessage(e.data);
-    this.port.postMessage({ type: "ready" });
+    // Probe timer once so main can see source immediately.
+    let probeMs = -1;
+    if (this._nowMs) {
+      try { probeMs = this._nowMs(); } catch (_) { probeMs = -1; }
+    }
+    this.port.postMessage({
+      type: "ready",
+      hasPerf: this.hasPerf ? 1 : 0,
+      timerSource: this.timerSource,
+      probeMs: probeMs,
+    });
   }
 
   activateVoice(v) {
@@ -230,6 +264,18 @@ class MidySynthProcessor extends AudioWorkletProcessor {
   /** Snapshot for main (no console). Called on requestStats / setDebug. */
   postStats() {
     try {
+      const quantums = this.statQuantums || 1;
+      const processCount = this.statProcessCount || 0;
+      const avgProcMs = processCount > 0
+        ? this.statProcessMs / processCount
+        : 0;
+      // Quantum wall budget ≈ 128 / sampleRate * 1000 ms (typical render quantum).
+      const quantumMs = (typeof sampleRate === "number" && sampleRate > 0)
+        ? (128 / sampleRate) * 1000
+        : 2.6667;
+      const cpuPct = processCount > 0 && quantumMs > 0
+        ? (avgProcMs / quantumMs) * 100
+        : 0;
       this.port.postMessage({
         type: "stats",
         active: this.activeSlots.length,
@@ -246,9 +292,15 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         activeSum: this.statActiveSum,
         processMs: this.statProcessMs,
         processMaxMs: this.statProcessMaxMs,
+        processCount: this.statProcessCount,
+        processAvgMs: avgProcMs,
+        processOverruns: this.statProcessOverruns,
+        quantumMs: quantumMs,
+        cpuPct: cpuPct,
         simpleVQ: this.statSimpleVQ,
         complexVQ: this.statComplexVQ,
         hasPerf: this.hasPerf ? 1 : 0,
+        timerSource: this.timerSource,
       });
     } catch (_) { /* ignore */ }
   }
@@ -513,6 +565,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     // We mutate via object to keep JS simple inside the string
   }
 
+  // Sample-accurate volume envelope (used by complex path and release edges).
   processVolEnv(v, dt) {
     switch (v.envStage) {
       case ENV_DELAY:
@@ -559,10 +612,77 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         break;
       case ENV_RELEASE: {
         v.envTime += dt;
-        // Exponential-ish linear fall from current release start level
-        if (v.envTime <= 0) {
-          // capture start level on first release sample
+        const startLevel = v._relStart != null ? v._relStart : (v._relStart = v.envLevel || 1e-6);
+        const t = Math.min(1, v.envTime / v.release);
+        v.envLevel = startLevel * (1 - t);
+        if (v.envTime >= v.release || v.envLevel < 1e-5) {
+          v.envStage = ENV_DONE;
+          v.envLevel = 0;
         }
+        break;
+      }
+      case ENV_DONE:
+        v.envLevel = 0;
+        break;
+    }
+    return v.envLevel;
+  }
+
+  // Block-rate volume envelope for simple path (MOD_BLOCK samples at a time).
+  // Linear stages are advanced in one step; SUSTAIN is free.
+  processVolEnvBlock(v, dt) {
+    switch (v.envStage) {
+      case ENV_DELAY:
+        v.envTime += dt;
+        if (v.envTime >= v.delay) {
+          const over = v.envTime - v.delay;
+          v.envStage = ENV_ATTACK;
+          v.envTime = over;
+          const t = Math.min(1, v.envTime / v.attack);
+          v.envLevel = t;
+          if (v.envTime >= v.attack) {
+            v.envStage = ENV_HOLD;
+            v.envTime = 0;
+            v.envLevel = 1;
+          }
+        } else {
+          v.envLevel = 0;
+        }
+        break;
+      case ENV_ATTACK: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.attack);
+        v.envLevel = t;
+        if (v.envTime >= v.attack) {
+          v.envStage = ENV_HOLD;
+          v.envTime = 0;
+          v.envLevel = 1;
+        }
+        break;
+      }
+      case ENV_HOLD:
+        v.envTime += dt;
+        v.envLevel = 1;
+        if (v.envTime >= v.hold) {
+          v.envStage = ENV_DECAY;
+          v.envTime = 0;
+        }
+        break;
+      case ENV_DECAY: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.decay);
+        v.envLevel = 1 + (v.sustain - 1) * t;
+        if (v.envTime >= v.decay) {
+          v.envStage = ENV_SUSTAIN;
+          v.envLevel = v.sustain;
+        }
+        break;
+      }
+      case ENV_SUSTAIN:
+        v.envLevel = v.sustain;
+        break;
+      case ENV_RELEASE: {
+        v.envTime += dt;
         const startLevel = v._relStart != null ? v._relStart : (v._relStart = v.envLevel || 1e-6);
         const t = Math.min(1, v.envTime / v.release);
         v.envLevel = startLevel * (1 - t);
@@ -651,7 +771,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       if (p >= le) {
         const loopLen = le - ls;
         if (loopLen <= 0) return -1;
-        p = ls + ((p - ls) % loopLen);
+        // Prefer subtract loop for typical small overshoots (faster than %).
+        p = ls + (p - ls);
+        while (p >= le) p -= loopLen;
       }
     } else if (p >= len - 1) {
       return -1;
@@ -713,7 +835,8 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
     this.statQuantums++;
     this.statActiveSum += activeSlots.length;
-    const tProc0 = this.hasPerf ? performance.now() : 0;
+    const nowFn = this._nowMs;
+    const tProc0 = nowFn ? nowFn() : 0;
 
     for (let i = 0; i < n; i++) {
       outL[i] = 0;
@@ -731,7 +854,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       const baseRate = v.playbackRate * (sample.sampleRate / sr);
       let ended = false;
 
-      // -------- Simple path: vol env + sample + pan only --------
+      // -------- Simple path: vol env (block-rate) + sample + pan only --------
       if (v.simplePath) {
         this.statSimpleVQ++;
         v.rateScale = baseRate > 0 ? baseRate : 1;
@@ -744,48 +867,110 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         const loop = sample.loop;
         const ls = sample.loopStart;
         const le = sample.loopEnd;
+        const loopLen = loop ? (le - ls) : 0;
         let phase = v.phase;
-        for (let i = 0; i < n; i++) {
-          const absFrame = frame0 + i;
-          if (absFrame < v.startFrame) continue;
-          if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
-            v.releasing = true;
-            v.envStage = ENV_RELEASE;
-            v.envTime = 0;
+
+        // Skip leading silence before note start (within this quantum).
+        let iStart = 0;
+        if (frame0 < v.startFrame) {
+          iStart = v.startFrame - frame0;
+          if (iStart >= n) {
+            // Entire quantum is before start; leave phase unchanged.
+            continue;
           }
-          const env = this.processVolEnv(v, invSr);
-          if (v.envStage === ENV_DONE) {
-            ended = true;
-            break;
-          }
-          // Inline linear interpolation (mono/stereo)
-          let p = phase;
-          if (loop) {
-            if (p >= le) {
-              const loopLen = le - ls;
-              if (loopLen <= 0) {
-                ended = true;
-                break;
-              }
-              p = ls + ((p - ls) % loopLen);
-            }
-          } else if (p >= len - 1) {
-            ended = true;
-            break;
-          }
-          const i0 = p | 0;
-          const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
-          const frac = p - i0;
-          const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
-          const sR = pcmR
-            ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
-            : sL;
-          phase = p + rate;
+        }
+
+        // Fast path when already in SUSTAIN and no pending release in this block.
+        const sustainOnly = v.envStage === ENV_SUSTAIN &&
+          (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
+
+        if (sustainOnly) {
+          const env = v.sustain;
           const amp = env * gPanL;
           const ampR = env * gPanR;
           if (amp === amp) {
-            outL[i] += sL * amp;
-            outR[i] += sR * ampR;
+            for (let i = iStart; i < n; i++) {
+              let p = phase;
+              if (loop) {
+                if (p >= le) {
+                  if (loopLen <= 0) { ended = true; break; }
+                  // Prefer subtract over % for typical small overshoots.
+                  p = ls + (p - ls);
+                  while (p >= le) p -= loopLen;
+                }
+              } else if (p >= len - 1) {
+                ended = true;
+                break;
+              }
+              const i0 = p | 0;
+              const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+              const frac = p - i0;
+              const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              const sR = pcmR
+                ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+                : sL;
+              phase = p + rate;
+              outL[i] += sL * amp;
+              outR[i] += sR * ampR;
+            }
+          }
+        } else {
+          // General simple path.
+          // - SUSTAIN / HOLD: constant (or rare block advance)
+          // - DELAY / ATTACK / DECAY / RELEASE: sample-accurate for correct shape
+          // Most polyphony time is spent in the dedicated sustainOnly path above.
+          let env = v.envLevel;
+          for (let i = iStart; i < n; i++) {
+            const absFrame = frame0 + i;
+            if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+              v.releasing = true;
+              v.envStage = ENV_RELEASE;
+              v.envTime = 0;
+              v._relStart = undefined;
+            }
+            const stage = v.envStage;
+            if (stage === ENV_SUSTAIN) {
+              env = v.sustain;
+            } else if (stage === ENV_HOLD) {
+              env = 1;
+              // still advance time so we leave HOLD correctly
+              if ((i & (MOD_BLOCK - 1)) === 0) {
+                this.processVolEnvBlock(v, blockDt);
+                env = v.envLevel;
+              }
+            } else {
+              // Transient stages: sample-accurate
+              env = this.processVolEnv(v, invSr);
+            }
+            if (v.envStage === ENV_DONE) {
+              ended = true;
+              break;
+            }
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
+              ended = true;
+              break;
+            }
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+            const sR = pcmR
+              ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+              : sL;
+            phase = p + rate;
+            const amp = env * gPanL;
+            const ampR = env * gPanR;
+            if (amp === amp) {
+              outL[i] += sL * amp;
+              outR[i] += sR * ampR;
+            }
           }
         }
         v.phase = phase;
@@ -803,13 +988,21 @@ class MidySynthProcessor extends AudioWorkletProcessor {
             v.releasing = true;
             v.envStage = ENV_RELEASE;
             v.envTime = 0;
+            v._relStart = undefined;
             if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
               v.modStage = ENV_RELEASE;
               v.modTime = 0;
+              v._modRelStart = undefined;
             }
           }
 
-          const env = this.processVolEnv(v, invSr);
+          // SUSTAIN is constant; avoid switch overhead on the common path.
+          let env;
+          if (v.envStage === ENV_SUSTAIN) {
+            env = v.sustain;
+          } else {
+            env = this.processVolEnv(v, invSr);
+          }
           if (v.envStage === ENV_DONE) {
             ended = true;
             break;
@@ -904,10 +1097,20 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       }
     }
 
-    if (this.hasPerf) {
-      const dt = performance.now() - tProc0;
-      this.statProcessMs += dt;
-      if (dt > this.statProcessMaxMs) this.statProcessMaxMs = dt;
+    if (nowFn) {
+      const dt = nowFn() - tProc0;
+      // Guard NaN / negative (Date.now coarseness or clock skew).
+      if (dt === dt && dt >= 0) {
+        this.statProcessMs += dt;
+        this.statProcessCount++;
+        if (dt > this.statProcessMaxMs) this.statProcessMaxMs = dt;
+        // Rough overrun: process wall time > quantum budget (128 frames).
+        // Date.now is ms-resolution so this is only useful with perf timer.
+        const quantumMs = (typeof sampleRate === "number" && sampleRate > 0)
+          ? (n / sampleRate) * 1000
+          : 2.6667;
+        if (dt > quantumMs * 1.05) this.statProcessOverruns++;
+      }
     }
 
     return true;
