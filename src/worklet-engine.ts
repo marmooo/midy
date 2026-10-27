@@ -170,7 +170,13 @@ export class WorkletEngine {
 
   /** Snapshot for console: stats + last log lines. */
   dumpDebug(lastN = 40): {
-    mainStats: typeof this.mainStats;
+    mainStats: {
+      noteOn: number;
+      noteOff: number;
+      stop: number;
+      loadSample: number;
+      voiceEnded: number;
+    };
     lastStats: Record<string, number> | null;
     loadedSamples: number;
     activeVoices: number;
