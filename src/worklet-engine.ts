@@ -262,6 +262,17 @@ export class WorkletEngine {
           simpleVQ?: number;
           complexVQ?: number;
           hasPerf?: number;
+          processOverruns?: number;
+          processMaxActive?: number;
+          processMaxMsgs?: number;
+          processOverrunMaxMs?: number;
+          procHist0?: number;
+          procHist1?: number;
+          procHist2?: number;
+          procHist3?: number;
+          procHist4?: number;
+          procHist5?: number;
+          timerSource?: string;
         };
         this.lastStats = {
           active: s.active,
@@ -281,6 +292,16 @@ export class WorkletEngine {
           simpleVQ: s.simpleVQ ?? 0,
           complexVQ: s.complexVQ ?? 0,
           hasPerf: s.hasPerf ?? 0,
+          processOverruns: s.processOverruns ?? 0,
+          processMaxActive: s.processMaxActive ?? 0,
+          processMaxMsgs: s.processMaxMsgs ?? 0,
+          processOverrunMaxMs: s.processOverrunMaxMs ?? 0,
+          procHist0: s.procHist0 ?? 0,
+          procHist1: s.procHist1 ?? 0,
+          procHist2: s.procHist2 ?? 0,
+          procHist3: s.procHist3 ?? 0,
+          procHist4: s.procHist4 ?? 0,
+          procHist5: s.procHist5 ?? 0,
         };
         // Ring buffer only — no live console spam.
         this.log(

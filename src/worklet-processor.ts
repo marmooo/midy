@@ -57,8 +57,57 @@ const ENV_SUSTAIN = 5;
 const ENV_RELEASE = 6;
 const ENV_DONE = 7;
 
+// ---- LUTs (built once at module load; no per-voice alloc) ----
+// Absolute cents → Hz for filter Fc (SF2 range ~0..13500, pad to 14000).
+const CENT_HZ_MAX = 14000;
+const centToHzLut = new Float32Array(CENT_HZ_MAX + 1);
+for (let i = 0; i <= CENT_HZ_MAX; i++) {
+  centToHzLut[i] = 8.176 * Math.pow(2, i / 1200);
+}
 function centToHz(cents) {
-  return 8.176 * Math.pow(2, cents / 1200);
+  if (!(cents > 0)) return centToHzLut[0];
+  if (cents >= CENT_HZ_MAX) return centToHzLut[CENT_HZ_MAX];
+  const i = cents | 0;
+  const f = cents - i;
+  const a = centToHzLut[i];
+  return a + (centToHzLut[i + 1] - a) * f;
+}
+
+// Pitch-mod ratio: 2^(cents/1200). Covers extreme SF2 depths with margin.
+const PITCH_RATIO_MIN = -4800;
+const PITCH_RATIO_MAX = 4800;
+const pitchRatioLut = new Float32Array(PITCH_RATIO_MAX - PITCH_RATIO_MIN + 1);
+for (let c = PITCH_RATIO_MIN; c <= PITCH_RATIO_MAX; c++) {
+  pitchRatioLut[c - PITCH_RATIO_MIN] = Math.pow(2, c / 1200);
+}
+function pitchRatioFromCents(cents) {
+  if (cents <= PITCH_RATIO_MIN) return pitchRatioLut[0];
+  if (cents >= PITCH_RATIO_MAX) {
+    return pitchRatioLut[PITCH_RATIO_MAX - PITCH_RATIO_MIN];
+  }
+  const x = cents - PITCH_RATIO_MIN;
+  const i = x | 0;
+  const f = x - i;
+  const a = pitchRatioLut[i];
+  return a + (pitchRatioLut[i + 1] - a) * f;
+}
+
+// Volume LFO: linear gain from centibels. SF2 modLfoToVolume is typically small.
+const CB_LIN_MIN = -200;
+const CB_LIN_MAX = 200;
+const cbToLinLut = new Float32Array(CB_LIN_MAX - CB_LIN_MIN + 1);
+const CB_TO_LN = Math.LN10 / 200;
+for (let cb = CB_LIN_MIN; cb <= CB_LIN_MAX; cb++) {
+  cbToLinLut[cb - CB_LIN_MIN] = Math.exp(cb * CB_TO_LN);
+}
+function cbToLin(cb) {
+  if (cb <= CB_LIN_MIN) return cbToLinLut[0];
+  if (cb >= CB_LIN_MAX) return cbToLinLut[CB_LIN_MAX - CB_LIN_MIN];
+  const x = cb - CB_LIN_MIN;
+  const i = x | 0;
+  const f = x - i;
+  const a = cbToLinLut[i];
+  return a + (cbToLinLut[i + 1] - a) * f;
 }
 
 function clampFc(hz, nyquist) {
@@ -206,6 +255,13 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.statProcessOverruns = 0;
     this.statSimpleVQ = 0;
     this.statComplexVQ = 0;
+    // Spike diagnostics for the slowest process() quantum.
+    this.statProcessMaxActive = 0;
+    this.statProcessMaxMsgs = 0;
+    this.statProcessOverrunMaxMs = 0;
+    this.statMsgsQueued = 0;
+    // Coarse histogram for process cost (ms buckets): <1,1-2,2-3,3-5,5-10,>=10
+    this.statProcHist = new Uint32Array(6);
     // AudioWorkletGlobalScope often lacks Performance API (Chrome/Firefox/Safari
     // as of 2026; spec still landing). Fall back to Date.now() for coarse timing.
     // See: https://github.com/WebAudio/web-audio-api/issues/2413
@@ -308,12 +364,22 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         complexVQ: this.statComplexVQ,
         hasPerf: this.hasPerf ? 1 : 0,
         timerSource: this.timerSource,
+        processMaxActive: this.statProcessMaxActive,
+        processMaxMsgs: this.statProcessMaxMsgs,
+        processOverrunMaxMs: this.statProcessOverrunMaxMs,
+        procHist0: this.statProcHist[0],
+        procHist1: this.statProcHist[1],
+        procHist2: this.statProcHist[2],
+        procHist3: this.statProcHist[3],
+        procHist4: this.statProcHist[4],
+        procHist5: this.statProcHist[5],
       });
     } catch (_) { /* ignore */ }
   }
 
   onMessage(msg) {
     if (!msg || typeof msg.type !== "string") return;
+    this.statMsgsQueued++;
     switch (msg.type) {
       case "loadSample": {
         const pcmL = msg.pcmL;
@@ -884,6 +950,9 @@ class MidySynthProcessor extends AudioWorkletProcessor {
 
     this.statQuantums++;
     this.statActiveSum += activeSlots.length;
+    const msgsThis = this.statMsgsQueued;
+    this.statMsgsQueued = 0;
+    const activeN = activeSlots.length;
     const nowFn = this._nowMs;
     const tProc0 = nowFn ? nowFn() : 0;
 
@@ -1125,7 +1194,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
                   modLfo * v.modLfoToPitch +
                   vibLfo * v.vibLfoToPitch;
                 let rs = pitchCents !== 0
-                  ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
+                  ? baseRate * pitchRatioFromCents(pitchCents)
                   : baseRate;
                 if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
                 rate = rs;
@@ -1136,7 +1205,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
               }
               if (v.needsVolLfo && modLfo !== 0) {
                 const cb = modLfo * v.modLfoToVolume;
-                const vl = Math.exp(cb * (Math.LN10 / 200));
+                const vl = cbToLin(cb);
                 volLfo = (vl === vl && vl > 0) ? vl : 1;
                 v.volLfo = volLfo;
               } else {
@@ -1243,7 +1312,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
                   modLfo * v.modLfoToPitch +
                   vibLfo * v.vibLfoToPitch;
                 let rs = pitchCents !== 0
-                  ? baseRate * Math.exp(pitchCents * LN2_OVER_1200)
+                  ? baseRate * pitchRatioFromCents(pitchCents)
                   : baseRate;
                 if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
                 rate = rs;
@@ -1254,7 +1323,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
               }
               if (v.needsVolLfo && modLfo !== 0) {
                 const cb = modLfo * v.modLfoToVolume;
-                const vl = Math.exp(cb * (Math.LN10 / 200));
+                const vl = cbToLin(cb);
                 volLfo = (vl === vl && vl > 0) ? vl : 1;
                 v.volLfo = volLfo;
               } else {
@@ -1338,13 +1407,30 @@ class MidySynthProcessor extends AudioWorkletProcessor {
       if (dt === dt && dt >= 0) {
         this.statProcessMs += dt;
         this.statProcessCount++;
-        if (dt > this.statProcessMaxMs) this.statProcessMaxMs = dt;
+        if (dt > this.statProcessMaxMs) {
+          this.statProcessMaxMs = dt;
+          this.statProcessMaxActive = activeN;
+          this.statProcessMaxMsgs = msgsThis;
+        }
+        // Histogram buckets (ms): <1, 1-2, 2-3, 3-5, 5-10, >=10
+        const hist = this.statProcHist;
+        if (dt < 1) hist[0]++;
+        else if (dt < 2) hist[1]++;
+        else if (dt < 3) hist[2]++;
+        else if (dt < 5) hist[3]++;
+        else if (dt < 10) hist[4]++;
+        else hist[5]++;
         // Rough overrun: process wall time > quantum budget (128 frames).
         // Date.now is ms-resolution so this is only useful with perf timer.
         const quantumMs = (typeof sampleRate === "number" && sampleRate > 0)
           ? (n / sampleRate) * 1000
           : 2.6667;
-        if (dt > quantumMs * 1.05) this.statProcessOverruns++;
+        if (dt > quantumMs * 1.05) {
+          this.statProcessOverruns++;
+          if (dt > this.statProcessOverrunMaxMs) {
+            this.statProcessOverrunMaxMs = dt;
+          }
+        }
       }
     }
 

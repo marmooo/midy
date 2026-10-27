@@ -3766,8 +3766,22 @@ export class Player<
         const vq = simpleVQ + complexVQ;
         const simplePct = vq > 0 ? (100 * simpleVQ) / vq : 0;
         const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
+        const overruns = st?.processOverruns ?? 0;
+        const maxActiveAtPeak = st?.processMaxActive ?? 0;
+        const maxMsgsAtPeak = st?.processMaxMsgs ?? 0;
+        const overrunMaxMs = st?.processOverrunMaxMs ?? 0;
+        const h0 = st?.procHist0 ?? 0;
+        const h1 = st?.procHist1 ?? 0;
+        const h2 = st?.procHist2 ?? 0;
+        const h3 = st?.procHist3 ?? 0;
+        const h4 = st?.procHist4 ?? 0;
+        const h5 = st?.procHist5 ?? 0;
+        const timerSrc = (st as { timerSource?: string } | null)?.timerSource ??
+          (st?.hasPerf ? "perf" : "date");
         // processMs / avgProcUs: audio-thread time in process() — compare these
         // across runs (wall/rtf stay ≈ song length under realtime playback).
+        // maxProcMs spike context: active voices + port msgs in that quantum.
+        // procHist buckets (ms): <1 | 1-2 | 2-3 | 3-5 | 5-10 | >=10
         console.log(
           `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms` +
             ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
@@ -3776,6 +3790,11 @@ export class Player<
             ` processMs=${processMs.toFixed(1)}` +
             ` avgProcUs=${avgProcUs.toFixed(1)}` +
             ` maxProcMs=${processMaxMs.toFixed(3)}` +
+            ` overruns=${overruns}` +
+            ` overrunMaxMs=${Number(overrunMaxMs).toFixed(3)}` +
+            ` maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}}` +
+            ` timer=${timerSrc}` +
+            ` procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5}` +
             ` simpleVQ=${simpleVQ} complexVQ=${complexVQ}` +
             ` simplePct=${simplePct.toFixed(1)}%` +
             ` noteOn=${on}` +
