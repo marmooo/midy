@@ -39,7 +39,7 @@ import { OfflineAudioContext as WebOfflineAudioContext } from "web-audio-api";
 
 Deno.test("worklet protocol: processor name and voice limit", () => {
   assertEquals(MIDY_WORKLET_NAME, "midy-synth-processor");
-  assertEquals(WORKLET_MAX_VOICES, 64);
+  assertEquals(WORKLET_MAX_VOICES, 1024);
   assert(WORKLET_MAX_VOICES > 0);
 });
 
