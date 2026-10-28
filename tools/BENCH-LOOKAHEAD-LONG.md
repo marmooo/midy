@@ -45,8 +45,8 @@ deno run -A tools/bench-main-load.ts \
   --max-play-sec 60 \
   --out-dir ./bench-logs-lookahead60
 
-deno run -A tools/bench-summarize.ts ./bench-logs-lookahead --sort bakeMax
-deno run -A tools/bench-summarize.ts ./bench-logs-lookahead --csv > lookahead.csv
+deno run -A tools/bench-summarize.ts ./bench-logs-lookahead60 --sort bakeMax
+deno run -A tools/bench-summarize.ts ./bench-logs-lookahead60 --csv > lookahead.csv
 ```
 
 Use **two songs** when possible:
