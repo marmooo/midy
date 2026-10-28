@@ -668,7 +668,7 @@ export class Player<
   // Soft cap on notes per chunk tile. When adding a *new onset group* would
   // exceed this, close and start a new tile (same-timestamp chords stay).
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
-  maxChunkNotes: number = 32;
+  maxChunkNotes: number = 24;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
   // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
   chunkBakeHeavyThresholdMs: number = 1500;
