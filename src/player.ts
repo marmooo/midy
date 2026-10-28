@@ -359,6 +359,8 @@ export class Player<
   // --- diag: noteBake / drum path ---
   noteBakePathCount: number = 0;
   noteBakeAdsPathCount: number = 0;
+  /** segment/chunk adsFallback (and similar) notes routed to worklet. */
+  noteBakeWorkletHybridCount: number = 0;
   noteBakeRealtimeExclCount: number = 0;
   noteBakeDrumCount: number = 0;
   noteBakeDrumExclusiveCount: number = 0;
@@ -677,11 +679,30 @@ export class Player<
   eventLoopLagWarnMs: number = 100;
   private eventLoopLagProbeTimer: number | null = null;
   private eventLoopLagProbeActive: boolean = false;
+  /** setTimeout probe samples this play (event-loop health). */
+  eventLoopLagSamples: number = 0;
+  /** Sum of (observed - interval) ms; excess only (clamped >= 0). */
+  eventLoopLagExcessSumMs: number = 0;
+  eventLoopLagExcessMaxMs: number = 0;
+  /** Count of samples with excess >= eventLoopLagWarnMs. */
+  eventLoopLagWarnCount: number = 0;
+  /** Main-thread time in scheduleTimelineEvents this play. */
+  playMainSchedSumMs: number = 0;
+  playMainSchedCount: number = 0;
+  playMainSchedMaxMs: number = 0;
   // Song-time window where scheduleTimelineEvents / closeChunk get verbose logs.
   diagSongTimeLo: number = 19;
   diagSongTimeHi: number = 25;
-  // [diag] Extra instrumentation (A–F). Gated by this.debug; throttle counters
-  // keep DevTools from stalling on dense songs.
+  // [diag] Extra instrumentation (A–F).
+  //   debug       = summary / end-of-play / errors (default quiet)
+  //   debugDetail = per-note / per-tile / noisy pipeline traces
+  // Throttle counters keep DevTools from stalling on dense songs.
+  /**
+   * Play-time verbose traces (non-tiled noteOn, tile-bake-detail, backlog,
+   * play-loop, mix-residual, close-chunk, …).
+   * End-of-play summaries stay on `debug` alone.
+   */
+  debugDetail: boolean = false;
   /** Log every Nth tile-bake-detail (1 = all). Also always logs when workMs>=tileBakeDetailMinMs or complexCount>0. */
   tileBakeDetailEveryN: number = 10;
   /** Always emit tile-bake-detail when work phase exceeds this (ms). */
@@ -776,7 +797,7 @@ export class Player<
         if (depthAtEnter > this.chunkGateWaitDepthMax) {
           this.chunkGateWaitDepthMax = depthAtEnter;
         }
-        if (this.debug && depthAtEnter >= 1) {
+        if (this.debug && this.debugDetail && depthAtEnter >= 1) {
           let oldest = chunkStart;
           for (let i = 0; i < this.chunkBakeWaiters.length; i++) {
             const s = this.chunkBakeWaiters[i].chunkStart;
@@ -802,7 +823,7 @@ export class Player<
       if (this.chunkGateWaitSamplesMs.length < Player.GATE_WAIT_SAMPLE_CAP) {
         this.chunkGateWaitSamplesMs.push(waited);
       }
-      if (this.debug && waited >= 30) {
+      if (this.debug && this.debugDetail && waited >= 30) {
         console.warn(
           `[midy] gate-wait-exit | chunkStart=${chunkStart.toFixed(2)}s ` +
             `waited=${waited.toFixed(1)}ms ` +
@@ -931,13 +952,19 @@ export class Player<
       this.eventLoopLagProbeTimer = setTimeout(() => {
         const lag = performance.now() - t0;
         // lag ≈ interval when healthy; excess = main-thread blockage.
-        const excess = lag - interval;
+        const excess = Math.max(0, lag - interval);
+        this.eventLoopLagSamples++;
+        this.eventLoopLagExcessSumMs += excess;
+        if (excess > this.eventLoopLagExcessMaxMs) {
+          this.eventLoopLagExcessMaxMs = excess;
+        }
         if (excess >= warnMs) {
+          this.eventLoopLagWarnCount++;
           let songT = 0;
           try {
             songT = this.currentTime();
           } catch { /* audio context may be closed */ }
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] event-loop-lag | excess=${excess.toFixed(0)}ms ` +
                 `timer=${lag.toFixed(0)}ms interval=${interval}ms ` +
@@ -1066,7 +1093,7 @@ export class Player<
         d.chunkStart >= this.diagSongTimeLo &&
         d.chunkStart <= this.diagSongTimeHi
       ) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] bake-start | chunkStart=${d.chunkStart.toFixed(2)}s ` +
               `notes=${d.chunk.notes.length} cost=${d.chunk.cost.toFixed(1)} ` +
@@ -3195,9 +3222,11 @@ export class Player<
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = noteOnDurations[queueIndex] ?? 0;
-          } else if (this.debug && isTiledCacheMode(cacheMode)) {
+          } else if (
+            this.debug && this.debugDetail && isTiledCacheMode(cacheMode)
+          ) {
             // Diagnostic: why this note is outside tiles, and which path it
-            // will take (long-note full bake vs realtime ADS / exclusive).
+            // will take (long-note full bake vs workletHybrid / exclusive).
             const vp = this.tiledVoiceParams[queueIndex];
             const duration = noteOnDurations[queueIndex] ?? 0;
             // Prefer snapshotted voiceParams; fall back to live resolve for
@@ -3247,23 +3276,31 @@ export class Player<
             // MIDI noteOn→noteOff length and can look short even when the
             // note is treated as long for tiling (long release or pad).
             const effective = duration + releaseTail;
+            // Hybrid: non-noteBake leftovers play via worklet (not main ADS).
+            const hybrid = !inLong;
             const path = inLong
               ? "noteBake"
               : (excl !== 0
-                ? "realtimeExcl"
-                : (effective > this.maxTiledNoteDuration ? "ads" : "realtime"));
+                ? (hybrid ? "workletHybrid" : "realtimeExcl")
+                : (effective > this.maxTiledNoteDuration
+                  ? (hybrid ? "workletHybrid" : "ads")
+                  : (hybrid ? "workletHybrid" : "realtime")));
             // Human-readable reason for being outside tiledBakedSet.
             let reason: string;
             if (excl !== 0) {
-              reason = `exclusiveClass=${excl}`;
+              reason = hybrid
+                ? `exclusiveClass=${excl}→workletHybrid`
+                : `exclusiveClass=${excl}`;
             } else if (effective > this.maxTiledNoteDuration) {
               reason = inLong
                 ? `effective>${this.maxTiledNoteDuration}s→noteBake(≤${
                   this.maxNoteBakeDuration || "inf"
                 }s)`
-                : `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`;
+                : (hybrid
+                  ? `effective>${this.maxTiledNoteDuration}s→workletHybrid(>maxNoteBake)`
+                  : `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`);
             } else {
-              reason = "other(notInTiledSet)";
+              reason = hybrid ? "other→workletHybrid" : "other(notInTiledSet)";
             }
             const capNote = releaseTail < releaseTailRaw
               ? ` rawRelease=${releaseTailRaw.toFixed(2)}s`
@@ -3276,6 +3313,7 @@ export class Player<
             } else if (path === "realtimeExcl") {
               this.noteBakeRealtimeExclCount++;
             }
+            // workletHybrid counted at setNoteAudioNode (actual dispatch).
             const isDrum = channel.channelNumber === 9 ||
               channel.channelNumber === 10;
             if (isDrum && path === "noteBake") {
@@ -3288,7 +3326,7 @@ export class Player<
               if (isDrum) this.noteBakeDrumReleaseCappedCount++;
             }
             if (
-              this.debug && isDrum && path === "noteBake" &&
+              this.debug && this.debugDetail && isDrum && path === "noteBake" &&
               (this.noteBakeDrumCount <= 8 ||
                 this.noteBakeDrumCount % 32 === 0)
             ) {
@@ -3365,13 +3403,16 @@ export class Player<
     // Runs after the sync pass so worker onmessage can interleave.
     if (isChunkMode) this.pumpDeferredChunkBakes();
     const schedMs = performance.now() - tSched0;
+    this.playMainSchedSumMs += schedMs;
+    this.playMainSchedCount++;
+    if (schedMs > this.playMainSchedMaxMs) this.playMainSchedMaxMs = schedMs;
     const inWindow = (firstSongT >= this.diagSongTimeLo &&
       firstSongT <= this.diagSongTimeHi) ||
       (lastSongT >= this.diagSongTimeLo && lastSongT <= this.diagSongTimeHi) ||
       (firstSongT >= 0 && firstSongT < this.diagSongTimeLo &&
         lastSongT > this.diagSongTimeHi);
     if (schedMs >= 20 || budgetHit || (inWindow && queueIndex > qi0)) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] schedule | wall=${schedMs.toFixed(0)}ms ` +
             `events=${queueIndex - qi0} noteOn=${noteOnCount} ` +
@@ -3686,7 +3727,7 @@ export class Player<
       const inWindow = songT >= this.diagSongTimeLo &&
         songT <= this.diagSongTimeHi;
       if (inWindow || loopMs >= 50) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] play-loop | n=${diagLoopN} songT=${songT.toFixed(2)}s ` +
               `loopMs=${loopMs.toFixed(0)} ` +
@@ -3737,17 +3778,41 @@ export class Player<
     if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
       await this.prewarmSimpleNoteCache();
     }
-    const workletPerfT0 = this.cacheMode === "worklet" ? performance.now() : 0;
+    // Wall-clock start for post-play RTF (worklet-perf / chunk-perf / segment-perf).
+    // Taken after prewarm so both modes share the same measurement window.
+    const playPerfT0 =
+      (this.cacheMode === "worklet" || isTiledCacheMode(this.cacheMode))
+        ? performance.now()
+        : 0;
     if (this.cacheMode === "worklet") {
       this.workletMainSteal = 0;
       this.workletPeakGroups = 0;
       this.workletPeakLayers = 0;
     }
+    // Path diagnostics for this play (must survive end-of-play resetAllStates).
+    this.noteBakePathCount = 0;
+    this.noteBakeAdsPathCount = 0;
+    this.noteBakeWorkletHybridCount = 0;
+    this.noteBakeRealtimeExclCount = 0;
+    this.noteBakeDrumCount = 0;
+    this.noteBakeDrumExclusiveCount = 0;
+    this.noteBakeReleaseCappedCount = 0;
+    this.noteBakeDrumReleaseCappedCount = 0;
+    this.noteBakeEffectiveSum = 0;
+    this.noteBakeDrumEffectiveSum = 0;
+    // Main-thread load / stability (event-loop lag + schedule cost).
+    this.eventLoopLagSamples = 0;
+    this.eventLoopLagExcessSumMs = 0;
+    this.eventLoopLagExcessMaxMs = 0;
+    this.eventLoopLagWarnCount = 0;
+    this.playMainSchedSumMs = 0;
+    this.playMainSchedCount = 0;
+    this.playMainSchedMaxMs = 0;
     this.playPromise = this.playNotes();
     await this.playPromise;
     if (this.cacheMode === "worklet" && this.workletEngine) {
       try {
-        const wallMs = performance.now() - workletPerfT0;
+        const wallMs = performance.now() - playPerfT0;
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
         const st = await this.workletEngine.fetchStats(100);
         const ms = this.workletEngine.mainStats;
@@ -3809,6 +3874,25 @@ export class Player<
             ` peakGroups=${this.workletPeakGroups}` +
             ` peakLayers=${this.workletPeakLayers}` +
             ` (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`,
+        );
+        // Stability / lightness (comparable to chunk play-load).
+        const lagN = this.eventLoopLagSamples;
+        const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
+        const processPct = wallMs > 0 ? (100 * processMs / wallMs) : 0;
+        const schedN = this.playMainSchedCount;
+        const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
+        console.log(
+          `[midy] play-load | mode=worklet` +
+            ` glitch=${overruns} (overruns)` +
+            ` glitchMaxMs=${Number(overrunMaxMs).toFixed(1)}` +
+            ` audioBusyMs=${processMs.toFixed(0)}` +
+            ` audioBusyPct=${processPct.toFixed(1)}%` +
+            ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
+            ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
+            ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
+            ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
+            ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
+            ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`,
         );
       } catch (_) { /* ignore */ }
     }
@@ -3888,6 +3972,53 @@ export class Player<
       const purePct = cb > 0
         ? ((100 * this.chunkPureTaTiles) / cb).toFixed(1)
         : "0.0";
+      // Comparable to worklet-perf: same RTF definition (songSec*1000/wallMs).
+      // play-load summarizes stability (glitch) + main-thread lightness.
+      if (isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
+        const wallMs = performance.now() - playPerfT0;
+        const songSec = this.totalTime > 0 ? this.totalTime : 0;
+        const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
+        const label = isChunkCacheMode(this.cacheMode)
+          ? "chunk-perf"
+          : "segment-perf";
+        console.log(
+          `[midy] ${label} | wall=${wallMs.toFixed(0)}ms` +
+            ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
+            ` tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate}` +
+            ` bakeAvg=${bakeAvg.toFixed(1)}ms` +
+            ` bakeP95=${bakeP95.toFixed(1)}ms` +
+            ` pureTA=${this.chunkPureTaTiles}` +
+            ` pathWorkletHybrid=${this.noteBakeWorkletHybridCount}` +
+            ` mode=${this.cacheMode}`,
+        );
+        const lagN = this.eventLoopLagSamples;
+        const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
+        const glitch = lateN + this.chunkDroppedLate;
+        const mixMainMs = this.chunkMixMainSumMs;
+        const mixWorkerMs = this.chunkMixWorkerSumMs;
+        const mixTotal = mixMainMs + mixWorkerMs;
+        const mainMixPct = mixTotal > 0 ? (100 * mixMainMs / mixTotal) : 0;
+        const schedN = this.playMainSchedCount;
+        const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
+        // mainBusyMs ≈ schedule work + main-thread mix (worker mix excluded).
+        const mainBusyMs = this.playMainSchedSumMs + mixMainMs;
+        const mainBusyPct = wallMs > 0 ? (100 * mainBusyMs / wallMs) : 0;
+        console.log(
+          `[midy] play-load | mode=${this.cacheMode}` +
+            ` glitch=${glitch} (late+dropped)` +
+            ` glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)}` +
+            ` mainBusyMs=${mainBusyMs.toFixed(0)}` +
+            ` mainBusyPct=${mainBusyPct.toFixed(2)}%` +
+            ` mixMainPct=${mainMixPct.toFixed(1)}%` +
+            ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
+            ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
+            ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
+            ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
+            ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
+            ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms` +
+            ` workerMixMs=${mixWorkerMs.toFixed(0)}`,
+        );
+      }
       const poolSize = this.bakeWorkerPool
         ? this.bakeWorkerPool.poolSize
         : (this.workerPoolSize > 0 ? this.workerPoolSize : Math.max(
@@ -3999,6 +4130,7 @@ export class Player<
           console.log(
             `[midy] noteBake-summary | pathNoteBake=${this.noteBakePathCount} ` +
               `pathAds=${this.noteBakeAdsPathCount} ` +
+              `pathWorkletHybrid=${this.noteBakeWorkletHybridCount} ` +
               `pathRealtimeExcl=${this.noteBakeRealtimeExclCount} ` +
               `drumNoteBake=${this.noteBakeDrumCount} ` +
               `drumExclusive=${this.noteBakeDrumExclusiveCount} ` +
@@ -4020,6 +4152,27 @@ export class Player<
               `maxNoteBake=${this.maxNoteBakeDuration} ` +
               `maxTiled=${this.maxTiledNoteDuration}`,
           );
+          if (this.noteBakeWorkletHybridCount > 0 && this.workletEngine) {
+            try {
+              const st = await this.workletEngine.fetchStats(80);
+              const peak = st?.peakActive ?? st?.active ?? 0;
+              const q = st?.quantums ?? 0;
+              const activeSum = st?.activeSum ?? 0;
+              const avgActive = q > 0 ? activeSum / q : 0;
+              const processMs = st?.processMs ?? 0;
+              const avgProcUs = q > 0 ? (processMs / q) * 1000 : 0;
+              console.log(
+                `[midy] worklet-hybrid | notes=${this.noteBakeWorkletHybridCount}` +
+                  ` peakActive=${peak}/${WORKLET_MAX_VOICES}` +
+                  ` avgActive=${avgActive.toFixed(1)}` +
+                  ` processMs=${processMs.toFixed(1)}` +
+                  ` avgProcUs=${avgProcUs.toFixed(1)}` +
+                  ` noteOn=${st?.noteOn ?? 0}` +
+                  ` miss=${st?.missingSample ?? 0}` +
+                  ` quantums=${q}`,
+              );
+            } catch { /* ignore */ }
+          }
         }
       }
       const notesAvg = cb > 0 ? this.chunkBakeNoteCountSum / cb : 0;
@@ -4771,7 +4924,7 @@ export class Player<
         }
       }
       if (started + deferred > 0) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] start-ready | started=${started} deferred=${deferred} ` +
               `wall=${(performance.now() - t0).toFixed(0)}ms ` +
@@ -5316,7 +5469,7 @@ export class Player<
           : !this.canAcceptChunkBakeSlot()
           ? "slot-full"
           : "rate-limit";
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
               `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
@@ -5344,7 +5497,7 @@ export class Player<
     this.recordChunkBakeStartThisPass();
 
     if (inDiagWindow && this.shouldLogCloseChunk()) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s ` +
             `notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} ` +
@@ -5441,37 +5594,44 @@ export class Player<
     ) {
       this.closeChunk(state);
     }
-    // [diag F] backlog snapshot (throttled)
-    if (this.debug) {
-      const nowWall = performance.now();
-      if (nowWall - this.lastBacklogLogMs >= this.backlogLogIntervalMs) {
-        this.lastBacklogLogMs = nowWall;
-        let songT = 0;
-        try {
-          songT = this.currentTime();
-        } catch { /* closed */ }
-        const deferred = this.deferredChunkBakes;
-        const oldest = deferred.length > 0
-          ? deferred.reduce(
-            (m, d) => d.chunkStart < m ? d.chunkStart : m,
-            deferred[0].chunkStart,
-          )
-          : -1;
-        let readyN = 0;
-        let notReadyN = 0;
-        for (let i = 0; i < state.pending.length; i++) {
-          if (state.pending[i].bufferReady) readyN++;
-          else notReadyN++;
+    // [diag F] backlog — play-time only (debugDetail).
+    if (this.debug && this.debugDetail) {
+      const deferred = this.deferredChunkBakes;
+      let notReadyN = 0;
+      for (let i = 0; i < state.pending.length; i++) {
+        if (!state.pending[i].bufferReady) notReadyN++;
+      }
+      // Skip empty idle snapshots.
+      if (deferred.length === 0 && notReadyN === 0) {
+        // still allow occasional empty lines only if we want — skip entirely
+      } else {
+        const nowWall = performance.now();
+        if (nowWall - this.lastBacklogLogMs >= this.backlogLogIntervalMs) {
+          this.lastBacklogLogMs = nowWall;
+          let songT = 0;
+          try {
+            songT = this.currentTime();
+          } catch { /* closed */ }
+          const oldest = deferred.length > 0
+            ? deferred.reduce(
+              (m, d) => d.chunkStart < m ? d.chunkStart : m,
+              deferred[0].chunkStart,
+            )
+            : -1;
+          let readyN = 0;
+          for (let i = 0; i < state.pending.length; i++) {
+            if (state.pending[i].bufferReady) readyN++;
+          }
+          console.warn(
+            `[midy] backlog | songT=${songT.toFixed(2)}s ` +
+              `deferred=${deferred.length} pending=${state.pending.length} ` +
+              `ready=${readyN} notReady=${notReadyN} ` +
+              `chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} ` +
+              `oldestDeferred=${
+                oldest >= 0 ? oldest.toFixed(2) : "-"
+              }s lookAhead=${lookAheadCheckTime.toFixed(2)}s`,
+          );
         }
-        console.warn(
-          `[midy] backlog | songT=${songT.toFixed(2)}s ` +
-            `deferred=${deferred.length} pending=${state.pending.length} ` +
-            `ready=${readyN} notReady=${notReadyN} ` +
-            `chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} ` +
-            `oldestDeferred=${
-              oldest >= 0 ? oldest.toFixed(2) : "-"
-            }s lookAhead=${lookAheadCheckTime.toFixed(2)}s`,
-        );
       }
     }
     const pending = state.pending;
@@ -5541,7 +5701,7 @@ export class Player<
     const maxTileBufSec = this.tileDuration +
       Math.max(0, this.maxTiledNoteDuration);
     if (totalDuration > maxTileBufSec) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] chunk buffer clamped ${totalDuration.toFixed(2)}s → ${
             maxTileBufSec.toFixed(2)
@@ -6111,7 +6271,7 @@ export class Player<
         this.liveMixWorkerCount++;
       }
       if (
-        this.debug &&
+        this.debug && this.debugDetail &&
         (this.liveMixOnMainCount + this.liveMixWorkerCount +
             this.liveMixSkipNotRealtime) <= 12
       ) {
@@ -6139,7 +6299,7 @@ export class Player<
           mixDetail,
         );
         mixMs = performance.now() - tMix0;
-        if (mixMs >= 200 && this.debug) {
+        if (mixMs >= 200 && this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms ` +
               `main=${mixDetail.mainMs.toFixed(0)}ms ` +
@@ -6164,7 +6324,7 @@ export class Player<
           : mixDetail.mainMs;
         mixMs = performance.now() - tMix0;
         if (mixMs >= 200 && mixMs > mixWorkMs + 50) {
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms ` +
                 `work=${mixWorkMs.toFixed(0)}ms ` +
@@ -6190,7 +6350,7 @@ export class Player<
         const ratio = mixMs > 0 ? overheadMs / mixMs : 0;
         if (overheadMs >= 50 || ratio >= 0.6) {
           this.chunkMixHighOverheadTiles++;
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] mix-overhead | chunkStart=${
                 chunk.chunkStart.toFixed(2)
@@ -7456,7 +7616,7 @@ export class Player<
       }
       const bodyMs = performance.now() - tBody0;
       if (bodyMs >= 100 || allocMs >= 50) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-body | total=${bodyMs.toFixed(0)}ms alloc=${
               allocMs.toFixed(0)
@@ -7751,7 +7911,7 @@ export class Player<
       // Residual ≥40ms is already audible as main-thread jank; log with
       // concurrent snapshot so we can tell bake/offline contention apart.
       if (residualMs >= 40) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
               `await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms ` +
@@ -7771,7 +7931,7 @@ export class Player<
       return buffer;
     } catch (err) {
       // Worker failure → fall back to main-thread mix so playback continues.
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           "[midy] worker mix failed, falling back to main thread",
           err,
@@ -8553,7 +8713,12 @@ export class Player<
     // Worklet: push PCM into the processor before play. Loading large samples
     // mid-song on the worklet thread starves process() and sounds like the
     // dense passages go silent until traffic thins out.
+    // segment/chunk hybrid only needs uploads when classification left leftovers.
     if (this.cacheMode === "worklet") {
+      await this.preloadWorkletSamples();
+    } else if (
+      isTiledCacheMode(this.cacheMode) && this.hasWorkletHybridCandidates()
+    ) {
       await this.preloadWorkletSamples();
     }
   }
@@ -8698,7 +8863,10 @@ export class Player<
     const adsDuration = adsCap > 0
       ? Math.min(naturalAdsDuration, adsCap)
       : naturalAdsDuration;
-    if (adsCap > 0 && naturalAdsDuration > adsCap && this.debug) {
+    if (
+      adsCap > 0 && naturalAdsDuration > adsCap && this.debug &&
+      this.debugDetail
+    ) {
       console.log(
         `[midy] ads-bake-cap | note=${note.noteNumber} ` +
           `envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan=${
@@ -8743,7 +8911,7 @@ export class Player<
     const sampleRate = this.audioContext.sampleRate;
     const length = Math.ceil(renderDuration * sampleRate);
     // [diag] How large is this ADS bake? Long decayVolEnv → large loopCount.
-    if (this.debug) {
+    if (this.debug && this.debugDetail) {
       const bytes = length * audioBuffer.numberOfChannels * 4;
       console.log(
         `[midy] ads-bake-size | note=${note.noteNumber} ` +
@@ -8952,15 +9120,9 @@ export class Player<
     this.chunkMixOverheadSumMs = 0;
     this.chunkMixOverheadMaxMs = 0;
     this.chunkMixHighOverheadTiles = 0;
-    this.noteBakePathCount = 0;
-    this.noteBakeAdsPathCount = 0;
-    this.noteBakeRealtimeExclCount = 0;
-    this.noteBakeDrumCount = 0;
-    this.noteBakeDrumExclusiveCount = 0;
-    this.noteBakeReleaseCappedCount = 0;
-    this.noteBakeDrumReleaseCappedCount = 0;
-    this.noteBakeEffectiveSum = 0;
-    this.noteBakeDrumEffectiveSum = 0;
+    // noteBake path* counters intentionally NOT cleared here: playNotes()
+    // calls resetAllStates() before start() prints noteBake-summary.
+    // They are reset once at the beginning of each start() instead.
     this.liveMixOnMainCount = 0;
     this.liveMixWorkerCount = 0;
     this.liveMixSkipNotRealtime = 0;
@@ -9035,7 +9197,8 @@ export class Player<
     mixEntryCount?: number;
     mixSrcSamplesSum?: number;
   }): void {
-    if (!this.debug) return;
+    // Play-time tile lines: debugDetail only.
+    if (!this.debug || !this.debugDetail) return;
     this.tileBakeDetailCount++;
     const every = Math.max(1, this.tileBakeDetailEveryN | 0);
     const mixHeavy = d.mixMs >= this.mixDetailMinMs;
@@ -9226,7 +9389,7 @@ export class Player<
         : p.mixUsedWorker === false
         ? `mixDetail: main=${(p.mixMainMs ?? 0).toFixed(0)}ms`
         : "";
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
             `gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms ` +
@@ -9367,7 +9530,7 @@ export class Player<
       const val = cache.get(key);
       if (!(val instanceof AudioBuffer)) continue;
       if (
-        this.debug &&
+        this.debug && this.debugDetail &&
         this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax
       ) {
         this.simpleCacheEvictLogCount++;
@@ -9469,7 +9632,7 @@ export class Player<
       const hasWf = entry.noteEvent
         ? this.hasWaveformAutomation(entry.noteEvent)
         : false;
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} ` +
             `dur=${entry.noteDuration.toFixed(3)}s ms=${
@@ -11530,6 +11693,15 @@ export class Player<
       return;
     }
 
+    // segment/chunk hybrid: notes that would have used ADS/realtime
+    // (not tiled, not noteBake) play via worklet instead of main-thread ADS.
+    // Offline export keeps the classic ADS path (no AudioWorklet).
+    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+      this.noteBakeWorkletHybridCount++;
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
+      return;
+    }
+
     const audioBuffer = await this.getAudioBuffer(channel, note, realtime);
     // If pause()/stop() interrupts during preparation, abort without creating a node.
     if (note.ending || !audioBuffer) return;
@@ -11852,6 +12024,52 @@ export class Player<
     } finally {
       this.maxPedalVoices = prev;
     }
+  }
+
+  /**
+   * segment/chunk Phase-1 hybrid: route classification leftovers (adsFallback,
+   * exclusive without noteBake, etc.) to the worklet synth instead of the
+   * main-thread ADS graph. Tiled ghosts and longNoteBakedSet notes stay on
+   * BufferSource paths.
+   */
+  shouldRouteNoteToWorkletHybrid(note: TNote): boolean {
+    if (!isTiledCacheMode(this.cacheMode)) return false;
+    if (note.isTiledGhost) return false;
+    if (this.audioContext instanceof OfflineAudioContext) return false;
+    // Live MIDI / unindexed notes: keep ADS (no stable classification).
+    if (note.timelineIndex == null) return false;
+    const i = note.timelineIndex;
+    // noteBake (moderate long / exclusive choke) stays offline buffer.
+    if (this.longNoteBakedSet.has(i)) return false;
+    // Tiled notes should already be ghosts; belt-and-suspenders.
+    if (this.tiledBakedSet.has(i)) return false;
+    return true;
+  }
+
+  /** True when segment/chunk classification left any non-tile, non-noteBake notes. */
+  hasWorkletHybridCandidates(): boolean {
+    if (!isTiledCacheMode(this.cacheMode)) return false;
+    const n = this.tiledVoiceParams.length;
+    if (n === 0) return false;
+    const tiled = this.tiledBakedSet;
+    const long = this.longNoteBakedSet;
+    for (let i = 0; i < n; i++) {
+      if (!this.tiledVoiceParams[i]) continue;
+      if (tiled.has(i) || long.has(i)) continue;
+      return true;
+    }
+    // Exclusive drums may lack tiledVoiceParams but still need hybrid.
+    // Safer to preload when any timeline note exists outside both sets.
+    const total = this.noteOnDurations.length;
+    for (let i = 0; i < total; i++) {
+      if (tiled.has(i) || long.has(i)) continue;
+      // Skip indices never used as note-ons (duration unset / 0 with no params).
+      if (this.noteOnDurations[i] == null && !this.tiledVoiceParams[i]) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   /**

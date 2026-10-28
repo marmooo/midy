@@ -1435,6 +1435,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     scheduleTime: number,
     queueIndex: number,
   ): number {
+    const tSched0 = performance.now();
     const timeOffset = this.resumeTime - this.startTime;
     const isSegmentMode = this.cacheMode === "segment";
     const isChunkMode = this.cacheMode === "chunk";
@@ -1473,10 +1474,10 @@ export class MidyGM2 extends Player<Note, Channel> {
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
-          } else if (this.debug && (isSegmentMode || isChunkMode)) {
-            // Diagnose non-tiled path: long non-exclusive → noteBake
-            // (Player.getAudioBuffer → getNoteModeBuffer); exclusive stays
-            // realtime for choke; other exclusions stay realtime ADS.
+          } else if (
+            this.debug && this.debugDetail && (isSegmentMode || isChunkMode)
+          ) {
+            // Detail-only: non-tiled path classification (noteBake / workletHybrid).
             // Classification uses effective = midiDur + releaseTail.
             // "midiDur" is MIDI noteOn→noteOff only; it can look short even
             // when the note is treated as long for tiling (long release/pad).
@@ -1495,23 +1496,45 @@ export class MidyGM2 extends Player<Note, Channel> {
               event.noteNumber!,
             );
             const effective = releaseTail < 0 ? -1 : midiDur + releaseTail;
+            // Hybrid: non-noteBake leftovers dispatch via worklet (setNoteAudioNode).
+            const hybrid = !inLong;
             const path = inLong
               ? "noteBake"
-              : (isExcl
-                ? "realtimeExcl"
-                : (effective > this.maxTiledNoteDuration ? "ads" : "realtime"));
+              : (hybrid
+                ? "workletHybrid"
+                : (isExcl
+                  ? "realtimeExcl"
+                  : (effective > this.maxTiledNoteDuration
+                    ? "ads"
+                    : "realtime")));
             let reason: string;
-            if (isExcl) {
+            if (inLong) {
+              reason = isExcl
+                ? `exclusiveClass=${excl || "?"}→noteBake`
+                : (effective > this.maxTiledNoteDuration
+                  ? `effective>${this.maxTiledNoteDuration}s→noteBake(≤${
+                    this.maxNoteBakeDuration || "inf"
+                  }s)`
+                  : "inLong→noteBake");
+            } else if (hybrid) {
+              reason = isExcl
+                ? `exclusiveClass=${excl || "?"}→workletHybrid`
+                : (effective > this.maxTiledNoteDuration
+                  ? `effective>${this.maxTiledNoteDuration}s→workletHybrid(>maxNoteBake)`
+                  : "other→workletHybrid");
+            } else if (isExcl) {
               reason = `exclusiveClass=${excl || "?"}`;
             } else if (effective > this.maxTiledNoteDuration) {
-              reason = inLong
-                ? `effective>${this.maxTiledNoteDuration}s→noteBake(≤${
-                  this.maxNoteBakeDuration || "inf"
-                }s)`
-                : `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`;
+              reason =
+                `effective>${this.maxTiledNoteDuration}s→ads(>maxNoteBake)`;
             } else {
               reason = "other(notInTiledSet)";
             }
+            if (path === "noteBake") {
+              this.noteBakePathCount++;
+              if (effective > 0) this.noteBakeEffectiveSum += effective;
+            }
+            // workletHybrid counted in setNoteAudioNode (actual dispatch).
             const capNote = releaseTail >= 0 && releaseTailRaw > releaseTail
               ? ` rawRelease=${releaseTailRaw.toFixed(2)}s`
               : "";
@@ -1567,6 +1590,10 @@ export class MidyGM2 extends Player<Note, Channel> {
       });
       queueIndex++;
     }
+    const schedMs = performance.now() - tSched0;
+    this.playMainSchedSumMs += schedMs;
+    this.playMainSchedCount++;
+    if (schedMs > this.playMainSchedMaxMs) this.playMainSchedMaxMs = schedMs;
     return queueIndex;
   }
 
@@ -1623,6 +1650,8 @@ export class MidyGM2 extends Player<Note, Channel> {
     } else {
       this.dispatchEvent(new Event("started"));
     }
+    // Main-thread lag probe (same as Player.playNotes) for play-load stats.
+    this.startEventLoopLagProbe();
     let queueIndex = this.getQueueIndex(this.resumeTime);
     let exitReason: string | undefined;
     this.notePromises = [];
@@ -1731,6 +1760,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       const waitTime = now + this.noteCheckInterval;
       await this.scheduleTask(() => {}, waitTime);
     }
+    this.stopEventLoopLagProbe();
     if (exitReason !== "paused") {
       this.resetAllStates();
       this.lastActiveSensing = 0;
@@ -2406,6 +2436,14 @@ export class MidyGM2 extends Player<Note, Channel> {
       // closeSegment / renderSegmentBuffer). This note object only exists
       // so activeNotes/FIFO noteOff matching stays correct relative to
       // any fallback (non-segment) notes on the same channel.
+      return;
+    }
+
+    // segment/chunk hybrid: adsFallback leftovers → worklet (same as Player).
+    // Without this, MidyGM2's override always falls through to ADS/buffer.
+    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+      this.noteBakeWorkletHybridCount++;
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
       return;
     }
 
