@@ -4,7 +4,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -29,7 +29,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 2,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -53,7 +53,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 4,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -77,7 +77,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 6,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -102,7 +102,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 4,
       "maxNoteBakeDuration": 12,
@@ -126,7 +126,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 6,
       "maxNoteBakeDuration": 12,
@@ -150,7 +150,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 12,
       "maxNoteBakeDuration": 12,
@@ -175,7 +175,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 8,
@@ -199,7 +199,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 16,
@@ -223,7 +223,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 24,
@@ -247,7 +247,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 0,
@@ -272,7 +272,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 2,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -296,7 +296,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 2,
       "maxTiledNoteDuration": 6,
       "maxNoteBakeDuration": 12,
@@ -320,7 +320,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 4,
       "maxNoteBakeDuration": 8,
@@ -344,7 +344,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 4,
       "maxNoteBakeDuration": 12,
@@ -368,7 +368,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 2,
       "maxTiledNoteDuration": 4,
       "maxNoteBakeDuration": 12,
@@ -392,7 +392,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 4,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 16,
@@ -416,7 +416,7 @@
     "set": {
       "cacheMode": "chunk",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 2,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 16,

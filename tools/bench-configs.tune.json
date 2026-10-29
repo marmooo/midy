@@ -3,7 +3,7 @@
     "name": "00-new-baseline",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -25,7 +25,7 @@
     "name": "01-notes24",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -47,7 +47,7 @@
     "name": "02-notes40",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -69,7 +69,7 @@
     "name": "03-budget8",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -91,7 +91,7 @@
     "name": "04-budget16",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -113,7 +113,7 @@
     "name": "05-tile0.5",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -135,7 +135,7 @@
     "name": "06-tile1.5",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -157,7 +157,7 @@
     "name": "07-horizon4",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -179,7 +179,7 @@
     "name": "08-horizon12",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -201,7 +201,7 @@
     "name": "09-starts6",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -223,7 +223,7 @@
     "name": "10-pool2",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -245,7 +245,7 @@
     "name": "11-pool6",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -267,7 +267,7 @@
     "name": "12-mixMin4",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 4,
@@ -289,7 +289,7 @@
     "name": "13-prewarm8s",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -311,7 +311,7 @@
     "name": "14-complexWeight2.5",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -334,7 +334,7 @@
     "name": "15-combo-tight",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,
@@ -356,7 +356,7 @@
     "name": "16-combo-wide",
     "set": {
       "cacheMode": "chunk",
-      "prerollSec": 20,
+      "prerollSec": 6,
       "debug": true,
       "useWorkerTypedArrayMix": true,
       "workerMixMinEntries": 1,

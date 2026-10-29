@@ -4,7 +4,7 @@
     "set": {
       "cacheMode": "worklet",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -16,7 +16,7 @@
     "set": {
       "cacheMode": "worklet",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -28,7 +28,7 @@
     "set": {
       "cacheMode": "worklet",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -40,7 +40,7 @@
     "set": {
       "cacheMode": "worklet",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
@@ -52,7 +52,7 @@
     "set": {
       "cacheMode": "worklet",
       "debug": true,
-      "prerollSec": 20,
+      "prerollSec": 6,
       "lookAhead": 1,
       "maxTiledNoteDuration": 8,
       "maxNoteBakeDuration": 12,
