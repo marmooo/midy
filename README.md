@@ -122,7 +122,7 @@ midy.addEventListener("tempoChanged", func);
 - `"segment"` Per-channel tiled offline buffers; channel vol/pan stay live.
 - `"chunk"` All-channel tiled offline mix; vol/pan snapshotted into buffer.
 - `"audio"` Entire song pre-rendered to one buffer. Lowest CPU.
-- `"worklet"` Real-time sample synthesis in AudioWorklet (experimental).
+- `"worklet"` Real-time sample synthesis in AudioWorklet.
 
 ```
 midy.cacheMode = "audio";
