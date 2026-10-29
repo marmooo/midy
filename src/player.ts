@@ -244,7 +244,7 @@ export class Player<
   chunkCostBudget: number = 16;
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight: number = 1.75;
-  maxTiledNoteDuration: number = 8;
+  maxTiledNoteDuration: number = 4;
   /**
    * Upper bound (seconds, duration+releaseTail) for full-note offline bake.
    * Notes longer than this stay off longNoteBakedSet and play via ADS
