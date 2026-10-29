@@ -1,0 +1,62 @@
+[
+  {
+    "name": "00-unlimited",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true,
+      "prerollSec": 20,
+      "lookAhead": 1,
+      "maxTiledNoteDuration": 8,
+      "maxNoteBakeDuration": 12,
+      "workletVoiceLimit": "unlimited"
+    }
+  },
+  {
+    "name": "01-match",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true,
+      "prerollSec": 20,
+      "lookAhead": 1,
+      "maxTiledNoteDuration": 8,
+      "maxNoteBakeDuration": 12,
+      "workletVoiceLimit": "match"
+    }
+  },
+  {
+    "name": "02-limit64",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true,
+      "prerollSec": 20,
+      "lookAhead": 1,
+      "maxTiledNoteDuration": 8,
+      "maxNoteBakeDuration": 12,
+      "workletVoiceLimit": 64
+    }
+  },
+  {
+    "name": "03-limit128",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true,
+      "prerollSec": 20,
+      "lookAhead": 1,
+      "maxTiledNoteDuration": 8,
+      "maxNoteBakeDuration": 12,
+      "workletVoiceLimit": 128
+    }
+  },
+  {
+    "name": "04-limit256",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true,
+      "prerollSec": 20,
+      "lookAhead": 1,
+      "maxTiledNoteDuration": 8,
+      "maxNoteBakeDuration": 12,
+      "workletVoiceLimit": 256
+    }
+  }
+]
