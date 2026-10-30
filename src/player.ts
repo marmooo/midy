@@ -5687,6 +5687,10 @@ export class Player<
     // Hard-cap buffer length so a mis-classified long note cannot allocate
     // multi-10s stereo PCM and OOM the tab (classification should already
     // exclude duration+release > maxTiledNoteDuration).
+    // forAudioOffline (renderFastMode / audio mode export) must NOT clamp:
+    // long notes are intentionally present and the final mix is one song-length
+    // buffer; truncating here produces late-window silence (see compare-long-
+    // note-bake_test).
     let totalDuration = 0;
     const notesLen = notes.length;
     for (let i = 0; i < notesLen; i++) {
@@ -5698,18 +5702,20 @@ export class Player<
       if (end > totalDuration) totalDuration = end;
     }
     if (totalDuration <= 0) return null;
-    const maxTileBufSec = this.tileDuration +
-      Math.max(0, this.maxTiledNoteDuration);
-    if (totalDuration > maxTileBufSec) {
-      if (this.debug && this.debugDetail) {
-        console.warn(
-          `[midy] chunk buffer clamped ${totalDuration.toFixed(2)}s → ${
-            maxTileBufSec.toFixed(2)
-          }s ` +
-            `(maxTiledNoteDuration=${this.maxTiledNoteDuration})`,
-        );
+    if (!forAudioOffline) {
+      const maxTileBufSec = this.tileDuration +
+        Math.max(0, this.maxTiledNoteDuration);
+      if (totalDuration > maxTileBufSec) {
+        if (this.debug && this.debugDetail) {
+          console.warn(
+            `[midy] chunk buffer clamped ${totalDuration.toFixed(2)}s → ${
+              maxTileBufSec.toFixed(2)
+            }s ` +
+              `(maxTiledNoteDuration=${this.maxTiledNoteDuration})`,
+          );
+        }
+        totalDuration = maxTileBufSec;
       }
-      totalDuration = maxTileBufSec;
     }
 
     // Over-allocate then trim -- avoids a second isSimpleNote pass.
@@ -8882,20 +8888,21 @@ export class Player<
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    // Buffer time span follows adsDuration (already capped). For uncapped
-    // looped voices, expand to loopExpandDurationSec so offline sustain does
-    // not depend only on AudioBufferSourceNode.loop (none-mode parity).
+    // Buffer time span: envelope meta (adsDuration) stays capped so lean
+    // realtime playback loops the level reached at the cap. The PCM itself
+    // still expands to loopExpandDurationSec for offline full-song mixes
+    // (audio / segment / chunk TypedArray paths) that do not rely on
+    // AudioBufferSourceNode.loop for the full note duration.
     const expandSec = (typeof this.loopExpandDurationSec === "number" &&
         this.loopExpandDurationSec > 0)
       ? this.loopExpandDurationSec
       : 8;
     let targetSpan: number;
     if (isLoop) {
-      // When capped, stay at the cap (loop-align may add one period).
-      // When uncapped, expand to at least expandSec for offline sustain.
-      targetSpan = (adsCap > 0 && naturalAdsDuration > adsCap)
-        ? adsDuration
-        : Math.max(adsDuration, expandSec);
+      // Always expand looped voices so a 10s+ note still has PCM past the
+      // ADS cap. Envelope gains hold the level at adsDuration; extra periods
+      // are pure sustain tiles (same as the old uncapped offline path).
+      targetSpan = Math.max(adsDuration, expandSec);
     } else {
       // Non-loop one-shots: keep full pitched sample duration (do not cut).
       targetSpan = audioBuffer.duration / playbackRate;
