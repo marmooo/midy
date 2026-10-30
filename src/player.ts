@@ -8888,21 +8888,27 @@ export class Player<
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    // Buffer time span: envelope meta (adsDuration) stays capped so lean
-    // realtime playback loops the level reached at the cap. The PCM itself
-    // still expands to loopExpandDurationSec for offline full-song mixes
-    // (audio / segment / chunk TypedArray paths) that do not rely on
-    // AudioBufferSourceNode.loop for the full note duration.
+    // Buffer time span follows adsDuration (already capped). For uncapped
+    // looped voices, expand to loopExpandDurationSec so offline sustain does
+    // not depend only on AudioBufferSourceNode.loop (none-mode parity).
+    // When capped, realtime keeps the short buffer (source.loop holds the
+    // level). Offline (audio mode / TypedArray mix) still expands so long
+    // notes are not truncated past the ADS cap.
     const expandSec = (typeof this.loopExpandDurationSec === "number" &&
         this.loopExpandDurationSec > 0)
       ? this.loopExpandDurationSec
       : 8;
+    const isOffline = this.offlineRenderOnly ||
+      this.audioContext instanceof OfflineAudioContext;
     let targetSpan: number;
     if (isLoop) {
-      // Always expand looped voices so a 10s+ note still has PCM past the
-      // ADS cap. Envelope gains hold the level at adsDuration; extra periods
-      // are pure sustain tiles (same as the old uncapped offline path).
-      targetSpan = Math.max(adsDuration, expandSec);
+      if (adsCap > 0 && naturalAdsDuration > adsCap && !isOffline) {
+        // Realtime capped: stay short; AudioBufferSourceNode.loop holds.
+        targetSpan = adsDuration;
+      } else {
+        // Uncapped, or offline (even when meta is capped): expand PCM.
+        targetSpan = Math.max(adsDuration, expandSec);
+      }
     } else {
       // Non-loop one-shots: keep full pitched sample duration (do not cut).
       targetSpan = audioBuffer.duration / playbackRate;
