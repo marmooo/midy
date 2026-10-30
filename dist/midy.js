@@ -6049,6 +6049,8 @@ var Note = class {
   // FIFO across groups (stacked same-pitch noteOns) but releases every
   // non-ending layer of the oldest group together.
   noteGroupId = 0;
+  /** Voice id inside WorkletEngine when cacheMode === "worklet". */
+  workletVoiceId = null;
   constructor(noteNumber, velocity, startTime) {
     this.noteNumber = noteNumber;
     this.velocity = velocity;
@@ -6156,9 +6158,12 @@ var Channel = class {
     const t2 = scheduleTime ?? player.audioContext.currentTime;
     const handler = player.controlChangeHandlers[controllerType];
     if (handler) {
-      handler.call(player, this, value, t2);
+      const ret = handler.call(player, this, value, t2);
       player.applyVoiceParams(this, controllerType + 128, t2);
-    } else {
+      if (ret != null && typeof ret.then === "function") {
+        return ret;
+      }
+    } else if (player.debug) {
       console.warn(
         `Unsupported Control change: controllerType=${controllerType} value=${value}`
       );
@@ -6202,7 +6207,8 @@ var Channel = class {
       }
     } else {
       const t2 = scheduleTime ?? player.audioContext.currentTime;
-      player.releaseSustainPedal(this, value, t2);
+      const rel = player.releaseSustainPedal(this, value, t2);
+      await Promise.all(rel.map((p) => Promise.resolve(p)));
     }
   }
   dataEntryMSB(value, scheduleTime) {
@@ -6228,9 +6234,11 @@ var Channel = class {
       case 16383:
         break;
       default:
-        console.warn(
-          `Channel ${this.channelNumber}: Unsupported RPN MSB=${this.rpnMSB} LSB=${this.rpnLSB}`
-        );
+        if (this.typedPlayer.debug) {
+          console.warn(
+            `Channel ${this.channelNumber}: Unsupported RPN MSB=${this.rpnMSB} LSB=${this.rpnLSB}`
+          );
+        }
     }
   }
   limitData(minMSB, maxMSB, minLSB, maxLSB) {
@@ -6617,7 +6625,23 @@ var BasePlayer = class _BasePlayer extends EventTarget {
   isPaused = false;
   isStopping = false;
   isSeeking = false;
+  // Primary end marker is noteOff. Release-related controllers after the last
+  // noteOff (sustain/sostenuto up, all-sound/notes-off) still count via
+  // isTotalTimeEvent(); other trailing controllers (e.g. CC7 padding) do not.
   totalTimeEventTypes = /* @__PURE__ */ new Set(["noteOff"]);
+  /** CC numbers that can release held notes after the last noteOff. */
+  postNoteOffControllerTypes = /* @__PURE__ */ new Set([
+    64,
+    // sustain
+    66,
+    // sostenuto
+    120,
+    // all sound off
+    121,
+    // reset all controllers
+    123
+    // all notes off
+  ]);
   tempo = 1;
   loop = false;
   playPromise;
@@ -7010,9 +7034,12 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     let loopStartSec = 0;
     let loopEndSec = audioBuffer.duration;
     if (wantsLoop) {
-      if (isRendered && renderedOrRaw.adsDuration != null) {
+      if (isRendered && renderedOrRaw.loopStart != null && renderedOrRaw.loopDuration != null && renderedOrRaw.loopDuration > 1e-9) {
         loopStartSec = renderedOrRaw.loopStart;
         loopEndSec = renderedOrRaw.loopStart + renderedOrRaw.loopDuration;
+      } else if (isRendered && renderedOrRaw.adsDuration != null) {
+        loopStartSec = renderedOrRaw.loopStart ?? 0;
+        loopEndSec = (renderedOrRaw.loopStart ?? 0) + (renderedOrRaw.loopDuration ?? 0);
       } else {
         const srcRate = audioBuffer.sampleRate || voiceParams.sampleRate || 1;
         loopStartSec = voiceParams.loopStart / srcRate;
@@ -7080,12 +7107,11 @@ var BasePlayer = class _BasePlayer extends EventTarget {
         onNoteOff?.(channel2, event, scheduleTime);
         break;
       case "controller":
-        channel2.setControlChange(
+        return channel2.setControlChange(
           event.controllerType,
           event.value,
           scheduleTime
         );
-        break;
       case "programChange":
         channel2.setProgramChange(event.programNumber);
         break;
@@ -7676,30 +7702,42 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     this.dispatchEvent(new Event("tempoChanged"));
   }
   /**
-   * Remove timeline events after the last noteOff (or other
-   * {@link totalTimeEventTypes}). Many SMFs leave a long empty gap before
-   * endOfTrack; keeping those events makes the player sit in silence until
-   * the padded end even though every note has already finished.
+   * True when a timeline event should count toward song end / survive
+   * {@link trimTrailingSilence}: noteOff, or a post-noteOff release controller
+   * (sustain/sostenuto up, all-sound/notes-off, reset-all-controllers).
+   */
+  isTotalTimeEvent(event) {
+    if (this.totalTimeEventTypes.has(event.type)) return true;
+    if (event.type === "controller") {
+      const cc = event.controllerType;
+      return cc != null && this.postNoteOffControllerTypes.has(cc);
+    }
+    return false;
+  }
+  /**
+   * Remove timeline events after the last noteOff / release controller.
+   * Many SMFs leave a long empty gap and non-release controllers before
+   * endOfTrack; keeping those makes the player sit in silence after every
+   * note has already finished. Sustain/sostenuto pedal-up after the last
+   * noteOff is preserved so held notes still release.
    */
   trimTrailingSilence() {
-    const types = this.totalTimeEventTypes;
     const timeline = this.timeline;
     let last = -1;
     for (let i = 0; i < timeline.length; i++) {
-      if (types.has(timeline[i].type)) last = i;
+      if (this.isTotalTimeEvent(timeline[i])) last = i;
     }
     if (last >= 0 && last < timeline.length - 1) {
       timeline.length = last + 1;
     }
   }
   calcTotalTime() {
-    const totalTimeEventTypes = this.totalTimeEventTypes;
     const timeline = this.timeline;
     const inverseTempo = 1 / this.tempo;
     let totalTime = 0;
     for (let i = 0; i < timeline.length; i++) {
       const event = timeline[i];
-      if (!totalTimeEventTypes.has(event.type)) continue;
+      if (!this.isTotalTimeEvent(event)) continue;
       const t2 = event.startTime * inverseTempo;
       if (totalTime < t2) totalTime = t2;
     }
@@ -8188,7 +8226,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
         } else {
           await this.setNoteAudioNode(channel2, layerNote, realtime);
           if (layerNote.ending) {
-            if (layerNote.bufferSource || layerNote.volumeNode) {
+            if (layerNote.bufferSource || layerNote.volumeNode || layerNote.workletVoiceId != null) {
               await this.soundOffNote(layerNote, this.audioContext.currentTime);
             }
           } else {
@@ -8461,19 +8499,39 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     }
     if (stack.length === 0) delete channel2.activeNotes[noteNumber];
   }
-  releaseSustainPedal(channel2, halfVelocity, scheduleTime) {
-    const velocity = halfVelocity * 2;
+  releaseSustainPedal(channel2, _halfVelocity, scheduleTime) {
     const promises = [];
+    const released = /* @__PURE__ */ new Set();
+    const forceRelease = (note) => {
+      if (!note || note.ending || released.has(note)) return;
+      released.add(note);
+      note.ending = true;
+      note.heldByPedal = false;
+      const stack = channel2.activeNotes[note.noteNumber];
+      if (stack) {
+        channel2.activeNotes[note.noteNumber] = stack.filter((n) => n !== note);
+        if (channel2.activeNotes[note.noteNumber].length === 0) {
+          delete channel2.activeNotes[note.noteNumber];
+        }
+      }
+      const p = Promise.resolve(note.ready).then(() => {
+        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
+        return this.releaseNote(channel2, note, scheduleTime);
+      });
+      promises.push(p);
+    };
     for (let i = 0; i < channel2.sustainNotes.length; i++) {
-      const promise = channel2.noteOff(
-        channel2.sustainNotes[i].noteNumber,
-        velocity,
-        scheduleTime,
-        true
-      );
-      promises.push(promise);
+      forceRelease(channel2.sustainNotes[i]);
     }
     channel2.sustainNotes = [];
+    for (let nn = 0; nn < 128; nn++) {
+      const stack = channel2.activeNotes[nn];
+      if (!stack) continue;
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
+        if (n && !n.ending && n.heldByPedal) forceRelease(n);
+      }
+    }
     return promises;
   }
   soundOffNote(note, scheduleTime) {
@@ -8658,10 +8716,32 @@ var BasePlayer = class _BasePlayer extends EventTarget {
     };
   }
   updateChannelVolume(channel2, scheduleTime) {
-    if (!channel2.gainL) return;
     const state = channel2.state;
     const abs = sf2VolumeExprGain(state.volumeMSB, state.expressionMSB);
     const gain = abs / DEFAULT_SF2_VOLUME_EXPR_GAIN;
+    const engine = this.workletEngine;
+    if (engine) {
+      const chPan = state.panMSB;
+      const stacks = channel2.activeNotes;
+      for (let i = 0; i < stacks.length; i++) {
+        const stack = stacks[i];
+        if (!stack) continue;
+        for (let j = 0; j < stack.length; j++) {
+          const note = stack[j];
+          const voiceId = note.workletVoiceId;
+          if (voiceId == null) continue;
+          const baseAtten = note.workletBaseAtten ?? 1;
+          const zonePan = note.workletZonePan ?? 0;
+          const voiceGain = Math.max(0, baseAtten * gain);
+          const pan = Math.max(
+            -1,
+            Math.min(1, zonePan * 2 + (chPan - 0.5) * 2)
+          );
+          engine.setVoiceParams(voiceId, { gain: voiceGain, pan });
+        }
+      }
+    }
+    if (!channel2.gainL) return;
     const { gainLeft, gainRight } = this.panToGain(state.panMSB);
     const timeConstant = this.perceptualSmoothingTime / 5;
     channel2.gainL.gain.cancelAndHoldAtTime(scheduleTime).setTargetAtTime(gain * gainLeft, scheduleTime, timeConstant);
@@ -8677,11 +8757,13 @@ var BasePlayer = class _BasePlayer extends EventTarget {
           case 2:
             break;
           default:
-            console.warn(`Unsupported Exclusive Message: ${data3}`);
+            if (this.debug) {
+              console.warn(`Unsupported Exclusive Message: ${data3}`);
+            }
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message: ${data3}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data3}`);
     }
   }
   GM1SystemOn(scheduleTime, channels2 = this.channels) {
@@ -8708,11 +8790,13 @@ var BasePlayer = class _BasePlayer extends EventTarget {
           case 1:
             return this.handleMasterVolumeSysEx(data3, scheduleTime);
           default:
-            console.warn(`Unsupported Exclusive Message: ${data3}`);
+            if (this.debug) {
+              console.warn(`Unsupported Exclusive Message: ${data3}`);
+            }
         }
         break;
       default:
-        console.warn(`Unsupported Exclusive Message: ${data3}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data3}`);
     }
   }
   fadeMasterVolumeTo(value, duration2, scheduleTime) {
@@ -8761,7 +8845,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       case 127:
         return this.handleUniversalRealTimeExclusiveMessage(data3, scheduleTime);
       default:
-        console.warn(`Unsupported Exclusive Message: ${data3}`);
+        if (this.debug) console.warn(`Unsupported Exclusive Message: ${data3}`);
     }
   }
   cancelScheduledTasks() {
@@ -8787,9 +8871,11 @@ var BasePlayer = class _BasePlayer extends EventTarget {
       }
       if (allDone) break;
       if (Date.now() > deadline) {
-        console.warn(
-          `${label}: timed out waiting for sources to end; forcing stop`
-        );
+        if (this.debug) {
+          console.warn(
+            `${label}: timed out waiting for sources to end; forcing stop`
+          );
+        }
         for (let i = 0; i < pending.length; i++) {
           const p = pending[i];
           if (p.source) {
@@ -9916,9 +10002,1910 @@ var MixPcmCache = class {
   }
 };
 
+// src/worklet-protocol.ts
+var MIDY_WORKLET_NAME = "midy-synth-processor";
+var WORKLET_MAX_VOICES = 1024;
+
+// src/worklet-processor.ts
+var MIDY_WORKLET_NAME2 = "midy-synth-processor";
+var WORKLET_MAX_VOICES2 = 1024;
+var WORKLET_PROCESSOR_SOURCE = `
+const MAX_VOICES = ${WORKLET_MAX_VOICES2};
+const NAME = ${JSON.stringify(MIDY_WORKLET_NAME2)};
+const TWO_PI = Math.PI * 2;
+const FULLY_OPEN_CENTS = 13500;
+// Update LFO / pitch scale / filter Fc every N samples (block-rate).
+// At 48kHz, N=8 \u2248 0.17ms \u2014 inaudible for LFO while cutting sin/pow cost ~8\xD7.
+// Block-rate for LFO / pitch / filter Fc. 16 \u2248 0.33ms @ 48kHz (still smooth).
+// Simple-path volume envelope uses a dedicated SUSTAIN fast path (majority of
+// polyphony time) and sample-accurate processing only for transient stages.
+const MOD_BLOCK = 32;
+const LN2_OVER_1200 = Math.LN2 / 1200;
+// Inaudible thresholds for simplePath (path selection only; actual depths kept).
+// Pitch < ~2 cents and vol LFO < ~0.1 dB are effectively silent.
+const PITCH_EPS_CENTS = 2;
+const VOL_LFO_EPS_CB = 1;
+
+class SampleEntry {
+  constructor(pcmL, pcmR, sampleRate, loopStart, loopEnd, loop) {
+    this.pcmL = pcmL;
+    this.pcmR = pcmR;
+    this.sampleRate = sampleRate;
+    this.loopStart = loopStart;
+    this.loopEnd = loopEnd;
+    this.loop = loop;
+    this.length = pcmL.length;
+  }
+}
+
+// Envelope stages (shared by vol + mod)
+const ENV_IDLE = 0;
+const ENV_DELAY = 1;
+const ENV_ATTACK = 2;
+const ENV_HOLD = 3;
+const ENV_DECAY = 4;
+const ENV_SUSTAIN = 5;
+const ENV_RELEASE = 6;
+const ENV_DONE = 7;
+
+// ---- LUTs (built once at module load; no per-voice alloc) ----
+// Absolute cents \u2192 Hz for filter Fc (SF2 range ~0..13500, pad to 14000).
+const CENT_HZ_MAX = 14000;
+const centToHzLut = new Float32Array(CENT_HZ_MAX + 1);
+for (let i = 0; i <= CENT_HZ_MAX; i++) {
+  centToHzLut[i] = 8.176 * Math.pow(2, i / 1200);
+}
+function centToHz(cents) {
+  if (!(cents > 0)) return centToHzLut[0];
+  if (cents >= CENT_HZ_MAX) return centToHzLut[CENT_HZ_MAX];
+  const i = cents | 0;
+  const f = cents - i;
+  const a = centToHzLut[i];
+  return a + (centToHzLut[i + 1] - a) * f;
+}
+
+// Pitch-mod ratio: 2^(cents/1200). Covers extreme SF2 depths with margin.
+const PITCH_RATIO_MIN = -4800;
+const PITCH_RATIO_MAX = 4800;
+const pitchRatioLut = new Float32Array(PITCH_RATIO_MAX - PITCH_RATIO_MIN + 1);
+for (let c = PITCH_RATIO_MIN; c <= PITCH_RATIO_MAX; c++) {
+  pitchRatioLut[c - PITCH_RATIO_MIN] = Math.pow(2, c / 1200);
+}
+function pitchRatioFromCents(cents) {
+  if (cents <= PITCH_RATIO_MIN) return pitchRatioLut[0];
+  if (cents >= PITCH_RATIO_MAX) {
+    return pitchRatioLut[PITCH_RATIO_MAX - PITCH_RATIO_MIN];
+  }
+  const x = cents - PITCH_RATIO_MIN;
+  const i = x | 0;
+  const f = x - i;
+  const a = pitchRatioLut[i];
+  return a + (pitchRatioLut[i + 1] - a) * f;
+}
+
+// Volume LFO: linear gain from centibels. SF2 modLfoToVolume is typically small.
+const CB_LIN_MIN = -200;
+const CB_LIN_MAX = 200;
+const cbToLinLut = new Float32Array(CB_LIN_MAX - CB_LIN_MIN + 1);
+const CB_TO_LN = Math.LN10 / 200;
+for (let cb = CB_LIN_MIN; cb <= CB_LIN_MAX; cb++) {
+  cbToLinLut[cb - CB_LIN_MIN] = Math.exp(cb * CB_TO_LN);
+}
+function cbToLin(cb) {
+  if (cb <= CB_LIN_MIN) return cbToLinLut[0];
+  if (cb >= CB_LIN_MAX) return cbToLinLut[CB_LIN_MAX - CB_LIN_MIN];
+  const x = cb - CB_LIN_MIN;
+  const i = x | 0;
+  const f = x - i;
+  const a = cbToLinLut[i];
+  return a + (cbToLinLut[i + 1] - a) * f;
+}
+
+function clampFc(hz, nyquist) {
+  if (hz < 20) return 20;
+  const max = nyquist * 0.99;
+  return hz > max ? max : hz;
+}
+
+// RBJ lowpass coefficients written into voice fields (no array alloc).
+function lowpassCoeffsInto(v, freq, q, sr) {
+  const w0 = TWO_PI * freq / sr;
+  const cosw = Math.cos(w0);
+  const sinw = Math.sin(w0);
+  const alpha = sinw / (2 * Math.max(0.001, q));
+  const b0 = (1 - cosw) * 0.5;
+  const b1 = 1 - cosw;
+  const a0 = 1 + alpha;
+  const invA0 = 1 / a0;
+  v.b0 = b0 * invA0;
+  v.b1 = b1 * invA0;
+  v.b2 = b0 * invA0;
+  v.a1 = (-2 * cosw) * invA0;
+  v.a2 = (1 - alpha) * invA0;
+}
+
+class Voice {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.active = false;
+    this.voiceId = -1;
+    this.sample = null;
+    this.phase = 0;
+    this.playbackRate = 1;
+    this.gain = 1;
+    this.panL = 0.7071;
+    this.panR = 0.7071;
+
+    // Volume envelope
+    this.envStage = ENV_IDLE;
+    this.envLevel = 0;
+    this.envTime = 0;
+    this.delay = 0;
+    this.attack = 0.001;
+    this.hold = 0;
+    this.decay = 0.01;
+    this.sustain = 1;
+    this.release = 0.05;
+    this.releasing = false;
+
+    // Mod envelope
+    this.modStage = ENV_IDLE;
+    this.modLevel = 0;
+    this.modTime = 0;
+    this.delayModEnv = 0;
+    this.attackModEnv = 0.001;
+    this.holdModEnv = 0;
+    this.decayModEnv = 0.01;
+    this.sustainModEnv = 0;
+    this.releaseModEnv = 0.05;
+    this.modEnvToPitch = 0;
+    this.modEnvToFilterFc = 0;
+
+    // Filter
+    this.filterFcCents = FULLY_OPEN_CENTS;
+    this.filterQ = 0.7071;
+    this.filterDcGain = 1;
+    this.filterEnabled = false;
+    this.z1L = 0; this.z2L = 0;
+    this.z1R = 0; this.z2R = 0;
+    this.b0 = 1; this.b1 = 0; this.b2 = 0;
+    this.a1 = 0; this.a2 = 0;
+    this.lastFc = -1;
+
+    // Mod LFO
+    this.modLfoPhase = 0;
+    this.modLfoDelay = 0;
+    this.modLfoFreq = 5;
+    this.modLfoToPitch = 0;
+    this.modLfoToFilterFc = 0;
+    this.modLfoToVolume = 0; // cB
+    this.modLfoAge = 0;
+
+    // Vib LFO
+    this.vibLfoPhase = 0;
+    this.vibLfoDelay = 0;
+    this.vibLfoFreq = 5;
+    this.vibLfoToPitch = 0;
+    this.vibLfoAge = 0;
+
+    this.startFrame = 0;
+    this.releaseFrame = -1; // absolute frame to enter release; -1 = none
+    this._relStart = undefined;
+    this._modRelStart = undefined;
+
+    // Hot-path caches (avoid alloc / recompute)
+    this.rateScale = 1;
+    this.volLfo = 1;
+    this.outL = 0;
+    this.outR = 0;
+    this.needsPitchMod = false;
+    this.needsVolLfo = false;
+    this.needsModEnv = false;
+    this.simplePath = false;
+    // NOTE: do NOT clear this.slot \u2014 permanent index in processor.voices[].
+    // activeIndex is managed by activate/deactivate, not reset().
+  }
+}
+
+class MidySynthProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.samples = new Map();
+    this.voices = new Array(MAX_VOICES);
+    this.activeSlots = [];
+    this.freeSlots = new Array(MAX_VOICES);
+    for (let i = 0; i < MAX_VOICES; i++) {
+      const v = new Voice();
+      v.slot = i;
+      v.activeIndex = -1;
+      this.voices[i] = v;
+      this.freeSlots[i] = i;
+    }
+    this.masterGain = 1;
+    // Soft polyphony cap from main (0 = unlimited \u2192 hard MAX_VOICES only).
+    // Caps activeSlots.length (peakActive); steal prefers future/releasing.
+    this.voiceLimit = 0;
+    this.voiceById = new Map();
+    this.debug = false;
+    this.statNoteOn = 0;
+    this.statNoteOff = 0;
+    this.statStop = 0;
+    this.statSteal = 0;
+    this.statMissing = 0;
+    this.statLoad = 0;
+    this.statEnded = 0;
+    this.statQuantums = 0;
+    this.statActiveSum = 0;
+    this.peakActive = 0;
+    this.statProcessMs = 0;
+    this.statProcessMaxMs = 0;
+    this.statProcessCount = 0;
+    this.statProcessOverruns = 0;
+    this.statSimpleVQ = 0;
+    this.statComplexVQ = 0;
+    // Spike diagnostics for the slowest process() quantum.
+    this.statProcessMaxActive = 0;
+    this.statProcessMaxMsgs = 0;
+    this.statProcessOverrunMaxMs = 0;
+    this.statMsgsQueued = 0;
+    // Coarse histogram for process cost (ms buckets): <1,1-2,2-3,3-5,5-10,>=10
+    this.statProcHist = new Uint32Array(6);
+    // AudioWorkletGlobalScope often lacks Performance API (Chrome/Firefox/Safari
+    // as of 2026; spec still landing). Fall back to Date.now() for coarse timing.
+    // See: https://github.com/WebAudio/web-audio-api/issues/2413
+    this._nowMs = null;
+    this.timerSource = "none";
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      try {
+        const t0 = performance.now();
+        if (typeof t0 === "number" && t0 === t0) {
+          this._nowMs = function () { return performance.now(); };
+          this.timerSource = "perf";
+        }
+      } catch (_) { /* ignore */ }
+    }
+    if (!this._nowMs && typeof Date !== "undefined" && typeof Date.now === "function") {
+      this._nowMs = function () { return Date.now(); };
+      this.timerSource = "date";
+    }
+    this.hasPerf = this.timerSource === "perf";
+    this.port.onmessage = (e) => this.onMessage(e.data);
+    // Probe timer once so main can see source immediately.
+    let probeMs = -1;
+    if (this._nowMs) {
+      try { probeMs = this._nowMs(); } catch (_) { probeMs = -1; }
+    }
+    this.port.postMessage({
+      type: "ready",
+      hasPerf: this.hasPerf ? 1 : 0,
+      timerSource: this.timerSource,
+      probeMs: probeMs,
+    });
+  }
+
+  activateVoice(v) {
+    if (v.activeIndex >= 0) return;
+    v.activeIndex = this.activeSlots.length;
+    this.activeSlots.push(v.slot);
+    if (this.activeSlots.length > this.peakActive) {
+      this.peakActive = this.activeSlots.length;
+    }
+  }
+
+  deactivateVoice(v) {
+    const i = v.activeIndex;
+    if (i < 0) return;
+    const slots = this.activeSlots;
+    const last = slots.length - 1;
+    const lastSlot = slots[last];
+    slots[i] = lastSlot;
+    this.voices[lastSlot].activeIndex = i;
+    slots.pop();
+    v.activeIndex = -1;
+  }
+
+  dbg(message) {
+    if (!this.debug) return;
+    if (message.indexOf("loadSample ") === 0) return;
+    try {
+      this.port.postMessage({ type: "debug", message: message });
+    } catch (_) { /* ignore */ }
+  }
+
+  /** Snapshot for main (no console). Called on requestStats / setDebug. */
+  postStats() {
+    try {
+      const quantums = this.statQuantums || 1;
+      const processCount = this.statProcessCount || 0;
+      const avgProcMs = processCount > 0
+        ? this.statProcessMs / processCount
+        : 0;
+      // Quantum wall budget \u2248 128 / sampleRate * 1000 ms (typical render quantum).
+      const quantumMs = (typeof sampleRate === "number" && sampleRate > 0)
+        ? (128 / sampleRate) * 1000
+        : 2.6667;
+      const cpuPct = processCount > 0 && quantumMs > 0
+        ? (avgProcMs / quantumMs) * 100
+        : 0;
+      this.port.postMessage({
+        type: "stats",
+        active: this.activeSlots.length,
+        peakActive: this.peakActive,
+        samples: this.samples.size,
+        noteOn: this.statNoteOn,
+        noteOff: this.statNoteOff,
+        stop: this.statStop,
+        steal: this.statSteal,
+        missingSample: this.statMissing,
+        loadSample: this.statLoad,
+        ended: this.statEnded,
+        quantums: this.statQuantums,
+        activeSum: this.statActiveSum,
+        processMs: this.statProcessMs,
+        processMaxMs: this.statProcessMaxMs,
+        processCount: this.statProcessCount,
+        processAvgMs: avgProcMs,
+        processOverruns: this.statProcessOverruns,
+        quantumMs: quantumMs,
+        cpuPct: cpuPct,
+        simpleVQ: this.statSimpleVQ,
+        complexVQ: this.statComplexVQ,
+        hasPerf: this.hasPerf ? 1 : 0,
+        timerSource: this.timerSource,
+        processMaxActive: this.statProcessMaxActive,
+        processMaxMsgs: this.statProcessMaxMsgs,
+        processOverrunMaxMs: this.statProcessOverrunMaxMs,
+        procHist0: this.statProcHist[0],
+        procHist1: this.statProcHist[1],
+        procHist2: this.statProcHist[2],
+        procHist3: this.statProcHist[3],
+        procHist4: this.statProcHist[4],
+        procHist5: this.statProcHist[5],
+      });
+    } catch (_) { /* ignore */ }
+  }
+
+  onMessage(msg) {
+    if (!msg || typeof msg.type !== "string") return;
+    this.statMsgsQueued++;
+    switch (msg.type) {
+      case "loadSample": {
+        const pcmL = msg.pcmL;
+        const len = pcmL ? pcmL.length : 0;
+        this.samples.set(msg.sampleId, new SampleEntry(
+          pcmL,
+          msg.pcmR || null,
+          msg.sampleRate,
+          msg.loopStart | 0,
+          msg.loopEnd | 0,
+          !!msg.loop,
+        ));
+        this.statLoad++;
+        this.dbg(
+          "loadSample id=" + msg.sampleId + " len=" + len +
+            " sr=" + msg.sampleRate + " totalSamples=" + this.samples.size,
+        );
+        break;
+      }
+      case "noteOn":
+        this.handleNoteOn(msg);
+        break;
+      case "noteOff":
+        this.statNoteOff++;
+        this.handleNoteOff(msg);
+        break;
+      case "stop":
+        this.statStop++;
+        this.stopVoice(msg.voiceId);
+        break;
+      case "allSoundOff":
+        for (let i = 0; i < this.activeSlots.length; i++) {
+          this.voices[this.activeSlots[i]].reset();
+          this.voices[this.activeSlots[i]].activeIndex = -1;
+        }
+        this.activeSlots.length = 0;
+        this.freeSlots.length = 0;
+        for (let i = 0; i < MAX_VOICES; i++) this.freeSlots.push(i);
+        this.voiceById.clear();
+        this.dbg("allSoundOff");
+        break;
+      case "setMasterGain":
+        this.masterGain = Math.max(0, Math.min(2, +msg.value || 0));
+        break;
+      case "setVoiceLimit": {
+        // 0 or invalid \u2192 unlimited (processor hard ceiling only).
+        const n = msg.value | 0;
+        this.voiceLimit = n > 0 ? Math.min(n, MAX_VOICES) : 0;
+        this.dbg("setVoiceLimit " + this.voiceLimit);
+        break;
+      }
+      case "setVoiceParams":
+        this.handleSetVoiceParams(msg);
+        break;
+      case "setDebug":
+        this.debug = !!msg.enabled;
+        this.dbg("setDebug " + this.debug);
+        break;
+      case "requestStats":
+        this.postStats();
+        break;
+    }
+  }
+
+  handleSetVoiceParams(msg) {
+    const v = this.voiceById.get(msg.voiceId | 0);
+    if (!v || !v.active) return;
+    if (msg.gain != null) v.gain = Math.max(0, +msg.gain);
+    if (msg.pan != null) {
+      const pan = Math.max(-1, Math.min(1, +msg.pan));
+      const angle = (pan + 1) * 0.25 * Math.PI;
+      v.panL = Math.cos(angle);
+      v.panR = Math.sin(angle);
+    }
+    if (msg.playbackRate != null) {
+      v.playbackRate = Math.max(1e-6, +msg.playbackRate);
+    }
+  }
+
+  /**
+   * Allocate a processor slot. Artistic polyphony is enforced on main (note
+   * groups, same as other modes). Here only the hard ceiling applies
+   * (MAX_VOICES / optional voiceLimit). Prefer future & releasing steals.
+   */
+  findFreeVoice(_newStartFrame) {
+    const cap = this.voiceLimit > 0 ? this.voiceLimit : MAX_VOICES;
+    if (this.activeSlots.length < cap && this.freeSlots.length > 0) {
+      return this.voices[this.freeSlots.pop()];
+    }
+
+    const slots = this.activeSlots;
+    const now = currentFrame;
+    if (slots.length === 0) {
+      if (this.freeSlots.length > 0) {
+        return this.voices[this.freeSlots.pop()];
+      }
+      return null;
+    }
+
+    let best = this.voices[slots[0]];
+    let bestScore = Infinity;
+    for (let i = 0; i < slots.length; i++) {
+      const v = this.voices[slots[i]];
+      let score;
+      if (!v.active || !v.sample) {
+        score = 0.0001;
+      } else if (v.startFrame > now) {
+        score = 0.001 + (v.startFrame - now) * 1e-9;
+      } else if (v.releasing) {
+        score = 0.25 + v.envLevel * 0.25 + v.startFrame * 1e-12;
+      } else {
+        score = 1 + v.envLevel + v.startFrame * 1e-12;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = v;
+      }
+    }
+
+    const stolenId = best.voiceId;
+    this.statSteal++;
+    if (stolenId >= 0) {
+      this.voiceById.delete(stolenId);
+      try {
+        this.port.postMessage({ type: "voiceEnded", voiceId: stolenId });
+      } catch (_) { /* ignore */ }
+    }
+    const keptIndex = best.activeIndex;
+    best.reset();
+    best.activeIndex = keptIndex;
+    return best;
+  }
+
+  handleNoteOn(msg) {
+    this.statNoteOn++;
+    const sample = this.samples.get(msg.sampleId);
+    if (!sample) {
+      this.statMissing++;
+      this.dbg(
+        "MISSING sampleId=" + msg.sampleId +
+          " voiceId=" + (msg.voiceId | 0) +
+          " samples=" + this.samples.size +
+          " missingTotal=" + this.statMissing,
+      );
+      return;
+    }
+
+    const existing = this.voiceById.get(msg.voiceId);
+    if (existing) {
+      existing.reset();
+      this.voiceById.delete(msg.voiceId);
+    }
+
+    // Resolve start frame before alloc (soft cap + lookAhead-safe steal).
+    const when0 = +msg.when || currentTime;
+    const startFrame0 = Math.max(currentFrame, Math.floor(when0 * sampleRate));
+    const v = this.findFreeVoice(startFrame0);
+    if (!v) {
+      // Soft cap full and only live victims \u2014 refuse lookAhead overbook.
+      return;
+    }
+    v.active = true;
+    v.voiceId = msg.voiceId | 0;
+    v.sample = sample;
+    v.phase = 0;
+    v.playbackRate = Math.max(1e-6, +msg.playbackRate || 1);
+    v.gain = Math.max(0, +msg.gain || 0);
+    const pan = Math.max(-1, Math.min(1, +msg.pan || 0));
+    const angle = (pan + 1) * 0.25 * Math.PI;
+    v.panL = Math.cos(angle);
+    v.panR = Math.sin(angle);
+
+    // Vol env
+    v.delay = Math.max(0, +msg.delay || 0);
+    v.attack = Math.max(1e-4, +msg.attack || 1e-4);
+    v.hold = Math.max(0, +msg.hold || 0);
+    v.decay = Math.max(1e-4, +msg.decay || 1e-4);
+    v.sustain = Math.max(0, Math.min(1, +msg.sustain || 0));
+    v.release = Math.max(1e-4, +msg.release || 0.05);
+    v.envStage = ENV_DELAY;
+    v.envLevel = 0;
+    v.envTime = 0;
+    v.releasing = false;
+    v.releaseFrame = -1;
+
+    // Filter
+    v.filterFcCents = msg.filterFcCents != null ? +msg.filterFcCents : FULLY_OPEN_CENTS;
+    v.filterQ = Math.max(0.001, +msg.filterQ || 0.7071);
+    v.filterDcGain = msg.filterDcGain != null ? +msg.filterDcGain : 1;
+    v.modEnvToFilterFc = +msg.modEnvToFilterFc || 0;
+    v.modLfoToFilterFc = +msg.modLfoToFilterFc || 0;
+    // Skip filter when effectively transparent:
+    //  1) SF2 fully-open sentinel (13500\xA2) with no downward mod, or
+    //  2) lowest reachable Fc still \u2265 ~0.95 * nyquist (inaudible roll-off).
+    // modEnv \u2208 [0,1], modLfo \u2208 [-1,1].
+    {
+      const lowestCents =
+        v.filterFcCents +
+        Math.min(0, v.modEnvToFilterFc) -
+        Math.abs(v.modLfoToFilterFc);
+      const lowestHz = centToHz(lowestCents);
+      const nyq = sampleRate * 0.5;
+      // Keep original sentinel so 13500\xA2 / no-mod stays simplePath.
+      // Hz gate catches "almost open" (e.g. 13400\xA2) that the sentinel misses.
+      v.filterEnabled =
+        lowestCents < FULLY_OPEN_CENTS - 1 &&
+        lowestHz < nyq * 0.95;
+    }
+    v.z1L = v.z2L = v.z1R = v.z2R = 0;
+    v.lastFc = -1;
+
+    // Mod env
+    v.delayModEnv = Math.max(0, +msg.delayModEnv || 0);
+    v.attackModEnv = Math.max(1e-4, +msg.attackModEnv || 1e-4);
+    v.holdModEnv = Math.max(0, +msg.holdModEnv || 0);
+    v.decayModEnv = Math.max(1e-4, +msg.decayModEnv || 1e-4);
+    // sustainModEnv here is the linear sustain level of the envelope (0=full, SF2 sustain is inverted)
+    v.sustainModEnv = Math.max(0, Math.min(1, +msg.sustainModEnv || 0));
+    v.releaseModEnv = Math.max(1e-4, +msg.releaseModEnv || 0.05);
+    v.modEnvToPitch = +msg.modEnvToPitch || 0;
+    v.modStage = ENV_DELAY;
+    v.modLevel = 0;
+    v.modTime = 0;
+
+    // Mod LFO
+    v.modLfoDelay = Math.max(0, +msg.delayModLFO || 0);
+    v.modLfoFreq = Math.max(0, +msg.freqModLFO || 0);
+    v.modLfoToPitch = +msg.modLfoToPitch || 0;
+    v.modLfoToVolume = +msg.modLfoToVolume || 0;
+    v.modLfoPhase = 0;
+    v.modLfoAge = 0;
+
+    // Vib LFO
+    v.vibLfoDelay = Math.max(0, +msg.delayVibLFO || 0);
+    v.vibLfoFreq = Math.max(0, +msg.freqVibLFO || 0);
+    v.vibLfoToPitch = +msg.vibLfoToPitch || 0;
+    v.vibLfoPhase = 0;
+    v.vibLfoAge = 0;
+
+    v.startFrame = startFrame0;
+    // Feature flags: skip sin/pow/modEnv work when depths are inaudible
+    // or LFO freq is zero (cannot modulate). Thresholds allow more voices
+    // onto simplePath without audible change.
+    const modLfoLive = v.modLfoFreq > 0;
+    const vibLfoLive = v.vibLfoFreq > 0;
+    v.needsPitchMod =
+      Math.abs(v.modEnvToPitch) >= PITCH_EPS_CENTS ||
+      (modLfoLive && Math.abs(v.modLfoToPitch) >= PITCH_EPS_CENTS) ||
+      (vibLfoLive && Math.abs(v.vibLfoToPitch) >= PITCH_EPS_CENTS);
+    v.needsVolLfo =
+      modLfoLive && Math.abs(v.modLfoToVolume) >= VOL_LFO_EPS_CB;
+    // needsModEnv only if pitch-mod or filter actually consumes it.
+    v.needsModEnv = v.needsPitchMod || v.filterEnabled;
+    // Fast path: no filter / LFO / mod-env work in the sample loop.
+    v.simplePath =
+      !v.filterEnabled && !v.needsPitchMod && !v.needsVolLfo && !v.needsModEnv;
+    v.rateScale = v.playbackRate * (sample.sampleRate / sampleRate);
+    v.volLfo = 1;
+    this.voiceById.set(v.voiceId, v);
+    this.activateVoice(v);
+  }
+
+  handleNoteOff(msg) {
+    const v = this.voiceById.get(msg.voiceId | 0);
+    if (!v || !v.active || v.releasing) return;
+    if (msg.release != null) v.release = Math.max(1e-4, +msg.release);
+    const when = +msg.when;
+    // Defer release until absolute context time "when" (AudioContext seconds).
+    // Early noteOff messages (lookAhead) must not cut the attack.
+    if (Number.isFinite(when) && when > 0) {
+      v.releaseFrame = Math.max(v.startFrame, Math.floor(when * sampleRate));
+    } else {
+      v.releasing = true;
+      v.envStage = ENV_RELEASE;
+      v.envTime = 0;
+      if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+        v.modStage = ENV_RELEASE;
+        v.modTime = 0;
+      }
+    }
+  }
+
+  releaseSlot(v) {
+    this.deactivateVoice(v);
+    this.freeSlots.push(v.slot);
+    v.reset();
+  }
+
+  stopVoice(voiceId) {
+    const v = this.voiceById.get(voiceId | 0);
+    if (!v) return;
+    this.voiceById.delete(voiceId | 0);
+    if (v.active || v.activeIndex >= 0) this.releaseSlot(v);
+  }
+
+  // Advance a generic AHDSR; mutates stage/time/level. Returns current level.
+  advanceEnv(stageRef, timeRef, levelRef, delay, attack, hold, decay, sustain, release, dt, releasing) {
+    // We mutate via object to keep JS simple inside the string
+  }
+
+  // Sample-accurate volume envelope (used by complex path and release edges).
+  processVolEnv(v, dt) {
+    switch (v.envStage) {
+      case ENV_DELAY:
+        v.envTime += dt;
+        if (v.envTime >= v.delay) {
+          v.envStage = ENV_ATTACK;
+          v.envTime = 0;
+          v.envLevel = 0;
+        } else {
+          v.envLevel = 0;
+        }
+        break;
+      case ENV_ATTACK: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.attack);
+        v.envLevel = t;
+        if (v.envTime >= v.attack) {
+          v.envStage = ENV_HOLD;
+          v.envTime = 0;
+          v.envLevel = 1;
+        }
+        break;
+      }
+      case ENV_HOLD:
+        v.envTime += dt;
+        v.envLevel = 1;
+        if (v.envTime >= v.hold) {
+          v.envStage = ENV_DECAY;
+          v.envTime = 0;
+        }
+        break;
+      case ENV_DECAY: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.decay);
+        v.envLevel = 1 + (v.sustain - 1) * t;
+        if (v.envTime >= v.decay) {
+          v.envStage = ENV_SUSTAIN;
+          v.envLevel = v.sustain;
+        }
+        break;
+      }
+      case ENV_SUSTAIN:
+        v.envLevel = v.sustain;
+        break;
+      case ENV_RELEASE: {
+        v.envTime += dt;
+        const startLevel = v._relStart != null ? v._relStart : (v._relStart = v.envLevel || 1e-6);
+        const t = Math.min(1, v.envTime / v.release);
+        v.envLevel = startLevel * (1 - t);
+        if (v.envTime >= v.release || v.envLevel < 1e-5) {
+          v.envStage = ENV_DONE;
+          v.envLevel = 0;
+        }
+        break;
+      }
+      case ENV_DONE:
+        v.envLevel = 0;
+        break;
+    }
+    return v.envLevel;
+  }
+
+  // Block-rate volume envelope for simple path (MOD_BLOCK samples at a time).
+  // Linear stages are advanced in one step; SUSTAIN is free.
+  processVolEnvBlock(v, dt) {
+    switch (v.envStage) {
+      case ENV_DELAY:
+        v.envTime += dt;
+        if (v.envTime >= v.delay) {
+          const over = v.envTime - v.delay;
+          v.envStage = ENV_ATTACK;
+          v.envTime = over;
+          const t = Math.min(1, v.envTime / v.attack);
+          v.envLevel = t;
+          if (v.envTime >= v.attack) {
+            v.envStage = ENV_HOLD;
+            v.envTime = 0;
+            v.envLevel = 1;
+          }
+        } else {
+          v.envLevel = 0;
+        }
+        break;
+      case ENV_ATTACK: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.attack);
+        v.envLevel = t;
+        if (v.envTime >= v.attack) {
+          v.envStage = ENV_HOLD;
+          v.envTime = 0;
+          v.envLevel = 1;
+        }
+        break;
+      }
+      case ENV_HOLD:
+        v.envTime += dt;
+        v.envLevel = 1;
+        if (v.envTime >= v.hold) {
+          v.envStage = ENV_DECAY;
+          v.envTime = 0;
+        }
+        break;
+      case ENV_DECAY: {
+        v.envTime += dt;
+        const t = Math.min(1, v.envTime / v.decay);
+        v.envLevel = 1 + (v.sustain - 1) * t;
+        if (v.envTime >= v.decay) {
+          v.envStage = ENV_SUSTAIN;
+          v.envLevel = v.sustain;
+        }
+        break;
+      }
+      case ENV_SUSTAIN:
+        v.envLevel = v.sustain;
+        break;
+      case ENV_RELEASE: {
+        v.envTime += dt;
+        const startLevel = v._relStart != null ? v._relStart : (v._relStart = v.envLevel || 1e-6);
+        const t = Math.min(1, v.envTime / v.release);
+        v.envLevel = startLevel * (1 - t);
+        if (v.envTime >= v.release || v.envLevel < 1e-5) {
+          v.envStage = ENV_DONE;
+          v.envLevel = 0;
+        }
+        break;
+      }
+      case ENV_DONE:
+        v.envLevel = 0;
+        break;
+    }
+    return v.envLevel;
+  }
+
+  processModEnv(v, dt) {
+    switch (v.modStage) {
+      case ENV_DELAY:
+        v.modTime += dt;
+        if (v.modTime >= v.delayModEnv) {
+          v.modStage = ENV_ATTACK;
+          v.modTime = 0;
+          v.modLevel = 0;
+        } else {
+          v.modLevel = 0;
+        }
+        break;
+      case ENV_ATTACK: {
+        v.modTime += dt;
+        const t = Math.min(1, v.modTime / v.attackModEnv);
+        v.modLevel = t;
+        if (v.modTime >= v.attackModEnv) {
+          v.modStage = ENV_HOLD;
+          v.modTime = 0;
+          v.modLevel = 1;
+        }
+        break;
+      }
+      case ENV_HOLD:
+        v.modTime += dt;
+        v.modLevel = 1;
+        if (v.modTime >= v.holdModEnv) {
+          v.modStage = ENV_DECAY;
+          v.modTime = 0;
+        }
+        break;
+      case ENV_DECAY: {
+        v.modTime += dt;
+        const t = Math.min(1, v.modTime / v.decayModEnv);
+        // sustainModEnv is already the target level (0\u20131)
+        v.modLevel = 1 + (v.sustainModEnv - 1) * t;
+        if (v.modTime >= v.decayModEnv) {
+          v.modStage = ENV_SUSTAIN;
+          v.modLevel = v.sustainModEnv;
+        }
+        break;
+      }
+      case ENV_SUSTAIN:
+        v.modLevel = v.sustainModEnv;
+        break;
+      case ENV_RELEASE: {
+        v.modTime += dt;
+        const startLevel = v._modRelStart != null ? v._modRelStart : (v._modRelStart = v.modLevel || 0);
+        const t = Math.min(1, v.modTime / v.releaseModEnv);
+        v.modLevel = startLevel * (1 - t);
+        if (v.modTime >= v.releaseModEnv) {
+          v.modStage = ENV_DONE;
+          v.modLevel = 0;
+        }
+        break;
+      }
+      case ENV_DONE:
+        v.modLevel = 0;
+        break;
+    }
+    return v.modLevel;
+  }
+
+  // Read interpolated sample into v.outL/v.outR. Returns new phase, or -1 if ended.
+  readSampleInto(v, sample, p) {
+    const len = sample.length;
+    if (sample.loop) {
+      const ls = sample.loopStart;
+      const le = sample.loopEnd;
+      if (p >= le) {
+        const loopLen = le - ls;
+        if (loopLen <= 0) return -1;
+        // Prefer subtract loop for typical small overshoots (faster than %).
+        p = ls + (p - ls);
+        while (p >= le) p -= loopLen;
+      }
+    } else if (p >= len - 1) {
+      return -1;
+    }
+    const i0 = p | 0;
+    const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+    const frac = p - i0;
+    const l0 = sample.pcmL[i0];
+    const l1 = sample.pcmL[i1];
+    v.outL = l0 + (l1 - l0) * frac;
+    if (sample.pcmR) {
+      const r0 = sample.pcmR[i0];
+      const r1 = sample.pcmR[i1];
+      v.outR = r0 + (r1 - r0) * frac;
+    } else {
+      v.outR = v.outL;
+    }
+    return p;
+  }
+
+  updateFilter(v, fcHz, sr) {
+    // Recompute coeffs only when Fc moves enough
+    if (Math.abs(fcHz - v.lastFc) < 0.5) return;
+    v.lastFc = fcHz;
+    lowpassCoeffsInto(v, fcHz, v.filterQ, sr);
+  }
+
+  // Transposed Direct Form II; mutates v.outL/v.outR in place.
+  processFilterInPlace(v) {
+    const xL = v.outL;
+    const yL = v.b0 * xL + v.z1L;
+    v.z1L = v.b1 * xL - v.a1 * yL + v.z2L;
+    v.z2L = v.b2 * xL - v.a2 * yL;
+
+    const xR = v.outR;
+    const yR = v.b0 * xR + v.z1R;
+    v.z1R = v.b1 * xR - v.a1 * yR + v.z2R;
+    v.z2R = v.b2 * xR - v.a2 * yR;
+
+    const g = v.filterDcGain;
+    v.outL = yL * g;
+    v.outR = yR * g;
+  }
+
+  process(_inputs, outputs) {
+    const output = outputs[0];
+    if (!output || output.length === 0) return true;
+    const outL = output[0];
+    const outR = output.length > 1 ? output[1] : output[0];
+    const n = outL.length;
+    const sr = sampleRate;
+    const invSr = 1 / sr;
+    const nyquist = sr * 0.5;
+    const mg = this.masterGain;
+    const frame0 = currentFrame;
+    const blockDt = invSr * MOD_BLOCK;
+    const voices = this.voices;
+    const activeSlots = this.activeSlots;
+
+    this.statQuantums++;
+    this.statActiveSum += activeSlots.length;
+    const msgsThis = this.statMsgsQueued;
+    this.statMsgsQueued = 0;
+    const activeN = activeSlots.length;
+    const nowFn = this._nowMs;
+    const tProc0 = nowFn ? nowFn() : 0;
+
+    for (let i = 0; i < n; i++) {
+      outL[i] = 0;
+      outR[i] = 0;
+    }
+
+    for (let ai = activeSlots.length - 1; ai >= 0; ai--) {
+      const v = voices[activeSlots[ai]];
+      if (!v.active || !v.sample) {
+        this.releaseSlot(v);
+        continue;
+      }
+
+      const sample = v.sample;
+      const baseRate = v.playbackRate * (sample.sampleRate / sr);
+      let ended = false;
+
+      // -------- Simple path: vol env (block-rate) + sample + pan only --------
+      if (v.simplePath) {
+        this.statSimpleVQ++;
+        v.rateScale = baseRate > 0 ? baseRate : 1;
+        const rate = v.rateScale;
+        const gPanL = v.gain * v.panL * mg;
+        const gPanR = v.gain * v.panR * mg;
+        const pcmL = sample.pcmL;
+        const pcmR = sample.pcmR;
+        const len = sample.length;
+        const loop = sample.loop;
+        const ls = sample.loopStart;
+        const le = sample.loopEnd;
+        const loopLen = loop ? (le - ls) : 0;
+        let phase = v.phase;
+
+        // Skip leading silence before note start (within this quantum).
+        let iStart = 0;
+        if (frame0 < v.startFrame) {
+          iStart = v.startFrame - frame0;
+          if (iStart >= n) {
+            // Entire quantum is before start; leave phase unchanged.
+            continue;
+          }
+        }
+
+        // Fast path when already in SUSTAIN and no pending release in this block.
+        const sustainOnly = v.envStage === ENV_SUSTAIN &&
+          (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
+
+        if (sustainOnly) {
+          const env = v.sustain;
+          const amp = env * gPanL;
+          const ampR = env * gPanR;
+          if (amp === amp) {
+            for (let i = iStart; i < n; i++) {
+              let p = phase;
+              if (loop) {
+                if (p >= le) {
+                  if (loopLen <= 0) { ended = true; break; }
+                  // Prefer subtract over % for typical small overshoots.
+                  p = ls + (p - ls);
+                  while (p >= le) p -= loopLen;
+                }
+              } else if (p >= len - 1) {
+                ended = true;
+                break;
+              }
+              const i0 = p | 0;
+              const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+              const frac = p - i0;
+              const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              const sR = pcmR
+                ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+                : sL;
+              phase = p + rate;
+              outL[i] += sL * amp;
+              outR[i] += sR * ampR;
+            }
+          }
+        } else {
+          // General simple path.
+          // - SUSTAIN / HOLD: constant (or rare block advance)
+          // - DELAY / ATTACK / DECAY / RELEASE: sample-accurate for correct shape
+          // Most polyphony time is spent in the dedicated sustainOnly path above.
+          let env = v.envLevel;
+          for (let i = iStart; i < n; i++) {
+            const absFrame = frame0 + i;
+            if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+              v.releasing = true;
+              v.envStage = ENV_RELEASE;
+              v.envTime = 0;
+              v._relStart = undefined;
+            }
+            const stage = v.envStage;
+            if (stage === ENV_SUSTAIN) {
+              env = v.sustain;
+            } else if (stage === ENV_HOLD) {
+              env = 1;
+              // still advance time so we leave HOLD correctly
+              if ((i & (MOD_BLOCK - 1)) === 0) {
+                this.processVolEnvBlock(v, blockDt);
+                env = v.envLevel;
+              }
+            } else {
+              // Transient stages: sample-accurate
+              env = this.processVolEnv(v, invSr);
+            }
+            if (v.envStage === ENV_DONE) {
+              ended = true;
+              break;
+            }
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
+              ended = true;
+              break;
+            }
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+            const sR = pcmR
+              ? pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac
+              : sL;
+            phase = p + rate;
+            const amp = env * gPanL;
+            const ampR = env * gPanR;
+            if (amp === amp) {
+              outL[i] += sL * amp;
+              outR[i] += sR * ampR;
+            }
+          }
+        }
+        v.phase = phase;
+      } else {
+        // -------- Full path: split filter-on / filter-off loops --------
+        this.statComplexVQ++;
+        let modEnv = v.modLevel;
+        let modLfo = 0;
+        let vibLfo = 0;
+
+        const cxSustainOnly = v.envStage === ENV_SUSTAIN &&
+          (v.releaseFrame < 0 || v.releaseFrame >= frame0 + n);
+        const envSustain = v.sustain;
+
+        let iStartCx = 0;
+        if (frame0 < v.startFrame) {
+          iStartCx = v.startFrame - frame0;
+          if (iStartCx >= n) {
+            continue;
+          }
+        }
+
+        const pcmL = sample.pcmL;
+        const pcmR = sample.pcmR;
+        const isStereo = !!pcmR;
+        const len = sample.length;
+        const loop = sample.loop;
+        const ls = sample.loopStart;
+        const le = sample.loopEnd;
+        const loopLen = loop ? (le - ls) : 0;
+        let phase = v.phase;
+        const basePanL = v.gain * v.panL * mg;
+        const basePanR = v.gain * v.panR * mg;
+        const filtOn = v.filterEnabled;
+        let rate = v.rateScale > 0 ? v.rateScale : (baseRate > 0 ? baseRate : 1);
+        let volLfo = v.volLfo;
+
+        // Shared: advance vol-env for one sample (or sustain constant).
+        // Inlined in both loops below to keep them monomorphic.
+
+        if (!filtOn) {
+          // ---- Almost-simple: pitch / vol LFO only, no filter ----
+          for (let i = iStartCx; i < n; i++) {
+            const absFrame = frame0 + i;
+            let env;
+            if (cxSustainOnly) {
+              env = envSustain;
+            } else {
+              if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+                v.releasing = true;
+                v.envStage = ENV_RELEASE;
+                v.envTime = 0;
+                v._relStart = undefined;
+                if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+                  v.modStage = ENV_RELEASE;
+                  v.modTime = 0;
+                  v._modRelStart = undefined;
+                }
+              }
+              if (v.envStage === ENV_SUSTAIN) {
+                env = v.sustain;
+              } else if (v.envStage === ENV_HOLD) {
+                env = 1;
+                if ((i & (MOD_BLOCK - 1)) === 0) {
+                  this.processVolEnv(v, blockDt);
+                  env = v.envLevel;
+                }
+              } else {
+                env = this.processVolEnv(v, invSr);
+              }
+              if (v.envStage === ENV_DONE) {
+                ended = true;
+                break;
+              }
+            }
+
+            if ((i & (MOD_BLOCK - 1)) === 0) {
+              if (v.needsModEnv) {
+                modEnv = this.processModEnv(v, blockDt);
+                if (modEnv !== modEnv) modEnv = 0;
+              } else {
+                modEnv = 0;
+              }
+              v.modLfoAge += blockDt;
+              v.vibLfoAge += blockDt;
+              modLfo = 0;
+              if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0 &&
+                (v.needsPitchMod || v.needsVolLfo)) {
+                modLfo = Math.sin(v.modLfoPhase);
+                v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
+                if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+              }
+              vibLfo = 0;
+              if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
+                v.vibLfoToPitch !== 0) {
+                vibLfo = Math.sin(v.vibLfoPhase);
+                v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
+                if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+              }
+              if (v.needsPitchMod) {
+                const pitchCents =
+                  modEnv * v.modEnvToPitch +
+                  modLfo * v.modLfoToPitch +
+                  vibLfo * v.vibLfoToPitch;
+                let rs = pitchCents !== 0
+                  ? baseRate * pitchRatioFromCents(pitchCents)
+                  : baseRate;
+                if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+                rate = rs;
+                v.rateScale = rs;
+              } else {
+                rate = baseRate > 0 ? baseRate : 1;
+                v.rateScale = rate;
+              }
+              if (v.needsVolLfo && modLfo !== 0) {
+                const cb = modLfo * v.modLfoToVolume;
+                const vl = cbToLin(cb);
+                volLfo = (vl === vl && vl > 0) ? vl : 1;
+                v.volLfo = volLfo;
+              } else {
+                volLfo = 1;
+                v.volLfo = 1;
+              }
+            }
+
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
+              ended = true;
+              break;
+            }
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            phase = p + rate;
+            const aL = env * volLfo * basePanL;
+            const aR = env * volLfo * basePanR;
+            if (!(aL === aL)) continue;
+            if (isStereo) {
+              const sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              const sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
+              outL[i] += sL * aL;
+              outR[i] += sR * aR;
+            } else {
+              const s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              outL[i] += s * aL;
+              outR[i] += s * aR;
+            }
+          }
+          v.phase = phase;
+        } else {
+          // ---- Filter path: mono/stereo DF2 ----
+          const filtGain = v.filterDcGain;
+          let z1L = v.z1L, z2L = v.z2L, z1R = v.z1R, z2R = v.z2R;
+          let b0 = v.b0, b1 = v.b1, b2 = v.b2, a1 = v.a1, a2 = v.a2;
+
+          for (let i = iStartCx; i < n; i++) {
+            const absFrame = frame0 + i;
+            let env;
+            if (cxSustainOnly) {
+              env = envSustain;
+            } else {
+              if (!v.releasing && v.releaseFrame >= 0 && absFrame >= v.releaseFrame) {
+                v.releasing = true;
+                v.envStage = ENV_RELEASE;
+                v.envTime = 0;
+                v._relStart = undefined;
+                if (v.modStage !== ENV_DONE && v.modStage !== ENV_IDLE) {
+                  v.modStage = ENV_RELEASE;
+                  v.modTime = 0;
+                  v._modRelStart = undefined;
+                }
+              }
+              if (v.envStage === ENV_SUSTAIN) {
+                env = v.sustain;
+              } else if (v.envStage === ENV_HOLD) {
+                env = 1;
+                if ((i & (MOD_BLOCK - 1)) === 0) {
+                  this.processVolEnv(v, blockDt);
+                  env = v.envLevel;
+                }
+              } else {
+                env = this.processVolEnv(v, invSr);
+              }
+              if (v.envStage === ENV_DONE) {
+                ended = true;
+                break;
+              }
+            }
+
+            if ((i & (MOD_BLOCK - 1)) === 0) {
+              if (v.needsModEnv) {
+                modEnv = this.processModEnv(v, blockDt);
+                if (modEnv !== modEnv) modEnv = 0;
+              } else {
+                modEnv = 0;
+              }
+              v.modLfoAge += blockDt;
+              v.vibLfoAge += blockDt;
+              modLfo = 0;
+              if (v.modLfoAge >= v.modLfoDelay && v.modLfoFreq > 0) {
+                modLfo = Math.sin(v.modLfoPhase);
+                v.modLfoPhase += TWO_PI * v.modLfoFreq * blockDt;
+                if (v.modLfoPhase > TWO_PI) v.modLfoPhase -= TWO_PI;
+              }
+              vibLfo = 0;
+              if (v.vibLfoAge >= v.vibLfoDelay && v.vibLfoFreq > 0 &&
+                v.vibLfoToPitch !== 0) {
+                vibLfo = Math.sin(v.vibLfoPhase);
+                v.vibLfoPhase += TWO_PI * v.vibLfoFreq * blockDt;
+                if (v.vibLfoPhase > TWO_PI) v.vibLfoPhase -= TWO_PI;
+              }
+              if (v.needsPitchMod) {
+                const pitchCents =
+                  modEnv * v.modEnvToPitch +
+                  modLfo * v.modLfoToPitch +
+                  vibLfo * v.vibLfoToPitch;
+                let rs = pitchCents !== 0
+                  ? baseRate * pitchRatioFromCents(pitchCents)
+                  : baseRate;
+                if (!(rs > 1e-6 && rs < 64)) rs = baseRate > 0 ? baseRate : 1;
+                rate = rs;
+                v.rateScale = rs;
+              } else {
+                rate = baseRate > 0 ? baseRate : 1;
+                v.rateScale = rate;
+              }
+              if (v.needsVolLfo && modLfo !== 0) {
+                const cb = modLfo * v.modLfoToVolume;
+                const vl = cbToLin(cb);
+                volLfo = (vl === vl && vl > 0) ? vl : 1;
+                v.volLfo = volLfo;
+              } else {
+                volLfo = 1;
+                v.volLfo = 1;
+              }
+              {
+                const fcCents =
+                  v.filterFcCents +
+                  modEnv * v.modEnvToFilterFc +
+                  modLfo * v.modLfoToFilterFc;
+                const fcHz = clampFc(centToHz(fcCents), nyquist);
+                this.updateFilter(v, fcHz, sr);
+                b0 = v.b0; b1 = v.b1; b2 = v.b2; a1 = v.a1; a2 = v.a2;
+              }
+            }
+
+            let p = phase;
+            if (loop) {
+              if (p >= le) {
+                if (loopLen <= 0) { ended = true; break; }
+                p = ls + (p - ls);
+                while (p >= le) p -= loopLen;
+              }
+            } else if (p >= len - 1) {
+              ended = true;
+              break;
+            }
+            const i0 = p | 0;
+            const i1 = i0 + 1 < len ? i0 + 1 : len - 1;
+            const frac = p - i0;
+            phase = p + rate;
+            const aL = env * volLfo * basePanL;
+            const aR = env * volLfo * basePanR;
+            if (!(aL === aL)) continue;
+
+            if (isStereo) {
+              let sL = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              let sR = pcmR[i0] + (pcmR[i1] - pcmR[i0]) * frac;
+              const yL = b0 * sL + z1L;
+              z1L = b1 * sL - a1 * yL + z2L;
+              z2L = b2 * sL - a2 * yL;
+              const yR = b0 * sR + z1R;
+              z1R = b1 * sR - a1 * yR + z2R;
+              z2R = b2 * sR - a2 * yR;
+              outL[i] += (yL * filtGain) * aL;
+              outR[i] += (yR * filtGain) * aR;
+            } else {
+              let s = pcmL[i0] + (pcmL[i1] - pcmL[i0]) * frac;
+              const y = b0 * s + z1L;
+              z1L = b1 * s - a1 * y + z2L;
+              z2L = b2 * s - a2 * y;
+              s = y * filtGain;
+              outL[i] += s * aL;
+              outR[i] += s * aR;
+            }
+          }
+
+          v.phase = phase;
+          v.z1L = z1L; v.z2L = z2L;
+          if (isStereo) {
+            v.z1R = z1R; v.z2R = z2R;
+          }
+        }
+      }
+
+      if (ended) {
+        const id = v.voiceId;
+        this.voiceById.delete(id);
+        this.releaseSlot(v);
+        this.statEnded++;
+        try {
+          this.port.postMessage({ type: "voiceEnded", voiceId: id });
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    if (nowFn) {
+      const dt = nowFn() - tProc0;
+      // Guard NaN / negative (Date.now coarseness or clock skew).
+      if (dt === dt && dt >= 0) {
+        this.statProcessMs += dt;
+        this.statProcessCount++;
+        if (dt > this.statProcessMaxMs) {
+          this.statProcessMaxMs = dt;
+          this.statProcessMaxActive = activeN;
+          this.statProcessMaxMsgs = msgsThis;
+        }
+        // Histogram buckets (ms): <1, 1-2, 2-3, 3-5, 5-10, >=10
+        const hist = this.statProcHist;
+        if (dt < 1) hist[0]++;
+        else if (dt < 2) hist[1]++;
+        else if (dt < 3) hist[2]++;
+        else if (dt < 5) hist[3]++;
+        else if (dt < 10) hist[4]++;
+        else hist[5]++;
+        // Rough overrun: process wall time > quantum budget (128 frames).
+        // Date.now is ms-resolution so this is only useful with perf timer.
+        const quantumMs = (typeof sampleRate === "number" && sampleRate > 0)
+          ? (n / sampleRate) * 1000
+          : 2.6667;
+        if (dt > quantumMs * 1.05) {
+          this.statProcessOverruns++;
+          if (dt > this.statProcessOverrunMaxMs) {
+            this.statProcessOverrunMaxMs = dt;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+}
+
+try {
+  registerProcessor(NAME, MidySynthProcessor);
+} catch (_) {
+  // Already registered on this AudioWorkletGlobalScope (second Midy instance,
+  // HMR, or dispose+recreate on the same AudioContext).
+}
+`;
+function createWorkletModuleURL() {
+  const blob = new Blob([WORKLET_PROCESSOR_SOURCE], {
+    type: "application/javascript"
+  });
+  return URL.createObjectURL(blob);
+}
+
+// src/worklet-engine.ts
+var workletModuleByContext = /* @__PURE__ */ new WeakMap();
+function ensureWorkletModule(ctx) {
+  let pending = workletModuleByContext.get(ctx);
+  if (!pending) {
+    pending = (async () => {
+      const url = createWorkletModuleURL();
+      await ctx.audioWorklet.addModule(url);
+      return url;
+    })();
+    workletModuleByContext.set(ctx, pending);
+  }
+  return pending;
+}
+var WorkletEngine = class _WorkletEngine {
+  /**
+   * Ring buffer of recent diagnostic lines (main + processor).
+   * Inspect via `midy.workletEngine.debugLogs` or `dumpDebug()`.
+   */
+  debugLogs = [];
+  /** Last processor stats snapshot (updated ~4/s when debug is on). */
+  lastStats = null;
+  /** Main-thread counters for this engine lifetime. */
+  mainStats = {
+    noteOn: 0,
+    noteOff: 0,
+    stop: 0,
+    loadSample: 0,
+    voiceEnded: 0
+  };
+  /** Mirror logs to console when true (set via setDebug). */
+  debug = false;
+  audioContext;
+  node = null;
+  moduleURL = null;
+  ready = null;
+  nextVoiceId = 1;
+  loadedSamples = /* @__PURE__ */ new Set();
+  /** voiceId → true while sounding (for local bookkeeping). */
+  activeVoices = /* @__PURE__ */ new Set();
+  static LOG_LIMIT = 500;
+  /** Dry path into masterVolume (or other destination). */
+  dryGain = null;
+  /** Post-stage effect send gains (worklet mix → effect.input). */
+  reverbSendGain = null;
+  chorusSendGain = null;
+  delaySendGain = null;
+  /** Per-voice send levels for bus max aggregation. */
+  voiceReverb = /* @__PURE__ */ new Map();
+  voiceChorus = /* @__PURE__ */ new Map();
+  voiceDelay = /* @__PURE__ */ new Map();
+  effectInputs = {};
+  constructor(audioContext) {
+    this.audioContext = audioContext;
+  }
+  /** Append a diagnostic line; always keeps a ring buffer. */
+  log(message, opts) {
+    const t2 = this.audioContext.currentTime.toFixed(3);
+    const line = `[${t2}] ${message}`;
+    this.debugLogs.push(line);
+    if (this.debugLogs.length > _WorkletEngine.LOG_LIMIT) {
+      this.debugLogs.splice(0, this.debugLogs.length - _WorkletEngine.LOG_LIMIT);
+    }
+    const toConsole = opts?.console ?? /^(proc: MISSING|proc: steal|preload|ensure|setDebug|ABORT|LATE|lateUpload)/.test(message);
+    if (this.debug && toConsole) {
+      console.log(`[worklet] ${line}`);
+    }
+  }
+  /** Enable processor + console diagnostics. Call when midy.debug is true. */
+  setDebug(enabled) {
+    this.debug = enabled;
+    this.post({ type: "setDebug", enabled });
+    this.log(`setDebug ${enabled}`);
+  }
+  /** Request a one-shot stats snapshot from the processor. */
+  requestStats() {
+    this.post({ type: "requestStats" });
+  }
+  /**
+   * Wait briefly for the next stats message (after requestStats).
+   * Returns lastStats (may be slightly stale if the port is busy).
+   */
+  async fetchStats(timeoutMs = 80) {
+    this.requestStats();
+    const start = performance.now();
+    const prev = this.lastStats;
+    while (performance.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 8));
+      if (this.lastStats && this.lastStats !== prev) {
+        return { ...this.lastStats };
+      }
+    }
+    return this.lastStats ? { ...this.lastStats } : null;
+  }
+  /** Snapshot for console: stats + last log lines. */
+  dumpDebug(lastN = 40) {
+    return {
+      mainStats: { ...this.mainStats },
+      lastStats: this.lastStats ? { ...this.lastStats } : null,
+      loadedSamples: this.loadedSamples.size,
+      activeVoices: this.activeVoices.size,
+      logs: this.debugLogs.slice(-lastN)
+    };
+  }
+  /**
+   * Ensure the worklet module is loaded and the node is connected.
+   * `destination` is the dry bus (typically masterVolume).
+   * Optional effect inputs receive post-mix sends (後段ノード).
+   */
+  async ensureStarted(destination, effects) {
+    if (effects) this.effectInputs = { ...this.effectInputs, ...effects };
+    if (this.node) {
+      this.reconnectEffectSends();
+      return;
+    }
+    if (!this.ready) {
+      this.ready = this.init(destination);
+    }
+    await this.ready;
+  }
+  async init(destination) {
+    const ctx = this.audioContext;
+    if (!ctx.audioWorklet) {
+      throw new Error("AudioWorklet is not supported in this environment");
+    }
+    this.moduleURL = await ensureWorkletModule(ctx);
+    const node = new AudioWorkletNode(ctx, MIDY_WORKLET_NAME, {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2]
+    });
+    node.port.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === "voiceEnded" && msg.voiceId != null) {
+        this.activeVoices.delete(msg.voiceId);
+        this.clearVoiceSends(msg.voiceId);
+        this.mainStats.voiceEnded++;
+      }
+      if (msg.type === "debug" && msg.message) {
+        this.log(`proc: ${msg.message}`);
+      }
+      if (msg.type === "stats") {
+        const s = msg;
+        this.lastStats = {
+          active: s.active,
+          peakActive: s.peakActive ?? s.active,
+          samples: s.samples,
+          noteOn: s.noteOn,
+          noteOff: s.noteOff,
+          stop: s.stop,
+          steal: s.steal,
+          missingSample: s.missingSample,
+          loadSample: s.loadSample,
+          ended: s.ended,
+          quantums: s.quantums,
+          activeSum: s.activeSum ?? 0,
+          processMs: s.processMs ?? 0,
+          processMaxMs: s.processMaxMs ?? 0,
+          simpleVQ: s.simpleVQ ?? 0,
+          complexVQ: s.complexVQ ?? 0,
+          hasPerf: s.hasPerf ?? 0,
+          processOverruns: s.processOverruns ?? 0,
+          processMaxActive: s.processMaxActive ?? 0,
+          processMaxMsgs: s.processMaxMsgs ?? 0,
+          processOverrunMaxMs: s.processOverrunMaxMs ?? 0,
+          procHist0: s.procHist0 ?? 0,
+          procHist1: s.procHist1 ?? 0,
+          procHist2: s.procHist2 ?? 0,
+          procHist3: s.procHist3 ?? 0,
+          procHist4: s.procHist4 ?? 0,
+          procHist5: s.procHist5 ?? 0
+        };
+        this.log(
+          `stats active=${s.active}/${WORKLET_MAX_VOICES} peak=${s.peakActive ?? s.active} samples=${s.samples} on=${s.noteOn} off=${s.noteOff} stop=${s.stop} steal=${s.steal} miss=${s.missingSample} load=${s.loadSample} ended=${s.ended} q=${s.quantums}`,
+          { console: false }
+        );
+      }
+    };
+    this.dryGain = new GainNode(ctx, { gain: 1 });
+    node.connect(this.dryGain);
+    this.dryGain.connect(destination);
+    this.reverbSendGain = new GainNode(ctx, { gain: 0 });
+    this.chorusSendGain = new GainNode(ctx, { gain: 0 });
+    this.delaySendGain = new GainNode(ctx, { gain: 0 });
+    node.connect(this.reverbSendGain);
+    node.connect(this.chorusSendGain);
+    node.connect(this.delaySendGain);
+    this.reconnectEffectSends();
+    this.node = node;
+  }
+  /** Wire send gains to current effect inputs (safe to call on effect swap). */
+  reconnectEffectSends() {
+    const { reverbInput, chorusInput, delayInput } = this.effectInputs;
+    this.safeReconnect(this.reverbSendGain, reverbInput ?? null);
+    this.safeReconnect(this.chorusSendGain, chorusInput ?? null);
+    this.safeReconnect(this.delaySendGain, delayInput ?? null);
+  }
+  safeReconnect(send, input) {
+    if (!send) return;
+    try {
+      send.disconnect();
+    } catch {
+    }
+    if (input) {
+      try {
+        send.connect(input);
+      } catch {
+      }
+    }
+  }
+  /** Update effect input targets (e.g. after setReverbEffect). */
+  setEffectInputs(effects) {
+    this.effectInputs = { ...this.effectInputs, ...effects };
+    this.reconnectEffectSends();
+  }
+  post(msg, transfer) {
+    if (!this.node) return;
+    if (transfer && transfer.length) {
+      this.node.port.postMessage(msg, transfer);
+    } else {
+      this.node.port.postMessage(msg);
+    }
+  }
+  /**
+   * Upload (or re-upload) a sample. Transfers the Float32Array buffers when
+   * possible so the main thread can drop the copies.
+   */
+  loadSample(sampleId, pcmL, pcmR, sampleRate2, loopStart, loopEnd, loop) {
+    const left = new Float32Array(pcmL);
+    const right = pcmR && pcmR.length === pcmL.length ? new Float32Array(pcmR) : void 0;
+    this.post({
+      type: "loadSample",
+      sampleId,
+      pcmL: left,
+      pcmR: right,
+      sampleRate: sampleRate2,
+      loopStart,
+      loopEnd,
+      loop
+    });
+    this.loadedSamples.add(sampleId);
+    this.mainStats.loadSample++;
+    this.log(
+      `loadSample id=${sampleId} len=${left.length} sr=${sampleRate2} loop=${loop} (${loopStart}-${loopEnd}) loaded=${this.loadedSamples.size}`
+    );
+  }
+  hasSample(sampleId) {
+    return this.loadedSamples.has(sampleId);
+  }
+  allocVoiceId() {
+    const id = this.nextVoiceId++;
+    if (this.nextVoiceId > 2147483647) this.nextVoiceId = 1;
+    return id;
+  }
+  noteOn(voiceId, params) {
+    this.activeVoices.add(voiceId);
+    this.mainStats.noteOn++;
+    this.post({
+      type: "noteOn",
+      voiceId,
+      sampleId: params.sampleId,
+      when: params.when,
+      playbackRate: params.playbackRate,
+      gain: params.gain,
+      pan: params.pan,
+      delay: params.delay,
+      attack: params.attack,
+      hold: params.hold,
+      decay: params.decay,
+      sustain: params.sustain,
+      release: params.release,
+      filterFcCents: params.filterFcCents,
+      filterQ: params.filterQ,
+      filterDcGain: params.filterDcGain,
+      delayModEnv: params.delayModEnv,
+      attackModEnv: params.attackModEnv,
+      holdModEnv: params.holdModEnv,
+      decayModEnv: params.decayModEnv,
+      sustainModEnv: params.sustainModEnv,
+      releaseModEnv: params.releaseModEnv,
+      modEnvToPitch: params.modEnvToPitch,
+      modEnvToFilterFc: params.modEnvToFilterFc,
+      delayModLFO: params.delayModLFO,
+      freqModLFO: params.freqModLFO,
+      modLfoToPitch: params.modLfoToPitch,
+      modLfoToFilterFc: params.modLfoToFilterFc,
+      modLfoToVolume: params.modLfoToVolume,
+      delayVibLFO: params.delayVibLFO,
+      freqVibLFO: params.freqVibLFO,
+      vibLfoToPitch: params.vibLfoToPitch
+    });
+  }
+  noteOff(voiceId, when, release) {
+    this.mainStats.noteOff++;
+    this.post({
+      type: "noteOff",
+      voiceId,
+      when,
+      release
+    });
+  }
+  stop(voiceId) {
+    this.activeVoices.delete(voiceId);
+    this.clearVoiceSends(voiceId);
+    this.mainStats.stop++;
+    this.post({ type: "stop", voiceId });
+  }
+  allSoundOff() {
+    this.activeVoices.clear();
+    this.voiceReverb.clear();
+    this.voiceChorus.clear();
+    this.voiceDelay.clear();
+    this.applySendBusLevels();
+    this.log("allSoundOff");
+    this.post({ type: "allSoundOff" });
+  }
+  setMasterGain(value) {
+    this.post({ type: "setMasterGain", value });
+  }
+  /**
+   * Soft polyphony cap for the processor (0 = unlimited).
+   * When active voices reach this count, further noteOns steal.
+   */
+  setVoiceLimit(value) {
+    const n = value | 0;
+    this.post({ type: "setVoiceLimit", value: n > 0 ? n : 0 });
+  }
+  /** Dynamic gain / pan / playbackRate update (channel CC). */
+  setVoiceParams(voiceId, params) {
+    this.post({
+      type: "setVoiceParams",
+      voiceId,
+      gain: params.gain,
+      pan: params.pan,
+      playbackRate: params.playbackRate
+    });
+  }
+  /**
+   * Set per-voice effect send levels (0–1). Bus gains use the max across
+   * active voices — a practical approximation for a post-mix worklet output.
+   */
+  setVoiceEffectSends(voiceId, sends) {
+    if (sends.reverb != null) {
+      const v = Math.max(0, Math.min(1, sends.reverb));
+      if (v > 0) this.voiceReverb.set(voiceId, v);
+      else this.voiceReverb.delete(voiceId);
+    }
+    if (sends.chorus != null) {
+      const v = Math.max(0, Math.min(1, sends.chorus));
+      if (v > 0) this.voiceChorus.set(voiceId, v);
+      else this.voiceChorus.delete(voiceId);
+    }
+    if (sends.delay != null) {
+      const v = Math.max(0, Math.min(1, sends.delay));
+      if (v > 0) this.voiceDelay.set(voiceId, v);
+      else this.voiceDelay.delete(voiceId);
+    }
+    this.applySendBusLevels();
+  }
+  clearVoiceSends(voiceId) {
+    let changed = false;
+    if (this.voiceReverb.delete(voiceId)) changed = true;
+    if (this.voiceChorus.delete(voiceId)) changed = true;
+    if (this.voiceDelay.delete(voiceId)) changed = true;
+    if (changed) this.applySendBusLevels();
+  }
+  maxMap(m) {
+    let max = 0;
+    for (const v of m.values()) if (v > max) max = v;
+    return max;
+  }
+  applySendBusLevels() {
+    const t2 = this.audioContext.currentTime;
+    const tc = 0.015;
+    if (this.reverbSendGain) {
+      this.reverbSendGain.gain.setTargetAtTime(
+        this.maxMap(this.voiceReverb),
+        t2,
+        tc
+      );
+    }
+    if (this.chorusSendGain) {
+      this.chorusSendGain.gain.setTargetAtTime(
+        this.maxMap(this.voiceChorus),
+        t2,
+        tc
+      );
+    }
+    if (this.delaySendGain) {
+      this.delaySendGain.gain.setTargetAtTime(
+        this.maxMap(this.voiceDelay),
+        t2,
+        tc
+      );
+    }
+  }
+  get activeVoiceCount() {
+    return this.activeVoices.size;
+  }
+  get maxVoices() {
+    return WORKLET_MAX_VOICES;
+  }
+  /** Disconnect and release the blob URL. */
+  dispose() {
+    if (this.node) {
+      try {
+        this.node.disconnect();
+      } catch {
+      }
+      try {
+        this.node.port.onmessage = null;
+      } catch {
+      }
+      this.node = null;
+    }
+    for (const g of [
+      this.dryGain,
+      this.reverbSendGain,
+      this.chorusSendGain,
+      this.delaySendGain
+    ]) {
+      if (!g) continue;
+      try {
+        g.disconnect();
+      } catch {
+      }
+    }
+    this.dryGain = null;
+    this.reverbSendGain = null;
+    this.chorusSendGain = null;
+    this.delaySendGain = null;
+    this.moduleURL = null;
+    this.loadedSamples.clear();
+    this.activeVoices.clear();
+    this.voiceReverb.clear();
+    this.voiceChorus.clear();
+    this.voiceDelay.clear();
+    this.ready = null;
+  }
+};
+
 // src/player.ts
 var Player = class _Player extends BasePlayer {
   cacheMode = DEFAULT_CACHE_MODE;
+  /**
+   * Worklet polyphony policy (see WorkletVoiceLimit).
+   * Only consulted when cacheMode === "worklet".
+   */
+  workletVoiceLimit = "unlimited";
+  /** AudioWorklet bridge when cacheMode === "worklet". */
+  workletEngine = null;
+  /**
+   * Voices reserved between enforceMaxVoices and soundingNotes.add
+   * (async sample upload window). Prevents parallel noteOn races from
+   * exceeding workletVoiceLimit on the main-thread counter.
+   */
+  /** In-flight note groups (noteGroupId) between enforce and soundingNotes.add */
+  workletPendingGroups = /* @__PURE__ */ new Set();
+  /** Main-thread polyphony diagnostics for worklet-perf log. */
+  workletMainSteal = 0;
+  workletPeakGroups = 0;
+  workletPeakLayers = 0;
   // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
   // One-level Map (no nesting). bigint avoids Number precision loss when
   // audioBufferId is large after the non-overlapping getVoiceId packing.
@@ -10010,7 +11997,7 @@ var Player = class _Player extends BasePlayer {
   chunkCostBudget = 16;
   // Extra weight for complex (automation) notes in the cost estimate.
   chunkComplexCostWeight = 1.75;
-  maxTiledNoteDuration = 8;
+  maxTiledNoteDuration = 4;
   /**
    * Upper bound (seconds, duration+releaseTail) for full-note offline bake.
    * Notes longer than this stay off longNoteBakedSet and play via ADS
@@ -10125,6 +12112,8 @@ var Player = class _Player extends BasePlayer {
   // --- diag: noteBake / drum path ---
   noteBakePathCount = 0;
   noteBakeAdsPathCount = 0;
+  /** segment/chunk adsFallback (and similar) notes routed to worklet. */
+  noteBakeWorkletHybridCount = 0;
   noteBakeRealtimeExclCount = 0;
   noteBakeDrumCount = 0;
   noteBakeDrumExclusiveCount = 0;
@@ -10398,7 +12387,7 @@ var Player = class _Player extends BasePlayer {
   // Soft cap on notes per chunk tile. When adding a *new onset group* would
   // exceed this, close and start a new tile (same-timestamp chords stay).
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
-  maxChunkNotes = 32;
+  maxChunkNotes = 24;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
   // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
   chunkBakeHeavyThresholdMs = 1500;
@@ -10409,11 +12398,30 @@ var Player = class _Player extends BasePlayer {
   eventLoopLagWarnMs = 100;
   eventLoopLagProbeTimer = null;
   eventLoopLagProbeActive = false;
+  /** setTimeout probe samples this play (event-loop health). */
+  eventLoopLagSamples = 0;
+  /** Sum of (observed - interval) ms; excess only (clamped >= 0). */
+  eventLoopLagExcessSumMs = 0;
+  eventLoopLagExcessMaxMs = 0;
+  /** Count of samples with excess >= eventLoopLagWarnMs. */
+  eventLoopLagWarnCount = 0;
+  /** Main-thread time in scheduleTimelineEvents this play. */
+  playMainSchedSumMs = 0;
+  playMainSchedCount = 0;
+  playMainSchedMaxMs = 0;
   // Song-time window where scheduleTimelineEvents / closeChunk get verbose logs.
   diagSongTimeLo = 19;
   diagSongTimeHi = 25;
-  // [diag] Extra instrumentation (A–F). Gated by this.debug; throttle counters
-  // keep DevTools from stalling on dense songs.
+  // [diag] Extra instrumentation (A–F).
+  //   debug       = summary / end-of-play / errors (default quiet)
+  //   debugDetail = per-note / per-tile / noisy pipeline traces
+  // Throttle counters keep DevTools from stalling on dense songs.
+  /**
+   * Play-time verbose traces (non-tiled noteOn, tile-bake-detail, backlog,
+   * play-loop, mix-residual, close-chunk, …).
+   * End-of-play summaries stay on `debug` alone.
+   */
+  debugDetail = false;
   /** Log every Nth tile-bake-detail (1 = all). Also always logs when workMs>=tileBakeDetailMinMs or complexCount>0. */
   tileBakeDetailEveryN = 10;
   /** Always emit tile-bake-detail when work phase exceeds this (ms). */
@@ -10493,7 +12501,7 @@ var Player = class _Player extends BasePlayer {
         if (depthAtEnter > this.chunkGateWaitDepthMax) {
           this.chunkGateWaitDepthMax = depthAtEnter;
         }
-        if (this.debug && depthAtEnter >= 1) {
+        if (this.debug && this.debugDetail && depthAtEnter >= 1) {
           let oldest = chunkStart;
           for (let i = 0; i < this.chunkBakeWaiters.length; i++) {
             const s = this.chunkBakeWaiters[i].chunkStart;
@@ -10513,7 +12521,7 @@ var Player = class _Player extends BasePlayer {
       if (this.chunkGateWaitSamplesMs.length < _Player.GATE_WAIT_SAMPLE_CAP) {
         this.chunkGateWaitSamplesMs.push(waited);
       }
-      if (this.debug && waited >= 30) {
+      if (this.debug && this.debugDetail && waited >= 30) {
         console.warn(
           `[midy] gate-wait-exit | chunkStart=${chunkStart.toFixed(2)}s waited=${waited.toFixed(1)}ms depthAtEnter=${depthAtEnter} activeNow=${this.chunkBakeActive}/${max} waitersLeft=${this.chunkBakeWaiters.length} mixAwaiting=${this.mixAwaitingCount}`
         );
@@ -10620,14 +12628,20 @@ var Player = class _Player extends BasePlayer {
       const t0 = performance.now();
       this.eventLoopLagProbeTimer = setTimeout(() => {
         const lag = performance.now() - t0;
-        const excess = lag - interval;
+        const excess = Math.max(0, lag - interval);
+        this.eventLoopLagSamples++;
+        this.eventLoopLagExcessSumMs += excess;
+        if (excess > this.eventLoopLagExcessMaxMs) {
+          this.eventLoopLagExcessMaxMs = excess;
+        }
         if (excess >= warnMs) {
+          this.eventLoopLagWarnCount++;
           let songT = 0;
           try {
             songT = this.currentTime();
           } catch {
           }
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] event-loop-lag | excess=${excess.toFixed(0)}ms timer=${lag.toFixed(0)}ms interval=${interval}ms songT=${songT.toFixed(2)}s chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} deferred=${this.deferredChunkBakes.length} pending=${this.chunkState.pending.length}`
             );
@@ -10726,7 +12740,7 @@ var Player = class _Player extends BasePlayer {
       }
       this.recordChunkBakeStartThisPass();
       if (d.chunkStart >= this.diagSongTimeLo && d.chunkStart <= this.diagSongTimeHi) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] bake-start | chunkStart=${d.chunkStart.toFixed(2)}s notes=${d.chunk.notes.length} cost=${d.chunk.cost.toFixed(1)} via=pump chunkBake=${this.chunkBakeActive} deferredLeft=${deferred.length - i - 1} passStarts=${this.chunkBakeStartsThisPass}`
           );
@@ -10764,9 +12778,11 @@ var Player = class _Player extends BasePlayer {
         this.pumpDeferredChunkBakes();
         spins++;
         if (spins > 1e4) {
-          console.warn(
-            `[midy] preroll drain: abort spins=${spins} deferred=${this.deferredChunkBakes.length} active=${this.chunkBakeActive}`
-          );
+          if (this.debug) {
+            console.warn(
+              `[midy] preroll drain: abort spins=${spins} deferred=${this.deferredChunkBakes.length} active=${this.chunkBakeActive}`
+            );
+          }
           break;
         }
         await new Promise((r) => queueMicrotask(r));
@@ -10775,9 +12791,11 @@ var Player = class _Player extends BasePlayer {
       await Promise.race(inflight);
       spins++;
       if (spins > 1e4) {
-        console.warn(
-          `[midy] preroll drain: abort spins=${spins} deferred=${this.deferredChunkBakes.length} active=${this.chunkBakeActive}`
-        );
+        if (this.debug) {
+          console.warn(
+            `[midy] preroll drain: abort spins=${spins} deferred=${this.deferredChunkBakes.length} active=${this.chunkBakeActive}`
+          );
+        }
         break;
       }
     }
@@ -10811,7 +12829,7 @@ var Player = class _Player extends BasePlayer {
       pending.bufferReady = true;
       resolve(buffer2);
     }).catch((err) => {
-      console.warn("chunk render failed", err);
+      if (this.debug) console.warn("chunk render failed", err);
       pending.buffer = null;
       pending.bufferReady = true;
       resolve(null);
@@ -11118,6 +13136,30 @@ var Player = class _Player extends BasePlayer {
                 seenPreloadIds.add(audioBufferId);
                 preloadEntries.push({ audioBufferId, voiceParams });
               }
+            }
+            const layers = this.resolveVoices(
+              channel2,
+              event.noteNumber,
+              event.velocity
+            );
+            for (let li = 0; li < layers.length; li++) {
+              const layer2 = layers[li];
+              const instrument = layer2.voice.generators.get("instrument") ?? 0;
+              const sampleID = layer2.voice.generators.get("sampleID") ?? 0;
+              const layerId = layer2.soundFontIndex * 2 ** 31 + instrument * 2 ** 24 + (sampleID << 8);
+              if (seenPreloadIds.has(layerId)) continue;
+              const layerCs = this.getControllerState(
+                channel2,
+                event.noteNumber,
+                event.velocity,
+                0
+              );
+              const layerVp = getVoiceParams(layer2.voice, layerCs);
+              seenPreloadIds.add(layerId);
+              preloadEntries.push({
+                audioBufferId: layerId,
+                voiceParams: layerVp
+              });
             }
           }
           break;
@@ -12054,6 +14096,7 @@ var Player = class _Player extends BasePlayer {
     const durQuantParts = durQuants.map(
       (q) => `q${q}=${durKeysAtQuant.get(q)}`
     ).join(" ");
+    if (!this.debug) return;
     console.log(
       `[midy] simple-key coarsen | notes=${noteCount} fullKeys=${fullKeys.size} | velocity: groups=${velGroupCount} splitGroups=${velSplitGroups} splitNotes=${velSplitNotes} avgVels/split=${avgVelPerSplit} | keysIf ${velStepParts}`
     );
@@ -12391,7 +14434,7 @@ var Player = class _Player extends BasePlayer {
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = noteOnDurations[queueIndex] ?? 0;
-          } else if (this.debug && isTiledCacheMode(cacheMode)) {
+          } else if (this.debug && this.debugDetail && isTiledCacheMode(cacheMode)) {
             const vp = this.tiledVoiceParams[queueIndex];
             const duration2 = noteOnDurations[queueIndex] ?? 0;
             let releaseVolEnv = vp?.releaseVolEnv ?? 0;
@@ -12433,14 +14476,15 @@ var Player = class _Player extends BasePlayer {
             );
             const inLong = this.longNoteBakedSet.has(queueIndex);
             const effective = duration2 + releaseTail;
-            const path = inLong ? "noteBake" : excl !== 0 ? "realtimeExcl" : effective > this.maxTiledNoteDuration ? "ads" : "realtime";
+            const hybrid2 = !inLong;
+            const path = inLong ? "noteBake" : excl !== 0 ? hybrid2 ? "workletHybrid" : "realtimeExcl" : effective > this.maxTiledNoteDuration ? hybrid2 ? "workletHybrid" : "ads" : hybrid2 ? "workletHybrid" : "realtime";
             let reason;
             if (excl !== 0) {
-              reason = `exclusiveClass=${excl}`;
+              reason = hybrid2 ? `exclusiveClass=${excl}\u2192workletHybrid` : `exclusiveClass=${excl}`;
             } else if (effective > this.maxTiledNoteDuration) {
-              reason = inLong ? `effective>${this.maxTiledNoteDuration}s\u2192noteBake(\u2264${this.maxNoteBakeDuration || "inf"}s)` : `effective>${this.maxTiledNoteDuration}s\u2192ads(>maxNoteBake)`;
+              reason = inLong ? `effective>${this.maxTiledNoteDuration}s\u2192noteBake(\u2264${this.maxNoteBakeDuration || "inf"}s)` : hybrid2 ? `effective>${this.maxTiledNoteDuration}s\u2192workletHybrid(>maxNoteBake)` : `effective>${this.maxTiledNoteDuration}s\u2192ads(>maxNoteBake)`;
             } else {
-              reason = "other(notInTiledSet)";
+              reason = hybrid2 ? "other\u2192workletHybrid" : "other(notInTiledSet)";
             }
             const capNote = releaseTail < releaseTailRaw ? ` rawRelease=${releaseTailRaw.toFixed(2)}s` : "";
             if (path === "noteBake") {
@@ -12461,14 +14505,16 @@ var Player = class _Player extends BasePlayer {
               this.noteBakeReleaseCappedCount++;
               if (isDrum) this.noteBakeDrumReleaseCappedCount++;
             }
-            if (this.debug && isDrum && path === "noteBake" && (this.noteBakeDrumCount <= 8 || this.noteBakeDrumCount % 32 === 0)) {
+            if (this.debug && this.debugDetail && isDrum && path === "noteBake" && (this.noteBakeDrumCount <= 8 || this.noteBakeDrumCount % 32 === 0)) {
               console.warn(
                 `[midy] noteBake-drum | ch=${channel2.channelNumber} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s midiDur=${duration2.toFixed(2)}s releaseTail=${releaseTail.toFixed(2)}s rawRelease=${releaseTailRaw.toFixed(2)}s effective=${effective.toFixed(2)}s excl=${excl} capped=${releaseTail < releaseTailRaw} inLong=${inLong} maxTiled=${this.maxTiledNoteDuration} maxNoteBake=${this.maxNoteBakeDuration} maxReleaseTail=${this.maxReleaseTailSec}`
               );
             }
-            console.warn(
-              `[midy] non-tiled noteOn | ch=${channel2.channelNumber} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s midiDur=${duration2.toFixed(2)}s releaseTail=${releaseTail.toFixed(2)}s${capNote} effective=${effective.toFixed(2)}s reason=${reason} excl=${excl} inLong=${inLong} path=${path} maxTiled=${this.maxTiledNoteDuration} maxNoteBake=${this.maxNoteBakeDuration} maxReleaseTail=${this.maxReleaseTailSec}`
-            );
+            if (this.debug) {
+              console.warn(
+                `[midy] non-tiled noteOn | ch=${channel2.channelNumber} note=${event2.noteNumber} idx=${queueIndex} songT=${t2.toFixed(2)}s midiDur=${duration2.toFixed(2)}s releaseTail=${releaseTail.toFixed(2)}s${capNote} effective=${effective.toFixed(2)}s reason=${reason} excl=${excl} inLong=${inLong} path=${path} maxTiled=${this.maxTiledNoteDuration} maxNoteBake=${this.maxNoteBakeDuration} maxReleaseTail=${this.maxReleaseTailSec}`
+              );
+            }
           }
           channel2.noteOn(
             event2.noteNumber,
@@ -12507,9 +14553,12 @@ var Player = class _Player extends BasePlayer {
     }
     if (isChunkMode) this.pumpDeferredChunkBakes();
     const schedMs = performance.now() - tSched0;
+    this.playMainSchedSumMs += schedMs;
+    this.playMainSchedCount++;
+    if (schedMs > this.playMainSchedMaxMs) this.playMainSchedMaxMs = schedMs;
     const inWindow = firstSongT >= this.diagSongTimeLo && firstSongT <= this.diagSongTimeHi || lastSongT >= this.diagSongTimeLo && lastSongT <= this.diagSongTimeHi || firstSongT >= 0 && firstSongT < this.diagSongTimeLo && lastSongT > this.diagSongTimeHi;
     if (schedMs >= 20 || budgetHit || inWindow && queueIndex > qi0) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] schedule | wall=${schedMs.toFixed(0)}ms events=${queueIndex - qi0} noteOn=${noteOnCount} chunkAppend=${chunkAppendCount} skipPreroll=${skippedPreroll} budgetHit=${budgetHit ? 1 : 0} songRange=[${firstSongT < 0 ? "-" : firstSongT.toFixed(2)}, ${lastSongT < 0 ? "-" : lastSongT.toFixed(2)}] lookAheadCheck=${lookAheadCheckTime.toFixed(2)} prerollUntil=${this.prerollUntilSongTime.toFixed(2)} openChunk=${this.chunkState.openChunk ? this.chunkState.openChunk.chunkStart.toFixed(2) : "none"} deferred=${this.deferredChunkBakes.length} pending=${this.chunkState.pending.length}`
         );
@@ -12778,7 +14827,7 @@ var Player = class _Player extends BasePlayer {
       const loopMs = tAfterPipe - tLoop0;
       const inWindow = songT >= this.diagSongTimeLo && songT <= this.diagSongTimeHi;
       if (inWindow || loopMs >= 50) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] play-loop | n=${diagLoopN} songT=${songT.toFixed(2)}s loopMs=${loopMs.toFixed(0)} schedMs=${(tAfterSched - tLoop0).toFixed(0)} pipeMs=${(tAfterPipe - tAfterSched).toFixed(0)} qi=${qiBefore}\u2192${queueIndex} chunkBake=${this.chunkBakeActive} deferred=${this.deferredChunkBakes.length} pending=${this.chunkState.pending.length} prerollUntil=${this.prerollUntilSongTime.toFixed(2)}s`
           );
@@ -12814,8 +14863,77 @@ var Player = class _Player extends BasePlayer {
     if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
       await this.prewarmSimpleNoteCache();
     }
+    const playPerfT0 = this.cacheMode === "worklet" || isTiledCacheMode(this.cacheMode) ? performance.now() : 0;
+    if (this.cacheMode === "worklet") {
+      this.workletMainSteal = 0;
+      this.workletPeakGroups = 0;
+      this.workletPeakLayers = 0;
+    }
+    this.noteBakePathCount = 0;
+    this.noteBakeAdsPathCount = 0;
+    this.noteBakeWorkletHybridCount = 0;
+    this.noteBakeRealtimeExclCount = 0;
+    this.noteBakeDrumCount = 0;
+    this.noteBakeDrumExclusiveCount = 0;
+    this.noteBakeReleaseCappedCount = 0;
+    this.noteBakeDrumReleaseCappedCount = 0;
+    this.noteBakeEffectiveSum = 0;
+    this.noteBakeDrumEffectiveSum = 0;
+    this.eventLoopLagSamples = 0;
+    this.eventLoopLagExcessSumMs = 0;
+    this.eventLoopLagExcessMaxMs = 0;
+    this.eventLoopLagWarnCount = 0;
+    this.playMainSchedSumMs = 0;
+    this.playMainSchedCount = 0;
+    this.playMainSchedMaxMs = 0;
     this.playPromise = this.playNotes();
     await this.playPromise;
+    if (this.cacheMode === "worklet" && this.workletEngine) {
+      try {
+        const wallMs = performance.now() - playPerfT0;
+        const songSec = this.totalTime > 0 ? this.totalTime : 0;
+        const st = await this.workletEngine.fetchStats(100);
+        const ms = this.workletEngine.mainStats;
+        const peak = st?.peakActive ?? st?.active ?? 0;
+        const on2 = st?.noteOn ?? ms.noteOn;
+        const steal = st?.steal ?? 0;
+        const miss = st?.missingSample ?? 0;
+        const q = st?.quantums ?? 0;
+        const activeSum = st?.activeSum ?? 0;
+        const avgActive = q > 0 ? activeSum / q : 0;
+        const processMs = st?.processMs ?? 0;
+        const processMaxMs = st?.processMaxMs ?? 0;
+        const avgProcUs = q > 0 ? processMs / q * 1e3 : 0;
+        const simpleVQ = st?.simpleVQ ?? 0;
+        const complexVQ = st?.complexVQ ?? 0;
+        const vq = simpleVQ + complexVQ;
+        const simplePct = vq > 0 ? 100 * simpleVQ / vq : 0;
+        const rtf = wallMs > 0 && songSec > 0 ? songSec * 1e3 / wallMs : 0;
+        const overruns = st?.processOverruns ?? 0;
+        const maxActiveAtPeak = st?.processMaxActive ?? 0;
+        const maxMsgsAtPeak = st?.processMaxMsgs ?? 0;
+        const overrunMaxMs = st?.processOverrunMaxMs ?? 0;
+        const h0 = st?.procHist0 ?? 0;
+        const h1 = st?.procHist1 ?? 0;
+        const h2 = st?.procHist2 ?? 0;
+        const h3 = st?.procHist3 ?? 0;
+        const h4 = st?.procHist4 ?? 0;
+        const h5 = st?.procHist5 ?? 0;
+        const timerSrc = st?.timerSource ?? (st?.hasPerf ? "perf" : "date");
+        console.log(
+          `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} peakActive=${peak}/${WORKLET_MAX_VOICES} avgActive=${avgActive.toFixed(1)} processMs=${processMs.toFixed(1)} avgProcUs=${avgProcUs.toFixed(1)} maxProcMs=${processMaxMs.toFixed(3)} overruns=${overruns} overrunMaxMs=${Number(overrunMaxMs).toFixed(3)} maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}} timer=${timerSrc} procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5} simpleVQ=${simpleVQ} complexVQ=${complexVQ} simplePct=${simplePct.toFixed(1)}% noteOn=${on2} stealWorklet=${steal} stealMain=${this.workletMainSteal} miss=${miss} stop=${st?.stop ?? ms.stop} quantums=${q} samples=${st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples} limit=${JSON.stringify(this.workletVoiceLimit)} mainMax=${this.resolveWorkletMainMaxVoices()} peakGroups=${this.workletPeakGroups} peakLayers=${this.workletPeakLayers} (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`
+        );
+        const lagN = this.eventLoopLagSamples;
+        const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
+        const processPct = wallMs > 0 ? 100 * processMs / wallMs : 0;
+        const schedN = this.playMainSchedCount;
+        const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
+        console.log(
+          `[midy] play-load | mode=worklet glitch=${overruns} (overruns) glitchMaxMs=${Number(overrunMaxMs).toFixed(1)} audioBusyMs=${processMs.toFixed(0)} audioBusyPct=${processPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`
+        );
+      } catch (_) {
+      }
+    }
     try {
       const cx = this.countComplexBreakdown();
       const cxPct = (n) => cx.complex > 0 ? (100 * n / cx.complex).toFixed(1) : "0.0";
@@ -12857,6 +14975,29 @@ var Player = class _Player extends BasePlayer {
       const lateN = this.chunkLateStarts;
       const lateAvg = lateN > 0 ? this.chunkLateSumMs / lateN : 0;
       const purePct = cb > 0 ? (100 * this.chunkPureTaTiles / cb).toFixed(1) : "0.0";
+      if (isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
+        const wallMs = performance.now() - playPerfT0;
+        const songSec = this.totalTime > 0 ? this.totalTime : 0;
+        const rtf = wallMs > 0 && songSec > 0 ? songSec * 1e3 / wallMs : 0;
+        const label = isChunkCacheMode(this.cacheMode) ? "chunk-perf" : "segment-perf";
+        console.log(
+          `[midy] ${label} | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate} bakeAvg=${bakeAvg.toFixed(1)}ms bakeP95=${bakeP95.toFixed(1)}ms pureTA=${this.chunkPureTaTiles} pathWorkletHybrid=${this.noteBakeWorkletHybridCount} mode=${this.cacheMode}`
+        );
+        const lagN = this.eventLoopLagSamples;
+        const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
+        const glitch = lateN + this.chunkDroppedLate;
+        const mixMainMs = this.chunkMixMainSumMs;
+        const mixWorkerMs = this.chunkMixWorkerSumMs;
+        const mixTotal = mixMainMs + mixWorkerMs;
+        const mainMixPct = mixTotal > 0 ? 100 * mixMainMs / mixTotal : 0;
+        const schedN = this.playMainSchedCount;
+        const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
+        const mainBusyMs = this.playMainSchedSumMs + mixMainMs;
+        const mainBusyPct = wallMs > 0 ? 100 * mainBusyMs / wallMs : 0;
+        console.log(
+          `[midy] play-load | mode=${this.cacheMode} glitch=${glitch} (late+dropped) glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)} mainBusyMs=${mainBusyMs.toFixed(0)} mainBusyPct=${mainBusyPct.toFixed(2)}% mixMainPct=${mainMixPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms workerMixMs=${mixWorkerMs.toFixed(0)}`
+        );
+      }
       const poolSize = this.bakeWorkerPool ? this.bakeWorkerPool.poolSize : this.workerPoolSize > 0 ? this.workerPoolSize : Math.max(
         1,
         Math.min(
@@ -12900,8 +15041,23 @@ var Player = class _Player extends BasePlayer {
             `[midy] mix-overhead-sum | tiles=${mixTiles} overheadSum=${this.chunkMixOverheadSumMs.toFixed(0)}ms overheadMax=${this.chunkMixOverheadMaxMs.toFixed(1)}ms highOverheadTiles=${this.chunkMixHighOverheadTiles} overheadAvg=${mixTiles > 0 ? (this.chunkMixOverheadSumMs / mixTiles).toFixed(1) : "0"}ms`
           );
           console.log(
-            `[midy] noteBake-summary | pathNoteBake=${this.noteBakePathCount} pathAds=${this.noteBakeAdsPathCount} pathRealtimeExcl=${this.noteBakeRealtimeExclCount} drumNoteBake=${this.noteBakeDrumCount} drumExclusive=${this.noteBakeDrumExclusiveCount} releaseCapped=${this.noteBakeReleaseCappedCount} drumReleaseCapped=${this.noteBakeDrumReleaseCappedCount} noteBakeEffAvg=${this.noteBakePathCount > 0 ? (this.noteBakeEffectiveSum / this.noteBakePathCount).toFixed(2) : "0"}s drumEffAvg=${this.noteBakeDrumCount > 0 ? (this.noteBakeDrumEffectiveSum / this.noteBakeDrumCount).toFixed(2) : "0"}s maxReleaseTail=${this.maxReleaseTailSec} maxNoteBake=${this.maxNoteBakeDuration} maxTiled=${this.maxTiledNoteDuration}`
+            `[midy] noteBake-summary | pathNoteBake=${this.noteBakePathCount} pathAds=${this.noteBakeAdsPathCount} pathWorkletHybrid=${this.noteBakeWorkletHybridCount} pathRealtimeExcl=${this.noteBakeRealtimeExclCount} drumNoteBake=${this.noteBakeDrumCount} drumExclusive=${this.noteBakeDrumExclusiveCount} releaseCapped=${this.noteBakeReleaseCappedCount} drumReleaseCapped=${this.noteBakeDrumReleaseCappedCount} noteBakeEffAvg=${this.noteBakePathCount > 0 ? (this.noteBakeEffectiveSum / this.noteBakePathCount).toFixed(2) : "0"}s drumEffAvg=${this.noteBakeDrumCount > 0 ? (this.noteBakeDrumEffectiveSum / this.noteBakeDrumCount).toFixed(2) : "0"}s maxReleaseTail=${this.maxReleaseTailSec} maxNoteBake=${this.maxNoteBakeDuration} maxTiled=${this.maxTiledNoteDuration}`
           );
+          if (this.noteBakeWorkletHybridCount > 0 && this.workletEngine) {
+            try {
+              const st = await this.workletEngine.fetchStats(80);
+              const peak = st?.peakActive ?? st?.active ?? 0;
+              const q = st?.quantums ?? 0;
+              const activeSum = st?.activeSum ?? 0;
+              const avgActive = q > 0 ? activeSum / q : 0;
+              const processMs = st?.processMs ?? 0;
+              const avgProcUs = q > 0 ? processMs / q * 1e3 : 0;
+              console.log(
+                `[midy] worklet-hybrid | notes=${this.noteBakeWorkletHybridCount} peakActive=${peak}/${WORKLET_MAX_VOICES} avgActive=${avgActive.toFixed(1)} processMs=${processMs.toFixed(1)} avgProcUs=${avgProcUs.toFixed(1)} noteOn=${st?.noteOn ?? 0} miss=${st?.missingSample ?? 0} quantums=${q}`
+              );
+            } catch {
+            }
+          }
         }
       }
       const notesAvg = cb > 0 ? this.chunkBakeNoteCountSum / cb : 0;
@@ -13384,9 +15540,11 @@ var Player = class _Player extends BasePlayer {
         this.totalTime > 0 ? this.totalTime : songStart + this.prerollSec,
         songStart + this.prerollSec
       );
-      console.warn(
-        `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s readyUntil=${readyUntil.toFixed(2)}s gap=${(targetEnd - readyUntil).toFixed(2)}s readyN=${readyN}/${sorted.length} bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} deferredBakes=${this.deferredChunkBakes.length} chunkBakeActive=${this.chunkBakeActive}`
-      );
+      if (this.debug) {
+        console.warn(
+          `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s readyUntil=${readyUntil.toFixed(2)}s gap=${(targetEnd - readyUntil).toFixed(2)}s readyN=${readyN}/${sorted.length} bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} deferredBakes=${this.deferredChunkBakes.length} chunkBakeActive=${this.chunkBakeActive}`
+        );
+      }
     }
   }
   /** Log first 3 close-chunks, then every 20th — avoids DevTools stall. */
@@ -13440,7 +15598,7 @@ var Player = class _Player extends BasePlayer {
         }
       }
       if (started + deferred > 0) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] start-ready | started=${started} deferred=${deferred} wall=${(performance.now() - t0).toFixed(0)}ms pending=${pending.length}`
           );
@@ -13647,7 +15805,7 @@ var Player = class _Player extends BasePlayer {
       pending.bufferReady = true;
       return buffer2;
     }).catch((err) => {
-      console.warn("segment render failed", err);
+      if (this.debug) console.warn("segment render failed", err);
       pending.buffer = null;
       pending.bufferReady = true;
       return null;
@@ -13863,7 +16021,7 @@ var Player = class _Player extends BasePlayer {
     if (!bakeNow) {
       if (inDiagWindow && this.shouldLogCloseChunk()) {
         const reason = liveDeferAll ? "live-defer" : !inNearWindow ? this.chunkBakeNearSec > 0 ? "near/horizon" : "horizon" : !this.canAcceptChunkBakeSlot() ? "slot-full" : "rate-limit";
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} deferred (${reason}) chunkBake=${this.chunkBakeActive} deferredN=${this.deferredChunkBakes.length} passStarts=${this.chunkBakeStartsThisPass}`
           );
@@ -13885,7 +16043,7 @@ var Player = class _Player extends BasePlayer {
     }
     this.recordChunkBakeStartThisPass();
     if (inDiagWindow && this.shouldLogCloseChunk()) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] close-chunk | start=${chunk.chunkStart.toFixed(2)}s notes=${chunk.notes.length} cost=${chunk.cost.toFixed(1)} bake-now chunkBake=${this.chunkBakeActive} pending=${state.pending.length} passStarts=${this.chunkBakeStartsThisPass}`
         );
@@ -13907,7 +16065,7 @@ var Player = class _Player extends BasePlayer {
       pending.bufferReady = true;
       return buffer2;
     }).catch((err) => {
-      console.warn("chunk render failed", err);
+      if (this.debug) console.warn("chunk render failed", err);
       pending.buffer = null;
       pending.bufferReady = true;
       return null;
@@ -13962,29 +16120,34 @@ var Player = class _Player extends BasePlayer {
     if (state.openChunk && state.openChunk.chunkStart + this.tileDuration <= lookAheadCheckTime) {
       this.closeChunk(state);
     }
-    if (this.debug) {
-      const nowWall = performance.now();
-      if (nowWall - this.lastBacklogLogMs >= this.backlogLogIntervalMs) {
-        this.lastBacklogLogMs = nowWall;
-        let songT = 0;
-        try {
-          songT = this.currentTime();
-        } catch {
+    if (this.debug && this.debugDetail) {
+      const deferred = this.deferredChunkBakes;
+      let notReadyN = 0;
+      for (let i = 0; i < state.pending.length; i++) {
+        if (!state.pending[i].bufferReady) notReadyN++;
+      }
+      if (deferred.length === 0 && notReadyN === 0) {
+      } else {
+        const nowWall = performance.now();
+        if (nowWall - this.lastBacklogLogMs >= this.backlogLogIntervalMs) {
+          this.lastBacklogLogMs = nowWall;
+          let songT = 0;
+          try {
+            songT = this.currentTime();
+          } catch {
+          }
+          const oldest = deferred.length > 0 ? deferred.reduce(
+            (m, d) => d.chunkStart < m ? d.chunkStart : m,
+            deferred[0].chunkStart
+          ) : -1;
+          let readyN = 0;
+          for (let i = 0; i < state.pending.length; i++) {
+            if (state.pending[i].bufferReady) readyN++;
+          }
+          console.warn(
+            `[midy] backlog | songT=${songT.toFixed(2)}s deferred=${deferred.length} pending=${state.pending.length} ready=${readyN} notReady=${notReadyN} chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} oldestDeferred=${oldest >= 0 ? oldest.toFixed(2) : "-"}s lookAhead=${lookAheadCheckTime.toFixed(2)}s`
+          );
         }
-        const deferred = this.deferredChunkBakes;
-        const oldest = deferred.length > 0 ? deferred.reduce(
-          (m, d) => d.chunkStart < m ? d.chunkStart : m,
-          deferred[0].chunkStart
-        ) : -1;
-        let readyN = 0;
-        let notReadyN = 0;
-        for (let i = 0; i < state.pending.length; i++) {
-          if (state.pending[i].bufferReady) readyN++;
-          else notReadyN++;
-        }
-        console.warn(
-          `[midy] backlog | songT=${songT.toFixed(2)}s deferred=${deferred.length} pending=${state.pending.length} ready=${readyN} notReady=${notReadyN} chunkBake=${this.chunkBakeActive} offline=${this.offlineRenderActive} oldestDeferred=${oldest >= 0 ? oldest.toFixed(2) : "-"}s lookAhead=${lookAheadCheckTime.toFixed(2)}s`
-        );
       }
     }
     const pending = state.pending;
@@ -14031,14 +16194,16 @@ var Player = class _Player extends BasePlayer {
       if (end > totalDuration2) totalDuration2 = end;
     }
     if (totalDuration2 <= 0) return null;
-    const maxTileBufSec = this.tileDuration + Math.max(0, this.maxTiledNoteDuration);
-    if (totalDuration2 > maxTileBufSec) {
-      if (this.debug) {
-        console.warn(
-          `[midy] chunk buffer clamped ${totalDuration2.toFixed(2)}s \u2192 ${maxTileBufSec.toFixed(2)}s (maxTiledNoteDuration=${this.maxTiledNoteDuration})`
-        );
+    if (!forAudioOffline) {
+      const maxTileBufSec = this.tileDuration + Math.max(0, this.maxTiledNoteDuration);
+      if (totalDuration2 > maxTileBufSec) {
+        if (this.debug && this.debugDetail) {
+          console.warn(
+            `[midy] chunk buffer clamped ${totalDuration2.toFixed(2)}s \u2192 ${maxTileBufSec.toFixed(2)}s (maxTiledNoteDuration=${this.maxTiledNoteDuration})`
+          );
+        }
+        totalDuration2 = maxTileBufSec;
       }
-      totalDuration2 = maxTileBufSec;
     }
     const simpleNotes = new Array(notesLen);
     const complexNotes = new Array(notesLen);
@@ -14497,7 +16662,7 @@ var Player = class _Player extends BasePlayer {
       } else {
         this.liveMixWorkerCount++;
       }
-      if (this.debug && this.liveMixOnMainCount + this.liveMixWorkerCount + this.liveMixSkipNotRealtime <= 12) {
+      if (this.debug && this.debugDetail && this.liveMixOnMainCount + this.liveMixWorkerCount + this.liveMixSkipNotRealtime <= 12) {
         console.warn(
           `[midy] live-mix-decision | onMain=${liveMixOnMain} liveRealtime=${liveRealtime} entries=${allEntries.length} liveMinEntries=${liveMinEntries} workerMixMinEntriesLive=${this.workerMixMinEntriesLive} workerMixMinEntries=${this.workerMixMinEntries} preferWorker=${this.preferWorkerMixDuringLive} isPlaying=${this.isPlaying} preroll=${this.chunkPrerollActive} offline=${forAudioOffline} chunkStart=${chunk.chunkStart.toFixed(2)}s`
         );
@@ -14513,7 +16678,7 @@ var Player = class _Player extends BasePlayer {
           mixDetail
         );
         mixMs = performance.now() - tMix0;
-        if (mixMs >= 200 && this.debug) {
+        if (mixMs >= 200 && this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-sync | wall=${mixMs.toFixed(0)}ms main=${mixDetail.mainMs.toFixed(0)}ms chunkStart=${chunk.chunkStart.toFixed(2)}s entries=${allEntries.length}`
           );
@@ -14532,7 +16697,7 @@ var Player = class _Player extends BasePlayer {
         const mixWorkMs = mixDetail.usedWorker ? mixDetail.prepareMs + mixDetail.workerMs + mixDetail.copyBackMs + mixDetail.postMs + mixDetail.queueMs : mixDetail.mainMs;
         mixMs = performance.now() - tMix0;
         if (mixMs >= 200 && mixMs > mixWorkMs + 50) {
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] mix-await-lag | wall=${mixMs.toFixed(0)}ms work=${mixWorkMs.toFixed(0)}ms setTimeout0=${awaitLagMs.toFixed(0)}ms usedWorker=${mixDetail.usedWorker} main=${mixDetail.mainMs.toFixed(0)} residual=${mixDetail.residualMs.toFixed(0)} chunkStart=${chunk.chunkStart.toFixed(2)}s entries=${allEntries.length} chunkBake=${this.chunkBakeActive}`
             );
@@ -14549,7 +16714,7 @@ var Player = class _Player extends BasePlayer {
         const ratio = mixMs > 0 ? overheadMs / mixMs : 0;
         if (overheadMs >= 50 || ratio >= 0.6) {
           this.chunkMixHighOverheadTiles++;
-          if (this.debug) {
+          if (this.debug && this.debugDetail) {
             console.warn(
               `[midy] mix-overhead | chunkStart=${chunk.chunkStart.toFixed(2)}s mixMs=${mixMs.toFixed(1)} overhead=${overheadMs.toFixed(1)} ratio=${(ratio * 100).toFixed(0)}% prepare=${mixDetail.prepareMs.toFixed(1)} await=${mixDetail.awaitMs.toFixed(1)} queue=${mixDetail.queueMs.toFixed(1)} post=${mixDetail.postMs.toFixed(1)} worker=${mixDetail.workerMs.toFixed(1)} residual=${mixDetail.residualMs.toFixed(1)} copyBack=${mixDetail.copyBackMs.toFixed(1)} afterAwait=${(mixDetail.afterAwaitMs ?? 0).toFixed(1)} entries=${mixDetail.entryCount ?? allEntries.length} srcSum=${mixDetail.srcSamplesSum ?? 0} transferable=${mixDetail.transferable} chunkBake=${this.chunkBakeActive} mixAwaiting=${this.mixAwaitingCount}`
             );
@@ -15032,7 +17197,7 @@ var Player = class _Player extends BasePlayer {
       const event = timeline[i];
       const t2 = event.startTime * inverseTempo;
       let pending;
-      offlinePlayer.processTimelineEvent(event, t2, {
+      const ctrlPending = offlinePlayer.processTimelineEvent(event, t2, {
         channels: channels2,
         onNoteOn: (channel2, ev) => {
           const note = offlinePlayer.createNoteInstance(
@@ -15073,6 +17238,7 @@ var Player = class _Player extends BasePlayer {
           pending = channel2.noteOff(ev.noteNumber, ev.velocity, t2, false);
         }
       });
+      if (ctrlPending) await ctrlPending;
       if (pending) await pending;
     }
     await Promise.all(allNotes.map((n) => n.ready));
@@ -15553,7 +17719,7 @@ var Player = class _Player extends BasePlayer {
       }
       const bodyMs = performance.now() - tBody0;
       if (bodyMs >= 100 || allocMs >= 50) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-body | total=${bodyMs.toFixed(0)}ms alloc=${allocMs.toFixed(0)}ms main=${mainMs.toFixed(0)}ms entries=${entries.length} destSamples=${bufferLength} simpleCache=${this.simpleNoteBufferCache.size}`
           );
@@ -15780,7 +17946,7 @@ var Player = class _Player extends BasePlayer {
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
       }
       if (residualMs >= 40) {
-        if (this.debug) {
+        if (this.debug && this.debugDetail) {
           console.warn(
             `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms afterAwait=${afterAwaitMs.toFixed(1)}ms prepare=${prepareMs.toFixed(0)}ms copyBack=${copyBackMs.toFixed(0)}ms | entries=${mixEntries.length} destSamples=${bufferLength} srcSamplesSum=${srcSamplesSum} transferable=${transferable} | concurrent: chunkBake=${concurrentSnap.chunkBakeActive} offline=${concurrentSnap.offlineRenderActive} deferred=${concurrentSnap.deferredBakes}`
           );
@@ -15788,7 +17954,7 @@ var Player = class _Player extends BasePlayer {
       }
       return buffer2;
     } catch (err) {
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           "[midy] worker mix failed, falling back to main thread",
           err
@@ -16387,9 +18553,98 @@ var Player = class _Player extends BasePlayer {
         entry.voiceParams
       );
     }
-    if (taskCount === 0) return;
-    tasks.length = taskCount;
-    await Promise.all(tasks);
+    if (taskCount > 0) {
+      tasks.length = taskCount;
+      await Promise.all(tasks);
+    }
+    if (this.cacheMode === "worklet") {
+      await this.preloadWorkletSamples();
+    } else if (isTiledCacheMode(this.cacheMode) && this.hasWorkletHybridCandidates()) {
+      await this.preloadWorkletSamples();
+    }
+  }
+  /**
+   * Upload every preload entry's PCM into WorkletEngine. Safe to call more
+   * than once; already-loaded sampleIds are skipped.
+   */
+  async preloadWorkletSamples() {
+    const entries = this.preloadEntries;
+    if (entries.length === 0) {
+      if (this.debug) {
+        console.log("[worklet] preloadWorkletSamples: no preloadEntries");
+      }
+      return;
+    }
+    const engine = await this.ensureWorkletEngine();
+    const t0 = performance.now();
+    let uploaded = 0;
+    let skipped = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (engine.hasSample(entry.audioBufferId)) {
+        skipped++;
+        continue;
+      }
+      await this.uploadWorkletSample(
+        engine,
+        entry.audioBufferId,
+        entry.voiceParams
+      );
+      uploaded++;
+      if ((i & 7) === 7) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    const ms = performance.now() - t0;
+    engine.log(
+      `preloadWorkletSamples entries=${entries.length} uploaded=${uploaded} skipped=${skipped} ${ms.toFixed(1)}ms`
+    );
+    if (this.debug) {
+      console.log(
+        `[worklet] preload done entries=${entries.length} uploaded=${uploaded} skipped=${skipped} ${ms.toFixed(1)}ms`
+      );
+    }
+  }
+  /** In-flight worklet sample uploads (coalesce concurrent noteOns). */
+  workletSampleUploads = /* @__PURE__ */ new Map();
+  uploadWorkletSample(engine, sampleId, voiceParams) {
+    if (engine.hasSample(sampleId)) return Promise.resolve();
+    let pending = this.workletSampleUploads.get(sampleId);
+    if (pending) return pending;
+    pending = (async () => {
+      try {
+        const audioBuffer = await this.getRawAudioBuffer(sampleId, voiceParams);
+        if (!audioBuffer || engine.hasSample(sampleId)) return;
+        const pcmL = audioBuffer.getChannelData(0);
+        const pcmR = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : null;
+        const loop = (voiceParams.sampleModes & 1) === 1 && voiceParams.loopEnd > voiceParams.loopStart;
+        let loopStart = 0;
+        let loopEnd = audioBuffer.length;
+        if (loop) {
+          loopStart = Math.max(
+            0,
+            Math.min(audioBuffer.length - 1, voiceParams.loopStart | 0)
+          );
+          loopEnd = Math.max(
+            loopStart + 1,
+            Math.min(audioBuffer.length, voiceParams.loopEnd | 0)
+          );
+        }
+        engine.loadSample(
+          sampleId,
+          pcmL,
+          pcmR,
+          audioBuffer.sampleRate,
+          loopStart,
+          loopEnd,
+          loop
+        );
+      } finally {
+        this.workletSampleUploads.delete(sampleId);
+      }
+    })();
+    this.workletSampleUploads.set(sampleId, pending);
+    return pending;
   }
   /**
    * ADS volume-envelope length in seconds (delay + attack + hold + decay).
@@ -16411,31 +18666,38 @@ var Player = class _Player extends BasePlayer {
   }
   createAdsRenderedBuffer(channel2, note, voiceParams, audioBuffer, isDrum = false) {
     const isLoop = isDrum ? this.isLoopDrum(channel2, note.noteNumber) && voiceParams.sampleModes % 2 !== 0 : voiceParams.sampleModes % 2 !== 0;
-    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
-    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    let decayDuration = voiceParams.decayVolEnv;
-    let adsDuration = this.computeAdsDuration(voiceParams);
+    const decayDuration = voiceParams.decayVolEnv;
+    const naturalAdsDuration = this.computeAdsDuration(voiceParams);
     const adsCap = this.maxAdsBakeDuration;
-    if (adsCap > 0 && adsDuration > adsCap) {
-      if (this.debug) {
-        console.log(
-          `[midy] ads-bake-cap | note=${note.noteNumber} adsDur=${adsDuration.toFixed(3)}s\u2192${adsCap.toFixed(3)}s decay=${decayDuration.toFixed(3)}s atk=${voiceParams.attackVolEnv.toFixed(3)}s hold=${voiceParams.holdVolEnv.toFixed(3)}s`
-        );
-      }
-      adsDuration = adsCap;
-      decayDuration = Math.max(1e-3, adsCap - holdVolEnvTime);
+    const adsDuration = adsCap > 0 ? Math.min(naturalAdsDuration, adsCap) : naturalAdsDuration;
+    if (adsCap > 0 && naturalAdsDuration > adsCap && this.debug && this.debugDetail) {
+      console.log(
+        `[midy] ads-bake-cap | note=${note.noteNumber} envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan=${adsDuration.toFixed(3)}s decay kept=${decayDuration.toFixed(3)}s`
+      );
     }
     const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
     const sampleLoopDuration = isLoop ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate : 0;
     const playbackRate = voiceParams.playbackRate;
     const outputLoopStart = sampleLoopStart / playbackRate;
     const outputLoopDuration = sampleLoopDuration / playbackRate;
-    const loopCount = isLoop && adsDuration > outputLoopStart && outputLoopDuration > 1e-9 ? Math.ceil((adsDuration - outputLoopStart) / outputLoopDuration) : 0;
+    const expandSec = typeof this.loopExpandDurationSec === "number" && this.loopExpandDurationSec > 0 ? this.loopExpandDurationSec : 8;
+    const isOffline = this.offlineRenderOnly || this.audioContext instanceof OfflineAudioContext;
+    let targetSpan;
+    if (isLoop) {
+      if (adsCap > 0 && naturalAdsDuration > adsCap && !isOffline) {
+        targetSpan = adsDuration;
+      } else {
+        targetSpan = Math.max(adsDuration, expandSec);
+      }
+    } else {
+      targetSpan = audioBuffer.duration / playbackRate;
+    }
+    const loopCount = isLoop && targetSpan > outputLoopStart && outputLoopDuration > 1e-9 ? Math.ceil((targetSpan - outputLoopStart) / outputLoopDuration) : 0;
     const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
-    const renderDuration = isLoop ? alignedLoopStart + outputLoopDuration : audioBuffer.duration / playbackRate;
+    const renderDuration = isLoop ? alignedLoopStart + outputLoopDuration : targetSpan;
     const sampleRate2 = this.audioContext.sampleRate;
     const length2 = Math.ceil(renderDuration * sampleRate2);
-    if (this.debug) {
+    if (this.debug && this.debugDetail) {
       const bytes = length2 * audioBuffer.numberOfChannels * 4;
       console.log(
         `[midy] ads-bake-size | note=${note.noteNumber} adsDur=${adsDuration.toFixed(3)}s decay=${voiceParams.decayVolEnv.toFixed(3)}s atk=${voiceParams.attackVolEnv.toFixed(3)}s hold=${voiceParams.holdVolEnv.toFixed(3)}s loop=${isLoop} loopDur=${outputLoopDuration.toFixed(3)}s loopCount=${loopCount} renderDur=${renderDuration.toFixed(3)}s samples=${length2} ~${(bytes / 1024 / 1024).toFixed(2)}MB`
@@ -16458,15 +18720,14 @@ var Player = class _Player extends BasePlayer {
       filterQ = qDc.q;
       filterDcGain = qDc.dcGain;
     }
-    const envParams = decayDuration === voiceParams.decayVolEnv ? voiceParams : { ...voiceParams, decayVolEnv: decayDuration };
     const gains = this.computeAdsVolumeGains(
-      envParams,
+      voiceParams,
       length2,
       sampleRate2,
       filterDcGain
     );
     const filterFreqs = this.computeFilterFreqCurve(
-      envParams,
+      voiceParams,
       length2,
       sampleRate2,
       null
@@ -16603,15 +18864,6 @@ var Player = class _Player extends BasePlayer {
     this.chunkMixOverheadSumMs = 0;
     this.chunkMixOverheadMaxMs = 0;
     this.chunkMixHighOverheadTiles = 0;
-    this.noteBakePathCount = 0;
-    this.noteBakeAdsPathCount = 0;
-    this.noteBakeRealtimeExclCount = 0;
-    this.noteBakeDrumCount = 0;
-    this.noteBakeDrumExclusiveCount = 0;
-    this.noteBakeReleaseCappedCount = 0;
-    this.noteBakeDrumReleaseCappedCount = 0;
-    this.noteBakeEffectiveSum = 0;
-    this.noteBakeDrumEffectiveSum = 0;
     this.liveMixOnMainCount = 0;
     this.liveMixWorkerCount = 0;
     this.liveMixSkipNotRealtime = 0;
@@ -16663,7 +18915,7 @@ var Player = class _Player extends BasePlayer {
    * sample volume (the only scaling that should matter for += loops).
    */
   maybeLogTileBakeDetail(d) {
-    if (!this.debug) return;
+    if (!this.debug || !this.debugDetail) return;
     this.tileBakeDetailCount++;
     const every = Math.max(1, this.tileBakeDetailEveryN | 0);
     const mixHeavy = d.mixMs >= this.mixDetailMinMs;
@@ -16761,7 +19013,7 @@ var Player = class _Player extends BasePlayer {
       const sMissBake = p.simpleMissBakeMs ?? 0;
       const mixWorker = p.mixUsedWorker === true;
       const mixLine = mixWorker ? `mixDetail: prepare=${(p.mixPrepareMs ?? 0).toFixed(0)}ms await=${(p.mixAwaitMs ?? 0).toFixed(0)}ms queue=${(p.mixQueueMs ?? 0).toFixed(0)}ms post=${(p.mixPostMs ?? 0).toFixed(0)}ms worker=${(p.mixWorkerMs ?? 0).toFixed(0)}ms residual=${(p.mixResidualMs ?? 0).toFixed(0)}ms afterAwait=${(p.mixAfterAwaitMs ?? 0).toFixed(1)}ms copyBack=${(p.mixCopyBackMs ?? 0).toFixed(0)}ms | entries=${p.mixEntryCount ?? "?"} destSamples=${p.mixDestSamples ?? "?"} srcSamplesSum=${p.mixSrcSamplesSum ?? "?"} transferable=${p.mixTransferable ?? "?"} | concurrent: chunkBake=${p.mixChunkBakeActive ?? "?"} offline=${p.mixOfflineRenderActive ?? "?"} deferred=${p.mixDeferredBakes ?? "?"}` : p.mixUsedWorker === false ? `mixDetail: main=${(p.mixMainMs ?? 0).toFixed(0)}ms` : "";
-      if (this.debug) {
+      if (this.debug && this.debugDetail) {
         console.warn(
           `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} start=${(p.chunkStart ?? 0).toFixed(2)}s notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} total=${simpleTotal} | cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${p.cxMod ?? 0} gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s cost=${(p.cost ?? 0).toFixed(2)} topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | parts: simple=${simpleMs.toFixed(0)}ms complex=${complexMs.toFixed(0)}ms mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms | simpleDetail: lookup=${sLookup.toFixed(0)}ms awaitInflight=${sAwaitInf.toFixed(0)}ms missBake=${sMissBake.toFixed(0)}ms` + (mixLine ? ` | ${mixLine}` : "")
         );
@@ -16858,7 +19110,7 @@ var Player = class _Player extends BasePlayer {
       const key = cands[i].key;
       const val = cache.get(key);
       if (!(val instanceof AudioBuffer)) continue;
-      if (this.debug && this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax) {
+      if (this.debug && this.debugDetail && this.simpleCacheEvictLogCount < this.simpleCacheEvictLogMax) {
         this.simpleCacheEvictLogCount++;
         const keyPreview = key.length > 48 ? key.slice(0, 48) + "\u2026" : key;
         const score = cands[i].score;
@@ -16926,9 +19178,11 @@ var Player = class _Player extends BasePlayer {
         entry.voiceParams
       );
       const hasWf = entry.noteEvent ? this.hasWaveformAutomation(entry.noteEvent) : false;
-      console.warn(
-        `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} dur=${entry.noteDuration.toFixed(3)}s ms=${(performance.now() - tComplexOne0).toFixed(1)} events=${events} types=${types} count=${count} fromCache=${fromCache} path=${path} mix=${bakeChannelMix ? "stereo" : "dry"} | almostBend=${this.useAlmostSimplePitchBend} almostPan=${this.useAlmostSimplePan} hasWaveform=${hasWf} bendNeedsCx=${bendNeedsCx} modEnvToPitch=${modEnv} modLfoToPitch=${modLfo}`
-      );
+      if (this.debug && this.debugDetail) {
+        console.warn(
+          `[midy] complex-one | ch=${entry.channelNumber} note=${entry.noteNumber} dur=${entry.noteDuration.toFixed(3)}s ms=${(performance.now() - tComplexOne0).toFixed(1)} events=${events} types=${types} count=${count} fromCache=${fromCache} path=${path} mix=${bakeChannelMix ? "stereo" : "dry"} | almostBend=${this.useAlmostSimplePitchBend} almostPan=${this.useAlmostSimplePan} hasWaveform=${hasWf} bendNeedsCx=${bendNeedsCx} modEnvToPitch=${modEnv} modLfoToPitch=${modLfo}`
+        );
+      }
     };
     if (count <= 1) {
       this.noteCacheRecordComplexUnique();
@@ -18480,7 +20734,16 @@ var Player = class _Player extends BasePlayer {
     const voiceParams = note.voiceParams ?? (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
+    if (this.cacheMode === "worklet") {
+      await this.setNoteAudioNodeWorklet(channel2, note, realtime);
+      return;
+    }
     if (note.isTiledGhost) {
+      return;
+    }
+    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+      this.noteBakeWorkletHybridCount++;
+      await this.setNoteAudioNodeWorklet(channel2, note, realtime);
       return;
     }
     const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
@@ -18577,8 +20840,419 @@ var Player = class _Player extends BasePlayer {
       note.bufferSource.start(startTime);
     }
   }
+  soundOffNote(note, scheduleTime) {
+    if (note.workletVoiceId != null) {
+      note.ending = true;
+      const engine = this.workletEngine;
+      const voiceId = note.workletVoiceId;
+      if (engine) engine.stop(voiceId);
+      this.soundingNotes.delete(note);
+      note.workletVoiceId = null;
+      return Promise.resolve();
+    }
+    return super.soundOffNote(note, scheduleTime);
+  }
+  // ---------------------------------------------------------------------------
+  // Worklet mode (cacheMode === "worklet")
+  // ---------------------------------------------------------------------------
+  /**
+   * Worklet polyphony counts MIDI note groups (one noteOn), not SF2 layers.
+   * Multi-zone stacks share noteGroupId and count as 1 toward maxVoices —
+   * same musical budget users expect from non-worklet modes.
+   */
+  countSoundingVoices() {
+    if (this.cacheMode !== "worklet") return super.countSoundingVoices();
+    const seen = /* @__PURE__ */ new Set();
+    let groups = 0;
+    let layers = 0;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      layers++;
+      const g = note.noteGroupId;
+      if (typeof g === "number") {
+        if (seen.has(g)) continue;
+        seen.add(g);
+      }
+      groups++;
+    }
+    groups += this.workletPendingGroups.size;
+    if (groups > this.workletPeakGroups) this.workletPeakGroups = groups;
+    if (layers > this.workletPeakLayers) this.workletPeakLayers = layers;
+    return groups;
+  }
+  /**
+   * Steal a whole note group (all SF2 layers of one noteOn) so layer stacks
+   * do not leave orphan voices after polyphony pressure.
+   */
+  stealOldestVoice(scheduleTime, pedalOnly = false) {
+    if (this.cacheMode !== "worklet") {
+      return super.stealOldestVoice(scheduleTime, pedalOnly);
+    }
+    let target = null;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      if (pedalOnly && !note.heldByPedal) continue;
+      target = note;
+      break;
+    }
+    if (!target) return false;
+    const groupId = target.noteGroupId;
+    const toStop = [];
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      if (typeof groupId === "number") {
+        if (note.noteGroupId === groupId) toStop.push(note);
+      } else if (note === target) {
+        toStop.push(note);
+      }
+    }
+    for (let i = 0; i < toStop.length; i++) {
+      this.forceStopVoice(toStop[i], scheduleTime);
+    }
+    if (toStop.length > 0) this.workletMainSteal++;
+    return toStop.length > 0;
+  }
+  /**
+   * Main-thread maxVoices is authoritative (same policy as other cache modes).
+   * Processor soft-cap stays off so multi-layer groups are not double-limited
+   * by raw slot count; WORKLET_MAX_VOICES remains the safety ceiling.
+   */
+  syncWorkletVoiceLimit(engine) {
+    engine.setVoiceLimit(0);
+  }
+  /** Update peakGroups / peakLayers for worklet-perf (call on noteOn path). */
+  sampleWorkletPolyPeaks() {
+    if (this.cacheMode !== "worklet") return;
+    const seen = /* @__PURE__ */ new Set();
+    let groups = 0;
+    let layers = 0;
+    for (const note of this.soundingNotes) {
+      if (note.ending || note.isTiledGhost) continue;
+      layers++;
+      const g = note.noteGroupId;
+      if (typeof g === "number") {
+        if (seen.has(g)) continue;
+        seen.add(g);
+      }
+      groups++;
+    }
+    groups += this.workletPendingGroups.size;
+    if (groups > this.workletPeakGroups) this.workletPeakGroups = groups;
+    if (layers > this.workletPeakLayers) this.workletPeakLayers = layers;
+  }
+  /**
+   * Effective main-thread maxVoices while in worklet mode.
+   * <= 0 means unlimited (processor hard ceiling only).
+   */
+  resolveWorkletMainMaxVoices() {
+    const lim = this.workletVoiceLimit;
+    if (lim === "unlimited") return 0;
+    if (lim === "match") {
+      const m = this.maxVoices | 0;
+      return m <= 0 ? 0 : m;
+    }
+    if (typeof lim === "number" && Number.isFinite(lim)) {
+      const n = lim | 0;
+      return n <= 0 ? 0 : n;
+    }
+    return 0;
+  }
+  /**
+   * Effective main-thread maxPedalVoices while in worklet mode.
+   * "match" uses Player.maxPedalVoices; otherwise unlimited on main
+   * (pedal pile is only cut by the worklet hard ceiling / note ends).
+   */
+  resolveWorkletMainMaxPedalVoices() {
+    const lim = this.workletVoiceLimit;
+    if (lim === "match") {
+      const m = this.maxPedalVoices | 0;
+      return m <= 0 ? 0 : m;
+    }
+    return 0;
+  }
+  /**
+   * Apply workletVoiceLimit on the main thread (same idea as other modes):
+   * - unlimited: no main steal
+   * - match | number: enforceMaxVoices with effective cap; steal whole groups
+   * Processor soft-cap stays disabled; hard ceiling is WORKLET_MAX_VOICES.
+   *
+   * reserve is layer count from noteOnChannel — for group-based counting,
+   * clamp to 1 so a multi-zone noteOn does not over-steal before it joins.
+   */
+  enforceMaxVoices(scheduleTime, reserve = 1) {
+    if (this.cacheMode !== "worklet") {
+      super.enforceMaxVoices(scheduleTime, reserve);
+      return;
+    }
+    const effective = this.resolveWorkletMainMaxVoices();
+    if (this.workletEngine) {
+      this.syncWorkletVoiceLimit(this.workletEngine);
+    }
+    if (effective <= 0) return;
+    const prev = this.maxVoices;
+    this.maxVoices = effective;
+    const groupReserve = Math.min(1, Math.max(0, reserve | 0));
+    try {
+      super.enforceMaxVoices(scheduleTime, groupReserve);
+    } finally {
+      this.maxVoices = prev;
+    }
+  }
+  enforceMaxPedalVoices(scheduleTime) {
+    if (this.cacheMode !== "worklet") {
+      super.enforceMaxPedalVoices(scheduleTime);
+      return;
+    }
+    const effective = this.resolveWorkletMainMaxPedalVoices();
+    if (effective <= 0) return;
+    const prev = this.maxPedalVoices;
+    this.maxPedalVoices = effective;
+    try {
+      super.enforceMaxPedalVoices(scheduleTime);
+    } finally {
+      this.maxPedalVoices = prev;
+    }
+  }
+  /**
+   * segment/chunk Phase-1 hybrid: route classification leftovers (adsFallback,
+   * exclusive without noteBake, etc.) to the worklet synth instead of the
+   * main-thread ADS graph. Tiled ghosts and longNoteBakedSet notes stay on
+   * BufferSource paths.
+   */
+  shouldRouteNoteToWorkletHybrid(note) {
+    if (!isTiledCacheMode(this.cacheMode)) return false;
+    if (note.isTiledGhost) return false;
+    if (this.audioContext instanceof OfflineAudioContext) return false;
+    if (note.timelineIndex == null) return false;
+    const i = note.timelineIndex;
+    if (this.longNoteBakedSet.has(i)) return false;
+    if (this.tiledBakedSet.has(i)) return false;
+    return true;
+  }
+  /** True when segment/chunk classification left any non-tile, non-noteBake notes. */
+  hasWorkletHybridCandidates() {
+    if (!isTiledCacheMode(this.cacheMode)) return false;
+    const n = this.tiledVoiceParams.length;
+    if (n === 0) return false;
+    const tiled = this.tiledBakedSet;
+    const long = this.longNoteBakedSet;
+    for (let i = 0; i < n; i++) {
+      if (!this.tiledVoiceParams[i]) continue;
+      if (tiled.has(i) || long.has(i)) continue;
+      return true;
+    }
+    const total2 = this.noteOnDurations.length;
+    for (let i = 0; i < total2; i++) {
+      if (tiled.has(i) || long.has(i)) continue;
+      if (this.noteOnDurations[i] == null && !this.tiledVoiceParams[i]) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Lazily create WorkletEngine and connect to masterVolume (dry) plus
+   * post-stage effect inputs when available (GM2 reverb/chorus, Midy delay).
+   */
+  async ensureWorkletEngine() {
+    const effects = this.getWorkletEffectInputs();
+    if (this.workletEngine) {
+      this.workletEngine.setEffectInputs(effects);
+      if (this.debug !== this.workletEngine.debug) {
+        this.workletEngine.setDebug(this.debug);
+      }
+      this.syncWorkletVoiceLimit(this.workletEngine);
+      return this.workletEngine;
+    }
+    const ctx = this.audioContext;
+    if (ctx instanceof OfflineAudioContext) {
+      throw new Error("worklet mode is not supported on OfflineAudioContext");
+    }
+    const engine = new WorkletEngine(ctx);
+    await engine.ensureStarted(this.masterVolume, effects);
+    if (this.debug) engine.setDebug(true);
+    this.syncWorkletVoiceLimit(engine);
+    engine.log(
+      `ensureWorkletEngine ok hardMax=${WORKLET_MAX_VOICES} workletVoiceLimit=${JSON.stringify(this.workletVoiceLimit)} mainMax=${this.resolveWorkletMainMaxVoices()} lookAhead=${this.lookAhead} cacheMode=${this.cacheMode}`
+    );
+    this.workletEngine = engine;
+    return engine;
+  }
+  /**
+   * Resolve post-stage effect inputs via duck typing so Player stays free of
+   * GM2/Midy imports. Subclasses that own reverbEffect / chorusEffect /
+   * delayEffect are picked up automatically.
+   */
+  getWorkletEffectInputs() {
+    const self2 = this;
+    return {
+      reverbInput: self2.reverbEffect?.input ?? null,
+      chorusInput: self2.chorusEffect?.input ?? null,
+      delayInput: self2.delayEffect?.input ?? null
+    };
+  }
+  /**
+   * Approximate per-note effect send levels for the post-mix worklet bus.
+   * GM2 overrides use key-based controllers; base uses channel CC × SF2 amount.
+   */
+  calcWorkletEffectSends(channel2, note) {
+    const vp = note.voiceParams;
+    if (!vp) return { reverb: 0, chorus: 0, delay: 0 };
+    const state = channel2.state;
+    const self2 = this;
+    const reverb = self2.calcReverbSendLevel ? self2.calcReverbSendLevel(channel2, note) : (vp.reverbEffectsSend ?? 0) * (state.reverbSendLevel ?? 0);
+    const chorus = self2.calcChorusSendLevel ? self2.calcChorusSendLevel(channel2, note) : (vp.chorusEffectsSend ?? 0) * (state.chorusSendLevel ?? 0);
+    const delay = self2.calcDelaySendLevel ? self2.calcDelaySendLevel(channel2, note) : state.delaySendLevel ?? 0;
+    return {
+      reverb: Math.max(0, Math.min(1, reverb)),
+      chorus: Math.max(0, Math.min(1, chorus)),
+      delay: Math.max(0, Math.min(1, delay))
+    };
+  }
+  /**
+   * Worklet note path (Phase 2): upload sample PCM, pass filter / LFO /
+   * modEnv / volume envelope, start a worklet voice. No Web Audio
+   * per-note graph. Channel vol/expr/pan can be updated live via
+   * setVoiceParams.
+   */
+  async setNoteAudioNodeWorklet(channel2, note, _realtime) {
+    const voiceParams = note.voiceParams;
+    if (!voiceParams) return;
+    const gid = note.noteGroupId;
+    const track = typeof gid === "number";
+    if (track) this.workletPendingGroups.add(gid);
+    try {
+      await this.setNoteAudioNodeWorkletBody(channel2, note);
+    } finally {
+      if (track) this.workletPendingGroups.delete(gid);
+    }
+  }
+  async setNoteAudioNodeWorkletBody(channel2, note) {
+    const voiceParams = note.voiceParams;
+    if (!voiceParams) return;
+    const engine = await this.ensureWorkletEngine();
+    const audioBufferId = note.audioBufferId !== void 0 ? note.audioBufferId : this.getVoiceId(channel2, note.noteNumber, note.velocity);
+    if (audioBufferId === void 0) return;
+    const sampleId = audioBufferId;
+    if (!engine.hasSample(sampleId)) {
+      const tLoad = performance.now();
+      await this.uploadWorkletSample(engine, sampleId, voiceParams);
+      if (this.debug) {
+        engine.log(
+          `lateUpload sampleId=${sampleId} ${(performance.now() - tLoad).toFixed(1)}ms ok=${engine.hasSample(sampleId)}`
+        );
+      }
+      if (!engine.hasSample(sampleId)) {
+        if (this.debug) {
+          engine.log(
+            `ABORT noteOn: sampleId=${sampleId} still missing after upload`
+          );
+        }
+        return;
+      }
+    }
+    const now = this.audioContext.currentTime;
+    if (this.debug && note.startTime < now - 0.01) {
+      engine.log(
+        `LATE noteOn sampleId=${sampleId} scheduled=${note.startTime.toFixed(3)} now=${now.toFixed(3)} lateBy=${(now - note.startTime).toFixed(3)}s`
+      );
+    }
+    const gainFromCC = sf2VolumeExprGain(
+      channel2.state.volumeMSB,
+      channel2.state.expressionMSB
+    ) / DEFAULT_SF2_VOLUME_EXPR_GAIN;
+    const atten = cbToRatio(-voiceParams.initialAttenuation);
+    const gain = Math.max(0, atten * gainFromCC);
+    note.workletBaseAtten = atten;
+    note.workletZonePan = voiceParams.pan;
+    const zonePan = voiceParams.pan;
+    const chPan = channel2.state.panMSB;
+    const pan = Math.max(-1, Math.min(1, zonePan * 2 + (chPan - 0.5) * 2));
+    const detuneCents = channel2.detune + (voiceParams.detune || 0);
+    const playbackRate = voiceParams.playbackRate * Math.pow(2, detuneCents / 1200);
+    const sustainLin = cbToRatio(-1e3 * voiceParams.sustainVolEnv);
+    const { q: filterQ, dcGain: filterDcGain } = sf2FilterQ(
+      voiceParams.initialFilterQ
+    );
+    const modSustainLevel = Math.max(
+      0,
+      Math.min(1, 1 - (voiceParams.sustainModEnv ?? 0))
+    );
+    const voiceId = engine.allocVoiceId();
+    note.workletVoiceId = voiceId;
+    this.soundingNotes.add(note);
+    this.sampleWorkletPolyPeaks();
+    engine.noteOn(voiceId, {
+      sampleId,
+      when: note.startTime,
+      playbackRate,
+      gain,
+      pan,
+      delay: voiceParams.delayVolEnv,
+      attack: Math.max(1e-4, voiceParams.attackVolEnv),
+      hold: voiceParams.holdVolEnv,
+      decay: Math.max(1e-4, voiceParams.decayVolEnv),
+      sustain: Math.max(0, Math.min(1, sustainLin / Math.max(atten, 1e-6))),
+      release: Math.max(1e-4, voiceParams.releaseVolEnv),
+      // Filter
+      filterFcCents: voiceParams.initialFilterFc,
+      filterQ,
+      filterDcGain,
+      // Mod envelope
+      delayModEnv: voiceParams.delayModEnv,
+      attackModEnv: Math.max(1e-4, voiceParams.attackModEnv),
+      holdModEnv: voiceParams.holdModEnv,
+      decayModEnv: Math.max(1e-4, voiceParams.decayModEnv),
+      sustainModEnv: modSustainLevel,
+      releaseModEnv: Math.max(1e-4, voiceParams.releaseModEnv),
+      modEnvToPitch: voiceParams.modEnvToPitch,
+      modEnvToFilterFc: voiceParams.modEnvToFilterFc,
+      // Mod LFO (freq is in absolute cents in SF2 → Hz)
+      delayModLFO: voiceParams.delayModLFO,
+      freqModLFO: this.centToHz(voiceParams.freqModLFO),
+      modLfoToPitch: voiceParams.modLfoToPitch,
+      modLfoToFilterFc: voiceParams.modLfoToFilterFc,
+      modLfoToVolume: voiceParams.modLfoToVolume,
+      // Vib LFO
+      delayVibLFO: voiceParams.delayVibLFO,
+      freqVibLFO: this.centToHz(voiceParams.freqVibLFO),
+      vibLfoToPitch: voiceParams.vibLfoToPitch
+    });
+    const sends = this.calcWorkletEffectSends(channel2, note);
+    engine.setVoiceEffectSends(voiceId, sends);
+  }
+  releaseNoteWorklet(note, endTime) {
+    const engine = this.workletEngine;
+    const voiceId = note.workletVoiceId;
+    if (!engine || voiceId == null) {
+      this.soundingNotes.delete(note);
+      note.workletVoiceId = null;
+      return Promise.resolve();
+    }
+    const release = note.voiceParams?.releaseVolEnv ?? 0.05;
+    engine.noteOff(voiceId, endTime, release);
+    const now = this.audioContext.currentTime;
+    const waitMs = Math.max(
+      80,
+      (Math.max(0, endTime - now) + release) * 1e3 + 150
+    );
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        if (note.workletVoiceId === voiceId) {
+          engine.stop(voiceId);
+          note.workletVoiceId = null;
+        }
+        this.soundingNotes.delete(note);
+        resolve();
+      }, waitMs);
+    });
+  }
   releaseNote(_channel, note, endTime) {
     if (note.isTiledGhost) return;
+    if (note.workletVoiceId != null) {
+      return this.releaseNoteWorklet(note, endTime);
+    }
     const now = this.audioContext.currentTime;
     const tRel = Math.max(0, endTime - note.startTime);
     const heldFromEnvelope = note.volumeEnvelopeNode ? this.volumeEnvelopeLevelAt(note, tRel) : 1;
@@ -19488,7 +22162,8 @@ var Channel3 = class extends Channel {
       }
     } else {
       const t2 = scheduleTime ?? player.audioContext.currentTime;
-      player.releaseSustainPedal(this, value, t2);
+      const rel = player.releaseSustainPedal(this, value, t2);
+      await Promise.all(rel.map((p) => Promise.resolve(p)));
     }
   }
   setPortamento(value, scheduleTime) {
@@ -20172,6 +22847,7 @@ var MidyGM2 = class _MidyGM2 extends Player {
     }
   }
   scheduleTimelineEvents(scheduleTime, queueIndex) {
+    const tSched0 = performance.now();
     const timeOffset = this.resumeTime - this.startTime;
     const isSegmentMode = this.cacheMode === "segment";
     const isChunkMode = this.cacheMode === "chunk";
@@ -20199,7 +22875,7 @@ var MidyGM2 = class _MidyGM2 extends Player {
           if (isSegmentNote || isChunkNote) {
             note.isTiledGhost = true;
             note.tiledNoteDuration = this.noteOnDurations[queueIndex] ?? 0;
-          } else if (this.debug && (isSegmentMode || isChunkMode)) {
+          } else if (this.debug && this.debugDetail && (isSegmentMode || isChunkMode)) {
             const midiDur = this.noteOnDurations[queueIndex] ?? 0;
             const vp = this.tiledVoiceParams[queueIndex];
             const releaseTailRaw = vp ? this.rawReleaseTailSec(vp.releaseVolEnv ?? 0, false) : -1;
@@ -20211,14 +22887,23 @@ var MidyGM2 = class _MidyGM2 extends Player {
               event2.noteNumber
             );
             const effective = releaseTail < 0 ? -1 : midiDur + releaseTail;
-            const path = inLong ? "noteBake" : isExcl ? "realtimeExcl" : effective > this.maxTiledNoteDuration ? "ads" : "realtime";
+            const hybrid2 = !inLong;
+            const path = inLong ? "noteBake" : hybrid2 ? "workletHybrid" : isExcl ? "realtimeExcl" : effective > this.maxTiledNoteDuration ? "ads" : "realtime";
             let reason;
-            if (isExcl) {
+            if (inLong) {
+              reason = isExcl ? `exclusiveClass=${excl || "?"}\u2192noteBake` : effective > this.maxTiledNoteDuration ? `effective>${this.maxTiledNoteDuration}s\u2192noteBake(\u2264${this.maxNoteBakeDuration || "inf"}s)` : "inLong\u2192noteBake";
+            } else if (hybrid2) {
+              reason = isExcl ? `exclusiveClass=${excl || "?"}\u2192workletHybrid` : effective > this.maxTiledNoteDuration ? `effective>${this.maxTiledNoteDuration}s\u2192workletHybrid(>maxNoteBake)` : "other\u2192workletHybrid";
+            } else if (isExcl) {
               reason = `exclusiveClass=${excl || "?"}`;
             } else if (effective > this.maxTiledNoteDuration) {
-              reason = inLong ? `effective>${this.maxTiledNoteDuration}s\u2192noteBake(\u2264${this.maxNoteBakeDuration || "inf"}s)` : `effective>${this.maxTiledNoteDuration}s\u2192ads(>maxNoteBake)`;
+              reason = `effective>${this.maxTiledNoteDuration}s\u2192ads(>maxNoteBake)`;
             } else {
               reason = "other(notInTiledSet)";
+            }
+            if (path === "noteBake") {
+              this.noteBakePathCount++;
+              if (effective > 0) this.noteBakeEffectiveSum += effective;
             }
             const capNote = releaseTail >= 0 && releaseTailRaw > releaseTail ? ` rawRelease=${releaseTailRaw.toFixed(2)}s` : "";
             console.warn(
@@ -20257,6 +22942,10 @@ var MidyGM2 = class _MidyGM2 extends Player {
       });
       queueIndex++;
     }
+    const schedMs = performance.now() - tSched0;
+    this.playMainSchedSumMs += schedMs;
+    this.playMainSchedCount++;
+    if (schedMs > this.playMainSchedMaxMs) this.playMainSchedMaxMs = schedMs;
     return queueIndex;
   }
   resetChannels(channels2 = this.channels, scheduleTime) {
@@ -20305,6 +22994,7 @@ var MidyGM2 = class _MidyGM2 extends Player {
     } else {
       this.dispatchEvent(new Event("started"));
     }
+    this.startEventLoopLagProbe();
     let queueIndex = this.getQueueIndex(this.resumeTime);
     let exitReason;
     this.notePromises = [];
@@ -20404,6 +23094,7 @@ var MidyGM2 = class _MidyGM2 extends Player {
       await this.scheduleTask(() => {
       }, waitTime);
     }
+    this.stopEventLoopLagProbe();
     if (exitReason !== "paused") {
       this.resetAllStates();
       this.lastActiveSensing = 0;
@@ -20538,6 +23229,10 @@ var MidyGM2 = class _MidyGM2 extends Player {
     if (this.reverbEffect) this.reverbEffect.output.disconnect();
     this.reverbEffect = this.createReverbEffect(algorithm);
     this.reverb.algorithm = algorithm;
+    this.reverbEffect.output.connect(this.masterVolume);
+    this.workletEngine?.setEffectInputs({
+      reverbInput: this.reverbEffect.input
+    });
   }
   createReverbEffect(algorithm) {
     const { audioContext, reverb } = this;
@@ -20934,7 +23629,16 @@ var MidyGM2 = class _MidyGM2 extends Player {
     const voiceParams = note.voiceParams ?? (note.voice ? getVoiceParams(note.voice, controllerState) : null);
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
+    if (this.cacheMode === "worklet") {
+      await this.setNoteAudioNodeWorklet(channel2, note, realtime);
+      return;
+    }
     if (note.isTiledGhost) {
+      return;
+    }
+    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+      this.noteBakeWorkletHybridCount++;
+      await this.setNoteAudioNodeWorklet(channel2, note, realtime);
       return;
     }
     const audioBuffer = await this.getAudioBuffer(channel2, note, realtime);
@@ -21223,6 +23927,9 @@ var MidyGM2 = class _MidyGM2 extends Player {
   // (waitSourceEnded disconnects the note — no separate cache callback).
   releaseNote(_channel, note, endTime) {
     if (note.isTiledGhost) return;
+    if (note.workletVoiceId != null) {
+      return this.releaseNoteWorklet(note, endTime);
+    }
     const now = this.audioContext.currentTime;
     const tRel = Math.max(0, endTime - note.startTime);
     const heldFromEnvelope = note.volumeEnvelopeNode ? this.volumeEnvelopeLevelAt(note, tRel) : 1;
@@ -21325,13 +24032,31 @@ var MidyGM2 = class _MidyGM2 extends Player {
       }
       const state = channel2.state;
       if (0.5 <= state.sustainPedal) {
-        const deferred = this.findNoteForOff(channel2, noteNumber);
-        if (deferred && !deferred.heldByPedal) {
-          deferred.heldByPedal = true;
-          if (channel2.sustainNotes.indexOf(deferred) < 0) {
-            channel2.sustainNotes.push(deferred);
+        const stack2 = channel2.activeNotes[noteNumber];
+        if (stack2 && stack2.length > 0) {
+          let targetGroupId2;
+          for (let i = 0; i < stack2.length; i++) {
+            const n = stack2[i];
+            if (n && !n.ending) {
+              targetGroupId2 = n.noteGroupId;
+              break;
+            }
           }
-          this.enforceMaxPedalVoices(endTime);
+          if (targetGroupId2 !== void 0) {
+            let marked = false;
+            for (let i = 0; i < stack2.length; i++) {
+              const n = stack2[i];
+              if (!n || n.ending || n.noteGroupId !== targetGroupId2) continue;
+              if (!n.heldByPedal) {
+                n.heldByPedal = true;
+                marked = true;
+              }
+              if (channel2.sustainNotes.indexOf(n) < 0) {
+                channel2.sustainNotes.push(n);
+              }
+            }
+            if (marked) this.enforceMaxPedalVoices(endTime);
+          }
         }
         return;
       }
@@ -21339,10 +24064,28 @@ var MidyGM2 = class _MidyGM2 extends Player {
         (n) => n.noteNumber === noteNumber && !n.ending
       );
       if (0.5 <= state.sostenutoPedal && heldBySostenuto) {
-        const deferred = this.findNoteForOff(channel2, noteNumber);
-        if (deferred && !deferred.heldByPedal) {
-          deferred.heldByPedal = true;
-          this.enforceMaxPedalVoices(endTime);
+        const stack2 = channel2.activeNotes[noteNumber];
+        if (stack2 && stack2.length > 0) {
+          let targetGroupId2;
+          for (let i = 0; i < stack2.length; i++) {
+            const n = stack2[i];
+            if (n && !n.ending) {
+              targetGroupId2 = n.noteGroupId;
+              break;
+            }
+          }
+          if (targetGroupId2 !== void 0) {
+            let marked = false;
+            for (let i = 0; i < stack2.length; i++) {
+              const n = stack2[i];
+              if (!n || n.ending || n.noteGroupId !== targetGroupId2) continue;
+              if (!n.heldByPedal) {
+                n.heldByPedal = true;
+                marked = true;
+              }
+            }
+            if (marked) this.enforceMaxPedalVoices(endTime);
+          }
         }
         return;
       }
@@ -21407,23 +24150,56 @@ var MidyGM2 = class _MidyGM2 extends Player {
     void this.soundOffNote(note, scheduleTime);
   }
   releaseSustainPedal(channel2, halfVelocity, scheduleTime) {
-    const velocity = halfVelocity * 2;
+    const velocity = Math.min(127, Math.max(0, halfVelocity * 2));
     const promises = [];
-    for (let i = 0; i < channel2.sustainNotes.length; i++) {
-      const note = channel2.sustainNotes[i];
+    const releasedNums = /* @__PURE__ */ new Set();
+    const releaseKey = (noteNumber) => {
+      if (releasedNums.has(noteNumber)) return;
+      releasedNums.add(noteNumber);
+      const p = channel2.noteOff(noteNumber, velocity, scheduleTime, true);
+      if (p) promises.push(p);
+    };
+    const pending = channel2.sustainNotes.slice();
+    channel2.sustainNotes = [];
+    for (let i = 0; i < pending.length; i++) {
+      const n = pending[i];
+      if (!n || n.ending) continue;
       const heldBySostenuto = channel2.sostenutoNotes.some(
-        (n) => n === note && !n.ending
+        (s) => s === n && !s.ending
       );
       if (heldBySostenuto) continue;
-      const promise = channel2.noteOff(
-        note.noteNumber,
-        velocity,
-        scheduleTime,
-        true
-      );
-      promises.push(promise);
+      releaseKey(n.noteNumber);
     }
-    channel2.sustainNotes = [];
+    for (let nn = 0; nn < 128; nn++) {
+      const stack = channel2.activeNotes[nn];
+      if (!stack) continue;
+      for (let i = 0; i < stack.length; i++) {
+        const n = stack[i];
+        if (!n || n.ending || !n.heldByPedal) continue;
+        const heldBySostenuto = channel2.sostenutoNotes.some(
+          (s) => s === n && !s.ending
+        );
+        if (heldBySostenuto) continue;
+        releaseKey(nn);
+      }
+    }
+    for (let i = 0; i < pending.length; i++) {
+      const note = pending[i];
+      if (!note || note.ending) continue;
+      const heldBySostenuto = channel2.sostenutoNotes.some(
+        (s) => s === note && !s.ending
+      );
+      if (heldBySostenuto) continue;
+      if (!note.voice && !note.bufferSource && !note.volumeNode) continue;
+      note.ending = true;
+      note.heldByPedal = false;
+      const p = Promise.resolve(note.ready).then(() => {
+        if (!note.voice && !note.bufferSource && !note.volumeNode) return;
+        return this.releaseNote(channel2, note, scheduleTime);
+      });
+      promises.push(p);
+      this.notePromises.push(p);
+    }
     return promises;
   }
   releaseSostenutoPedal(channel2, halfVelocity, scheduleTime) {
@@ -21545,6 +24321,12 @@ var MidyGM2 = class _MidyGM2 extends Player {
   }
   setReverbSend(channel2, note, scheduleTime) {
     const level = this.calcReverbSendLevel(channel2, note);
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        reverb: level
+      });
+      return;
+    }
     note.reverbSend = this.updateNoteSendGain(
       note,
       note.reverbSend,
@@ -21555,6 +24337,12 @@ var MidyGM2 = class _MidyGM2 extends Player {
   }
   setChorusSend(channel2, note, scheduleTime) {
     const level = this.calcChorusSendLevel(channel2, note);
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        chorus: level
+      });
+      return;
+    }
     note.chorusSend = this.updateNoteSendGain(
       note,
       note.chorusSend,
@@ -22853,6 +25641,12 @@ var Midy = class _Midy extends MidyGM2 {
   }
   setDelaySend(channel2, note, scheduleTime) {
     const level = this.calcDelaySendLevel(channel2, note);
+    if (note.workletVoiceId != null && this.workletEngine) {
+      this.workletEngine.setVoiceEffectSends(note.workletVoiceId, {
+        delay: level
+      });
+      return;
+    }
     note.delaySend = this.updateNoteSendGain(
       note,
       note.delaySend,
