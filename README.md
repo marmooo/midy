@@ -1,7 +1,7 @@
 # Midy
 
-A MIDI player/synthesizer written in TypeScript that supports GM-Lite/GM1/GM2
-and SF2/SF3.
+A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3. TypeScript API with a
+C/WASM AudioWorklet core.
 
 This library provides several files depending on the implementation level.
 
@@ -17,6 +17,7 @@ This library provides several files depending on the implementation level.
   [en v1.0](https://amei.or.jp/midistandardcommittee/Recommended_Practice/e/rp24(e).pdf),
   [ja v1.0](https://amei.or.jp/midistandardcommittee/Recommended_Practice/GM2_japanese.pdf))
 - midy.js: full implementation (in progress)
+- midy.wasm.js: full implementation (in progress)
 
 ## Demo
 
@@ -78,7 +79,8 @@ All implementations follow the specification.
 // import { MidyGMLite as Midy } from "midy-GMLite.js";
 // import { MidyGM1 as Midy } from "midy-GM1.js";
 // import { MidyGM2 as Midy } from "midy-GM2.js";
-import { Midy } from "midy.js";
+// import { Midy } from "midy.js";
+import { Midy } from "midy.wasm.js";
 
 const audioContext = new AudioContext();
 if (audioContext.state === "running") await audioContext.suspend();
@@ -228,7 +230,10 @@ await midy.loadSoundFont(paths);
 ## Build
 
 ```
-deno task build
+deno task build            # js + wasm
+deno task build:js         # dist/midy.js, midy.min.js, …
+deno task build:wasm       # dist/midy.wasm.js, … (minify only)
+deno task build:wasm-core  # clang → wasm → embed (when rebuilding the core)
 ```
 
 ## Test

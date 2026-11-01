@@ -8,7 +8,10 @@ import {
   type WorkletMainToProcessorMsg,
   type WorkletProcessorToMainMsg,
 } from "./worklet-protocol.ts";
-import { createWorkletModuleURL } from "./worklet-processor.ts";
+import {
+  createWorkletModuleURL,
+  postInitToWorklet,
+} from "./worklet-backend.ts";
 
 /**
  * addModule + registerProcessor is once-per-AudioContext. A second Blob URL
@@ -224,6 +227,7 @@ export class WorkletEngine {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
+    postInitToWorklet(node);
     node.port.onmessage = (
       ev: MessageEvent<
         WorkletProcessorToMainMsg | {

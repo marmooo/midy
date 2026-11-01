@@ -9,10 +9,7 @@
 //   - OfflineAudioContext rejection for ensureWorkletEngine
 
 import "./mock-shared.ts";
-import {
-  assertEquals,
-  assertNotEquals,
-} from "./mock-shared.ts";
+import { assertEquals, assertNotEquals } from "./mock-shared.ts";
 import { assert, assertRejects } from "@std/assert";
 
 import {
@@ -26,10 +23,7 @@ import {
   WORKLET_PROCESSOR_SOURCE,
 } from "../src/worklet-processor.ts";
 import { WorkletEngine } from "../src/worklet-engine.ts";
-import {
-  isWorkletCacheMode,
-  type CacheMode,
-} from "../src/cache-strategy.ts";
+import { type CacheMode, isWorkletCacheMode } from "../src/cache-strategy.ts";
 import { MidyGMLite } from "../src/midy-GMLite.ts";
 import { OfflineAudioContext as WebOfflineAudioContext } from "web-audio-api";
 
@@ -131,7 +125,10 @@ Deno.test("worklet processor source: Phase-2 feature markers present", () => {
   assert(src.includes("ENV_ATTACK"), "vol env");
   // Filter
   assert(src.includes("filterFcCents") || src.includes("filterQ"), "filter");
-  assert(src.includes("lowpassCoeffs") || src.includes("processFilter"), "biquad");
+  assert(
+    src.includes("lowpassCoeffs") || src.includes("processFilter"),
+    "biquad",
+  );
   // LFO
   assert(src.includes("modLfo") || src.includes("modLfoPhase"), "mod LFO");
   assert(src.includes("vibLfo") || src.includes("vibLfoPhase"), "vib LFO");
