@@ -55,6 +55,8 @@ fi
   -Wl,--export=sc_peak_active \
   -Wl,--export=sc_complex_vq \
   -Wl,--export=sc_simple_vq \
+  -Wl,--export=sc_mix_clear \
+  -Wl,--export=sc_mix_add \
   -o "$OUT_DIR/synth_core.wasm" \
   synth_core.c
 

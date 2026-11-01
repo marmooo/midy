@@ -20,6 +20,8 @@
 //
 // Curve computation (ADSR / filter / pan) stays on the main thread.
 
+import { SYNTH_CORE_WASM_BASE64 } from "./synth_core_wasm_b64.ts";
+
 export type MixSourceEntry = {
   /** Left (or mono) channel data. */
   left: Float32Array;
@@ -186,6 +188,122 @@ export class BakeWorkerPool {
     //   - type:"mix"          → multi-buffer additive mix
     //   - type:"renderSample" → resample + loop + optional biquad + gains
     const workerSource = `
+
+// --- WASM bake mix (optional; falls back to JS) ---
+var __wasmExports = null;
+var __wasmMemory = null;
+var __wasmReady = false;
+var __wasmFailed = false;
+var __wasmHeap = 65536; // bump cursor in bytes (leave low memory for tables)
+
+function b64ToU8(b64) {
+  var bin = atob(b64);
+  var u8 = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+function ensureWasm(b64) {
+  if (__wasmReady || __wasmFailed) return Promise.resolve(__wasmReady);
+  if (!b64) { __wasmFailed = true; return Promise.resolve(false); }
+  return WebAssembly.instantiate(b64ToU8(b64), {}).then(function(r) {
+    __wasmExports = r.instance.exports;
+    __wasmMemory = __wasmExports.memory;
+    __wasmReady = true;
+    return true;
+  }).catch(function(err) {
+    console.error("[midy bake-wasm]", err && err.message ? err.message : err);
+    __wasmFailed = true;
+    return false;
+  });
+}
+
+function wasmGrowFor(bytesNeeded) {
+  var pagesNeeded = ((bytesNeeded + 65535) / 65536) | 0;
+  var curPages = __wasmMemory.buffer.byteLength / 65536;
+  if (pagesNeeded > curPages) {
+    __wasmMemory.grow(pagesNeeded - curPages);
+  }
+}
+
+function wasmMix(destLen, destChCount, entries) {
+  if (!__wasmReady) return null;
+  var e = __wasmExports;
+  // Layout: destL, destR?, then per-entry src copies
+  var f32Bytes = 4;
+  var destSamples = destLen * (destChCount > 1 ? 2 : 1);
+  var cursor = 65536; // leave low region alone
+  var destLPtr = cursor;
+  cursor += destLen * f32Bytes;
+  var destRPtr = 0;
+  if (destChCount > 1) {
+    destRPtr = cursor;
+    cursor += destLen * f32Bytes;
+  }
+  // Estimate source needs
+  var need = cursor;
+  for (var i = 0; i < entries.length; i++) {
+    var en = entries[i];
+    need += en.left.length * f32Bytes;
+    if (en.right) need += en.right.length * f32Bytes;
+    if (en.gainCurve) need += en.gainCurve.length * f32Bytes;
+  }
+  wasmGrowFor(need + 65536);
+  var heap = new Float32Array(__wasmMemory.buffer);
+  // clear dest via C
+  e.sc_mix_clear(destLPtr, destRPtr || 0, destLen);
+  // Actually sc_mix_clear expects float* which in our export is byte offset? 
+  // clang wasm exports pointers as i32 byte offsets into linear memory.
+  // Our C takes float* — the JS call should pass byte offset.
+  // Wait: when calling from JS, we pass the numeric pointer value as used by C.
+  // sc_mix_clear(float*, float*, int) — first args are pointers = byte offsets.
+
+  for (var ei = 0; ei < entries.length; ei++) {
+    var ent = entries[ei];
+    var srcL = ent.left;
+    var srcLen = srcL.length;
+    var srcLPtr = cursor;
+    var srcHeap = new Float32Array(__wasmMemory.buffer, srcLPtr, srcLen);
+    srcHeap.set(srcL);
+    cursor += srcLen * f32Bytes;
+    var srcRPtr = 0;
+    if (ent.right) {
+      srcRPtr = cursor;
+      new Float32Array(__wasmMemory.buffer, srcRPtr, ent.right.length).set(ent.right);
+      cursor += ent.right.length * f32Bytes;
+    }
+    var curvePtr = 0;
+    if (ent.gainCurve) {
+      curvePtr = cursor;
+      new Float32Array(__wasmMemory.buffer, curvePtr, ent.gainCurve.length).set(ent.gainCurve);
+      cursor += ent.gainCurve.length * f32Bytes;
+    }
+    var gL = ent.gain;
+    var gR = ent.gainRight != null ? ent.gainRight : ent.gain;
+    e.sc_mix_add(
+      destLPtr,
+      destRPtr,
+      destLen,
+      srcLPtr,
+      srcRPtr,
+      ent.startSample | 0,
+      srcLen,
+      gL,
+      gR,
+      curvePtr
+    );
+  }
+  var destLeft = new Float32Array(destLen);
+  destLeft.set(new Float32Array(__wasmMemory.buffer, destLPtr, destLen));
+  var destRight = null;
+  if (destChCount > 1) {
+    destRight = new Float32Array(destLen);
+    destRight.set(new Float32Array(__wasmMemory.buffer, destRPtr, destLen));
+  }
+  return { left: destLeft, right: destRight };
+}
+
+
 function biquadLowpassCoeffs(freq, q, sampleRate) {
   var nyquist = sampleRate * 0.5;
   var f = freq;
@@ -352,9 +470,23 @@ function mixEntriesInto(destLeft, destRight, destLen, entries) {
 function handleMix(msg) {
   var t0 = performance.now();
   var destLen = msg.destLen;
-  var destLeft = new Float32Array(destLen);
-  var destRight = msg.destChCount > 1 ? new Float32Array(destLen) : null;
-  mixEntriesInto(destLeft, destRight, destLen, msg.entries);
+  var destChCount = msg.destChCount;
+  var destLeft, destRight;
+  var usedWasm = false;
+  // Prefer WASM for larger tiles (copy overhead otherwise dominates).
+  if (__wasmReady && destLen >= 2048 && msg.entries && msg.entries.length > 0) {
+    var mixed = wasmMix(destLen, destChCount, msg.entries);
+    if (mixed) {
+      destLeft = mixed.left;
+      destRight = mixed.right;
+      usedWasm = true;
+    }
+  }
+  if (!usedWasm) {
+    destLeft = new Float32Array(destLen);
+    destRight = destChCount > 1 ? new Float32Array(destLen) : null;
+    mixEntriesInto(destLeft, destRight, destLen, msg.entries);
+  }
   var workerMs = performance.now() - t0;
   var transfer = [destLeft.buffer];
   if (destRight) transfer.push(destRight.buffer);
@@ -372,9 +504,22 @@ function handleMixBatch(msg) {
   for (var j = 0; j < jobs.length; j++) {
     var job = jobs[j];
     var destLen = job.destLen;
-    var destLeft = new Float32Array(destLen);
-    var destRight = job.destChCount > 1 ? new Float32Array(destLen) : null;
-    mixEntriesInto(destLeft, destRight, destLen, job.entries);
+    var destChCount = job.destChCount;
+    var destLeft, destRight;
+    var usedWasm = false;
+    if (__wasmReady && destLen >= 2048 && job.entries && job.entries.length > 0) {
+      var mixed = wasmMix(destLen, destChCount, job.entries);
+      if (mixed) {
+        destLeft = mixed.left;
+        destRight = mixed.right;
+        usedWasm = true;
+      }
+    }
+    if (!usedWasm) {
+      destLeft = new Float32Array(destLen);
+      destRight = destChCount > 1 ? new Float32Array(destLen) : null;
+      mixEntriesInto(destLeft, destRight, destLen, job.entries);
+    }
     transfer.push(destLeft.buffer);
     if (destRight) transfer.push(destRight.buffer);
     results.push({ left: destLeft, right: destRight || undefined });
@@ -486,6 +631,12 @@ self.onmessage = function(ev) {
   var msg = ev.data;
   if (!msg || !msg.type) return;
   try {
+    if (msg.type === "initWasm") {
+      ensureWasm(msg.wasmB64).then(function(ok) {
+        self.postMessage({ type: "wasm-ready", ok: !!ok });
+      });
+      return;
+    }
     if (msg.type === "mix") {
       handleMix(msg);
     } else if (msg.type === "mixBatch") {
@@ -515,6 +666,13 @@ self.onmessage = function(ev) {
       };
       this.workers.push(w);
       this.free.push(w);
+      // Fire-and-forget WASM init for bake mix acceleration.
+      if (
+        SYNTH_CORE_WASM_BASE64 &&
+        !SYNTH_CORE_WASM_BASE64.startsWith("PLACEHOLDER")
+      ) {
+        w.postMessage({ type: "initWasm", wasmB64: SYNTH_CORE_WASM_BASE64 });
+      }
     }
   }
 
@@ -533,7 +691,12 @@ self.onmessage = function(ev) {
       }[];
       workerMs?: number;
       message?: string;
+      ok?: boolean;
     };
+    if (data && data.type === "wasm-ready") {
+      // Mix falls back to JS until ready; no pending job to resolve.
+      return;
+    }
     const pending = this.pendingById.get(data.id);
     if (!pending) {
       this.releaseWorker(worker);

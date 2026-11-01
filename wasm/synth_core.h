@@ -84,6 +84,38 @@ uint32_t sc_simple_vq(void);
 uint32_t sc_complex_vq(void);
 int32_t sc_peak_active(void);
 
+/* -------------------------------------------------------------------------
+ * Offline bake mix (chunk / segment tile path)
+ *
+ * Mirrors the JS mixEntriesInto semantics used by BakeWorkerPool:
+ *   dest += src * gain  (optional per-sample gainCurve, optional L/R gains)
+ *
+ * All pointers are into the WASM linear memory (byte offsets from the
+ * JS side via memory.buffer). dest_r may be 0 for mono destination.
+ * src_r may be 0 → treat as mono source (duplicate left).
+ * curve may be 0 → constant gain only.
+ * ------------------------------------------------------------------------- */
+void sc_mix_clear(float *dest_l, float *dest_r, int32_t dest_len);
+
+/**
+ * Add one source into dest.
+ * start: destination sample index
+ * src_len: length of src buffers (and curve if non-null)
+ * gain_l / gain_r: linear scales (mono dest uses equal-power when gain_r != gain_l)
+ */
+void sc_mix_add(
+    float *dest_l,
+    float *dest_r,
+    int32_t dest_len,
+    const float *src_l,
+    const float *src_r,
+    int32_t start,
+    int32_t src_len,
+    float gain_l,
+    float gain_r,
+    const float *curve
+);
+
 #ifdef __cplusplus
 }
 #endif

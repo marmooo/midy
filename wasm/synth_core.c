@@ -70,6 +70,18 @@ static float sc_clampf(float x, float lo, float hi) {
   return x;
 }
 
+/* Newton sqrt — enough for equal-power mono gain */
+static float sc_sqrtf(float x) {
+  float y;
+  int i;
+  if (x <= 0.0f) return 0.0f;
+  y = x;
+  if (x >= 1.0f) y = 1.0f + 0.5f * (x - 1.0f);
+  else y = 0.5f + 0.5f * x;
+  for (i = 0; i < 4; i++) y = 0.5f * (y + x / y);
+  return y;
+}
+
 static int sc_isfinite(float x) {
   return (x == x) && (x - x == 0.0f);
 }
@@ -909,6 +921,172 @@ int32_t sc_process(int32_t frames) {
 uint32_t sc_simple_vq(void) { return g_simple_vq; }
 uint32_t sc_complex_vq(void) { return g_complex_vq; }
 int32_t sc_peak_active(void) { return g_peak_active; }
+
+/* -------------------------------------------------------------------------
+ * Offline bake mix — mirrors JS mixEntriesInto (bake-worker-pool.ts)
+ * ------------------------------------------------------------------------- */
+
+void sc_mix_clear(float *dest_l, float *dest_r, int32_t dest_len) {
+  int32_t i;
+  if (!dest_l || dest_len <= 0) return;
+  for (i = 0; i < dest_len; i++) dest_l[i] = 0.0f;
+  if (dest_r) {
+    for (i = 0; i < dest_len; i++) dest_r[i] = 0.0f;
+  }
+}
+
+void sc_mix_add(
+    float *dest_l,
+    float *dest_r,
+    int32_t dest_len,
+    const float *src_l,
+    const float *src_r,
+    int32_t start,
+    int32_t src_len,
+    float gain_l,
+    float gain_r,
+    const float *curve
+) {
+  int32_t copy_len, i, di, n;
+  float g_mono;
+  const float *sr;
+
+  if (!dest_l || !src_l || dest_len <= 0 || src_len <= 0) return;
+  if (start >= dest_len) return;
+  if (start < 0) start = 0;
+  copy_len = src_len;
+  if (copy_len > dest_len - start) copy_len = dest_len - start;
+  if (copy_len <= 0) return;
+
+  if (!dest_r) {
+    /* mono dest: equal-power when L/R gains differ (center pan → 1.0) */
+    if (gain_l != gain_r) {
+      g_mono = sc_sqrtf(gain_l * gain_l + gain_r * gain_r);
+    } else {
+      g_mono = gain_l;
+    }
+    i = 0;
+    di = start;
+    if (curve) {
+      if (g_mono == 1.0f) {
+        while (i < copy_len) {
+          dest_l[di] += src_l[i] * curve[i];
+          i++; di++;
+        }
+      } else {
+        while (i < copy_len) {
+          dest_l[di] += src_l[i] * g_mono * curve[i];
+          i++; di++;
+        }
+      }
+    } else if (g_mono == 1.0f) {
+      n = copy_len - 3;
+      while (i < n) {
+        dest_l[di]     += src_l[i];
+        dest_l[di + 1] += src_l[i + 1];
+        dest_l[di + 2] += src_l[i + 2];
+        dest_l[di + 3] += src_l[i + 3];
+        i += 4; di += 4;
+      }
+      while (i < copy_len) {
+        dest_l[di] += src_l[i];
+        i++; di++;
+      }
+    } else {
+      n = copy_len - 3;
+      while (i < n) {
+        dest_l[di]     += src_l[i] * g_mono;
+        dest_l[di + 1] += src_l[i + 1] * g_mono;
+        dest_l[di + 2] += src_l[i + 2] * g_mono;
+        dest_l[di + 3] += src_l[i + 3] * g_mono;
+        i += 4; di += 4;
+      }
+      while (i < copy_len) {
+        dest_l[di] += src_l[i] * g_mono;
+        i++; di++;
+      }
+    }
+    return;
+  }
+
+  /* stereo dest */
+  sr = src_r ? src_r : src_l;
+  i = 0;
+  di = start;
+  if (curve) {
+    if (gain_l == 1.0f && gain_r == 1.0f) {
+      while (i < copy_len) {
+        float cg = curve[i];
+        dest_l[di] += src_l[i] * cg;
+        dest_r[di] += sr[i] * cg;
+        i++; di++;
+      }
+    } else {
+      while (i < copy_len) {
+        float cg = curve[i];
+        dest_l[di] += src_l[i] * gain_l * cg;
+        dest_r[di] += sr[i] * gain_r * cg;
+        i++; di++;
+      }
+    }
+  } else if (gain_l == 1.0f && gain_r == 1.0f) {
+    n = copy_len - 3;
+    while (i < n) {
+      dest_l[di]     += src_l[i];
+      dest_r[di]     += sr[i];
+      dest_l[di + 1] += src_l[i + 1];
+      dest_r[di + 1] += sr[i + 1];
+      dest_l[di + 2] += src_l[i + 2];
+      dest_r[di + 2] += sr[i + 2];
+      dest_l[di + 3] += src_l[i + 3];
+      dest_r[di + 3] += sr[i + 3];
+      i += 4; di += 4;
+    }
+    while (i < copy_len) {
+      dest_l[di] += src_l[i];
+      dest_r[di] += sr[i];
+      i++; di++;
+    }
+  } else if (gain_l == gain_r) {
+    float g = gain_l;
+    n = copy_len - 3;
+    while (i < n) {
+      dest_l[di]     += src_l[i] * g;
+      dest_r[di]     += sr[i] * g;
+      dest_l[di + 1] += src_l[i + 1] * g;
+      dest_r[di + 1] += sr[i + 1] * g;
+      dest_l[di + 2] += src_l[i + 2] * g;
+      dest_r[di + 2] += sr[i + 2] * g;
+      dest_l[di + 3] += src_l[i + 3] * g;
+      dest_r[di + 3] += sr[i + 3] * g;
+      i += 4; di += 4;
+    }
+    while (i < copy_len) {
+      dest_l[di] += src_l[i] * g;
+      dest_r[di] += sr[i] * g;
+      i++; di++;
+    }
+  } else {
+    n = copy_len - 3;
+    while (i < n) {
+      dest_l[di]     += src_l[i] * gain_l;
+      dest_r[di]     += sr[i] * gain_r;
+      dest_l[di + 1] += src_l[i + 1] * gain_l;
+      dest_r[di + 1] += sr[i + 1] * gain_r;
+      dest_l[di + 2] += src_l[i + 2] * gain_l;
+      dest_r[di + 2] += sr[i + 2] * gain_r;
+      dest_l[di + 3] += src_l[i + 3] * gain_l;
+      dest_r[di + 3] += sr[i + 3] * gain_r;
+      i += 4; di += 4;
+    }
+    while (i < copy_len) {
+      dest_l[di] += src_l[i] * gain_l;
+      dest_r[di] += sr[i] * gain_r;
+      i++; di++;
+    }
+  }
+}
+
 
 #ifdef SC_NATIVE_MAIN
 #include <stdio.h>
