@@ -192,6 +192,15 @@ export class Player<
    */
   simpleNoteOnsets: Map<string, number[]> = new Map();
   /**
+   * Onsets keyed by {@link makeSimpleNoteReleaseKey} (stable identity without
+   * fine detune / CC7/10/11 that drift between count-walk and live mix).
+   * Playhead release uses this so cache entries still free after last use
+   * even when the full cache key string does not match buildSimpleNoteCounts.
+   */
+  simpleNoteReleaseOnsets: Map<string, number[]> = new Map();
+  /** Full cache key → release key (filled on insert / hit with note entry). */
+  simpleNoteCacheReleaseKey: Map<string, string> = new Map();
+  /**
    * Remaining planned uses per simple-note key (copy of simpleNoteCounts at
    * build time). Decremented on each real play/mix hit (not prewarm). When it
    * reaches 0 the buffer is dropped from simpleNoteBufferCache + mixPcmCache
@@ -199,6 +208,22 @@ export class Player<
    * end-of-play / maxSize eviction.
    */
   simpleNoteRemaining: Map<string, number> = new Map();
+  /**
+   * Seconds after a key's *last onset* (release-key timeline) that the buffer
+   * is still considered in use. Default is sounding tail only:
+   * `tileDuration + maxReleaseTailSec` (~1+8s). Future onsets are kept via the
+   * onset list itself, not by inflating this past margin.
+   * - `< 0` (default): auto sounding-tail margin
+   * - `0`: free as soon as last onset is past the playhead
+   * - `> 0`: explicit retain margin in seconds
+   */
+  simpleNoteCacheRetainPastSec: number = -1;
+  /**
+   * When false, {@link releasePastSimpleNoteCaches} is a no-op (chunk1-style
+   * retention: only maxSize eviction / end-of-play clear free buffers).
+   * Set false to A/B whether playhead release is the hit-rate regression.
+   */
+  simpleNoteCachePlayheadRelease: boolean = true;
   // Complex-note cache (shared by note / segment / chunk / audio modes).
   // Notes with identical in-interval automation (pitch bend / CC / sysEx
   // relative timeline) + voice / duration / onset channel state share one
@@ -1286,6 +1311,8 @@ export class Player<
     this.mixPcmCache.clear();
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteReleaseOnsets.clear();
+    this.simpleNoteCacheReleaseKey.clear();
     this.simpleNoteRemaining.clear();
     this.complexNoteBufferCache.clear();
     this.complexNoteCounts.clear();
@@ -2353,6 +2380,8 @@ export class Player<
   buildSimpleNoteCounts(): void {
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteReleaseOnsets.clear();
+    this.simpleNoteCacheReleaseKey.clear();
     this.simpleNoteRemaining.clear();
     if (!this.simpleNoteCache) return;
     const cacheMode = this.cacheMode;
@@ -2422,33 +2451,39 @@ export class Player<
             const sampleID = voice.generators.get("sampleID") ?? 0;
             const audioBufferId = layer.soundFontIndex * (2 ** 31) +
               instrument * (2 ** 24) + (sampleID << 8);
-            const key = this.makeSimpleNoteKey(
-              {
-                audioBufferId,
-                noteNumber: noteEvent.noteNumber!,
-                velocity: noteEvent.velocity!,
-                noteDuration: this.noteBakeDurations[i] ??
-                  noteOnEvent.duration,
-                noteEvent: noteOnEvent,
-                channelDetune: renderChannel.detune,
-                channelStateArray: renderChannel.state.array,
-                programNumber: renderChannel.programNumber,
-                isDrum: renderChannel.isDrum,
-                voiceParams,
-              },
-              bakeMix,
-            );
+            const noteKeyBody = {
+              audioBufferId,
+              noteNumber: noteEvent.noteNumber!,
+              velocity: noteEvent.velocity!,
+              noteDuration: this.noteBakeDurations[i] ??
+                noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array,
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams,
+            };
+            const key = this.makeSimpleNoteKey(noteKeyBody, bakeMix);
             simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
             const onsetList = simpleNoteOnsets.get(key);
             if (onsetList) onsetList.push(offset);
             else simpleNoteOnsets.set(key, [offset]);
+            // Release identity is stable across count-walk vs live mix drift.
+            const rKey = this.makeSimpleNoteReleaseKey(noteKeyBody, bakeMix);
+            const rList = this.simpleNoteReleaseOnsets.get(rKey);
+            if (rList) rList.push(offset);
+            else this.simpleNoteReleaseOnsets.set(rKey, [offset]);
           }
         },
       });
     }
 
-    // Sort onset lists ascending for binary search in eviction.
+    // Sort onset lists ascending for binary search in eviction / release.
     for (const list of simpleNoteOnsets.values()) {
+      if (list.length > 1) list.sort((a, b) => a - b);
+    }
+    for (const list of this.simpleNoteReleaseOnsets.values()) {
       if (list.length > 1) list.sort((a, b) => a - b);
     }
     // Snapshot remaining uses so play/mix hits can free buffers after the
@@ -2808,6 +2843,62 @@ export class Player<
     bakeChannelMix: boolean,
   ): string {
     return this.buildNoteCacheKeyParts(n, bakeChannelMix, false).join("|");
+  }
+
+  /**
+   * Stable identity for playhead release (not for buffer sharing).
+   * Omits fine detune and CC7/10/11 which drift between the count-walk and
+   * live mix snapshots and otherwise prevent onset lookup from matching the
+   * cache key (no free → RSS climbs for the whole song).
+   */
+  makeSimpleNoteReleaseKey(
+    n: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    },
+    bakeChannelMix: boolean,
+  ): string {
+    const durTicks = n.noteEvent?.durationTicks ??
+      Math.round(n.noteDuration * 1000);
+    return [
+      bakeChannelMix ? "mix" : "dry",
+      n.audioBufferId ?? -1,
+      n.noteNumber,
+      n.velocity,
+      durTicks,
+      n.programNumber,
+      n.isDrum ? 1 : 0,
+      Math.round(n.voiceParams.releaseVolEnv * 1e6),
+      Math.round(n.voiceParams.playbackRate * 1e6),
+      n.noteEvent?.soundOff ? 1 : 0,
+    ].join("|");
+  }
+
+  /** Bind full cache key → release key; call on insert/hit when `n` is known. */
+  protected bindSimpleNoteReleaseKey(
+    cacheKey: string,
+    n: {
+      audioBufferId?: number;
+      noteNumber: number;
+      velocity: number;
+      noteDuration: number;
+      noteEvent?: NoteOnEventEntry;
+      programNumber: number;
+      isDrum: boolean;
+      voiceParams: VoiceParams;
+    },
+    bakeChannelMix: boolean,
+  ): void {
+    this.simpleNoteCacheReleaseKey.set(
+      cacheKey,
+      this.makeSimpleNoteReleaseKey(n, bakeChannelMix),
+    );
   }
 
   // Controllers that change the offline-baked waveform when replayed inside
@@ -3481,6 +3572,8 @@ export class Player<
     this.simpleNoteBufferCache = new Map();
     this.simpleNoteCounts = new Map();
     this.simpleNoteOnsets = new Map();
+    this.simpleNoteReleaseOnsets = new Map();
+    this.simpleNoteCacheReleaseKey = new Map();
     this.simpleNoteRemaining = new Map();
     this.complexNoteBufferCache = new Map();
     this.complexNoteCounts = new Map();
@@ -5850,6 +5943,7 @@ export class Player<
         if (this.simpleNoteCache) {
           const bakeMix = this.simpleBakeChannelMixForNote(n);
           const key = this.makeSimpleNoteKey(n, bakeMix);
+          this.bindSimpleNoteReleaseKey(key, n, bakeMix);
           const entry = this.simpleNoteBufferCache.get(key);
           if (entry instanceof AudioBuffer) {
             this.noteCacheRecordSimpleHit();
@@ -9605,25 +9699,53 @@ export class Player<
   }
 
   /**
-   * Free simple-note buffers whose last onset is already behind the playhead.
-   * Primary mid-play release path (remaining-count alone cannot free early
-   * multi-use keys until their final hit, and mixPcmCache must track the Map).
+   * Free simple-note buffers that have no remaining reuse.
+   *
+   * Only drop when we can *prove* the key is done:
+   * - remaining uses exhausted (or never tracked), AND
+   * - onset list exists and last onset is older than retainPastSec.
+   *
+   * Critical: keys with no onset metadata must NOT be dropped here.
+   * Cache keys at mix time can differ from buildSimpleNoteCounts keys
+   * (channel-state / bakeMix snapshot). Dropping "unknown" keys on every
+   * playhead pass was re-baking them (hit rate stuck ~78% regardless of
+   * margin; playheadRelease=false restored 86%).
+   * Untracked keys are left to maxSize eviction / end-of-play clear.
    */
   protected releasePastSimpleNoteCaches(songT: number): void {
     if (this.loop) return;
+    if (!this.simpleNoteCachePlayheadRelease) return;
     const cache = this.simpleNoteBufferCache;
     if (cache.size === 0) return;
+    let retainPastSec = this.simpleNoteCacheRetainPastSec;
+    if (retainPastSec < 0) {
+      // Sounding tail only. lookAhead/maxTiledNoteDuration are *ahead* of the
+      // playhead (future onsets stay via the onset list); folding them into
+      // the past margin only delayed free and kept RSS climbing to the end.
+      // remaining-count is NOT consulted: hit paths do not always decrement
+      // it, so rem>0 blocked free for the whole song while peak never fell.
+      retainPastSec = Math.max(this.tileDuration, 1) +
+        Math.max(this.maxReleaseTailSec, 0);
+    }
+    const retainThreshold = songT - retainPastSec;
     const onsetsMap = this.simpleNoteOnsets;
+    const releaseOnsets = this.simpleNoteReleaseOnsets;
+    const cacheToRelease = this.simpleNoteCacheReleaseKey;
+    const remaining = this.simpleNoteRemaining;
     const toDrop: string[] = [];
     for (const key of cache.keys()) {
-      const onsets = onsetsMap.get(key);
+      // Prefer stable release-key onsets (match count-walk vs live mix).
+      const rKey = cacheToRelease.get(key);
+      let onsets = rKey ? releaseOnsets.get(rKey) : undefined;
       if (!onsets || onsets.length === 0) {
-        toDrop.push(key);
+        onsets = onsetsMap.get(key);
+      }
+      if (!onsets || onsets.length === 0) continue;
+      // Still needed if any onset is in [retainThreshold, ∞).
+      if (this.nextSimpleOnsetAtOrAfter(onsets, retainThreshold) !== null) {
         continue;
       }
-      if (this.nextSimpleOnsetAtOrAfter(onsets, songT) === null) {
-        toDrop.push(key);
-      }
+      toDrop.push(key);
     }
     for (let i = 0; i < toDrop.length; i++) {
       const key = toDrop[i];
@@ -9631,7 +9753,8 @@ export class Player<
       if (buf instanceof Promise) continue;
       if (buf instanceof AudioBuffer) this.mixPcmCache.delete(buf);
       cache.delete(key);
-      this.simpleNoteRemaining.delete(key);
+      remaining.delete(key);
+      cacheToRelease.delete(key);
     }
   }
 
@@ -9879,6 +10002,7 @@ export class Player<
   ): Promise<AudioBuffer | null> {
     if (!this.simpleNoteCache) return null;
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+    this.bindSimpleNoteReleaseKey(key, n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordSimpleHit();
@@ -10282,6 +10406,7 @@ export class Player<
     fromOuterSlot = false,
   ): Promise<AudioBuffer> {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+    this.bindSimpleNoteReleaseKey(key, n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordSimpleHit();
@@ -10309,6 +10434,7 @@ export class Player<
       return await renderPromise;
     } catch (err) {
       this.simpleNoteBufferCache.delete(key);
+      this.simpleNoteCacheReleaseKey.delete(key);
       throw err;
     }
   }
@@ -10351,6 +10477,7 @@ export class Player<
       const entry = entries[i];
       // Use the batch-wide bakeChannelMix so key matches cache writes below.
       const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+      this.bindSimpleNoteReleaseKey(key, entry, bakeChannelMix);
       const cached = this.simpleNoteBufferCache.get(key);
       if (cached instanceof AudioBuffer) {
         this.noteCacheRecordSimpleHit();
