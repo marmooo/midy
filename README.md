@@ -1,7 +1,7 @@
 # Midy
 
-A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3. TypeScript API with a
-C/WASM AudioWorklet core.
+A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3. TypeScript API with
+C/WASM cores.
 
 This library provides several files depending on the implementation level.
 
@@ -229,11 +229,41 @@ await midy.loadSoundFont(paths);
 
 ## Build
 
+### Prerequisites (WASM core)
+
+`deno task build:wasm-core` compiles `wasm/synth_core.c` to WebAssembly and
+embeds it into TypeScript. You need a clang that can target `wasm32` and
+`wasm-ld` (from LLVM's lld).
+
+- **Ubuntu / Debian**
+  ```
+  sudo apt install clang lld-18   # or: lld
+  # If wasm-ld is installed as wasm-ld-18, either put it on PATH or rely on
+  # wasm/build.sh which already searches common LLVM bin dirs.
+  ```
+- **macOS (Homebrew)**
+  ```
+  brew install llvm
+  # Ensure wasm-ld is visible, e.g.:
+  export PATH="$(brew --prefix llvm)/bin:$PATH"
+  ```
+- Verify:
+  ```
+  clang --version
+  wasm-ld --version
+  ```
+
+Rebuild the core only when `wasm/synth_core.c` (or related scripts) change.
+Day-to-day JS/TS builds do not require clang.
+
+### Tasks
+
 ```
 deno task build            # js + wasm
 deno task build:js         # dist/midy.js, midy.min.js, …
 deno task build:wasm       # dist/midy.wasm.js, … (minify only)
 deno task build:wasm-core  # clang → wasm → embed (when rebuilding the core)
+deno task build:all        # build:wasm-core then build
 ```
 
 ## Test
