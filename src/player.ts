@@ -191,6 +191,14 @@ export class Player<
    * capped cache prefers buffers needed near the playhead.
    */
   simpleNoteOnsets: Map<string, number[]> = new Map();
+  /**
+   * Remaining planned uses per simple-note key (copy of simpleNoteCounts at
+   * build time). Decremented on each real play/mix hit (not prewarm). When it
+   * reaches 0 the buffer is dropped from simpleNoteBufferCache + mixPcmCache
+   * so multi-use notes free memory after their last onset instead of only at
+   * end-of-play / maxSize eviction.
+   */
+  simpleNoteRemaining: Map<string, number> = new Map();
   // Complex-note cache (shared by note / segment / chunk / audio modes).
   // Notes with identical in-interval automation (pitch bend / CC / sysEx
   // relative timeline) + voice / duration / onset channel state share one
@@ -201,6 +209,8 @@ export class Player<
   complexNoteBufferCache: Map<string, AudioBuffer | Promise<AudioBuffer>> =
     new Map();
   complexNoteCounts: Map<string, number> = new Map();
+  /** Same remaining-use bookkeeping as simpleNoteRemaining for complex keys. */
+  complexNoteRemaining: Map<string, number> = new Map();
   // Runtime hit/miss counters for simpleNoteBufferCache / complexNoteBufferCache.
   // Reset at the start of each start() (before prewarm). Survives map.clear()
   // at end-of-song so post-playback logs still show rates even when
@@ -1276,8 +1286,10 @@ export class Player<
     this.mixPcmCache.clear();
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteRemaining.clear();
     this.complexNoteBufferCache.clear();
     this.complexNoteCounts.clear();
+    this.complexNoteRemaining.clear();
     this.tiledVoiceParams = [];
     this.tiledVoices = [];
     this.noteOnDurations = [];
@@ -2341,6 +2353,7 @@ export class Player<
   buildSimpleNoteCounts(): void {
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteRemaining.clear();
     if (!this.simpleNoteCache) return;
     const cacheMode = this.cacheMode;
     if (
@@ -2437,6 +2450,11 @@ export class Player<
     // Sort onset lists ascending for binary search in eviction.
     for (const list of simpleNoteOnsets.values()) {
       if (list.length > 1) list.sort((a, b) => a - b);
+    }
+    // Snapshot remaining uses so play/mix hits can free buffers after the
+    // last scheduled onset (see releaseSimpleNoteIfExhausted).
+    for (const [key, count] of simpleNoteCounts) {
+      this.simpleNoteRemaining.set(key, count);
     }
   }
 
@@ -3041,6 +3059,7 @@ export class Player<
   // miss; unique patterns stay on the one-shot renderEntryAudioBuffer path.
   buildComplexNoteCounts(): void {
     this.complexNoteCounts.clear();
+    this.complexNoteRemaining.clear();
     if (!this.complexNoteCache) return;
     const cacheMode = this.cacheMode;
     if (
@@ -3134,6 +3153,9 @@ export class Player<
           complexNoteCounts.set(key, (complexNoteCounts.get(key) ?? 0) + 1);
         },
       });
+    }
+    for (const [key, count] of complexNoteCounts) {
+      this.complexNoteRemaining.set(key, count);
     }
   }
 
@@ -3449,14 +3471,20 @@ export class Player<
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
+    // PCM slices hold strong refs to the same buffers as simpleNoteBufferCache.
+    // Without this, end-of-play / stop leave multi-MB Float32Arrays alive even
+    // after the note-buffer Maps are replaced.
+    this.mixPcmCache.clear();
     // Replace maps rather than only clear(): in-flight Promise callbacks that
     // still hold the old Map entry lose their only strong path into the shared
     // cache object once we drop this reference.
     this.simpleNoteBufferCache = new Map();
     this.simpleNoteCounts = new Map();
     this.simpleNoteOnsets = new Map();
+    this.simpleNoteRemaining = new Map();
     this.complexNoteBufferCache = new Map();
     this.complexNoteCounts = new Map();
+    this.complexNoteRemaining = new Map();
   }
 
   // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
@@ -5821,6 +5849,7 @@ export class Player<
           const entry = this.simpleNoteBufferCache.get(key);
           if (entry instanceof AudioBuffer) {
             this.noteCacheRecordSimpleHit();
+            this.releaseSimpleNoteIfExhausted(key);
             simpleLookupMs += performance.now() - tLookup0;
             const gains = this.chunkNoteMixParams(n, entry.length, sampleRate);
             simpleHits.push({
@@ -5890,6 +5919,7 @@ export class Player<
               const again = this.simpleNoteBufferCache.get(item.key);
               if (again instanceof AudioBuffer) {
                 this.noteCacheRecordSimpleHit();
+                this.releaseSimpleNoteIfExhausted(item.key);
                 {
                   const gains = this.chunkNoteMixParams(
                     n,
@@ -6009,6 +6039,7 @@ export class Player<
                 try {
                   cached = await item.entry;
                   this.noteCacheRecordSimpleHit();
+                  if (item.key) this.releaseSimpleNoteIfExhausted(item.key);
                 } catch {
                   cached = null;
                 }
@@ -6017,12 +6048,14 @@ export class Player<
                 const again = this.simpleNoteBufferCache.get(item.key);
                 if (again instanceof AudioBuffer) {
                   this.noteCacheRecordSimpleHit();
+                  this.releaseSimpleNoteIfExhausted(item.key);
                   cached = again;
                 } else if (again instanceof Promise) {
                   const tInf0 = performance.now();
                   try {
                     cached = await again;
                     this.noteCacheRecordSimpleHit();
+                    this.releaseSimpleNoteIfExhausted(item.key);
                   } catch {
                     cached = null;
                   }
@@ -9468,6 +9501,45 @@ export class Player<
     this.complexNoteCacheMisses++;
   }
 
+  /**
+   * After a real play/mix consumption of a simple-note key, drop the cached
+   * AudioBuffer + MixPcmCache entry once remaining uses hit 0.
+   * Skipped during prewarm (fills only) and when looping (remaining is not
+   * rebuilt mid-loop; clearPlaybackCaches handles end-of-play).
+   */
+  protected releaseSimpleNoteIfExhausted(key: string): void {
+    if (this.noteCacheStatsInPrewarm) return;
+    if (this.loop) return;
+    const rem = this.simpleNoteRemaining.get(key);
+    if (rem === undefined) return;
+    const next = rem - 1;
+    if (next > 0) {
+      this.simpleNoteRemaining.set(key, next);
+      return;
+    }
+    this.simpleNoteRemaining.delete(key);
+    const buf = this.simpleNoteBufferCache.get(key);
+    if (buf instanceof AudioBuffer) {
+      this.mixPcmCache.delete(buf);
+    }
+    this.simpleNoteBufferCache.delete(key);
+  }
+
+  /** Same remaining-use release for multi-use complex-note keys. */
+  protected releaseComplexNoteIfExhausted(key: string): void {
+    if (this.noteCacheStatsInPrewarm) return;
+    if (this.loop) return;
+    const rem = this.complexNoteRemaining.get(key);
+    if (rem === undefined) return;
+    const next = rem - 1;
+    if (next > 0) {
+      this.complexNoteRemaining.set(key, next);
+      return;
+    }
+    this.complexNoteRemaining.delete(key);
+    this.complexNoteBufferCache.delete(key);
+  }
+
   protected noteCacheRecordComplexUnique(): void {
     this.complexNoteCacheUniqueBakes++;
   }
@@ -9584,12 +9656,14 @@ export class Player<
     const cached = this.complexNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordComplexHit();
+      this.releaseComplexNoteIfExhausted(key);
       return cached;
     }
     if (cached instanceof Promise) {
       try {
         const buf = await cached;
         this.noteCacheRecordComplexHit();
+        this.releaseComplexNoteIfExhausted(key);
         return buf;
       } catch {
         return null;
@@ -9713,12 +9787,14 @@ export class Player<
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordSimpleHit();
+      this.releaseSimpleNoteIfExhausted(key);
       return cached;
     }
     if (cached instanceof Promise) {
       try {
         const buf = await cached;
         this.noteCacheRecordSimpleHit();
+        this.releaseSimpleNoteIfExhausted(key);
         return buf;
       } catch {
         return null;
