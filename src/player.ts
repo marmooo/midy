@@ -5293,6 +5293,7 @@ export class Player<
         }
       }
     }
+    this.releasePastSimpleNoteCaches(this.currentTime());
   }
 
   initChunkPipeline(): void {
@@ -5689,6 +5690,9 @@ export class Player<
       }
     }
     this.pumpDeferredChunkBakes();
+    // Free simple-note / MixPcmCache entries whose last onset is behind the
+    // playhead so memory does not climb for the whole song.
+    this.releasePastSimpleNoteCaches(this.currentTime());
   }
 
   // forAudioOffline=false → realtime "chunk" mode (soft-clamp only; never
@@ -7922,13 +7926,36 @@ export class Player<
       const copyBackMs = performance.now() - tCopy0;
       this.chunkMixCopyBackSumMs += copyBackMs;
       this.chunkMixWorkerTiles++;
+      // Collect unique source buffers for post-mix MixPcmCache hygiene.
+      const mixSources: AudioBuffer[] = [];
+      {
+        const seenSrc = new Set<AudioBuffer>();
+        for (let si = 0; si < entries.length; si++) {
+          const b = entries[si].buffer;
+          if (!seenSrc.has(b)) {
+            seenSrc.add(b);
+            mixSources.push(b);
+          }
+        }
+      }
       if (transferredBufs.length > 0) {
         const bufs = transferredBufs;
         const pcmCache = this.mixPcmCache;
         queueMicrotask(() => {
-          pcmCache.restoreAfterTransfer(bufs);
+          // Only restore PCM for buffers still in the simple-note cache.
+          // One-shot / exhausted sources must not be re-sliced back into
+          // mixPcmCache or memory grows for the whole song.
+          const retained = this.retainedSimpleNoteBuffers();
+          const keep: AudioBuffer[] = [];
+          for (let i = 0; i < bufs.length; i++) {
+            const b = bufs[i];
+            if (retained.has(b)) keep.push(b);
+            else pcmCache.delete(b);
+          }
+          if (keep.length > 0) pcmCache.restoreAfterTransfer(keep);
         });
       }
+      this.cleanupMixPcmAfterTile(mixSources);
       if (detailOut) {
         detailOut.prepareMs = prepareMs;
         detailOut.awaitMs = awaitMs;
@@ -7992,6 +8019,20 @@ export class Player<
       if (detailOut) {
         detailOut.mainMs = mainMs;
         detailOut.usedWorker = false;
+      }
+      // Main-thread mix does not touch mixPcmCache; still drop any stale
+      // one-shot PCM that earlier worker tiles may have left.
+      {
+        const seenSrc = new Set<AudioBuffer>();
+        const mixSources: AudioBuffer[] = [];
+        for (let si = 0; si < entries.length; si++) {
+          const b = entries[si].buffer;
+          if (!seenSrc.has(b)) {
+            seenSrc.add(b);
+            mixSources.push(b);
+          }
+        }
+        this.cleanupMixPcmAfterTile(mixSources);
       }
       return buffer;
     }
@@ -9502,10 +9543,10 @@ export class Player<
   }
 
   /**
-   * After a real play/mix consumption of a simple-note key, drop the cached
-   * AudioBuffer + MixPcmCache entry once remaining uses hit 0.
-   * Skipped during prewarm (fills only) and when looping (remaining is not
-   * rebuilt mid-loop; clearPlaybackCaches handles end-of-play).
+   * Decrement remaining uses for a simple-note key. Does not free buffers
+   * here — mix may still need the AudioBuffer / MixPcmCache entry in the
+   * same turn. Actual free is {@link releasePastSimpleNoteCaches} (playhead)
+   * and {@link cleanupMixPcmAfterTile} (one-shot PCM left in mixPcmCache).
    */
   protected releaseSimpleNoteIfExhausted(key: string): void {
     if (this.noteCacheStatsInPrewarm) return;
@@ -9518,14 +9559,9 @@ export class Player<
       return;
     }
     this.simpleNoteRemaining.delete(key);
-    const buf = this.simpleNoteBufferCache.get(key);
-    if (buf instanceof AudioBuffer) {
-      this.mixPcmCache.delete(buf);
-    }
-    this.simpleNoteBufferCache.delete(key);
   }
 
-  /** Same remaining-use release for multi-use complex-note keys. */
+  /** Decrement remaining uses for a complex-note key (buffer free is deferred). */
   protected releaseComplexNoteIfExhausted(key: string): void {
     if (this.noteCacheStatsInPrewarm) return;
     if (this.loop) return;
@@ -9537,7 +9573,66 @@ export class Player<
       return;
     }
     this.complexNoteRemaining.delete(key);
-    this.complexNoteBufferCache.delete(key);
+    // Complex keys are not re-sliced into mixPcmCache the same way; drop
+    // settled buffers once remaining hits 0.
+    const buf = this.complexNoteBufferCache.get(key);
+    if (!(buf instanceof Promise)) {
+      this.complexNoteBufferCache.delete(key);
+    }
+  }
+
+  /** Settled AudioBuffers still retained by the simple-note cache. */
+  protected retainedSimpleNoteBuffers(): Set<AudioBuffer> {
+    const set = new Set<AudioBuffer>();
+    for (const v of this.simpleNoteBufferCache.values()) {
+      if (v instanceof AudioBuffer) set.add(v);
+    }
+    return set;
+  }
+
+  /**
+   * Drop MixPcmCache entries for sources that are no longer in
+   * simpleNoteBufferCache. Tile mix calls ensure()/takeForTransfer on every
+   * source — including one-shot (count≤1) buffers that never enter the
+   * simple-note Map. Without this, mixPcmCache grows by one full PCM copy
+   * per unique note for the whole song.
+   */
+  protected cleanupMixPcmAfterTile(sources: Iterable<AudioBuffer>): void {
+    const retained = this.retainedSimpleNoteBuffers();
+    for (const src of sources) {
+      if (!retained.has(src)) this.mixPcmCache.delete(src);
+    }
+  }
+
+  /**
+   * Free simple-note buffers whose last onset is already behind the playhead.
+   * Primary mid-play release path (remaining-count alone cannot free early
+   * multi-use keys until their final hit, and mixPcmCache must track the Map).
+   */
+  protected releasePastSimpleNoteCaches(songT: number): void {
+    if (this.loop) return;
+    const cache = this.simpleNoteBufferCache;
+    if (cache.size === 0) return;
+    const onsetsMap = this.simpleNoteOnsets;
+    const toDrop: string[] = [];
+    for (const key of cache.keys()) {
+      const onsets = onsetsMap.get(key);
+      if (!onsets || onsets.length === 0) {
+        toDrop.push(key);
+        continue;
+      }
+      if (this.nextSimpleOnsetAtOrAfter(onsets, songT) === null) {
+        toDrop.push(key);
+      }
+    }
+    for (let i = 0; i < toDrop.length; i++) {
+      const key = toDrop[i];
+      const buf = cache.get(key);
+      if (buf instanceof Promise) continue;
+      if (buf instanceof AudioBuffer) this.mixPcmCache.delete(buf);
+      cache.delete(key);
+      this.simpleNoteRemaining.delete(key);
+    }
   }
 
   protected noteCacheRecordComplexUnique(): void {
