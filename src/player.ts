@@ -3954,7 +3954,7 @@ export class Player<
     this.playMainSchedMaxMs = 0;
     this.playPromise = this.playNotes();
     await this.playPromise;
-    if (this.debug && this.cacheMode === "worklet" && this.workletEngine) {
+    if (this.cacheMode === "worklet" && this.workletEngine) {
       try {
         const wallMs = performance.now() - playPerfT0;
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
@@ -4118,7 +4118,7 @@ export class Player<
         : "0.0";
       // Comparable to worklet-perf: same RTF definition (songSec*1000/wallMs).
       // play-load summarizes stability (glitch) + main-thread lightness.
-      if (this.debug && isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
+      if (isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
         const wallMs = performance.now() - playPerfT0;
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
         const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
@@ -4515,31 +4515,29 @@ export class Player<
         const liveBakePolicy = this.preferWorkerBakeDuringLive
           ? "worker"
           : "main";
-        if (this.debug) {
-          console.log(
-            `[midy] main-thread | ` +
-              `mixMainMs=${mixMainMs.toFixed(0)} ` +
-              `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
-              `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-              `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
-              `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
-              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
-              `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
-          );
-          console.log(
-            `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
-              `worker=${this.liveMixWorkerCount} ` +
-              `notRealtime=${this.liveMixSkipNotRealtime} ` +
-              `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
-              `workerMixMinEntries=${this.workerMixMinEntries} ` +
-              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
-          );
-          // Offload summary (same numbers, easy to grep alongside older logs).
-          console.log(
-            `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-              `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
-          );
-        }
+        console.log(
+          `[midy] main-thread | ` +
+            `mixMainMs=${mixMainMs.toFixed(0)} ` +
+            `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
+            `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+            `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
+            `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
+            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
+            `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
+        );
+        console.log(
+          `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
+            `worker=${this.liveMixWorkerCount} ` +
+            `notRealtime=${this.liveMixSkipNotRealtime} ` +
+            `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
+            `workerMixMinEntries=${this.workerMixMinEntries} ` +
+            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
+        );
+        // Offload summary (same numbers, easy to grep alongside older logs).
+        console.log(
+          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+            `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
+        );
       }
       if (this.debug) {
         console.log(
@@ -4765,7 +4763,7 @@ export class Player<
     }
 
     const wallMs = performance.now() - t0;
-    if (this.debug) {
+    if (this.debug || bakedOk > 0) {
       console.warn(
         `[midy] simple-prewarm | head=${head.length} rest=${rest.length} ` +
           `allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} ` +
@@ -12278,6 +12276,23 @@ export class Player<
     return super.soundOffNote(note, scheduleTime);
   }
 
+  /**
+   * After channel/residual stops, force-silence any worklet/WASM voices that
+   * were started by an in-flight sample upload after stopChannelNotes ran
+   * (upload completed with workletVoiceId allocated only after the stop
+   * pass). Without this, hybrid/worklet voices can keep sounding past
+   * song-end / stop.
+   */
+  override async stopNotes(scheduleTime: number): Promise<void[]> {
+    const result = await super.stopNotes(scheduleTime);
+    const engine = this.workletEngine;
+    if (engine) {
+      engine.allSoundOff();
+      this.workletPendingGroups.clear();
+    }
+    return result;
+  }
+
   // ---------------------------------------------------------------------------
   // Worklet mode (cacheMode === "worklet")
   // ---------------------------------------------------------------------------
@@ -12630,9 +12645,11 @@ export class Player<
     if (!voiceParams) return;
 
     const engine = await this.ensureWorkletEngine();
-    // Do not return on note.ending: lookAhead may have already fired noteOff
-    // (sets ending) while we await sample load. releaseNote waits on note.ready
-    // and will schedule worklet noteOff at endTime after workletVoiceId is set.
+    // LookAhead may set ending while we await sample load; releaseNote is
+    // chained on note.ready and will noteOff after workletVoiceId is set.
+    // Force-stop paths (stop/pause/seek) also set ending — those must not
+    // start a new worklet voice after the await, or residual sound hangs
+    // past song-end (especially WASM hybrid uploads).
 
     const audioBufferId = note.audioBufferId !== undefined
       ? note.audioBufferId
@@ -12658,6 +12675,21 @@ export class Player<
         }
         return;
       }
+    }
+
+    // Abort if stop/pause/seek won the race during sample upload. Do not
+    // confuse with lookAhead noteOff (ending=true while still isPlaying and
+    // not stopping) — that path still needs noteOn + ready-chained release.
+    if (
+      note.ending &&
+      (this.isStopping || this.isPausing || this.isSeeking || !this.isPlaying)
+    ) {
+      if (this.debug) {
+        engine.log(
+          `ABORT noteOn after stop race sampleId=${sampleId}`,
+        );
+      }
+      return;
     }
 
     // Preparation lag relative to scheduled start (same idea as warnIfStartTimeMissed).

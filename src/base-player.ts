@@ -2360,8 +2360,15 @@ export class BasePlayer<
         // Set the 'ending' flag beforehand to prevent start() from being called after buffer prep completes.
         // Waiting for 'note.ready' could cause a hang during decoding or offline rendering,
         // so we only call soundOff() for nodes that already exist.
+        // Worklet voices have neither bufferSource nor volumeNode — only
+        // workletVoiceId. Skipping them left WASM/worklet synth voices
+        // running after stop / song-end (hanging residual notes).
         note.ending = true;
-        if (note.bufferSource || note.volumeNode) {
+        if (
+          note.bufferSource ||
+          note.volumeNode ||
+          note.workletVoiceId != null
+        ) {
           promises.push(this.soundOffNote(note, scheduleTime));
         } else {
           this.soundingNotes.delete(note);
