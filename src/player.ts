@@ -3991,53 +3991,57 @@ export class Player<
         // across runs (wall/rtf stay ≈ song length under realtime playback).
         // maxProcMs spike context: active voices + port msgs in that quantum.
         // procHist buckets (ms): <1 | 1-2 | 2-3 | 3-5 | 5-10 | >=10
-        console.log(
-          `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms` +
-            ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
-            ` peakActive=${peak}/${WORKLET_MAX_VOICES}` +
-            ` avgActive=${avgActive.toFixed(1)}` +
-            ` processMs=${processMs.toFixed(1)}` +
-            ` avgProcUs=${avgProcUs.toFixed(1)}` +
-            ` maxProcMs=${processMaxMs.toFixed(3)}` +
-            ` overruns=${overruns}` +
-            ` overrunMaxMs=${Number(overrunMaxMs).toFixed(3)}` +
-            ` maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}}` +
-            ` timer=${timerSrc}` +
-            ` procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5}` +
-            ` simpleVQ=${simpleVQ} complexVQ=${complexVQ}` +
-            ` simplePct=${simplePct.toFixed(1)}%` +
-            ` noteOn=${on}` +
-            ` stealWorklet=${steal} stealMain=${this.workletMainSteal}` +
-            ` miss=${miss}` +
-            ` stop=${st?.stop ?? ms.stop} quantums=${q}` +
-            ` samples=${
-              st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples
-            }` +
-            ` limit=${JSON.stringify(this.workletVoiceLimit)}` +
-            ` mainMax=${this.resolveWorkletMainMaxVoices()}` +
-            ` peakGroups=${this.workletPeakGroups}` +
-            ` peakLayers=${this.workletPeakLayers}` +
-            ` (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms` +
+              ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
+              ` peakActive=${peak}/${WORKLET_MAX_VOICES}` +
+              ` avgActive=${avgActive.toFixed(1)}` +
+              ` processMs=${processMs.toFixed(1)}` +
+              ` avgProcUs=${avgProcUs.toFixed(1)}` +
+              ` maxProcMs=${processMaxMs.toFixed(3)}` +
+              ` overruns=${overruns}` +
+              ` overrunMaxMs=${Number(overrunMaxMs).toFixed(3)}` +
+              ` maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}}` +
+              ` timer=${timerSrc}` +
+              ` procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5}` +
+              ` simpleVQ=${simpleVQ} complexVQ=${complexVQ}` +
+              ` simplePct=${simplePct.toFixed(1)}%` +
+              ` noteOn=${on}` +
+              ` stealWorklet=${steal} stealMain=${this.workletMainSteal}` +
+              ` miss=${miss}` +
+              ` stop=${st?.stop ?? ms.stop} quantums=${q}` +
+              ` samples=${
+                st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples
+              }` +
+              ` limit=${JSON.stringify(this.workletVoiceLimit)}` +
+              ` mainMax=${this.resolveWorkletMainMaxVoices()}` +
+              ` peakGroups=${this.workletPeakGroups}` +
+              ` peakLayers=${this.workletPeakLayers}` +
+              ` (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`,
+          );
+        }
         // Stability / lightness (comparable to chunk play-load).
         const lagN = this.eventLoopLagSamples;
         const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
         const processPct = wallMs > 0 ? (100 * processMs / wallMs) : 0;
         const schedN = this.playMainSchedCount;
         const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
-        console.log(
-          `[midy] play-load | mode=worklet` +
-            ` glitch=${overruns} (overruns)` +
-            ` glitchMaxMs=${Number(overrunMaxMs).toFixed(1)}` +
-            ` audioBusyMs=${processMs.toFixed(0)}` +
-            ` audioBusyPct=${processPct.toFixed(1)}%` +
-            ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
-            ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
-            ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
-            ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
-            ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
-            ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] play-load | mode=worklet` +
+              ` glitch=${overruns} (overruns)` +
+              ` glitchMaxMs=${Number(overrunMaxMs).toFixed(1)}` +
+              ` audioBusyMs=${processMs.toFixed(0)}` +
+              ` audioBusyPct=${processPct.toFixed(1)}%` +
+              ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
+              ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
+              ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
+              ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
+              ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
+              ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`,
+          );
+        }
       } catch (_) { /* ignore */ }
     }
     // Post-playback cache / complex-breakdown stats.
@@ -4125,16 +4129,18 @@ export class Player<
         const label = isChunkCacheMode(this.cacheMode)
           ? "chunk-perf"
           : "segment-perf";
-        console.log(
-          `[midy] ${label} | wall=${wallMs.toFixed(0)}ms` +
-            ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
-            ` tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate}` +
-            ` bakeAvg=${bakeAvg.toFixed(1)}ms` +
-            ` bakeP95=${bakeP95.toFixed(1)}ms` +
-            ` pureTA=${this.chunkPureTaTiles}` +
-            ` pathWorkletHybrid=${this.noteBakeWorkletHybridCount}` +
-            ` mode=${this.cacheMode}`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] ${label} | wall=${wallMs.toFixed(0)}ms` +
+              ` song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)}` +
+              ` tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate}` +
+              ` bakeAvg=${bakeAvg.toFixed(1)}ms` +
+              ` bakeP95=${bakeP95.toFixed(1)}ms` +
+              ` pureTA=${this.chunkPureTaTiles}` +
+              ` pathWorkletHybrid=${this.noteBakeWorkletHybridCount}` +
+              ` mode=${this.cacheMode}`,
+          );
+        }
         const lagN = this.eventLoopLagSamples;
         const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
         const glitch = lateN + this.chunkDroppedLate;
@@ -4147,21 +4153,23 @@ export class Player<
         // mainBusyMs ≈ schedule work + main-thread mix (worker mix excluded).
         const mainBusyMs = this.playMainSchedSumMs + mixMainMs;
         const mainBusyPct = wallMs > 0 ? (100 * mainBusyMs / wallMs) : 0;
-        console.log(
-          `[midy] play-load | mode=${this.cacheMode}` +
-            ` glitch=${glitch} (late+dropped)` +
-            ` glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)}` +
-            ` mainBusyMs=${mainBusyMs.toFixed(0)}` +
-            ` mainBusyPct=${mainBusyPct.toFixed(2)}%` +
-            ` mixMainPct=${mainMixPct.toFixed(1)}%` +
-            ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
-            ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
-            ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
-            ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
-            ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
-            ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms` +
-            ` workerMixMs=${mixWorkerMs.toFixed(0)}`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] play-load | mode=${this.cacheMode}` +
+              ` glitch=${glitch} (late+dropped)` +
+              ` glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)}` +
+              ` mainBusyMs=${mainBusyMs.toFixed(0)}` +
+              ` mainBusyPct=${mainBusyPct.toFixed(2)}%` +
+              ` mixMainPct=${mainMixPct.toFixed(1)}%` +
+              ` lagWarns=${this.eventLoopLagWarnCount}/${lagN}` +
+              ` lagAvgExcess=${lagAvg.toFixed(1)}ms` +
+              ` lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms` +
+              ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
+              ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
+              ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms` +
+              ` workerMixMs=${mixWorkerMs.toFixed(0)}`,
+          );
+        }
       }
       const poolSize = this.bakeWorkerPool
         ? this.bakeWorkerPool.poolSize
@@ -4515,29 +4523,35 @@ export class Player<
         const liveBakePolicy = this.preferWorkerBakeDuringLive
           ? "worker"
           : "main";
-        console.log(
-          `[midy] main-thread | ` +
-            `mixMainMs=${mixMainMs.toFixed(0)} ` +
-            `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
-            `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-            `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
-            `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
-            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
-            `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
-        );
-        console.log(
-          `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
-            `worker=${this.liveMixWorkerCount} ` +
-            `notRealtime=${this.liveMixSkipNotRealtime} ` +
-            `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
-            `workerMixMinEntries=${this.workerMixMinEntries} ` +
-            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] main-thread | ` +
+              `mixMainMs=${mixMainMs.toFixed(0)} ` +
+              `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
+              `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+              `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
+              `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
+              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
+              `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
+          );
+        }
+        if (this.debug) {
+          console.log(
+            `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
+              `worker=${this.liveMixWorkerCount} ` +
+              `notRealtime=${this.liveMixSkipNotRealtime} ` +
+              `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
+              `workerMixMinEntries=${this.workerMixMinEntries} ` +
+              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
+          );
+        }
         // Offload summary (same numbers, easy to grep alongside older logs).
-        console.log(
-          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-            `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+              `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
+          );
+        }
       }
       if (this.debug) {
         console.log(
