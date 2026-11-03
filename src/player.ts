@@ -3954,7 +3954,7 @@ export class Player<
     this.playMainSchedMaxMs = 0;
     this.playPromise = this.playNotes();
     await this.playPromise;
-    if (this.cacheMode === "worklet" && this.workletEngine) {
+    if (this.debug && this.cacheMode === "worklet" && this.workletEngine) {
       try {
         const wallMs = performance.now() - playPerfT0;
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
@@ -4118,7 +4118,7 @@ export class Player<
         : "0.0";
       // Comparable to worklet-perf: same RTF definition (songSec*1000/wallMs).
       // play-load summarizes stability (glitch) + main-thread lightness.
-      if (isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
+      if (this.debug && isTiledCacheMode(this.cacheMode) && playPerfT0 > 0) {
         const wallMs = performance.now() - playPerfT0;
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
         const rtf = wallMs > 0 && songSec > 0 ? (songSec * 1000 / wallMs) : 0;
@@ -4515,29 +4515,31 @@ export class Player<
         const liveBakePolicy = this.preferWorkerBakeDuringLive
           ? "worker"
           : "main";
-        console.log(
-          `[midy] main-thread | ` +
-            `mixMainMs=${mixMainMs.toFixed(0)} ` +
-            `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
-            `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-            `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
-            `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
-            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
-            `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
-        );
-        console.log(
-          `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
-            `worker=${this.liveMixWorkerCount} ` +
-            `notRealtime=${this.liveMixSkipNotRealtime} ` +
-            `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
-            `workerMixMinEntries=${this.workerMixMinEntries} ` +
-            `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
-        );
-        // Offload summary (same numbers, easy to grep alongside older logs).
-        console.log(
-          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
-            `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] main-thread | ` +
+              `mixMainMs=${mixMainMs.toFixed(0)} ` +
+              `mixWorkerMs=${mixWorkerMs.toFixed(0)} ` +
+              `mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+              `mixMainRatio=${mixMainRatio.toFixed(1)}% | ` +
+              `liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} ` +
+              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} ` +
+              `preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`,
+          );
+          console.log(
+            `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} ` +
+              `worker=${this.liveMixWorkerCount} ` +
+              `notRealtime=${this.liveMixSkipNotRealtime} ` +
+              `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
+              `workerMixMinEntries=${this.workerMixMinEntries} ` +
+              `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
+          );
+          // Offload summary (same numbers, easy to grep alongside older logs).
+          console.log(
+            `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} ` +
+              `mixMainRatio=${mixMainRatio.toFixed(1)}%`,
+          );
+        }
       }
       if (this.debug) {
         console.log(
@@ -4763,7 +4765,7 @@ export class Player<
     }
 
     const wallMs = performance.now() - t0;
-    if (this.debug || bakedOk > 0) {
+    if (this.debug) {
       console.warn(
         `[midy] simple-prewarm | head=${head.length} rest=${rest.length} ` +
           `allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} ` +
