@@ -385,6 +385,8 @@ export class Player<
   chunkGateReasonMixAwaiting: number = 0;
   chunkGateReasonHorizon: number = 0;
   chunkGateReasonPassBudget: number = 0;
+  /** Live: deferred bake held because offline was active and tile not urgent. */
+  chunkGateReasonLiveOfflineHold: number = 0;
   private chunkGateWaitSamplesMs: number[] = [];
   private static readonly GATE_WAIT_SAMPLE_CAP = 256;
   // --- diag: mix overhead ---
@@ -500,6 +502,21 @@ export class Player<
   // 0 = unlimited (legacy). 2 overlaps ~30–70ms pureTA tiles so deferred
   // drains faster than the playhead after dense schedule passes.
   maxConcurrentChunkBakes: number = 2;
+  /**
+   * During live playback (isPlaying && !preroll), cap concurrent chunk bakes
+   * to this value (min'd with maxConcurrentChunkBakes). Keeps mix onmessage
+   * residual down when bake completion and offline work would otherwise
+   * contend with worker mix replies. Preroll / offline export still use
+   * maxConcurrentChunkBakes. 1 = one bake at a time while playing.
+   */
+  maxConcurrentChunkBakesLive: number = 1;
+  /**
+   * Live-only: when offlineRenderActive > 0, only promote deferred tiles
+   * whose chunkStart is within this many seconds of the playhead. Far
+   * horizon bakes wait until offline is idle so mix residual stays low.
+   * 0 = do not special-case offline (legacy). Default 2s.
+   */
+  chunkBakeLiveOfflineUrgencySec: number = 2;
   /**
    * Extra gate waiters allowed beyond maxConcurrentChunkBakes.
    * 0 = never block on the bake gate during live play: only start a bake
@@ -901,6 +918,7 @@ export class Player<
       this.wakeNextChunkBakeWaiter();
       // Prefer promoting deferred over growing an in-gate waiter queue.
       // queueMicrotask so the current stack finishes before pump runs.
+      // Live + mixAwaiting: leave deferred idle so mix onmessage runs first.
       if (
         this.deferredChunkBakes.length > 0 &&
         this.canAcceptChunkBakeSlot() &&
@@ -963,9 +981,20 @@ export class Player<
   protected canAcceptChunkBakeSlot(): boolean {
     const max = this.maxConcurrentChunkBakes | 0;
     if (max <= 0) return true;
+    const live = this.isPlaying && !this.chunkPrerollActive;
+    // Live mix priority: never take a new bake slot while a worker mix
+    // reply is outstanding (main must stay free for onmessage / copyBack).
+    if (live && this.mixAwaitingCount > 0) {
+      this.chunkGateReasonMixAwaiting++;
+      return false;
+    }
+    // Live: tighter concurrency than preroll (see maxConcurrentChunkBakesLive).
+    const effectiveMax = live
+      ? Math.min(max, Math.max(1, this.maxConcurrentChunkBakesLive | 0))
+      : max;
     const waitCap = Math.max(0, this.maxChunkBakeWaiters | 0);
     return (this.chunkBakeActive + this.chunkBakeWaiters.length) <
-      (max + waitCap);
+      (effectiveMax + waitCap);
   }
 
   /**
@@ -1103,15 +1132,29 @@ export class Player<
   protected pumpDeferredChunkBakes(): void {
     const deferred = this.deferredChunkBakes;
     if (deferred.length === 0) return;
+    const live = this.isPlaying && !this.chunkPrerollActive;
     // Hold promotions while mix replies are in flight so main stays free
     // for onmessage (cuts residual). Preroll/offline never wait.
-    if (
-      this.mixAwaitingCount > 0 && this.isPlaying && !this.chunkPrerollActive
-    ) {
+    if (live && this.mixAwaitingCount > 0) {
+      this.chunkGateReasonMixAwaiting++;
       return;
     }
     // Stable: process earliest chunkStart first.
     deferred.sort((a, b) => a.chunkStart - b.chunkStart);
+    // Live + offline busy: only promote urgent tiles (near playhead).
+    let liveNow = 0;
+    let offlineHold = false;
+    if (live && this.offlineRenderActive > 0) {
+      const urg = this.chunkBakeLiveOfflineUrgencySec;
+      if (urg > 0) {
+        offlineHold = true;
+        try {
+          liveNow = this.currentTime();
+        } catch {
+          offlineHold = false;
+        }
+      }
+    }
     const still: typeof deferred = [];
     for (let i = 0; i < deferred.length; i++) {
       const d = deferred[i];
@@ -1121,6 +1164,18 @@ export class Player<
       }
       if (!this.shouldBakeChunkNow(d.chunkStart)) {
         // Sorted by chunkStart: once one is beyond near/horizon, the rest are too.
+        still.push(d);
+        for (let j = i + 1; j < deferred.length; j++) {
+          still.push(deferred[j]);
+        }
+        break;
+      }
+      if (
+        offlineHold &&
+        d.chunkStart > liveNow + this.chunkBakeLiveOfflineUrgencySec
+      ) {
+        // Not urgent while offline is occupying main — keep deferred.
+        this.chunkGateReasonLiveOfflineHold++;
         still.push(d);
         for (let j = i + 1; j < deferred.length; j++) {
           still.push(deferred[j]);
@@ -4263,6 +4318,7 @@ export class Player<
               `mixAwaiting=${this.chunkGateReasonMixAwaiting} ` +
               `horizon=${this.chunkGateReasonHorizon} ` +
               `passBudget=${this.chunkGateReasonPassBudget} ` +
+              `liveOfflineHold=${this.chunkGateReasonLiveOfflineHold} ` +
               `maxConcurrent=${this.maxConcurrentChunkBakes} ` +
               `maxWaiters=${this.maxChunkBakeWaiters} ` +
               `priorityByStart=${this.chunkBakePriorityByStart}`,
@@ -4564,6 +4620,7 @@ export class Player<
             `complexWeight=${this.chunkComplexCostWeight} ` +
             `tileDuration=${this.tileDuration} ` +
             `maxChunkBakes=${this.maxConcurrentChunkBakes} ` +
+            `maxChunkBakesLive=${this.maxConcurrentChunkBakesLive} ` +
             `horizon=${this.chunkBakeHorizonSec}s ` +
             `near=${this.chunkBakeNearSec}s ` +
             `startsPerPass=${this.maxChunkBakeStartsPerPass} ` +
@@ -9418,6 +9475,7 @@ export class Player<
     this.chunkGateReasonMixAwaiting = 0;
     this.chunkGateReasonHorizon = 0;
     this.chunkGateReasonPassBudget = 0;
+    this.chunkGateReasonLiveOfflineHold = 0;
     this.chunkGateWaitSamplesMs = [];
     this.chunkMixOverheadSumMs = 0;
     this.chunkMixOverheadMaxMs = 0;
