@@ -229,9 +229,10 @@ function wasmGrowFor(bytesNeeded) {
 function wasmMix(destLen, destChCount, entries) {
   if (!__wasmReady) return null;
   var e = __wasmExports;
-  // Layout: destL, destR?, then per-entry src copies
+  // Layout: destL, destR?, then unique source/curve copies.
+  // Same Float32Array appearing in multiple entries is interned once
+  // (common when a tile reuses the same simple-note buffer).
   var f32Bytes = 4;
-  var destSamples = destLen * (destChCount > 1 ? 2 : 1);
   var cursor = 65536; // leave low region alone
   var destLPtr = cursor;
   cursor += destLen * f32Bytes;
@@ -240,44 +241,45 @@ function wasmMix(destLen, destChCount, entries) {
     destRPtr = cursor;
     cursor += destLen * f32Bytes;
   }
-  // Estimate source needs
+  // Estimate unique source/curve footprint (object identity).
+  var seen = new Set();
   var need = cursor;
   for (var i = 0; i < entries.length; i++) {
     var en = entries[i];
-    need += en.left.length * f32Bytes;
-    if (en.right) need += en.right.length * f32Bytes;
-    if (en.gainCurve) need += en.gainCurve.length * f32Bytes;
+    if (!seen.has(en.left)) {
+      seen.add(en.left);
+      need += en.left.length * f32Bytes;
+    }
+    if (en.right && !seen.has(en.right)) {
+      seen.add(en.right);
+      need += en.right.length * f32Bytes;
+    }
+    if (en.gainCurve && !seen.has(en.gainCurve)) {
+      seen.add(en.gainCurve);
+      need += en.gainCurve.length * f32Bytes;
+    }
   }
   wasmGrowFor(need + 65536);
-  var heap = new Float32Array(__wasmMemory.buffer);
-  // clear dest via C
+  // Grow may detach old buffer views — only create views after grow.
   e.sc_mix_clear(destLPtr, destRPtr || 0, destLen);
-  // Actually sc_mix_clear expects float* which in our export is byte offset? 
-  // clang wasm exports pointers as i32 byte offsets into linear memory.
-  // Our C takes float* — the JS call should pass byte offset.
-  // Wait: when calling from JS, we pass the numeric pointer value as used by C.
-  // sc_mix_clear(float*, float*, int) — first args are pointers = byte offsets.
-
+  // Float32Array -> byte offset in WASM linear memory
+  var ptrMap = new Map();
+  function intern(arr) {
+    var p = ptrMap.get(arr);
+    if (p !== undefined) return p;
+    p = cursor;
+    new Float32Array(__wasmMemory.buffer, p, arr.length).set(arr);
+    cursor += arr.length * f32Bytes;
+    ptrMap.set(arr, p);
+    return p;
+  }
   for (var ei = 0; ei < entries.length; ei++) {
     var ent = entries[ei];
     var srcL = ent.left;
     var srcLen = srcL.length;
-    var srcLPtr = cursor;
-    var srcHeap = new Float32Array(__wasmMemory.buffer, srcLPtr, srcLen);
-    srcHeap.set(srcL);
-    cursor += srcLen * f32Bytes;
-    var srcRPtr = 0;
-    if (ent.right) {
-      srcRPtr = cursor;
-      new Float32Array(__wasmMemory.buffer, srcRPtr, ent.right.length).set(ent.right);
-      cursor += ent.right.length * f32Bytes;
-    }
-    var curvePtr = 0;
-    if (ent.gainCurve) {
-      curvePtr = cursor;
-      new Float32Array(__wasmMemory.buffer, curvePtr, ent.gainCurve.length).set(ent.gainCurve);
-      cursor += ent.gainCurve.length * f32Bytes;
-    }
+    var srcLPtr = intern(srcL);
+    var srcRPtr = ent.right ? intern(ent.right) : 0;
+    var curvePtr = ent.gainCurve ? intern(ent.gainCurve) : 0;
     var gL = ent.gain;
     var gR = ent.gainRight != null ? ent.gainRight : ent.gain;
     e.sc_mix_add(
@@ -293,6 +295,9 @@ function wasmMix(destLen, destChCount, entries) {
       curvePtr
     );
   }
+  // Copy-out once into standalone buffers that can be postMessage-transferred.
+  // WebAssembly.Memory.buffer is non-detachable, so a real zero-copy transfer
+  // of the dest region is not possible without SharedArrayBuffer.
   var destLeft = new Float32Array(destLen);
   destLeft.set(new Float32Array(__wasmMemory.buffer, destLPtr, destLen));
   var destRight = null;
