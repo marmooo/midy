@@ -426,6 +426,29 @@ export class Player<
    * and any main-thread busy time before the mix promise resolves.
    */
   chunkMixResidualSumMs: number = 0;
+  /**
+   * Per-tile residual samples (worker-path only). Used for residualP50/P95
+   * and correlation summaries even when debugDetail is off.
+   */
+  chunkMixResidualSamplesMs: number[] = [];
+  /** Tiles with residualMs >= residualWarnMs. */
+  chunkMixHighResidualTiles: number = 0;
+  /** Rate-limit for play-time mix-residual warnings (debug, not debugDetail). */
+  private mixResidualWarnCount: number = 0;
+  /** Cap play-time residual warnings per play (avoids console flood). */
+  mixResidualWarnMax: number = 40;
+  /** Threshold (ms) for residual warn + highResidualTiles. */
+  residualWarnMs: number = 40;
+  // Running sums for residual correlation (worker tiles only).
+  private mixResCorrN: number = 0;
+  private mixResCorrSumR: number = 0;
+  private mixResCorrSumE: number = 0;
+  private mixResCorrSumS: number = 0;
+  private mixResCorrSumRE: number = 0;
+  private mixResCorrSumRS: number = 0;
+  private mixResCorrSumE2: number = 0;
+  private mixResCorrSumS2: number = 0;
+  private mixResCorrSumR2: number = 0;
   chunkMixCopyBackSumMs: number = 0;
   chunkMixMainSumMs: number = 0;
   /** Ms spent in Float32Array.slice during prepare. */
@@ -4349,6 +4372,68 @@ export class Player<
               `copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms ` +
               `mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`,
           );
+          // Always-on residual summary (no debugDetail required).
+          {
+            const rs = this.chunkMixResidualSamplesMs.slice().sort((a, b) =>
+              a - b
+            );
+            const pct = (q: number) => {
+              if (rs.length === 0) return 0;
+              const i = Math.min(
+                rs.length - 1,
+                Math.floor(q * (rs.length - 1)),
+              );
+              return rs[i]!;
+            };
+            const residualMax = rs.length > 0 ? rs[rs.length - 1]! : 0;
+            const corr = (
+              n: number,
+              sumX: number,
+              sumY: number,
+              sumXY: number,
+              sumX2: number,
+              sumY2: number,
+            ): number => {
+              if (n < 3) return NaN;
+              const num = n * sumXY - sumX * sumY;
+              const den = Math.sqrt(
+                (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY),
+              );
+              return den > 1e-12 ? num / den : NaN;
+            };
+            const rEntries = corr(
+              this.mixResCorrN,
+              this.mixResCorrSumR,
+              this.mixResCorrSumE,
+              this.mixResCorrSumRE,
+              this.mixResCorrSumR2,
+              this.mixResCorrSumE2,
+            );
+            const rSrc = corr(
+              this.mixResCorrN,
+              this.mixResCorrSumR,
+              this.mixResCorrSumS,
+              this.mixResCorrSumRS,
+              this.mixResCorrSumR2,
+              this.mixResCorrSumS2,
+            );
+            const fmtR = (v: number) =>
+              Number.isFinite(v) ? v.toFixed(2) : "n/a";
+            console.log(
+              `[midy] mix-residual-summary | tiles=${mw} ` +
+                `residualAvg=${residualAvg.toFixed(1)}ms ` +
+                `residualP50=${pct(0.5).toFixed(1)}ms ` +
+                `residualP95=${pct(0.95).toFixed(1)}ms ` +
+                `residualMax=${residualMax.toFixed(1)}ms ` +
+                `highResidualTiles(>=${this.residualWarnMs}ms)=${this.chunkMixHighResidualTiles} | ` +
+                `corr residual↔entries=${fmtR(rEntries)} ` +
+                `residual↔srcSum=${fmtR(rSrc)} | ` +
+                `awaitAvg=${awaitAvg.toFixed(1)} workerAvg=${
+                  workerAvg.toFixed(1)
+                } copyBackAvg=${copyAvg.toFixed(1)} ` +
+                `afterAwait is inside residual (reply lag + event-loop)`,
+            );
+          }
           // prepare breakdown: is slice the dominant cost? buffer reuse?
           const prepTiles = mw;
           const sliceAvg = prepTiles > 0
@@ -8009,6 +8094,24 @@ export class Player<
       // Residual = reply path + event-loop lag (not explained by queue/post/worker).
       const residualMs = Math.max(0, awaitMs - queueMs - postMs - workerMs);
       this.chunkMixResidualSumMs += residualMs;
+      this.chunkMixResidualSamplesMs.push(residualMs);
+      if (residualMs >= this.residualWarnMs) {
+        this.chunkMixHighResidualTiles++;
+      }
+      // Correlation accumulators (residual vs entries / src sample volume).
+      {
+        const e = mixEntries.length;
+        const s = srcSamplesSum;
+        this.mixResCorrN++;
+        this.mixResCorrSumR += residualMs;
+        this.mixResCorrSumE += e;
+        this.mixResCorrSumS += s;
+        this.mixResCorrSumRE += residualMs * e;
+        this.mixResCorrSumRS += residualMs * s;
+        this.mixResCorrSumE2 += e * e;
+        this.mixResCorrSumS2 += s * s;
+        this.mixResCorrSumR2 += residualMs * residualMs;
+      }
 
       // Gap between promise resolve and copyBack (microtask / other main work).
       const tCopy0 = performance.now();
@@ -8068,25 +8171,29 @@ export class Player<
         detailOut.offlineRenderActive = concurrentSnap.offlineRenderActive;
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
       }
-      // Residual ≥40ms is already audible as main-thread jank; log with
-      // concurrent snapshot so we can tell bake/offline contention apart.
-      if (residualMs >= 40) {
-        if (this.debug && this.debugDetail) {
-          console.warn(
-            `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
-              `await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms ` +
-              `post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms ` +
-              `afterAwait=${afterAwaitMs.toFixed(1)}ms ` +
-              `prepare=${prepareMs.toFixed(0)}ms copyBack=${
-                copyBackMs.toFixed(0)
-              }ms | ` +
-              `entries=${mixEntries.length} destSamples=${bufferLength} ` +
-              `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
-              `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
-              `offline=${concurrentSnap.offlineRenderActive} ` +
-              `deferred=${concurrentSnap.deferredBakes}`,
-          );
-        }
+      // Residual ≥ residualWarnMs is already audible as main-thread jank.
+      // Log under debug alone (not only debugDetail), rate-limited.
+      if (
+        residualMs >= this.residualWarnMs &&
+        this.debug &&
+        this.mixResidualWarnCount < this.mixResidualWarnMax
+      ) {
+        this.mixResidualWarnCount++;
+        console.warn(
+          `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms ` +
+            `await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms ` +
+            `post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms ` +
+            `afterAwait=${afterAwaitMs.toFixed(1)}ms ` +
+            `prepare=${prepareMs.toFixed(0)}ms copyBack=${
+              copyBackMs.toFixed(0)
+            }ms | ` +
+            `entries=${mixEntries.length} destSamples=${bufferLength} ` +
+            `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
+            `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
+            `offline=${concurrentSnap.offlineRenderActive} ` +
+            `deferred=${concurrentSnap.deferredBakes}` +
+            ` | n=${this.mixResidualWarnCount}/${this.mixResidualWarnMax}`,
+        );
       }
       return buffer;
     } catch (err) {
@@ -9317,6 +9424,18 @@ export class Player<
     this.chunkMixQueueSumMs = 0;
     this.chunkMixPostSumMs = 0;
     this.chunkMixResidualSumMs = 0;
+    this.chunkMixResidualSamplesMs = [];
+    this.chunkMixHighResidualTiles = 0;
+    this.mixResidualWarnCount = 0;
+    this.mixResCorrN = 0;
+    this.mixResCorrSumR = 0;
+    this.mixResCorrSumE = 0;
+    this.mixResCorrSumS = 0;
+    this.mixResCorrSumRE = 0;
+    this.mixResCorrSumRS = 0;
+    this.mixResCorrSumE2 = 0;
+    this.mixResCorrSumS2 = 0;
+    this.mixResCorrSumR2 = 0;
     this.chunkMixCopyBackSumMs = 0;
     this.chunkMixMainSumMs = 0;
     this.chunkMixWorkerTiles = 0;
