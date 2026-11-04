@@ -410,6 +410,20 @@ export class Player<
   chunkBakeComplexSumMs: number = 0;
   chunkBakeMixSumMs: number = 0;
   chunkBakeOacSumMs: number = 0;
+  /**
+   * Chunk simple-miss path breakdown (diagnose bakeMax: main sync vs worker
+   * batch vs serial getSimpleNoteBuffer). Reset each start via pipeline stats.
+   * - sync: tryBakeSimpleNoteSync hit (main, no await)
+   * - workerBatch: bakeSimpleNotesBatch used worker pool
+   * - serial: sequential getSimpleNoteBuffer (Promise.all map or batch fallback)
+   */
+  simpleMissPathSyncNotes: number = 0;
+  simpleMissPathWorkerBatchNotes: number = 0;
+  simpleMissPathWorkerBatchJobs: number = 0;
+  simpleMissPathSerialNotes: number = 0;
+  simpleMissPathSerialMs: number = 0;
+  simpleMissPathWorkerBatchMs: number = 0;
+  simpleMissPathSyncMs: number = 0;
   // Mix-phase breakdown inside mixEntriesToBuffer (sums over tiles that used it).
   // prepare: getChannelData + optional slice + MixSourceEntry assembly
   // await:   postMessage round-trip + worker queue wait + structured clone
@@ -4366,6 +4380,27 @@ export class Player<
               `maxNoteBake=${this.maxNoteBakeDuration} ` +
               `maxTiled=${this.maxTiledNoteDuration}`,
           );
+          // Where chunk simple misses actually ran: sync main / worker batch /
+          // serial getSimpleNoteBuffer. Use this to decide SIMD vs more threads
+          // before spending more prewarm budget.
+          const smSync = this.simpleMissPathSyncNotes;
+          const smWb = this.simpleMissPathWorkerBatchNotes;
+          const smSer = this.simpleMissPathSerialNotes;
+          const smTotal = smSync + smWb + smSer;
+          if (smTotal > 0) {
+            console.log(
+              `[midy] simple-miss-path | totalNotes=${smTotal} ` +
+                `sync=${smSync} (${this.simpleMissPathSyncMs.toFixed(0)}ms) ` +
+                `workerBatch=${smWb} ` +
+                `jobs=${this.simpleMissPathWorkerBatchJobs} ` +
+                `(${this.simpleMissPathWorkerBatchMs.toFixed(0)}ms) ` +
+                `serial=${smSer} (${
+                  this.simpleMissPathSerialMs.toFixed(0)
+                }ms) ` +
+                `| preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive} ` +
+                `useWorkerSimpleNoteBake=${this.useWorkerSimpleNoteBake}`,
+            );
+          }
           if (this.noteBakeWorkletHybridCount > 0 && this.workletEngine) {
             try {
               const st = await this.workletEngine.fetchStats(80);
@@ -6216,12 +6251,16 @@ export class Player<
               voice: n.voice,
             };
             const bakeMixLive = this.simpleBakeChannelMixForNote(n);
+            const tSync0 = performance.now();
             const noteBuf = this.tryBakeSimpleNoteSync(
               entry,
               bakeMixLive,
               item.key,
             );
             if (noteBuf) {
+              const syncMs = performance.now() - tSync0;
+              this.simpleMissPathSyncNotes++;
+              this.simpleMissPathSyncMs += syncMs;
               const gains = this.chunkNoteMixParams(
                 n,
                 noteBuf.length,
@@ -6236,6 +6275,7 @@ export class Player<
               });
               simpleMissesBaked++;
               simpleLookupMs += item.lookupMs;
+              simpleMissBakeMs += syncMs;
               continue;
             }
             pending.push({
@@ -6366,6 +6406,11 @@ export class Player<
                   false, // not holding an outer gate slot
                 );
                 const missBakeMs = performance.now() - tBake0;
+                // Non-live / preroll path: per-note getSimpleNoteBuffer (may
+                // itself use worker for the sample loop). Count as serial at
+                // the tile orchestration layer (Promise.all of individuals).
+                this.simpleMissPathSerialNotes++;
+                this.simpleMissPathSerialMs += missBakeMs;
                 const gainsMiss = this.chunkNoteMixParams(
                   n,
                   noteBuf.length,
@@ -6417,6 +6462,8 @@ export class Player<
                   false,
                 );
                 const missBakeMs = performance.now() - tBake0;
+                this.simpleMissPathSerialNotes++;
+                this.simpleMissPathSerialMs += missBakeMs;
                 const gainsBake = this.chunkNoteMixParams(
                   n,
                   noteBuf.length,
@@ -9498,6 +9545,13 @@ export class Player<
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
     this.chunkBakeOacSumMs = 0;
+    this.simpleMissPathSyncNotes = 0;
+    this.simpleMissPathWorkerBatchNotes = 0;
+    this.simpleMissPathWorkerBatchJobs = 0;
+    this.simpleMissPathSerialNotes = 0;
+    this.simpleMissPathSerialMs = 0;
+    this.simpleMissPathWorkerBatchMs = 0;
+    this.simpleMissPathSyncMs = 0;
     this.chunkMixPrepareSumMs = 0;
     this.chunkMixAwaitSumMs = 0;
     this.chunkMixWorkerSumMs = 0;
@@ -10660,9 +10714,17 @@ export class Player<
   ): Promise<AudioBuffer[]> {
     if (entries.length === 0) return [];
     if (entries.length === 1) {
-      return [
-        await this.getSimpleNoteBuffer(entries[0], bakeChannelMix, false),
-      ];
+      const tOne0 = performance.now();
+      const one = await this.getSimpleNoteBuffer(
+        entries[0],
+        bakeChannelMix,
+        false,
+      );
+      // Single-note batch degenerates to getSimpleNoteBuffer (sample loop may
+      // still use a worker internally via renderSampleTypedArrayMaybeWorker).
+      this.simpleMissPathSerialNotes++;
+      this.simpleMissPathSerialMs += performance.now() - tOne0;
+      return [one];
     }
 
     const out: (AudioBuffer | null)[] = new Array(entries.length).fill(null);
@@ -10737,6 +10799,7 @@ export class Player<
       });
 
     if (!canBatch) {
+      const tSerial0 = performance.now();
       for (const m of misses) {
         const buf = await this.getSimpleNoteBuffer(
           m.entry,
@@ -10749,6 +10812,8 @@ export class Player<
           for (let a = 0; a < aliases.length; a++) out[aliases[a]] = buf;
         }
       }
+      this.simpleMissPathSerialNotes += misses.length;
+      this.simpleMissPathSerialMs += performance.now() - tSerial0;
       return out as AudioBuffer[];
     }
 
@@ -10956,6 +11021,7 @@ export class Player<
 
       try {
         let monos: Float32Array[];
+        const tChunk0 = performance.now();
         if (useWorker) {
           const pool = this.getBakeWorkerPool();
           const batch = await pool.renderSamplesBatch(
@@ -10963,8 +11029,14 @@ export class Player<
             this.useWorkerTransferable,
           );
           monos = batch.results.map((r) => r.channels[0]);
+          this.simpleMissPathWorkerBatchJobs++;
+          this.simpleMissPathWorkerBatchNotes += owned.length;
+          this.simpleMissPathWorkerBatchMs += performance.now() - tChunk0;
         } else {
           monos = renderChunkOnMain(owned);
+          // Main TypedArray batch still serial across notes inside renderChunkOnMain.
+          this.simpleMissPathSerialNotes += owned.length;
+          this.simpleMissPathSerialMs += performance.now() - tChunk0;
         }
         for (let k = 0; k < owned.length; k++) {
           finishJob(owned[k], expandToBuffer(owned[k], monos[k]));
@@ -10974,6 +11046,8 @@ export class Player<
           failJob(job, err);
         }
         // Sequential fallback for this chunk only.
+        const tFb0 = performance.now();
+        let fbN = 0;
         for (const job of owned) {
           if (out[job.miss.entryIdx] !== null) continue;
           try {
@@ -10983,9 +11057,14 @@ export class Player<
               false,
             );
             assignOut(job.miss.key, job.miss.entryIdx, buf);
+            fbN++;
           } catch {
             /* leave null */
           }
+        }
+        if (fbN > 0) {
+          this.simpleMissPathSerialNotes += fbN;
+          this.simpleMissPathSerialMs += performance.now() - tFb0;
         }
       }
 
