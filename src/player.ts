@@ -717,9 +717,13 @@ export class Player<
   // Head keys use prewarmSimpleHeadMinCount (default 1 = include one-shots).
   // Phase 2: remaining multi-use keys (prewarmSimpleMinCount) if budget left.
   // Within each phase: earliest onset first, then frequency desc.
-  // Stops when wall time exceeds prewarmSimpleMaxMs (0 = no limit).
-  // Wall-clock budget for prewarm (ms). 0 = bake all candidates.
-  prewarmSimpleMaxMs: number = 3000;
+  // Stops when wall time exceeds prewarmSimpleMaxSec (0 = no limit).
+  // Wall-clock budget for prewarm (seconds). 0 = bake all candidates.
+  // Prefer a value at least around prerollSec (or a bit higher) so the head
+  // window is mostly filled before preroll/live; a thin budget leaves first-
+  // seen simple keys to be baked during preroll or early playback and raises
+  // early lag / bake spikes. Default 8s is intentionally above prerollSec=6.
+  prewarmSimpleMaxSec: number = 8;
   // Min appearances for post-head (phase 2) keys. Default: multi-use only.
   prewarmSimpleMinCount: number = 2;
   // Song-time window (seconds) for phase-1 priority. 0 = auto
@@ -745,8 +749,10 @@ export class Player<
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
   maxChunkNotes: number = 24;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
-  // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
-  chunkBakeHeavyThresholdMs: number = 1500;
+  // Fired under `debug` alone (does not require debugDetail).
+  // 0 = disable. Default 40 catches current bakeMax outliers (~45ms); raise
+  // to 1500+ only when hunting multi-second miss storms.
+  chunkBakeHeavyThresholdMs: number = 40;
   // --- Main-thread lag diagnostics (preroll-boundary / residual hunt) ---
   // Periodic setTimeout(0) probe while playing; logs when the timer fires
   // later than eventLoopLagWarnMs (main thread was busy).
@@ -4656,7 +4662,9 @@ export class Player<
   private async prewarmSimpleNoteCacheBody(): Promise<void> {
     const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
     const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
-    const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
+    // prewarmSimpleMaxSec is seconds (same unit style as prerollSec); convert
+    // to ms for the wall-clock deadline below.
+    const maxMs = Math.max(0, (this.prewarmSimpleMaxSec | 0) * 1000);
     const headSec = this.prewarmSimpleHeadSec > 0
       ? this.prewarmSimpleHeadSec
       : Math.max(0.001, this.lookAhead + this.maxTiledNoteDuration);
@@ -4780,7 +4788,7 @@ export class Player<
     let bakedOk = 0;
     let bakedFail = 0;
 
-    // Parallel prewarm: sequential await left most of the 3s budget idle while
+    // Parallel prewarm: sequential await left most of the budget idle while
     // one worker ran. Cap concurrency to pool size (or 4) so we fill the cache
     // faster without flooding main.
     // Start pool so parallel getSimpleNoteBuffer can offload sample render.
@@ -9660,7 +9668,9 @@ export class Player<
   ): void {
     this.chunkBakeCount++;
     this.chunkBakeSumMs += ms;
-    if (ms > this.chunkBakeMaxMs) this.chunkBakeMaxMs = ms;
+    const prevMax = this.chunkBakeMaxMs;
+    const isNewMax = ms > prevMax;
+    if (isNewMax) this.chunkBakeMaxMs = ms;
     const gw = parts?.gateWaitMs ?? 0;
     this.chunkGateWaitSumMs += gw;
     if (gw > this.chunkGateWaitMaxMs) this.chunkGateWaitMaxMs = gw;
@@ -9761,10 +9771,13 @@ export class Player<
         : p.mixUsedWorker === false
         ? `mixDetail: main=${(p.mixMainMs ?? 0).toFixed(0)}ms`
         : "";
-      if (this.debug && this.debugDetail) {
+      // debug alone (not debugDetail): bakeMax spike hunting in normal bench.
+      if (this.debug) {
         console.warn(
-          `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
-            `gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms ` +
+          `[midy] chunk-heavy | work=${workMs.toFixed(1)}ms ` +
+            `newMax=${isNewMax ? 1 : 0} ` +
+            `e2e=${(gateWaitMs + workMs).toFixed(0)}ms ` +
+            `gateWait=${gateWaitMs.toFixed(0)}ms ` +
             `dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} ` +
             `start=${(p.chunkStart ?? 0).toFixed(2)}s ` +
             `notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | ` +
