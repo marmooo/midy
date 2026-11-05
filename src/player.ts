@@ -726,9 +726,12 @@ export class Player<
    */
   private mixAwaitingCount: number = 0;
 
-  // Simple-note prewarm budget (start() before playNotes).
+  // Simple-note prewarm budget (start() before playNotes / preroll).
+  // Pre-start order is intentional: simple keys first, then tiled preroll for
+  // the same head window (see start() + playNotes). Tile vs non-tile bake
+  // paths stay distinct; only the priority window is shared.
   // Phase 1: keys whose earliest onset falls in the song-head window
-  // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
+  // (prewarmSimpleHeadSec; 0 = auto, see below).
   // Head keys use prewarmSimpleHeadMinCount (default 1 = include one-shots).
   // Phase 2: remaining multi-use keys (prewarmSimpleMinCount) if budget left.
   // Within each phase: earliest onset first, then frequency desc.
@@ -741,14 +744,18 @@ export class Player<
   prewarmSimpleMaxSec: number = 8;
   // Min appearances for post-head (phase 2) keys. Default: multi-use only.
   prewarmSimpleMinCount: number = 2;
-  // Song-time window (seconds) for phase-1 priority. 0 = auto
-  // (lookAhead + maxTiledNoteDuration).
+  // Song-time window (seconds) for phase-1 priority. 0 = auto:
+  //   prerollSec > 0  → prerollSec + tileDuration  (align with tiled head)
+  //   prerollSec <= 0 → lookAhead + maxTiledNoteDuration (legacy fallback)
+  // Explicit > 0 overrides auto (A/B or non-tiled tuning).
   prewarmSimpleHeadSec: number = 0;
   // Min appearances inside the head window (1 = include one-shot keys).
   prewarmSimpleHeadMinCount: number = 1;
 
   // Song-time window (seconds) to fully bake before arming the playback clock.
   // Only applies to segment/chunk modes. 0 = disable preroll.
+  // When > 0, simple prewarm phase-1 auto head uses prerollSec + tileDuration
+  // so start-before work shares one time axis (simple keys → tiles).
   // Light songs finish early; heavy songs wait up to prerollMaxMs.
   prerollSec: number = 6;
   // Wall-clock cap for preroll bake (ms). 0 = no cap.
@@ -3814,8 +3821,9 @@ export class Player<
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
-    // Preroll tiled tiles BEFORE arming startTime so bake time does not
-    // eat into the lookAhead window (late chunk/note starts at song head).
+    // Step 2 of pre-start bake (after simple prewarm in start()): tiled head
+    // for [resumeTime, resumeTime + prerollSec]. Same time axis as simple
+    // phase-1 head (prerollSec + tileDuration). Arm startTime only after.
     this.prerollUntilSongTime = 0;
     this.prerollUntilPeak = 0;
     if (isTiledCacheMode(this.cacheMode)) {
@@ -3992,9 +4000,10 @@ export class Player<
     // Hit/miss rates for this play (including prewarm). Counters survive
     // end-of-song map clears so the post-play log remains meaningful.
     this.resetNoteCacheHitStats();
-    // Chunk/segment/note/audio: fill multi-use simple buffers before the
-    // realtime pipeline so early tiles are mostly BufferSource hits instead
-    // of blocking per-note OACs (or a heavy all-direct mix graph).
+    // Pre-start bake order (shared head window = prerollSec when tiled):
+    //   1) simple-note keys (this prewarm) — cheap, reusable PCM
+    //   2) tiled preroll in playNotes() — mixes those keys into head tiles
+    // Keeps early tiles on BufferSource hits instead of blocking per-note OACs.
     if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
       await this.prewarmSimpleNoteCache();
     }
@@ -4677,10 +4686,12 @@ export class Player<
   }
 
   // Bake simple-note cache keys before playNotes, prioritizing the song head.
-  // Phase 1 fills keys whose earliest onset is inside prewarmSimpleHeadSec
-  // (including one-shots when headMinCount=1). Phase 2 spends any remaining
-  // wall budget on later multi-use keys. Logging is intentional for bake
-  // diagnosis (share console output when tuning budgets).
+  // Phase 1 fills keys whose earliest onset is inside the head window
+  // (prewarmSimpleHeadSec, or auto prerollSec+tileDuration / lookAhead
+  // fallback; including one-shots when headMinCount=1). Phase 2 spends any
+  // remaining wall budget on later multi-use keys. Intended to run before
+  // prerollTiledPipeline so head tiles mostly hit simpleNoteBufferCache.
+  // Logging is intentional for bake diagnosis (tune against preroll logs).
   async prewarmSimpleNoteCache(): Promise<void> {
     if (!this.simpleNoteCache) return;
     if (this.simpleNoteCounts.size === 0) return;
@@ -4701,9 +4712,13 @@ export class Player<
     // prewarmSimpleMaxSec is seconds (same unit style as prerollSec); convert
     // to ms for the wall-clock deadline below.
     const maxMs = Math.max(0, (this.prewarmSimpleMaxSec | 0) * 1000);
+    // Align phase-1 with tiled preroll head when preroll is enabled so
+    // pre-start work shares one song-time axis (simple → tile).
     const headSec = this.prewarmSimpleHeadSec > 0
       ? this.prewarmSimpleHeadSec
-      : Math.max(0.001, this.lookAhead + this.maxTiledNoteDuration);
+      : (this.prerollSec > 0
+        ? Math.max(0.001, this.prerollSec + this.tileDuration)
+        : Math.max(0.001, this.lookAhead + this.maxTiledNoteDuration));
 
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
@@ -4880,7 +4895,9 @@ export class Player<
     const wallMs = performance.now() - t0;
     if (this.debug || bakedOk > 0) {
       console.warn(
-        `[midy] simple-prewarm | head=${head.length} rest=${rest.length} ` +
+        `[midy] simple-prewarm | headSec=${headSec.toFixed(2)}s ` +
+          `prerollSec=${this.prerollSec} tileDuration=${this.tileDuration} ` +
+          `head=${head.length} rest=${rest.length} ` +
           `allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} ` +
           `wall=${wallMs.toFixed(0)}ms budget=${maxMs}ms ` +
           `stoppedEarly=${stoppedEarly} concurrency=${concurrency} ` +
@@ -4959,8 +4976,9 @@ export class Player<
   }
 
   // Bake tiled tiles covering [resumeTime, resumeTime + prerollSec] before the
-  // playback clock is armed. Uses a shadow channel walk so this.channels is
-  // left untouched for the live scheduleTimelineEvents pass.
+  // playback clock is armed. Runs after simple prewarm (same head window when
+  // prewarmSimpleHeadSec is auto). Uses a channel walk so this.channels state
+  // matches the later live scheduleTimelineEvents pass.
   // Pending buffers stay in chunkState / segmentChannelStates; sources are
   // started later via startReadyTiledSources() once startTime is set.
   async prerollTiledPipeline(): Promise<void> {
