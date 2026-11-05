@@ -4887,23 +4887,48 @@ export class Player<
       await Promise.all(workers);
     };
 
+    const headBakedBefore = bakedOk;
+    const headFailBefore = bakedFail;
     await bakeList(head);
+    const headBaked = bakedOk - headBakedBefore;
+    const headFail = bakedFail - headFailBefore;
+    // Keys still missing from cache after phase-1 (budget cut or bake error).
+    let headIncomplete = 0;
+    for (let i = 0; i < head.length; i++) {
+      const cached = this.simpleNoteBufferCache.get(head[i].key);
+      if (!(cached instanceof AudioBuffer) && !(cached instanceof Promise)) {
+        headIncomplete++;
+      }
+    }
     if (!stoppedEarly && rest.length > 0) {
       await bakeList(rest);
     }
 
     const wallMs = performance.now() - t0;
     if (this.debug || bakedOk > 0) {
+      const headComplete = head.length === 0 || headIncomplete === 0;
       console.warn(
         `[midy] simple-prewarm | headSec=${headSec.toFixed(2)}s ` +
           `prerollSec=${this.prerollSec} tileDuration=${this.tileDuration} ` +
-          `head=${head.length} rest=${rest.length} ` +
-          `allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} ` +
+          `head=${head.length} headBaked=${headBaked} headFail=${headFail} ` +
+          `headIncomplete=${headIncomplete} headComplete=${headComplete} ` +
+          `rest=${rest.length} allKeys=${allKeys.size} ` +
+          `baked=${bakedOk} fail=${bakedFail} ` +
           `wall=${wallMs.toFixed(0)}ms budget=${maxMs}ms ` +
           `stoppedEarly=${stoppedEarly} concurrency=${concurrency} ` +
           `cacheSize=${this.simpleNoteBufferCache.size} ` +
           `maxSize=${this.simpleNoteCacheMaxSize}`,
       );
+      if (this.debug && !headComplete) {
+        // Head keys left unbaked → first tiles/notes will miss and lag at t≈0.
+        console.warn(
+          `[midy] simple-prewarm INCOMPLETE | ` +
+            `targetHead=[0, ${headSec.toFixed(2)}s] ` +
+            `missingKeys=${headIncomplete}/${head.length} ` +
+            `budget=${maxMs}ms wall=${wallMs.toFixed(0)}ms ` +
+            `(raise prewarmSimpleMaxSec or lower song density in head)`,
+        );
+      }
     }
   }
 
@@ -5160,50 +5185,154 @@ export class Player<
     if (coveredEnd > this.prerollUntilPeak) {
       this.prerollUntilPeak = coveredEnd;
     }
-    const pendingCount = isChunkMode ? this.chunkState.pending.length : 0;
+    const wallMs = performance.now() - t0;
+    const targetEnd = Math.min(
+      this.totalTime > 0 ? this.totalTime : songStart + prerollSec,
+      songStart + prerollSec,
+    );
+    // How far the head is *actually* playable (contiguous ready buffers
+    // from songStart). bufferReady with buffer==null counts as a hole
+    // (bake failed) — same audible gap as not-ready.
+    const headReady = this.measurePrerollHeadReady(songStart, targetEnd);
     if (this.debug) {
+      const coveragePct = targetEnd > songStart
+        ? (100 * (Math.min(coveredEnd, targetEnd) - songStart) /
+          (targetEnd - songStart)).toFixed(0)
+        : "100";
+      const readyPct = targetEnd > songStart
+        ? (100 * (Math.min(headReady.readyUntil, targetEnd) - songStart) /
+          (targetEnd - songStart)).toFixed(0)
+        : "100";
       console.log(
-        `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s ` +
-          `wall=${(performance.now() - t0).toFixed(0)}ms ` +
-          `pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`,
+        `[midy] preroll done | target=[${songStart.toFixed(2)}, ${
+          targetEnd.toFixed(2)
+        }]s ` +
+          `coveredEnd=${coveredEnd.toFixed(2)}s (${coveragePct}%) ` +
+          `readyUntil=${headReady.readyUntil.toFixed(2)}s (${readyPct}%) ` +
+          `gap=${headReady.gapSec.toFixed(2)}s ` +
+          `tiles=${headReady.tileTotal} ready=${headReady.tileReady} ` +
+          `failed=${headReady.tileFailed} notReady=${headReady.tileNotReady} ` +
+          `wall=${wallMs.toFixed(0)}ms maxMs=${maxMs || "none"} ` +
+          `stoppedEarly=${stoppedEarly} ` +
+          `deferredLeft=${this.deferredChunkBakes.length}`,
       );
-    }
-    // [diag A] How far is the contiguous ready span from songStart?
-    if (this.debug && isChunkMode) {
-      const pending = this.chunkState.pending;
-      // Assume pending is roughly chunkStart-ordered (closeChunk appends in order).
-      const sorted = pending.slice().sort((a, b) =>
-        a.chunkStart - b.chunkStart
-      );
-      let readyN = 0;
-      let readyUntil = songStart;
-      for (let i = 0; i < sorted.length; i++) {
-        const p = sorted[i];
-        if (p.bufferReady) {
-          readyN++;
-          const end = p.chunkStart + this.tileDuration;
-          if (end > readyUntil) readyUntil = end;
-        } else {
-          // First gap ends the contiguous ready span from the head.
-          break;
-        }
-      }
-      const targetEnd = Math.min(
-        this.totalTime > 0 ? this.totalTime : songStart + this.prerollSec,
-        songStart + this.prerollSec,
-      );
-      if (this.debug) {
+      const coverageShort = coveredEnd + 1e-3 < targetEnd;
+      if (headReady.incomplete || coverageShort) {
+        // Head not fully baked before clock arm → lag / late starts at t≈0.
         console.warn(
-          `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s ` +
-            `readyUntil=${readyUntil.toFixed(2)}s ` +
-            `gap=${(targetEnd - readyUntil).toFixed(2)}s ` +
-            `readyN=${readyN}/${sorted.length} ` +
-            `bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} ` +
-            `deferredBakes=${this.deferredChunkBakes.length} ` +
-            `chunkBakeActive=${this.chunkBakeActive}`,
+          `[midy] preroll INCOMPLETE | ` +
+            `readyUntil=${headReady.readyUntil.toFixed(2)}s ` +
+            `coveredEnd=${coveredEnd.toFixed(2)}s ` +
+            `targetEnd=${targetEnd.toFixed(2)}s ` +
+            `gap=${headReady.gapSec.toFixed(2)}s ` +
+            `firstHole@${headReady.firstHoleAt.toFixed(2)}s ` +
+            `failed=${headReady.tileFailed} notReady=${headReady.tileNotReady} ` +
+            `stoppedEarly=${stoppedEarly} coverageShort=${coverageShort} ` +
+            `(raise prerollMaxMs / maxConcurrentChunkBakes, or wait for head)`,
         );
       }
     }
+  }
+
+  /**
+   * Contiguous head readiness for preroll diagnostics (debug).
+   * Walks pending tiles in chunkStart order from songStart; the first
+   * missing/failed buffer ends the ready span. Segment mode aggregates
+   * all channels (a hole on any channel ends the span).
+   */
+  protected measurePrerollHeadReady(
+    songStart: number,
+    targetEnd: number,
+  ): {
+    readyUntil: number;
+    gapSec: number;
+    firstHoleAt: number;
+    tileTotal: number;
+    tileReady: number;
+    tileFailed: number;
+    tileNotReady: number;
+    incomplete: boolean;
+  } {
+    type Tile = { start: number; ready: boolean; failed: boolean };
+    const tiles: Tile[] = [];
+    if (isChunkCacheMode(this.cacheMode)) {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        tiles.push({
+          start: p.chunkStart,
+          ready: !!(p.bufferReady && p.buffer),
+          failed: !!(p.bufferReady && !p.buffer),
+        });
+      }
+    } else if (isSegmentCacheMode(this.cacheMode)) {
+      const states = this.segmentChannelStates;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          const p = pending[i];
+          tiles.push({
+            start: p.segmentStart,
+            ready: !!(p.bufferReady && p.buffer),
+            failed: !!(p.bufferReady && !p.buffer),
+          });
+        }
+      }
+    }
+
+    tiles.sort((a, b) => a.start - b.start);
+
+    let tileReady = 0;
+    let tileFailed = 0;
+    let tileNotReady = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i].ready) tileReady++;
+      else if (tiles[i].failed) tileFailed++;
+      else tileNotReady++;
+    }
+
+    // Contiguous span from songStart: advance while tiles at/after the
+    // frontier are ready. A gap in chunkStart larger than ~2 tiles is still
+    // treated as covered up to the previous tile end (no onset in between).
+    let readyUntil = songStart;
+    let firstHoleAt = targetEnd;
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      if (t.start >= targetEnd + this.tileDuration) break;
+      if (t.start > readyUntil + this.tileDuration + 1e-3) {
+        // Sparse head: no tile in between — keep readyUntil (silence is fine).
+        // Only a non-ready tile at/near frontier is a hole.
+      }
+      if (!t.ready) {
+        firstHoleAt = t.start;
+        break;
+      }
+      const end = t.start + this.tileDuration;
+      if (end > readyUntil) readyUntil = end;
+    }
+    if (tiles.length === 0) {
+      // No tiled notes in window — head is vacuously ready through target.
+      readyUntil = targetEnd;
+    }
+
+    const gapSec = Math.max(0, targetEnd - readyUntil);
+    // Incomplete only when a tile inside the target window is missing or
+    // failed. A ready span ending slightly before targetEnd (last onset
+    // early in the window) is still a complete head bake.
+    const hasHole = tileFailed > 0 || tileNotReady > 0 ||
+      (tiles.length > 0 && firstHoleAt < targetEnd - 1e-3);
+    return {
+      readyUntil,
+      gapSec,
+      firstHoleAt,
+      tileTotal: tiles.length,
+      tileReady,
+      tileFailed,
+      tileNotReady,
+      incomplete: hasHole,
+    };
   }
 
   /** Log first 3 close-chunks, then every 20th — avoids DevTools stall. */
@@ -5244,6 +5373,8 @@ export class Player<
       const pending = this.chunkState.pending;
       let started = 0;
       let deferred = 0;
+      let notReadyInWindow = 0;
+      let failedInWindow = 0;
       const t0 = performance.now();
       // Prefer the preroll coverage window; fall back to full ready set so
       // seek/resume after a short preroll still arms what is already baked.
@@ -5253,21 +5384,38 @@ export class Player<
         : Number.POSITIVE_INFINITY;
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
-        if (!p.source && p.bufferReady) {
-          if (p.chunkStart < bulkUntil) {
+        const inWindow = p.chunkStart < bulkUntil;
+        if (!p.source && p.bufferReady && p.buffer) {
+          if (inWindow) {
             this.startPendingChunk(p);
             started++;
           } else {
             deferred++;
           }
+          continue;
         }
+        if (!inWindow) continue;
+        if (!p.bufferReady) notReadyInWindow++;
+        else if (!p.buffer) failedInWindow++;
       }
-      if (started + deferred > 0) {
-        if (this.debug && this.debugDetail) {
+      if (
+        this.debug &&
+        (started + deferred + notReadyInWindow + failedInWindow > 0)
+      ) {
+        console.warn(
+          `[midy] start-ready | started=${started} deferred=${deferred} ` +
+            `notReadyInWindow=${notReadyInWindow} failedInWindow=${failedInWindow} ` +
+            `bulkUntil=${
+              Number.isFinite(bulkUntil) ? bulkUntil.toFixed(2) + "s" : "inf"
+            } ` +
+            `wall=${(performance.now() - t0).toFixed(0)}ms ` +
+            `pending=${pending.length}`,
+        );
+        if (notReadyInWindow > 0 || failedInWindow > 0) {
           console.warn(
-            `[midy] start-ready | started=${started} deferred=${deferred} ` +
-              `wall=${(performance.now() - t0).toFixed(0)}ms ` +
-              `pending=${pending.length}`,
+            `[midy] start-ready HEAD GAP | ` +
+              `notReady=${notReadyInWindow} failed=${failedInWindow} ` +
+              `— playhead may hit unbaked tiles at t≈0`,
           );
         }
       }
