@@ -413,7 +413,8 @@ export class Player<
   /**
    * Chunk simple-miss path breakdown (diagnose bakeMax: main sync vs worker
    * batch vs serial getSimpleNoteBuffer). Reset each start via pipeline stats.
-   * - sync: tryBakeSimpleNoteSync hit (main, no await)
+   * - sync: tryBakeSimpleNoteSync hit (main, no await). Skipped when
+   *   preferWorkerBakeDuringLive so live misses can reach workerBatch.
    * - workerBatch: bakeSimpleNotesBatch used worker pool
    * - serial: sequential getSimpleNoteBuffer (Promise.all map or batch fallback)
    */
@@ -6190,15 +6191,18 @@ export class Player<
 
       if (needAsync.length > 0) {
         // LIVE: never await resolved Promises for miss bake — same residual
-        // pathology as mix (body tens of ms, await wall seconds). Prefer a
-        // fully synchronous TypedArray bake when the raw sample is already
-        // in rawAudioBufferCache as an AudioBuffer.
+        // pathology as mix (body tens of ms, await wall seconds).
+        // Prefer worker batch when preferWorkerBakeDuringLive; otherwise
+        // try fully synchronous TypedArray bake when the raw sample is
+        // already in rawAudioBufferCache as an AudioBuffer.
         const liveRealtime = this.isPlaying && !this.chunkPrerollActive &&
           !forAudioOffline;
         if (liveRealtime && bakeChunkMiss) {
-          // LIVE: 1) sync TypedArray when raw is ready (no await).
-          // 2) remaining misses → bakeSimpleNotesBatch (worker chunks), not
-          //    sequential getSimpleNoteBuffer (that serialized simpleMs).
+          // LIVE:
+          // - preferWorkerBakeDuringLive=true → bakeSimpleNotesBatch (worker)
+          // - else: 1) sync TypedArray when raw is ready (no await)
+          //         2) remaining → bakeSimpleNotesBatch
+          // Avoid sequential getSimpleNoteBuffer (that serialized simpleMs).
           type LivePend = {
             note: (typeof needAsync)[0]["note"];
             key: string;
@@ -6251,32 +6255,38 @@ export class Player<
               voice: n.voice,
             };
             const bakeMixLive = this.simpleBakeChannelMixForNote(n);
-            const tSync0 = performance.now();
-            const noteBuf = this.tryBakeSimpleNoteSync(
-              entry,
-              bakeMixLive,
-              item.key,
-            );
-            if (noteBuf) {
-              const syncMs = performance.now() - tSync0;
-              this.simpleMissPathSyncNotes++;
-              this.simpleMissPathSyncMs += syncMs;
-              const gains = this.chunkNoteMixParams(
-                n,
-                noteBuf.length,
-                sampleRate,
+            // When preferWorkerBakeDuringLive is set, skip the sync path so
+            // tile misses reach bakeSimpleNotesBatch (worker). Previously
+            // tryBakeSimpleNoteSync absorbed almost all live misses (raw is
+            // usually preloaded), leaving workerBatch=0 despite the flag.
+            if (!this.preferWorkerBakeDuringLive) {
+              const tSync0 = performance.now();
+              const noteBuf = this.tryBakeSimpleNoteSync(
+                entry,
+                bakeMixLive,
+                item.key,
               );
-              simpleHits.push({
-                buffer: noteBuf,
-                offset: n.offset,
-                gainL: gains.gainL,
-                gainR: gains.gainR,
-                gainCurve: gains.gainCurve,
-              });
-              simpleMissesBaked++;
-              simpleLookupMs += item.lookupMs;
-              simpleMissBakeMs += syncMs;
-              continue;
+              if (noteBuf) {
+                const syncMs = performance.now() - tSync0;
+                this.simpleMissPathSyncNotes++;
+                this.simpleMissPathSyncMs += syncMs;
+                const gains = this.chunkNoteMixParams(
+                  n,
+                  noteBuf.length,
+                  sampleRate,
+                );
+                simpleHits.push({
+                  buffer: noteBuf,
+                  offset: n.offset,
+                  gainL: gains.gainL,
+                  gainR: gains.gainR,
+                  gainCurve: gains.gainCurve,
+                });
+                simpleMissesBaked++;
+                simpleLookupMs += item.lookupMs;
+                simpleMissBakeMs += syncMs;
+                continue;
+              }
             }
             pending.push({
               note: n,
