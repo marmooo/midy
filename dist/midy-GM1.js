@@ -7502,7 +7502,7 @@ var BasePlayer = class _BasePlayer extends EventTarget {
         const note = stack[j];
         if (note.isTiledGhost) continue;
         note.ending = true;
-        if (note.bufferSource || note.volumeNode) {
+        if (note.bufferSource || note.volumeNode || note.workletVoiceId != null) {
           promises.push(this.soundOffNote(note, scheduleTime));
         } else {
           this.soundingNotes.delete(note);
@@ -9047,6 +9047,9 @@ function bakeChannelMixForMode(mode2) {
   return mode2 !== "segment";
 }
 
+// src/synth_core_wasm_b64.ts
+var SYNTH_CORE_WASM_BASE64 = "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DiAQSA0ACyAKIA5qIQoLIAsgDkwNAiALIA5rIQYgASAKQQJ0IgVqIQkgACAFaiEFIAMgDkECdCIEaiEDIAIgBGohAgNAIAUgAyoCACAHlCAFKgIAkjgCACAJIAIqAgAgB5QgCSoCAJI4AgAgCUEEaiEJIAVBBGohBSADQQRqIQMgAkEEaiECIAZBf2oiBg0ADAMLC0EAIQ4CQCALQQRIDQAgASAKQQJ0IglqIREgACAJaiESQQAhCUEAIQ4DQCASIAlqIgUgAyAJaiIEKgIAIAeUIAUqAgCSOAIAIBEgCWoiBiACIAlqIg8qAgAgCJQgBioCAJI4AgAgBUEEaiINIARBBGoqAgAgB5QgDSoCAJI4AgAgBkEEaiINIA9BBGoqAgAgCJQgDSoCAJI4AgAgBUEIaiINIARBCGoqAgAgB5QgDSoCAJI4AgAgBkEIaiINIA9BCGoqAgAgCJQgDSoCAJI4AgAgBUEMaiIFIARBDGoqAgAgB5QgBSoCAJI4AgAgBkEMaiIFIA9BDGoqAgAgCJQgBSoCAJI4AgAgCUEQaiEJIA5BBGoiDiAQSA0ACyAKIA5qIQoLIAsgDkwNASALIA5rIQYgASAKQQJ0IgVqIQkgACAFaiEFIAMgDkECdCIEaiEDIAIgBGohAgNAIAUgAyoCACAHlCAFKgIAkjgCACAJIAIqAgAgCJQgCSoCAJI4AgAgCUEEaiEJIAVBBGohBSADQQRqIQMgAkEEaiECIAZBf2oiBg0ADAILCyALQQEgC0EBShsiBUEBcSENQQAhAgJAIAtBAkgNAEEAIQZBACAFQX5xayEBIAAgCkECdGohDkEAIQIDQCAOIAJqIgUgByADIAJqIgQqAgCUIAkgAmoiDyoCAJQgBSoCAJI4AgAgBUEEaiIFIAcgBEEEaioCAJQgD0EEaioCAJQgBSoCAJI4AgAgAkEIaiECIAEgBkF+aiIGRw0ACyAKIAZrIQpBACAGayECCyANRQ0AIAAgCkECdGoiBSAHIAMgAkECdCICaioCAJQgCSACaioCAJQgBSoCAJI4AgAPCwsLEwEAQYAICwwAAIA/AIA7Rz7DrjcApQMEbmFtZQAQD3N5bnRoX2NvcmUud2FzbQHtAhgAB3NjX2luaXQBEnNjX3NldF9tYXN0ZXJfZ2FpbgINc2Nfc2V0X2ZyYW1lMAMSc2Nfc2V0X3NhbXBsZV9yYXRlBA9zY19zYW1wbGVfYWxsb2MFEnNjX3NhbXBsZV9yZWdpc3RlcgYOc2NfZW5kZWRfY291bnQHC3NjX2VuZGVkX2lkCAtzY192b2ljZV9vbgkObG93cGFzc19jb2VmZnMKDHNjX3ZvaWNlX29mZgsNc2Nfdm9pY2Vfc3RvcAwQc2NfYWxsX3NvdW5kX29mZg0Qc2NfYWN0aXZlX3ZvaWNlcw4Lc2Nfb3V0cHV0X2wPC3NjX291dHB1dF9yEBBzY19iZW5jaF9zdGFydF9uEQpzY19wcm9jZXNzEgtwcm9jZXNzX2VudhMMc2Nfc2ltcGxlX3ZxFA1zY19jb21wbGV4X3ZxFQ5zY19wZWFrX2FjdGl2ZRYMc2NfbWl4X2NsZWFyFwpzY19taXhfYWRkBxIBAA9fX3N0YWNrX3BvaW50ZXIJCAEABS5kYXRhADgJcHJvZHVjZXJzAQxwcm9jZXNzZWQtYnkBDFVidW50dSBjbGFuZxExOC4xLjMgKDF1YnVudHUxKQAsD3RhcmdldF9mZWF0dXJlcwIrD211dGFibGUtZ2xvYmFscysIc2lnbi1leHQ=";
+
 // src/bake-worker-pool.ts
 function jobPriority(request) {
   const t2 = request?.type;
@@ -9079,6 +9082,127 @@ var BakeWorkerPool = class _BakeWorkerPool {
     if (this.started) return;
     this.started = true;
     const workerSource = `
+
+// --- WASM bake mix (optional; falls back to JS) ---
+var __wasmExports = null;
+var __wasmMemory = null;
+var __wasmReady = false;
+var __wasmFailed = false;
+var __wasmHeap = 65536; // bump cursor in bytes (leave low memory for tables)
+
+function b64ToU8(b64) {
+  var bin = atob(b64);
+  var u8 = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+function ensureWasm(b64) {
+  if (__wasmReady || __wasmFailed) return Promise.resolve(__wasmReady);
+  if (!b64) { __wasmFailed = true; return Promise.resolve(false); }
+  return WebAssembly.instantiate(b64ToU8(b64), {}).then(function(r) {
+    __wasmExports = r.instance.exports;
+    __wasmMemory = __wasmExports.memory;
+    __wasmReady = true;
+    return true;
+  }).catch(function(err) {
+    console.error("[midy bake-wasm]", err && err.message ? err.message : err);
+    __wasmFailed = true;
+    return false;
+  });
+}
+
+function wasmGrowFor(bytesNeeded) {
+  var pagesNeeded = ((bytesNeeded + 65535) / 65536) | 0;
+  var curPages = __wasmMemory.buffer.byteLength / 65536;
+  if (pagesNeeded > curPages) {
+    __wasmMemory.grow(pagesNeeded - curPages);
+  }
+}
+
+function wasmMix(destLen, destChCount, entries) {
+  if (!__wasmReady) return null;
+  var e = __wasmExports;
+  // Layout: destL, destR?, then unique source/curve copies.
+  // Same Float32Array appearing in multiple entries is interned once
+  // (common when a tile reuses the same simple-note buffer).
+  var f32Bytes = 4;
+  var cursor = 65536; // leave low region alone
+  var destLPtr = cursor;
+  cursor += destLen * f32Bytes;
+  var destRPtr = 0;
+  if (destChCount > 1) {
+    destRPtr = cursor;
+    cursor += destLen * f32Bytes;
+  }
+  // Estimate unique source/curve footprint (object identity).
+  var seen = new Set();
+  var need = cursor;
+  for (var i = 0; i < entries.length; i++) {
+    var en = entries[i];
+    if (!seen.has(en.left)) {
+      seen.add(en.left);
+      need += en.left.length * f32Bytes;
+    }
+    if (en.right && !seen.has(en.right)) {
+      seen.add(en.right);
+      need += en.right.length * f32Bytes;
+    }
+    if (en.gainCurve && !seen.has(en.gainCurve)) {
+      seen.add(en.gainCurve);
+      need += en.gainCurve.length * f32Bytes;
+    }
+  }
+  wasmGrowFor(need + 65536);
+  // Grow may detach old buffer views \u2014 only create views after grow.
+  e.sc_mix_clear(destLPtr, destRPtr || 0, destLen);
+  // Float32Array -> byte offset in WASM linear memory
+  var ptrMap = new Map();
+  function intern(arr) {
+    var p = ptrMap.get(arr);
+    if (p !== undefined) return p;
+    p = cursor;
+    new Float32Array(__wasmMemory.buffer, p, arr.length).set(arr);
+    cursor += arr.length * f32Bytes;
+    ptrMap.set(arr, p);
+    return p;
+  }
+  for (var ei = 0; ei < entries.length; ei++) {
+    var ent = entries[ei];
+    var srcL = ent.left;
+    var srcLen = srcL.length;
+    var srcLPtr = intern(srcL);
+    var srcRPtr = ent.right ? intern(ent.right) : 0;
+    var curvePtr = ent.gainCurve ? intern(ent.gainCurve) : 0;
+    var gL = ent.gain;
+    var gR = ent.gainRight != null ? ent.gainRight : ent.gain;
+    e.sc_mix_add(
+      destLPtr,
+      destRPtr,
+      destLen,
+      srcLPtr,
+      srcRPtr,
+      ent.startSample | 0,
+      srcLen,
+      gL,
+      gR,
+      curvePtr
+    );
+  }
+  // Copy-out once into standalone buffers that can be postMessage-transferred.
+  // WebAssembly.Memory.buffer is non-detachable, so a real zero-copy transfer
+  // of the dest region is not possible without SharedArrayBuffer.
+  var destLeft = new Float32Array(destLen);
+  destLeft.set(new Float32Array(__wasmMemory.buffer, destLPtr, destLen));
+  var destRight = null;
+  if (destChCount > 1) {
+    destRight = new Float32Array(destLen);
+    destRight.set(new Float32Array(__wasmMemory.buffer, destRPtr, destLen));
+  }
+  return { left: destLeft, right: destRight };
+}
+
+
 function biquadLowpassCoeffs(freq, q, sampleRate) {
   var nyquist = sampleRate * 0.5;
   var f = freq;
@@ -9245,9 +9369,23 @@ function mixEntriesInto(destLeft, destRight, destLen, entries) {
 function handleMix(msg) {
   var t0 = performance.now();
   var destLen = msg.destLen;
-  var destLeft = new Float32Array(destLen);
-  var destRight = msg.destChCount > 1 ? new Float32Array(destLen) : null;
-  mixEntriesInto(destLeft, destRight, destLen, msg.entries);
+  var destChCount = msg.destChCount;
+  var destLeft, destRight;
+  var usedWasm = false;
+  // Prefer WASM for larger tiles (copy overhead otherwise dominates).
+  if (__wasmReady && destLen >= 2048 && msg.entries && msg.entries.length > 0) {
+    var mixed = wasmMix(destLen, destChCount, msg.entries);
+    if (mixed) {
+      destLeft = mixed.left;
+      destRight = mixed.right;
+      usedWasm = true;
+    }
+  }
+  if (!usedWasm) {
+    destLeft = new Float32Array(destLen);
+    destRight = destChCount > 1 ? new Float32Array(destLen) : null;
+    mixEntriesInto(destLeft, destRight, destLen, msg.entries);
+  }
   var workerMs = performance.now() - t0;
   var transfer = [destLeft.buffer];
   if (destRight) transfer.push(destRight.buffer);
@@ -9265,9 +9403,22 @@ function handleMixBatch(msg) {
   for (var j = 0; j < jobs.length; j++) {
     var job = jobs[j];
     var destLen = job.destLen;
-    var destLeft = new Float32Array(destLen);
-    var destRight = job.destChCount > 1 ? new Float32Array(destLen) : null;
-    mixEntriesInto(destLeft, destRight, destLen, job.entries);
+    var destChCount = job.destChCount;
+    var destLeft, destRight;
+    var usedWasm = false;
+    if (__wasmReady && destLen >= 2048 && job.entries && job.entries.length > 0) {
+      var mixed = wasmMix(destLen, destChCount, job.entries);
+      if (mixed) {
+        destLeft = mixed.left;
+        destRight = mixed.right;
+        usedWasm = true;
+      }
+    }
+    if (!usedWasm) {
+      destLeft = new Float32Array(destLen);
+      destRight = destChCount > 1 ? new Float32Array(destLen) : null;
+      mixEntriesInto(destLeft, destRight, destLen, job.entries);
+    }
     transfer.push(destLeft.buffer);
     if (destRight) transfer.push(destRight.buffer);
     results.push({ left: destLeft, right: destRight || undefined });
@@ -9379,6 +9530,12 @@ self.onmessage = function(ev) {
   var msg = ev.data;
   if (!msg || !msg.type) return;
   try {
+    if (msg.type === "initWasm") {
+      ensureWasm(msg.wasmB64).then(function(ok) {
+        self.postMessage({ type: "wasm-ready", ok: !!ok });
+      });
+      return;
+    }
     if (msg.type === "mix") {
       handleMix(msg);
     } else if (msg.type === "mixBatch") {
@@ -9407,10 +9564,16 @@ self.onmessage = function(ev) {
       };
       this.workers.push(w);
       this.free.push(w);
+      if (SYNTH_CORE_WASM_BASE64 && !SYNTH_CORE_WASM_BASE64.startsWith("PLACEHOLDER")) {
+        w.postMessage({ type: "initWasm", wasmB64: SYNTH_CORE_WASM_BASE64 });
+      }
     }
   }
   onWorkerMessage(worker, ev) {
     const data3 = ev.data;
+    if (data3 && data3.type === "wasm-ready") {
+      return;
+    }
     const pending = this.pendingById.get(data3.id);
     if (!pending) {
       this.releaseWorker(worker);
@@ -11443,6 +11606,10 @@ function createWorkletModuleURL() {
   return URL.createObjectURL(blob);
 }
 
+// src/worklet-backend.ts
+function postInitToWorklet(_node) {
+}
+
 // src/worklet-engine.ts
 var workletModuleByContext = /* @__PURE__ */ new WeakMap();
 function ensureWorkletModule(ctx) {
@@ -11574,6 +11741,7 @@ var WorkletEngine = class _WorkletEngine {
       numberOfOutputs: 1,
       outputChannelCount: [2]
     });
+    postInitToWorklet(node);
     node.port.onmessage = (ev) => {
       const msg = ev.data;
       if (!msg) return;
@@ -11945,6 +12113,39 @@ var Player = class _Player extends BasePlayer {
    * capped cache prefers buffers needed near the playhead.
    */
   simpleNoteOnsets = /* @__PURE__ */ new Map();
+  /**
+   * Onsets keyed by {@link makeSimpleNoteReleaseKey} (stable identity without
+   * fine detune / CC7/10/11 that drift between count-walk and live mix).
+   * Playhead release uses this so cache entries still free after last use
+   * even when the full cache key string does not match buildSimpleNoteCounts.
+   */
+  simpleNoteReleaseOnsets = /* @__PURE__ */ new Map();
+  /** Full cache key → release key (filled on insert / hit with note entry). */
+  simpleNoteCacheReleaseKey = /* @__PURE__ */ new Map();
+  /**
+   * Remaining planned uses per simple-note key (copy of simpleNoteCounts at
+   * build time). Decremented on each real play/mix hit (not prewarm). When it
+   * reaches 0 the buffer is dropped from simpleNoteBufferCache + mixPcmCache
+   * so multi-use notes free memory after their last onset instead of only at
+   * end-of-play / maxSize eviction.
+   */
+  simpleNoteRemaining = /* @__PURE__ */ new Map();
+  /**
+   * Seconds after a key's *last onset* (release-key timeline) that the buffer
+   * is still considered in use. Default is sounding tail only:
+   * `tileDuration + maxReleaseTailSec` (~1+8s). Future onsets are kept via the
+   * onset list itself, not by inflating this past margin.
+   * - `< 0` (default): auto sounding-tail margin
+   * - `0`: free as soon as last onset is past the playhead
+   * - `> 0`: explicit retain margin in seconds
+   */
+  simpleNoteCacheRetainPastSec = -1;
+  /**
+   * When false, {@link releasePastSimpleNoteCaches} is a no-op (chunk1-style
+   * retention: only maxSize eviction / end-of-play clear free buffers).
+   * Set false to A/B whether playhead release is the hit-rate regression.
+   */
+  simpleNoteCachePlayheadRelease = true;
   // Complex-note cache (shared by note / segment / chunk / audio modes).
   // Notes with identical in-interval automation (pitch bend / CC / sysEx
   // relative timeline) + voice / duration / onset channel state share one
@@ -11954,6 +12155,8 @@ var Player = class _Player extends BasePlayer {
   complexNoteCache = true;
   complexNoteBufferCache = /* @__PURE__ */ new Map();
   complexNoteCounts = /* @__PURE__ */ new Map();
+  /** Same remaining-use bookkeeping as simpleNoteRemaining for complex keys. */
+  complexNoteRemaining = /* @__PURE__ */ new Map();
   // Runtime hit/miss counters for simpleNoteBufferCache / complexNoteBufferCache.
   // Reset at the start of each start() (before prewarm). Survives map.clear()
   // at end-of-song so post-playback logs still show rates even when
@@ -12103,6 +12306,8 @@ var Player = class _Player extends BasePlayer {
   chunkGateReasonMixAwaiting = 0;
   chunkGateReasonHorizon = 0;
   chunkGateReasonPassBudget = 0;
+  /** Live: deferred bake held because offline was active and tile not urgent. */
+  chunkGateReasonLiveOfflineHold = 0;
   chunkGateWaitSamplesMs = [];
   static GATE_WAIT_SAMPLE_CAP = 256;
   // --- diag: mix overhead ---
@@ -12126,6 +12331,21 @@ var Player = class _Player extends BasePlayer {
   chunkBakeComplexSumMs = 0;
   chunkBakeMixSumMs = 0;
   chunkBakeOacSumMs = 0;
+  /**
+   * Chunk simple-miss path breakdown (diagnose bakeMax: main sync vs worker
+   * batch vs serial getSimpleNoteBuffer). Reset each start via pipeline stats.
+   * - sync: tryBakeSimpleNoteSync hit (main, no await). Skipped when
+   *   preferWorkerBakeDuringLive so live misses can reach workerBatch.
+   * - workerBatch: bakeSimpleNotesBatch used worker pool
+   * - serial: sequential getSimpleNoteBuffer (Promise.all map or batch fallback)
+   */
+  simpleMissPathSyncNotes = 0;
+  simpleMissPathWorkerBatchNotes = 0;
+  simpleMissPathWorkerBatchJobs = 0;
+  simpleMissPathSerialNotes = 0;
+  simpleMissPathSerialMs = 0;
+  simpleMissPathWorkerBatchMs = 0;
+  simpleMissPathSyncMs = 0;
   // Mix-phase breakdown inside mixEntriesToBuffer (sums over tiles that used it).
   // prepare: getChannelData + optional slice + MixSourceEntry assembly
   // await:   postMessage round-trip + worker queue wait + structured clone
@@ -12144,6 +12364,29 @@ var Player = class _Player extends BasePlayer {
    * and any main-thread busy time before the mix promise resolves.
    */
   chunkMixResidualSumMs = 0;
+  /**
+   * Per-tile residual samples (worker-path only). Used for residualP50/P95
+   * and correlation summaries even when debugDetail is off.
+   */
+  chunkMixResidualSamplesMs = [];
+  /** Tiles with residualMs >= residualWarnMs. */
+  chunkMixHighResidualTiles = 0;
+  /** Rate-limit for play-time mix-residual warnings (debug, not debugDetail). */
+  mixResidualWarnCount = 0;
+  /** Cap play-time residual warnings per play (avoids console flood). */
+  mixResidualWarnMax = 40;
+  /** Threshold (ms) for residual warn + highResidualTiles. */
+  residualWarnMs = 40;
+  // Running sums for residual correlation (worker tiles only).
+  mixResCorrN = 0;
+  mixResCorrSumR = 0;
+  mixResCorrSumE = 0;
+  mixResCorrSumS = 0;
+  mixResCorrSumRE = 0;
+  mixResCorrSumRS = 0;
+  mixResCorrSumE2 = 0;
+  mixResCorrSumS2 = 0;
+  mixResCorrSumR2 = 0;
   chunkMixCopyBackSumMs = 0;
   chunkMixMainSumMs = 0;
   /** Ms spent in Float32Array.slice during prepare. */
@@ -12195,6 +12438,21 @@ var Player = class _Player extends BasePlayer {
   // 0 = unlimited (legacy). 2 overlaps ~30–70ms pureTA tiles so deferred
   // drains faster than the playhead after dense schedule passes.
   maxConcurrentChunkBakes = 2;
+  /**
+   * During live playback (isPlaying && !preroll), cap concurrent chunk bakes
+   * to this value (min'd with maxConcurrentChunkBakes). Keeps mix onmessage
+   * residual down when bake completion and offline work would otherwise
+   * contend with worker mix replies. Preroll / offline export still use
+   * maxConcurrentChunkBakes. 1 = one bake at a time while playing.
+   */
+  maxConcurrentChunkBakesLive = 1;
+  /**
+   * Live-only: when offlineRenderActive > 0, only promote deferred tiles
+   * whose chunkStart is within this many seconds of the playhead. Far
+   * horizon bakes wait until offline is idle so mix residual stays low.
+   * 0 = do not special-case offline (legacy). Default 2s.
+   */
+  chunkBakeLiveOfflineUrgencySec = 2;
   /**
    * Extra gate waiters allowed beyond maxConcurrentChunkBakes.
    * 0 = never block on the bake gate during live play: only start a bake
@@ -12356,24 +12614,35 @@ var Player = class _Player extends BasePlayer {
    * (residual = await - queue - post - worker).
    */
   mixAwaitingCount = 0;
-  // Simple-note prewarm budget (start() before playNotes).
+  // Simple-note prewarm budget (start() before playNotes / preroll).
+  // Pre-start order is intentional: simple keys first, then tiled preroll for
+  // the same head window (see start() + playNotes). Tile vs non-tile bake
+  // paths stay distinct; only the priority window is shared.
   // Phase 1: keys whose earliest onset falls in the song-head window
-  // (prewarmSimpleHeadSec; 0 = auto lookAhead+maxTiledNoteDuration).
+  // (prewarmSimpleHeadSec; 0 = auto, see below).
   // Head keys use prewarmSimpleHeadMinCount (default 1 = include one-shots).
   // Phase 2: remaining multi-use keys (prewarmSimpleMinCount) if budget left.
   // Within each phase: earliest onset first, then frequency desc.
-  // Stops when wall time exceeds prewarmSimpleMaxMs (0 = no limit).
-  // Wall-clock budget for prewarm (ms). 0 = bake all candidates.
-  prewarmSimpleMaxMs = 3e3;
+  // Stops when wall time exceeds prewarmSimpleMaxSec (0 = no limit).
+  // Wall-clock budget for prewarm (seconds). 0 = bake all candidates.
+  // Prefer a value at least around prerollSec (or a bit higher) so the head
+  // window is mostly filled before preroll/live; a thin budget leaves first-
+  // seen simple keys to be baked during preroll or early playback and raises
+  // early lag / bake spikes. Default 8s is intentionally above prerollSec=6.
+  prewarmSimpleMaxSec = 8;
   // Min appearances for post-head (phase 2) keys. Default: multi-use only.
   prewarmSimpleMinCount = 2;
-  // Song-time window (seconds) for phase-1 priority. 0 = auto
-  // (lookAhead + maxTiledNoteDuration).
+  // Song-time window (seconds) for phase-1 priority. 0 = auto:
+  //   prerollSec > 0  → prerollSec + tileDuration  (align with tiled head)
+  //   prerollSec <= 0 → lookAhead + maxTiledNoteDuration (legacy fallback)
+  // Explicit > 0 overrides auto (A/B or non-tiled tuning).
   prewarmSimpleHeadSec = 0;
   // Min appearances inside the head window (1 = include one-shot keys).
   prewarmSimpleHeadMinCount = 1;
   // Song-time window (seconds) to fully bake before arming the playback clock.
   // Only applies to segment/chunk modes. 0 = disable preroll.
+  // When > 0, simple prewarm phase-1 auto head uses prerollSec + tileDuration
+  // so start-before work shares one time axis (simple keys → tiles).
   // Light songs finish early; heavy songs wait up to prerollMaxMs.
   prerollSec = 6;
   // Wall-clock cap for preroll bake (ms). 0 = no cap.
@@ -12389,8 +12658,10 @@ var Player = class _Player extends BasePlayer {
   // 0 = disabled. Guards against one huge dense chord/arpeggio tile.
   maxChunkNotes = 24;
   // Log a detailed breakdown when a single tile bake exceeds this (ms).
-  // 0 = disable. Use to hunt bakeMax outliers (complex OAC, miss storms, mix).
-  chunkBakeHeavyThresholdMs = 1500;
+  // Fired under `debug` alone (does not require debugDetail).
+  // 0 = disable. Default 40 catches current bakeMax outliers (~45ms); raise
+  // to 1500+ only when hunting multi-second miss storms.
+  chunkBakeHeavyThresholdMs = 40;
   // --- Main-thread lag diagnostics (preroll-boundary / residual hunt) ---
   // Periodic setTimeout(0) probe while playing; logs when the timer fires
   // later than eventLoopLagWarnMs (main thread was busy).
@@ -12586,8 +12857,14 @@ var Player = class _Player extends BasePlayer {
   canAcceptChunkBakeSlot() {
     const max = this.maxConcurrentChunkBakes | 0;
     if (max <= 0) return true;
+    const live = this.isPlaying && !this.chunkPrerollActive;
+    if (live && this.mixAwaitingCount > 0) {
+      this.chunkGateReasonMixAwaiting++;
+      return false;
+    }
+    const effectiveMax = live ? Math.min(max, Math.max(1, this.maxConcurrentChunkBakesLive | 0)) : max;
     const waitCap = Math.max(0, this.maxChunkBakeWaiters | 0);
-    return this.chunkBakeActive + this.chunkBakeWaiters.length < max + waitCap;
+    return this.chunkBakeActive + this.chunkBakeWaiters.length < effectiveMax + waitCap;
   }
   /**
    * Whether a closed tile at chunkStart may enter the bake gate now.
@@ -12706,10 +12983,25 @@ var Player = class _Player extends BasePlayer {
   pumpDeferredChunkBakes() {
     const deferred = this.deferredChunkBakes;
     if (deferred.length === 0) return;
-    if (this.mixAwaitingCount > 0 && this.isPlaying && !this.chunkPrerollActive) {
+    const live = this.isPlaying && !this.chunkPrerollActive;
+    if (live && this.mixAwaitingCount > 0) {
+      this.chunkGateReasonMixAwaiting++;
       return;
     }
     deferred.sort((a, b) => a.chunkStart - b.chunkStart);
+    let liveNow = 0;
+    let offlineHold = false;
+    if (live && this.offlineRenderActive > 0) {
+      const urg = this.chunkBakeLiveOfflineUrgencySec;
+      if (urg > 0) {
+        offlineHold = true;
+        try {
+          liveNow = this.currentTime();
+        } catch {
+          offlineHold = false;
+        }
+      }
+    }
     const still = [];
     for (let i = 0; i < deferred.length; i++) {
       const d = deferred[i];
@@ -12718,6 +13010,14 @@ var Player = class _Player extends BasePlayer {
         continue;
       }
       if (!this.shouldBakeChunkNow(d.chunkStart)) {
+        still.push(d);
+        for (let j = i + 1; j < deferred.length; j++) {
+          still.push(deferred[j]);
+        }
+        break;
+      }
+      if (offlineHold && d.chunkStart > liveNow + this.chunkBakeLiveOfflineUrgencySec) {
+        this.chunkGateReasonLiveOfflineHold++;
         still.push(d);
         for (let j = i + 1; j < deferred.length; j++) {
           still.push(deferred[j]);
@@ -12884,8 +13184,12 @@ var Player = class _Player extends BasePlayer {
     this.mixPcmCache.clear();
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteReleaseOnsets.clear();
+    this.simpleNoteCacheReleaseKey.clear();
+    this.simpleNoteRemaining.clear();
     this.complexNoteBufferCache.clear();
     this.complexNoteCounts.clear();
+    this.complexNoteRemaining.clear();
     this.tiledVoiceParams = [];
     this.tiledVoices = [];
     this.noteOnDurations = [];
@@ -13776,6 +14080,9 @@ var Player = class _Player extends BasePlayer {
   buildSimpleNoteCounts() {
     this.simpleNoteCounts.clear();
     this.simpleNoteOnsets.clear();
+    this.simpleNoteReleaseOnsets.clear();
+    this.simpleNoteCacheReleaseKey.clear();
+    this.simpleNoteRemaining.clear();
     if (!this.simpleNoteCache) return;
     const cacheMode = this.cacheMode;
     if (cacheMode !== "note" && cacheMode !== "segment" && cacheMode !== "chunk" && cacheMode !== "audio") {
@@ -13828,31 +14135,39 @@ var Player = class _Player extends BasePlayer {
             const instrument = voice.generators.get("instrument") ?? 0;
             const sampleID = voice.generators.get("sampleID") ?? 0;
             const audioBufferId = layer2.soundFontIndex * 2 ** 31 + instrument * 2 ** 24 + (sampleID << 8);
-            const key = this.makeSimpleNoteKey(
-              {
-                audioBufferId,
-                noteNumber: noteEvent.noteNumber,
-                velocity: noteEvent.velocity,
-                noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
-                noteEvent: noteOnEvent,
-                channelDetune: renderChannel.detune,
-                channelStateArray: renderChannel.state.array,
-                programNumber: renderChannel.programNumber,
-                isDrum: renderChannel.isDrum,
-                voiceParams
-              },
-              bakeMix
-            );
+            const noteKeyBody = {
+              audioBufferId,
+              noteNumber: noteEvent.noteNumber,
+              velocity: noteEvent.velocity,
+              noteDuration: this.noteBakeDurations[i] ?? noteOnEvent.duration,
+              noteEvent: noteOnEvent,
+              channelDetune: renderChannel.detune,
+              channelStateArray: renderChannel.state.array,
+              programNumber: renderChannel.programNumber,
+              isDrum: renderChannel.isDrum,
+              voiceParams
+            };
+            const key = this.makeSimpleNoteKey(noteKeyBody, bakeMix);
             simpleNoteCounts.set(key, (simpleNoteCounts.get(key) ?? 0) + 1);
             const onsetList = simpleNoteOnsets.get(key);
             if (onsetList) onsetList.push(offset);
             else simpleNoteOnsets.set(key, [offset]);
+            const rKey = this.makeSimpleNoteReleaseKey(noteKeyBody, bakeMix);
+            const rList = this.simpleNoteReleaseOnsets.get(rKey);
+            if (rList) rList.push(offset);
+            else this.simpleNoteReleaseOnsets.set(rKey, [offset]);
           }
         }
       });
     }
     for (const list of simpleNoteOnsets.values()) {
       if (list.length > 1) list.sort((a, b) => a - b);
+    }
+    for (const list of this.simpleNoteReleaseOnsets.values()) {
+      if (list.length > 1) list.sort((a, b) => a - b);
+    }
+    for (const [key, count] of simpleNoteCounts) {
+      this.simpleNoteRemaining.set(key, count);
     }
   }
   isSimpleNote(n) {
@@ -14107,6 +14422,34 @@ var Player = class _Player extends BasePlayer {
   makeSimpleNoteKey(n, bakeChannelMix) {
     return this.buildNoteCacheKeyParts(n, bakeChannelMix, false).join("|");
   }
+  /**
+   * Stable identity for playhead release (not for buffer sharing).
+   * Omits fine detune and CC7/10/11 which drift between the count-walk and
+   * live mix snapshots and otherwise prevent onset lookup from matching the
+   * cache key (no free → RSS climbs for the whole song).
+   */
+  makeSimpleNoteReleaseKey(n, bakeChannelMix) {
+    const durTicks = n.noteEvent?.durationTicks ?? Math.round(n.noteDuration * 1e3);
+    return [
+      bakeChannelMix ? "mix" : "dry",
+      n.audioBufferId ?? -1,
+      n.noteNumber,
+      n.velocity,
+      durTicks,
+      n.programNumber,
+      n.isDrum ? 1 : 0,
+      Math.round(n.voiceParams.releaseVolEnv * 1e6),
+      Math.round(n.voiceParams.playbackRate * 1e6),
+      n.noteEvent?.soundOff ? 1 : 0
+    ].join("|");
+  }
+  /** Bind full cache key → release key; call on insert/hit when `n` is known. */
+  bindSimpleNoteReleaseKey(cacheKey, n, bakeChannelMix) {
+    this.simpleNoteCacheReleaseKey.set(
+      cacheKey,
+      this.makeSimpleNoteReleaseKey(n, bakeChannelMix)
+    );
+  }
   // Controllers that change the offline-baked waveform when replayed inside
   // renderEntryAudioBuffer. Sustain (64), all-notes-off, etc. affect note
   // lifetime which is already captured by durationTicks -- including them in
@@ -14296,6 +14639,7 @@ var Player = class _Player extends BasePlayer {
   // miss; unique patterns stay on the one-shot renderEntryAudioBuffer path.
   buildComplexNoteCounts() {
     this.complexNoteCounts.clear();
+    this.complexNoteRemaining.clear();
     if (!this.complexNoteCache) return;
     const cacheMode = this.cacheMode;
     if (cacheMode !== "note" && cacheMode !== "segment" && cacheMode !== "chunk" && cacheMode !== "audio") {
@@ -14376,6 +14720,9 @@ var Player = class _Player extends BasePlayer {
           complexNoteCounts.set(key, (complexNoteCounts.get(key) ?? 0) + 1);
         }
       });
+    }
+    for (const [key, count] of complexNoteCounts) {
+      this.complexNoteRemaining.set(key, count);
     }
   }
   // -------------------------------------------------------------------------
@@ -14577,11 +14924,16 @@ var Player = class _Player extends BasePlayer {
     this.voiceCache.clear();
     this.realtimeVoiceCache.clear();
     this.adsrVoiceCache.clear();
+    this.mixPcmCache.clear();
     this.simpleNoteBufferCache = /* @__PURE__ */ new Map();
     this.simpleNoteCounts = /* @__PURE__ */ new Map();
     this.simpleNoteOnsets = /* @__PURE__ */ new Map();
+    this.simpleNoteReleaseOnsets = /* @__PURE__ */ new Map();
+    this.simpleNoteCacheReleaseKey = /* @__PURE__ */ new Map();
+    this.simpleNoteRemaining = /* @__PURE__ */ new Map();
     this.complexNoteBufferCache = /* @__PURE__ */ new Map();
     this.complexNoteCounts = /* @__PURE__ */ new Map();
+    this.complexNoteRemaining = /* @__PURE__ */ new Map();
   }
   // Stop tiled BufferSources, null pending AudioBuffers, bump generations so
   // in-flight OfflineAudioContext results are discarded on completion.
@@ -14920,17 +15272,21 @@ var Player = class _Player extends BasePlayer {
         const h4 = st?.procHist4 ?? 0;
         const h5 = st?.procHist5 ?? 0;
         const timerSrc = st?.timerSource ?? (st?.hasPerf ? "perf" : "date");
-        console.log(
-          `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} peakActive=${peak}/${WORKLET_MAX_VOICES} avgActive=${avgActive.toFixed(1)} processMs=${processMs.toFixed(1)} avgProcUs=${avgProcUs.toFixed(1)} maxProcMs=${processMaxMs.toFixed(3)} overruns=${overruns} overrunMaxMs=${Number(overrunMaxMs).toFixed(3)} maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}} timer=${timerSrc} procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5} simpleVQ=${simpleVQ} complexVQ=${complexVQ} simplePct=${simplePct.toFixed(1)}% noteOn=${on2} stealWorklet=${steal} stealMain=${this.workletMainSteal} miss=${miss} stop=${st?.stop ?? ms.stop} quantums=${q} samples=${st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples} limit=${JSON.stringify(this.workletVoiceLimit)} mainMax=${this.resolveWorkletMainMaxVoices()} peakGroups=${this.workletPeakGroups} peakLayers=${this.workletPeakLayers} (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] worklet-perf | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} peakActive=${peak}/${WORKLET_MAX_VOICES} avgActive=${avgActive.toFixed(1)} processMs=${processMs.toFixed(1)} avgProcUs=${avgProcUs.toFixed(1)} maxProcMs=${processMaxMs.toFixed(3)} overruns=${overruns} overrunMaxMs=${Number(overrunMaxMs).toFixed(3)} maxAt={active:${maxActiveAtPeak},msgs:${maxMsgsAtPeak}} timer=${timerSrc} procHist=<1:${h0} 1-2:${h1} 2-3:${h2} 3-5:${h3} 5-10:${h4} >=10:${h5} simpleVQ=${simpleVQ} complexVQ=${complexVQ} simplePct=${simplePct.toFixed(1)}% noteOn=${on2} stealWorklet=${steal} stealMain=${this.workletMainSteal} miss=${miss} stop=${st?.stop ?? ms.stop} quantums=${q} samples=${st?.samples ?? this.workletEngine.dumpDebug(0).loadedSamples} limit=${JSON.stringify(this.workletVoiceLimit)} mainMax=${this.resolveWorkletMainMaxVoices()} peakGroups=${this.workletPeakGroups} peakLayers=${this.workletPeakLayers} (groups=MIDI noteOns, layers=SF2 zones, peakActive=worklet slots)`
+          );
+        }
         const lagN = this.eventLoopLagSamples;
         const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
         const processPct = wallMs > 0 ? 100 * processMs / wallMs : 0;
         const schedN = this.playMainSchedCount;
         const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
-        console.log(
-          `[midy] play-load | mode=worklet glitch=${overruns} (overruns) glitchMaxMs=${Number(overrunMaxMs).toFixed(1)} audioBusyMs=${processMs.toFixed(0)} audioBusyPct=${processPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] play-load | mode=worklet glitch=${overruns} (overruns) glitchMaxMs=${Number(overrunMaxMs).toFixed(1)} audioBusyMs=${processMs.toFixed(0)} audioBusyPct=${processPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms`
+          );
+        }
       } catch (_) {
       }
     }
@@ -14980,9 +15336,11 @@ var Player = class _Player extends BasePlayer {
         const songSec = this.totalTime > 0 ? this.totalTime : 0;
         const rtf = wallMs > 0 && songSec > 0 ? songSec * 1e3 / wallMs : 0;
         const label = isChunkCacheMode(this.cacheMode) ? "chunk-perf" : "segment-perf";
-        console.log(
-          `[midy] ${label} | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate} bakeAvg=${bakeAvg.toFixed(1)}ms bakeP95=${bakeP95.toFixed(1)}ms pureTA=${this.chunkPureTaTiles} pathWorkletHybrid=${this.noteBakeWorkletHybridCount} mode=${this.cacheMode}`
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] ${label} | wall=${wallMs.toFixed(0)}ms song=${songSec.toFixed(2)}s rtf=${rtf.toFixed(3)} tiles=${cb} late=${lateN} dropped=${this.chunkDroppedLate} bakeAvg=${bakeAvg.toFixed(1)}ms bakeP95=${bakeP95.toFixed(1)}ms pureTA=${this.chunkPureTaTiles} pathWorkletHybrid=${this.noteBakeWorkletHybridCount} mode=${this.cacheMode}`
+          );
+        }
         const lagN = this.eventLoopLagSamples;
         const lagAvg = lagN > 0 ? this.eventLoopLagExcessSumMs / lagN : 0;
         const glitch = lateN + this.chunkDroppedLate;
@@ -14994,9 +15352,11 @@ var Player = class _Player extends BasePlayer {
         const schedAvg = schedN > 0 ? this.playMainSchedSumMs / schedN : 0;
         const mainBusyMs = this.playMainSchedSumMs + mixMainMs;
         const mainBusyPct = wallMs > 0 ? 100 * mainBusyMs / wallMs : 0;
-        console.log(
-          `[midy] play-load | mode=${this.cacheMode} glitch=${glitch} (late+dropped) glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)} mainBusyMs=${mainBusyMs.toFixed(0)} mainBusyPct=${mainBusyPct.toFixed(2)}% mixMainPct=${mainMixPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms workerMixMs=${mixWorkerMs.toFixed(0)}`
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] play-load | mode=${this.cacheMode} glitch=${glitch} (late+dropped) glitchMaxMs=${this.chunkLateMaxMs.toFixed(1)} mainBusyMs=${mainBusyMs.toFixed(0)} mainBusyPct=${mainBusyPct.toFixed(2)}% mixMainPct=${mainMixPct.toFixed(1)}% lagWarns=${this.eventLoopLagWarnCount}/${lagN} lagAvgExcess=${lagAvg.toFixed(1)}ms lagMaxExcess=${this.eventLoopLagExcessMaxMs.toFixed(0)}ms mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms mainSchedAvg=${schedAvg.toFixed(2)}ms mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms workerMixMs=${mixWorkerMs.toFixed(0)}`
+          );
+        }
       }
       const poolSize = this.bakeWorkerPool ? this.bakeWorkerPool.poolSize : this.workerPoolSize > 0 ? this.workerPoolSize : Math.max(
         1,
@@ -15034,7 +15394,7 @@ var Player = class _Player extends BasePlayer {
             return gwSamples[i];
           };
           console.log(
-            `[midy] gate-summary | enters=${this.chunkGateWaitEnterCount} depthAvg=${this.chunkGateWaitEnterCount > 0 ? (this.chunkGateWaitDepthSum / this.chunkGateWaitEnterCount).toFixed(1) : "0"} depthMax=${this.chunkGateWaitDepthMax} waitP50=${pct(0.5).toFixed(1)}ms waitP95=${pct(0.95).toFixed(1)}ms reasons: activeFull=${this.chunkGateReasonActiveFull} mixAwaiting=${this.chunkGateReasonMixAwaiting} horizon=${this.chunkGateReasonHorizon} passBudget=${this.chunkGateReasonPassBudget} maxConcurrent=${this.maxConcurrentChunkBakes} maxWaiters=${this.maxChunkBakeWaiters} priorityByStart=${this.chunkBakePriorityByStart}`
+            `[midy] gate-summary | enters=${this.chunkGateWaitEnterCount} depthAvg=${this.chunkGateWaitEnterCount > 0 ? (this.chunkGateWaitDepthSum / this.chunkGateWaitEnterCount).toFixed(1) : "0"} depthMax=${this.chunkGateWaitDepthMax} waitP50=${pct(0.5).toFixed(1)}ms waitP95=${pct(0.95).toFixed(1)}ms reasons: activeFull=${this.chunkGateReasonActiveFull} mixAwaiting=${this.chunkGateReasonMixAwaiting} horizon=${this.chunkGateReasonHorizon} passBudget=${this.chunkGateReasonPassBudget} liveOfflineHold=${this.chunkGateReasonLiveOfflineHold} maxConcurrent=${this.maxConcurrentChunkBakes} maxWaiters=${this.maxChunkBakeWaiters} priorityByStart=${this.chunkBakePriorityByStart}`
           );
           const mixTiles = this.chunkMixWorkerTiles + this.chunkMixMainTiles;
           console.log(
@@ -15043,6 +15403,15 @@ var Player = class _Player extends BasePlayer {
           console.log(
             `[midy] noteBake-summary | pathNoteBake=${this.noteBakePathCount} pathAds=${this.noteBakeAdsPathCount} pathWorkletHybrid=${this.noteBakeWorkletHybridCount} pathRealtimeExcl=${this.noteBakeRealtimeExclCount} drumNoteBake=${this.noteBakeDrumCount} drumExclusive=${this.noteBakeDrumExclusiveCount} releaseCapped=${this.noteBakeReleaseCappedCount} drumReleaseCapped=${this.noteBakeDrumReleaseCappedCount} noteBakeEffAvg=${this.noteBakePathCount > 0 ? (this.noteBakeEffectiveSum / this.noteBakePathCount).toFixed(2) : "0"}s drumEffAvg=${this.noteBakeDrumCount > 0 ? (this.noteBakeDrumEffectiveSum / this.noteBakeDrumCount).toFixed(2) : "0"}s maxReleaseTail=${this.maxReleaseTailSec} maxNoteBake=${this.maxNoteBakeDuration} maxTiled=${this.maxTiledNoteDuration}`
           );
+          const smSync = this.simpleMissPathSyncNotes;
+          const smWb = this.simpleMissPathWorkerBatchNotes;
+          const smSer = this.simpleMissPathSerialNotes;
+          const smTotal = smSync + smWb + smSer;
+          if (smTotal > 0) {
+            console.log(
+              `[midy] simple-miss-path | totalNotes=${smTotal} sync=${smSync} (${this.simpleMissPathSyncMs.toFixed(0)}ms) workerBatch=${smWb} jobs=${this.simpleMissPathWorkerBatchJobs} (${this.simpleMissPathWorkerBatchMs.toFixed(0)}ms) serial=${smSer} (${this.simpleMissPathSerialMs.toFixed(0)}ms) | preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive} useWorkerSimpleNoteBake=${this.useWorkerSimpleNoteBake}`
+            );
+          }
           if (this.noteBakeWorkletHybridCount > 0 && this.workletEngine) {
             try {
               const st = await this.workletEngine.fetchStats(80);
@@ -15086,6 +15455,48 @@ var Player = class _Player extends BasePlayer {
           console.log(
             `[midy] chunk-mix-parts | workerTiles=${mw} mainTiles=${mm} entriesAvg=${entriesAvg.toFixed(1)} | prepareAvg=${prepAvg.toFixed(1)}ms awaitAvg=${awaitAvg.toFixed(1)}ms queueAvg=${queueAvg.toFixed(1)}ms postAvg=${postAvg.toFixed(1)}ms workerAvg=${workerAvg.toFixed(1)}ms residualAvg=${residualAvg.toFixed(1)}ms copyBackAvg=${copyAvg.toFixed(1)}ms mainAvg=${mainAvg.toFixed(1)}ms | prepareSum=${this.chunkMixPrepareSumMs.toFixed(0)}ms awaitSum=${this.chunkMixAwaitSumMs.toFixed(0)}ms queueSum=${this.chunkMixQueueSumMs.toFixed(0)}ms postSum=${this.chunkMixPostSumMs.toFixed(0)}ms workerSum=${this.chunkMixWorkerSumMs.toFixed(0)}ms residualSum=${this.chunkMixResidualSumMs.toFixed(0)}ms copyBackSum=${this.chunkMixCopyBackSumMs.toFixed(0)}ms mainSum=${this.chunkMixMainSumMs.toFixed(0)}ms`
           );
+          {
+            const rs = this.chunkMixResidualSamplesMs.slice().sort(
+              (a, b) => a - b
+            );
+            const pct = (q) => {
+              if (rs.length === 0) return 0;
+              const i = Math.min(
+                rs.length - 1,
+                Math.floor(q * (rs.length - 1))
+              );
+              return rs[i];
+            };
+            const residualMax = rs.length > 0 ? rs[rs.length - 1] : 0;
+            const corr = (n, sumX, sumY, sumXY, sumX2, sumY2) => {
+              if (n < 3) return NaN;
+              const num = n * sumXY - sumX * sumY;
+              const den = Math.sqrt(
+                (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY)
+              );
+              return den > 1e-12 ? num / den : NaN;
+            };
+            const rEntries = corr(
+              this.mixResCorrN,
+              this.mixResCorrSumR,
+              this.mixResCorrSumE,
+              this.mixResCorrSumRE,
+              this.mixResCorrSumR2,
+              this.mixResCorrSumE2
+            );
+            const rSrc = corr(
+              this.mixResCorrN,
+              this.mixResCorrSumR,
+              this.mixResCorrSumS,
+              this.mixResCorrSumRS,
+              this.mixResCorrSumR2,
+              this.mixResCorrSumS2
+            );
+            const fmtR = (v) => Number.isFinite(v) ? v.toFixed(2) : "n/a";
+            console.log(
+              `[midy] mix-residual-summary | tiles=${mw} residualAvg=${residualAvg.toFixed(1)}ms residualP50=${pct(0.5).toFixed(1)}ms residualP95=${pct(0.95).toFixed(1)}ms residualMax=${residualMax.toFixed(1)}ms highResidualTiles(>=${this.residualWarnMs}ms)=${this.chunkMixHighResidualTiles} | corr residual\u2194entries=${fmtR(rEntries)} residual\u2194srcSum=${fmtR(rSrc)} | awaitAvg=${awaitAvg.toFixed(1)} workerAvg=${workerAvg.toFixed(1)} copyBackAvg=${copyAvg.toFixed(1)} afterAwait is inside residual (reply lag + event-loop)`
+            );
+          }
           const prepTiles = mw;
           const sliceAvg = prepTiles > 0 ? this.chunkMixPrepareSliceSumMs / prepTiles : 0;
           const asmAvg = prepTiles > 0 ? this.chunkMixPrepareAssemblySumMs / prepTiles : 0;
@@ -15120,19 +15531,25 @@ var Player = class _Player extends BasePlayer {
         const mixMainRatio = mixTiles > 0 ? 100 * mm / mixTiles : 0;
         const liveMixPolicy = this.preferWorkerMixDuringLive ? "worker" : "main";
         const liveBakePolicy = this.preferWorkerBakeDuringLive ? "worker" : "main";
-        console.log(
-          `[midy] main-thread | mixMainMs=${mixMainMs.toFixed(0)} mixWorkerMs=${mixWorkerMs.toFixed(0)} mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}% | liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`
-        );
-        console.log(
-          `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} worker=${this.liveMixWorkerCount} notRealtime=${this.liveMixSkipNotRealtime} workerMixMinEntriesLive=${this.workerMixMinEntriesLive} workerMixMinEntries=${this.workerMixMinEntries} preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`
-        );
-        console.log(
-          `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}%`
-        );
+        if (this.debug) {
+          console.log(
+            `[midy] main-thread | mixMainMs=${mixMainMs.toFixed(0)} mixWorkerMs=${mixWorkerMs.toFixed(0)} mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}% | liveMix=${liveMixPolicy} liveBake=${liveBakePolicy} preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive} preferWorkerBakeDuringLive=${this.preferWorkerBakeDuringLive}`
+          );
+        }
+        if (this.debug) {
+          console.log(
+            `[midy] live-mix-summary | onMain=${this.liveMixOnMainCount} worker=${this.liveMixWorkerCount} notRealtime=${this.liveMixSkipNotRealtime} workerMixMinEntriesLive=${this.workerMixMinEntriesLive} workerMixMinEntries=${this.workerMixMinEntries} preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`
+          );
+        }
+        if (this.debug) {
+          console.log(
+            `[midy] offload | mixMainTiles=${mm} mixWorkerTiles=${mw} mixMainRatio=${mixMainRatio.toFixed(1)}%`
+          );
+        }
       }
       if (this.debug) {
         console.log(
-          `[midy] chunk-tile-shape | notesAvg=${notesAvg.toFixed(1)} complexNotesAvg=${complexNotesAvg.toFixed(1)} sumDurAvg=${sumDurAvg.toFixed(3)}s costAvg=${costAvg.toFixed(3)} budget=${this.chunkCostBudget} complexWeight=${this.chunkComplexCostWeight} tileDuration=${this.tileDuration} maxChunkBakes=${this.maxConcurrentChunkBakes} horizon=${this.chunkBakeHorizonSec}s near=${this.chunkBakeNearSec}s startsPerPass=${this.maxChunkBakeStartsPerPass} maxChunkNotes=${this.maxChunkNotes}`
+          `[midy] chunk-tile-shape | notesAvg=${notesAvg.toFixed(1)} complexNotesAvg=${complexNotesAvg.toFixed(1)} sumDurAvg=${sumDurAvg.toFixed(3)}s costAvg=${costAvg.toFixed(3)} budget=${this.chunkCostBudget} complexWeight=${this.chunkComplexCostWeight} tileDuration=${this.tileDuration} maxChunkBakes=${this.maxConcurrentChunkBakes} maxChunkBakesLive=${this.maxConcurrentChunkBakesLive} horizon=${this.chunkBakeHorizonSec}s near=${this.chunkBakeNearSec}s startsPerPass=${this.maxChunkBakeStartsPerPass} maxChunkNotes=${this.maxChunkNotes}`
         );
       }
     } catch (e2) {
@@ -15142,10 +15559,12 @@ var Player = class _Player extends BasePlayer {
     }
   }
   // Bake simple-note cache keys before playNotes, prioritizing the song head.
-  // Phase 1 fills keys whose earliest onset is inside prewarmSimpleHeadSec
-  // (including one-shots when headMinCount=1). Phase 2 spends any remaining
-  // wall budget on later multi-use keys. Logging is intentional for bake
-  // diagnosis (share console output when tuning budgets).
+  // Phase 1 fills keys whose earliest onset is inside the head window
+  // (prewarmSimpleHeadSec, or auto prerollSec+tileDuration / lookAhead
+  // fallback; including one-shots when headMinCount=1). Phase 2 spends any
+  // remaining wall budget on later multi-use keys. Intended to run before
+  // prerollTiledPipeline so head tiles mostly hit simpleNoteBufferCache.
+  // Logging is intentional for bake diagnosis (tune against preroll logs).
   async prewarmSimpleNoteCache() {
     if (!this.simpleNoteCache) return;
     if (this.simpleNoteCounts.size === 0) return;
@@ -15161,8 +15580,8 @@ var Player = class _Player extends BasePlayer {
   async prewarmSimpleNoteCacheBody() {
     const restMinCount = Math.max(1, this.prewarmSimpleMinCount | 0);
     const headMinCount = Math.max(1, this.prewarmSimpleHeadMinCount | 0);
-    const maxMs = Math.max(0, this.prewarmSimpleMaxMs | 0);
-    const headSec = this.prewarmSimpleHeadSec > 0 ? this.prewarmSimpleHeadSec : Math.max(1e-3, this.lookAhead + this.maxTiledNoteDuration);
+    const maxMs = Math.max(0, (this.prewarmSimpleMaxSec | 0) * 1e3);
+    const headSec = this.prewarmSimpleHeadSec > 0 ? this.prewarmSimpleHeadSec : this.prerollSec > 0 ? Math.max(1e-3, this.prerollSec + this.tileDuration) : Math.max(1e-3, this.lookAhead + this.maxTiledNoteDuration);
     const settings = this.constructor.channelSettings;
     const numChannels = this.numChannels;
     const channels2 = new Array(numChannels);
@@ -15295,15 +15714,32 @@ var Player = class _Player extends BasePlayer {
       for (let w = 0; w < n; w++) workers.push(run());
       await Promise.all(workers);
     };
+    const headBakedBefore = bakedOk;
+    const headFailBefore = bakedFail;
     await bakeList(head);
+    const headBaked = bakedOk - headBakedBefore;
+    const headFail = bakedFail - headFailBefore;
+    let headIncomplete = 0;
+    for (let i = 0; i < head.length; i++) {
+      const cached = this.simpleNoteBufferCache.get(head[i].key);
+      if (!(cached instanceof AudioBuffer) && !(cached instanceof Promise)) {
+        headIncomplete++;
+      }
+    }
     if (!stoppedEarly && rest.length > 0) {
       await bakeList(rest);
     }
     const wallMs = performance.now() - t0;
     if (this.debug || bakedOk > 0) {
+      const headComplete = head.length === 0 || headIncomplete === 0;
       console.warn(
-        `[midy] simple-prewarm | head=${head.length} rest=${rest.length} allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} wall=${wallMs.toFixed(0)}ms budget=${maxMs}ms stoppedEarly=${stoppedEarly} concurrency=${concurrency} cacheSize=${this.simpleNoteBufferCache.size} maxSize=${this.simpleNoteCacheMaxSize}`
+        `[midy] simple-prewarm | headSec=${headSec.toFixed(2)}s prerollSec=${this.prerollSec} tileDuration=${this.tileDuration} head=${head.length} headBaked=${headBaked} headFail=${headFail} headIncomplete=${headIncomplete} headComplete=${headComplete} rest=${rest.length} allKeys=${allKeys.size} baked=${bakedOk} fail=${bakedFail} wall=${wallMs.toFixed(0)}ms budget=${maxMs}ms stoppedEarly=${stoppedEarly} concurrency=${concurrency} cacheSize=${this.simpleNoteBufferCache.size} maxSize=${this.simpleNoteCacheMaxSize}`
       );
+      if (this.debug && !headComplete) {
+        console.warn(
+          `[midy] simple-prewarm INCOMPLETE | targetHead=[0, ${headSec.toFixed(2)}s] missingKeys=${headIncomplete}/${head.length} budget=${maxMs}ms wall=${wallMs.toFixed(0)}ms (raise prewarmSimpleMaxSec or lower song density in head)`
+        );
+      }
     }
   }
   async stop() {
@@ -15368,8 +15804,9 @@ var Player = class _Player extends BasePlayer {
     return now + this.resumeTime - this.startTime;
   }
   // Bake tiled tiles covering [resumeTime, resumeTime + prerollSec] before the
-  // playback clock is armed. Uses a shadow channel walk so this.channels is
-  // left untouched for the live scheduleTimelineEvents pass.
+  // playback clock is armed. Runs after simple prewarm (same head window when
+  // prewarmSimpleHeadSec is auto). Uses a channel walk so this.channels state
+  // matches the later live scheduleTimelineEvents pass.
   // Pending buffers stay in chunkState / segmentChannelStates; sources are
   // started later via startReadyTiledSources() once startTime is set.
   async prerollTiledPipeline() {
@@ -15513,39 +15950,98 @@ var Player = class _Player extends BasePlayer {
     if (coveredEnd > this.prerollUntilPeak) {
       this.prerollUntilPeak = coveredEnd;
     }
-    const pendingCount = isChunkMode ? this.chunkState.pending.length : 0;
+    const wallMs = performance.now() - t0;
+    const targetEnd = Math.min(
+      this.totalTime > 0 ? this.totalTime : songStart + prerollSec,
+      songStart + prerollSec
+    );
+    const headReady = this.measurePrerollHeadReady(songStart, targetEnd);
     if (this.debug) {
+      const coveragePct = targetEnd > songStart ? (100 * (Math.min(coveredEnd, targetEnd) - songStart) / (targetEnd - songStart)).toFixed(0) : "100";
+      const readyPct = targetEnd > songStart ? (100 * (Math.min(headReady.readyUntil, targetEnd) - songStart) / (targetEnd - songStart)).toFixed(0) : "100";
       console.log(
-        `[midy] preroll done | coveredEnd=${coveredEnd.toFixed(2)}s wall=${(performance.now() - t0).toFixed(0)}ms pendingTiles=${pendingCount} stoppedEarly=${stoppedEarly}`
+        `[midy] preroll done | target=[${songStart.toFixed(2)}, ${targetEnd.toFixed(2)}]s coveredEnd=${coveredEnd.toFixed(2)}s (${coveragePct}%) readyUntil=${headReady.readyUntil.toFixed(2)}s (${readyPct}%) gap=${headReady.gapSec.toFixed(2)}s tiles=${headReady.tileTotal} ready=${headReady.tileReady} failed=${headReady.tileFailed} notReady=${headReady.tileNotReady} wall=${wallMs.toFixed(0)}ms maxMs=${maxMs || "none"} stoppedEarly=${stoppedEarly} deferredLeft=${this.deferredChunkBakes.length}`
       );
-    }
-    if (this.debug && isChunkMode) {
-      const pending = this.chunkState.pending;
-      const sorted = pending.slice().sort(
-        (a, b) => a.chunkStart - b.chunkStart
-      );
-      let readyN = 0;
-      let readyUntil = songStart;
-      for (let i = 0; i < sorted.length; i++) {
-        const p = sorted[i];
-        if (p.bufferReady) {
-          readyN++;
-          const end = p.chunkStart + this.tileDuration;
-          if (end > readyUntil) readyUntil = end;
-        } else {
-          break;
-        }
-      }
-      const targetEnd = Math.min(
-        this.totalTime > 0 ? this.totalTime : songStart + this.prerollSec,
-        songStart + this.prerollSec
-      );
-      if (this.debug) {
+      const coverageShort = coveredEnd + 1e-3 < targetEnd;
+      if (headReady.incomplete || coverageShort) {
         console.warn(
-          `[midy] preroll-ready-span | songStart=${songStart.toFixed(2)}s readyUntil=${readyUntil.toFixed(2)}s gap=${(targetEnd - readyUntil).toFixed(2)}s readyN=${readyN}/${sorted.length} bufferReadyTotal=${sorted.filter((p) => p.bufferReady).length} deferredBakes=${this.deferredChunkBakes.length} chunkBakeActive=${this.chunkBakeActive}`
+          `[midy] preroll INCOMPLETE | readyUntil=${headReady.readyUntil.toFixed(2)}s coveredEnd=${coveredEnd.toFixed(2)}s targetEnd=${targetEnd.toFixed(2)}s gap=${headReady.gapSec.toFixed(2)}s firstHole@${headReady.firstHoleAt.toFixed(2)}s failed=${headReady.tileFailed} notReady=${headReady.tileNotReady} stoppedEarly=${stoppedEarly} coverageShort=${coverageShort} (raise prerollMaxMs / maxConcurrentChunkBakes, or wait for head)`
         );
       }
     }
+  }
+  /**
+   * Contiguous head readiness for preroll diagnostics (debug).
+   * Walks pending tiles in chunkStart order from songStart; the first
+   * missing/failed buffer ends the ready span. Segment mode aggregates
+   * all channels (a hole on any channel ends the span).
+   */
+  measurePrerollHeadReady(songStart, targetEnd) {
+    const tiles = [];
+    if (isChunkCacheMode(this.cacheMode)) {
+      const pending = this.chunkState.pending;
+      for (let i = 0; i < pending.length; i++) {
+        const p = pending[i];
+        tiles.push({
+          start: p.chunkStart,
+          ready: !!(p.bufferReady && p.buffer),
+          failed: !!(p.bufferReady && !p.buffer)
+        });
+      }
+    } else if (isSegmentCacheMode(this.cacheMode)) {
+      const states = this.segmentChannelStates;
+      for (let ch = 0; ch < states.length; ch++) {
+        const state = states[ch];
+        if (!state) continue;
+        const pending = state.pending;
+        for (let i = 0; i < pending.length; i++) {
+          const p = pending[i];
+          tiles.push({
+            start: p.segmentStart,
+            ready: !!(p.bufferReady && p.buffer),
+            failed: !!(p.bufferReady && !p.buffer)
+          });
+        }
+      }
+    }
+    tiles.sort((a, b) => a.start - b.start);
+    let tileReady = 0;
+    let tileFailed = 0;
+    let tileNotReady = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i].ready) tileReady++;
+      else if (tiles[i].failed) tileFailed++;
+      else tileNotReady++;
+    }
+    let readyUntil = songStart;
+    let firstHoleAt = targetEnd;
+    for (let i = 0; i < tiles.length; i++) {
+      const t2 = tiles[i];
+      if (t2.start >= targetEnd + this.tileDuration) break;
+      if (t2.start > readyUntil + this.tileDuration + 1e-3) {
+      }
+      if (!t2.ready) {
+        firstHoleAt = t2.start;
+        break;
+      }
+      const end = t2.start + this.tileDuration;
+      if (end > readyUntil) readyUntil = end;
+    }
+    if (tiles.length === 0) {
+      readyUntil = targetEnd;
+    }
+    const gapSec = Math.max(0, targetEnd - readyUntil);
+    const hasHole = tileFailed > 0 || tileNotReady > 0 || tiles.length > 0 && firstHoleAt < targetEnd - 1e-3;
+    return {
+      readyUntil,
+      gapSec,
+      firstHoleAt,
+      tileTotal: tiles.length,
+      tileReady,
+      tileFailed,
+      tileNotReady,
+      incomplete: hasHole
+    };
   }
   /** Log first 3 close-chunks, then every 20th — avoids DevTools stall. */
   shouldLogCloseChunk() {
@@ -15583,24 +16079,34 @@ var Player = class _Player extends BasePlayer {
       const pending = this.chunkState.pending;
       let started = 0;
       let deferred = 0;
+      let notReadyInWindow = 0;
+      let failedInWindow = 0;
       const t0 = performance.now();
       const prerollUntil = this.prerollUntilSongTime;
       const bulkUntil = prerollUntil > 0 ? prerollUntil + this.tileDuration : Number.POSITIVE_INFINITY;
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i];
-        if (!p.source && p.bufferReady) {
-          if (p.chunkStart < bulkUntil) {
+        const inWindow = p.chunkStart < bulkUntil;
+        if (!p.source && p.bufferReady && p.buffer) {
+          if (inWindow) {
             this.startPendingChunk(p);
             started++;
           } else {
             deferred++;
           }
+          continue;
         }
+        if (!inWindow) continue;
+        if (!p.bufferReady) notReadyInWindow++;
+        else if (!p.buffer) failedInWindow++;
       }
-      if (started + deferred > 0) {
-        if (this.debug && this.debugDetail) {
+      if (this.debug && started + deferred + notReadyInWindow + failedInWindow > 0) {
+        console.warn(
+          `[midy] start-ready | started=${started} deferred=${deferred} notReadyInWindow=${notReadyInWindow} failedInWindow=${failedInWindow} bulkUntil=${Number.isFinite(bulkUntil) ? bulkUntil.toFixed(2) + "s" : "inf"} wall=${(performance.now() - t0).toFixed(0)}ms pending=${pending.length}`
+        );
+        if (notReadyInWindow > 0 || failedInWindow > 0) {
           console.warn(
-            `[midy] start-ready | started=${started} deferred=${deferred} wall=${(performance.now() - t0).toFixed(0)}ms pending=${pending.length}`
+            `[midy] start-ready HEAD GAP | notReady=${notReadyInWindow} failed=${failedInWindow} \u2014 playhead may hit unbaked tiles at t\u22480`
           );
         }
       }
@@ -15880,6 +16386,7 @@ var Player = class _Player extends BasePlayer {
         }
       }
     }
+    this.releasePastSimpleNoteCaches(this.currentTime());
   }
   initChunkPipeline() {
     this.chunkState = { openChunk: null, pending: [] };
@@ -16170,6 +16677,7 @@ var Player = class _Player extends BasePlayer {
       }
     }
     this.pumpDeferredChunkBakes();
+    this.releasePastSimpleNoteCaches(this.currentTime());
   }
   // forAudioOffline=false → realtime "chunk" mode (soft-clamp only; never
   //                         peak-normalize per window)
@@ -16265,9 +16773,11 @@ var Player = class _Player extends BasePlayer {
         if (this.simpleNoteCache) {
           const bakeMix = this.simpleBakeChannelMixForNote(n);
           const key = this.makeSimpleNoteKey(n, bakeMix);
+          this.bindSimpleNoteReleaseKey(key, n, bakeMix);
           const entry = this.simpleNoteBufferCache.get(key);
           if (entry instanceof AudioBuffer) {
             this.noteCacheRecordSimpleHit();
+            this.releaseSimpleNoteIfExhausted(key);
             simpleLookupMs += performance.now() - tLookup0;
             const gains = this.chunkNoteMixParams(n, entry.length, sampleRate2);
             simpleHits.push({
@@ -16317,6 +16827,7 @@ var Player = class _Player extends BasePlayer {
               const again = this.simpleNoteBufferCache.get(item.key);
               if (again instanceof AudioBuffer) {
                 this.noteCacheRecordSimpleHit();
+                this.releaseSimpleNoteIfExhausted(item.key);
                 {
                   const gains = this.chunkNoteMixParams(
                     n,
@@ -16351,27 +16862,34 @@ var Player = class _Player extends BasePlayer {
               voice: n.voice
             };
             const bakeMixLive = this.simpleBakeChannelMixForNote(n);
-            const noteBuf = this.tryBakeSimpleNoteSync(
-              entry,
-              bakeMixLive,
-              item.key
-            );
-            if (noteBuf) {
-              const gains = this.chunkNoteMixParams(
-                n,
-                noteBuf.length,
-                sampleRate2
+            if (!this.preferWorkerBakeDuringLive) {
+              const tSync0 = performance.now();
+              const noteBuf = this.tryBakeSimpleNoteSync(
+                entry,
+                bakeMixLive,
+                item.key
               );
-              simpleHits.push({
-                buffer: noteBuf,
-                offset: n.offset,
-                gainL: gains.gainL,
-                gainR: gains.gainR,
-                gainCurve: gains.gainCurve
-              });
-              simpleMissesBaked++;
-              simpleLookupMs += item.lookupMs;
-              continue;
+              if (noteBuf) {
+                const syncMs = performance.now() - tSync0;
+                this.simpleMissPathSyncNotes++;
+                this.simpleMissPathSyncMs += syncMs;
+                const gains = this.chunkNoteMixParams(
+                  n,
+                  noteBuf.length,
+                  sampleRate2
+                );
+                simpleHits.push({
+                  buffer: noteBuf,
+                  offset: n.offset,
+                  gainL: gains.gainL,
+                  gainR: gains.gainR,
+                  gainCurve: gains.gainCurve
+                });
+                simpleMissesBaked++;
+                simpleLookupMs += item.lookupMs;
+                simpleMissBakeMs += syncMs;
+                continue;
+              }
             }
             pending.push({
               note: n,
@@ -16432,6 +16950,7 @@ var Player = class _Player extends BasePlayer {
                 try {
                   cached = await item.entry;
                   this.noteCacheRecordSimpleHit();
+                  if (item.key) this.releaseSimpleNoteIfExhausted(item.key);
                 } catch {
                   cached = null;
                 }
@@ -16440,12 +16959,14 @@ var Player = class _Player extends BasePlayer {
                 const again = this.simpleNoteBufferCache.get(item.key);
                 if (again instanceof AudioBuffer) {
                   this.noteCacheRecordSimpleHit();
+                  this.releaseSimpleNoteIfExhausted(item.key);
                   cached = again;
                 } else if (again instanceof Promise) {
                   const tInf0 = performance.now();
                   try {
                     cached = await again;
                     this.noteCacheRecordSimpleHit();
+                    this.releaseSimpleNoteIfExhausted(item.key);
                   } catch {
                     cached = null;
                   }
@@ -16495,6 +17016,8 @@ var Player = class _Player extends BasePlayer {
                   // not holding an outer gate slot
                 );
                 const missBakeMs = performance.now() - tBake0;
+                this.simpleMissPathSerialNotes++;
+                this.simpleMissPathSerialMs += missBakeMs;
                 const gainsMiss = this.chunkNoteMixParams(
                   n,
                   noteBuf.length,
@@ -16545,6 +17068,8 @@ var Player = class _Player extends BasePlayer {
                   false
                 );
                 const missBakeMs = performance.now() - tBake0;
+                this.simpleMissPathSerialNotes++;
+                this.simpleMissPathSerialMs += missBakeMs;
                 const gainsBake = this.chunkNoteMixParams(
                   n,
                   noteBuf.length,
@@ -17911,6 +18436,23 @@ var Player = class _Player extends BasePlayer {
       this.chunkMixPostSumMs += postMs;
       const residualMs = Math.max(0, awaitMs - queueMs - postMs - workerMs);
       this.chunkMixResidualSumMs += residualMs;
+      this.chunkMixResidualSamplesMs.push(residualMs);
+      if (residualMs >= this.residualWarnMs) {
+        this.chunkMixHighResidualTiles++;
+      }
+      {
+        const e2 = mixEntries.length;
+        const s = srcSamplesSum;
+        this.mixResCorrN++;
+        this.mixResCorrSumR += residualMs;
+        this.mixResCorrSumE += e2;
+        this.mixResCorrSumS += s;
+        this.mixResCorrSumRE += residualMs * e2;
+        this.mixResCorrSumRS += residualMs * s;
+        this.mixResCorrSumE2 += e2 * e2;
+        this.mixResCorrSumS2 += s * s;
+        this.mixResCorrSumR2 += residualMs * residualMs;
+      }
       const tCopy0 = performance.now();
       const afterAwaitMs = tCopy0 - tAwaitDone;
       buffer2.copyToChannel(result.left, 0);
@@ -17920,13 +18462,32 @@ var Player = class _Player extends BasePlayer {
       const copyBackMs = performance.now() - tCopy0;
       this.chunkMixCopyBackSumMs += copyBackMs;
       this.chunkMixWorkerTiles++;
+      const mixSources = [];
+      {
+        const seenSrc = /* @__PURE__ */ new Set();
+        for (let si = 0; si < entries.length; si++) {
+          const b = entries[si].buffer;
+          if (!seenSrc.has(b)) {
+            seenSrc.add(b);
+            mixSources.push(b);
+          }
+        }
+      }
       if (transferredBufs.length > 0) {
         const bufs = transferredBufs;
         const pcmCache = this.mixPcmCache;
         queueMicrotask(() => {
-          pcmCache.restoreAfterTransfer(bufs);
+          const retained = this.retainedSimpleNoteBuffers();
+          const keep = [];
+          for (let i = 0; i < bufs.length; i++) {
+            const b = bufs[i];
+            if (retained.has(b)) keep.push(b);
+            else pcmCache.delete(b);
+          }
+          if (keep.length > 0) pcmCache.restoreAfterTransfer(keep);
         });
       }
+      this.cleanupMixPcmAfterTile(mixSources);
       if (detailOut) {
         detailOut.prepareMs = prepareMs;
         detailOut.awaitMs = awaitMs;
@@ -17945,12 +18506,11 @@ var Player = class _Player extends BasePlayer {
         detailOut.offlineRenderActive = concurrentSnap.offlineRenderActive;
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
       }
-      if (residualMs >= 40) {
-        if (this.debug && this.debugDetail) {
-          console.warn(
-            `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms afterAwait=${afterAwaitMs.toFixed(1)}ms prepare=${prepareMs.toFixed(0)}ms copyBack=${copyBackMs.toFixed(0)}ms | entries=${mixEntries.length} destSamples=${bufferLength} srcSamplesSum=${srcSamplesSum} transferable=${transferable} | concurrent: chunkBake=${concurrentSnap.chunkBakeActive} offline=${concurrentSnap.offlineRenderActive} deferred=${concurrentSnap.deferredBakes}`
-          );
-        }
+      if (residualMs >= this.residualWarnMs && this.debug && this.mixResidualWarnCount < this.mixResidualWarnMax) {
+        this.mixResidualWarnCount++;
+        console.warn(
+          `[midy] mix-residual | residual=${residualMs.toFixed(0)}ms await=${awaitMs.toFixed(0)}ms queue=${queueMs.toFixed(0)}ms post=${postMs.toFixed(0)}ms worker=${workerMs.toFixed(0)}ms afterAwait=${afterAwaitMs.toFixed(1)}ms prepare=${prepareMs.toFixed(0)}ms copyBack=${copyBackMs.toFixed(0)}ms | entries=${mixEntries.length} destSamples=${bufferLength} srcSamplesSum=${srcSamplesSum} transferable=${transferable} | concurrent: chunkBake=${concurrentSnap.chunkBakeActive} offline=${concurrentSnap.offlineRenderActive} deferred=${concurrentSnap.deferredBakes} | n=${this.mixResidualWarnCount}/${this.mixResidualWarnMax}`
+        );
       }
       return buffer2;
     } catch (err) {
@@ -17974,6 +18534,18 @@ var Player = class _Player extends BasePlayer {
       if (detailOut) {
         detailOut.mainMs = mainMs;
         detailOut.usedWorker = false;
+      }
+      {
+        const seenSrc = /* @__PURE__ */ new Set();
+        const mixSources = [];
+        for (let si = 0; si < entries.length; si++) {
+          const b = entries[si].buffer;
+          if (!seenSrc.has(b)) {
+            seenSrc.add(b);
+            mixSources.push(b);
+          }
+        }
+        this.cleanupMixPcmAfterTile(mixSources);
       }
       return buffer2;
     }
@@ -18860,6 +19432,7 @@ var Player = class _Player extends BasePlayer {
     this.chunkGateReasonMixAwaiting = 0;
     this.chunkGateReasonHorizon = 0;
     this.chunkGateReasonPassBudget = 0;
+    this.chunkGateReasonLiveOfflineHold = 0;
     this.chunkGateWaitSamplesMs = [];
     this.chunkMixOverheadSumMs = 0;
     this.chunkMixOverheadMaxMs = 0;
@@ -18871,12 +19444,31 @@ var Player = class _Player extends BasePlayer {
     this.chunkBakeComplexSumMs = 0;
     this.chunkBakeMixSumMs = 0;
     this.chunkBakeOacSumMs = 0;
+    this.simpleMissPathSyncNotes = 0;
+    this.simpleMissPathWorkerBatchNotes = 0;
+    this.simpleMissPathWorkerBatchJobs = 0;
+    this.simpleMissPathSerialNotes = 0;
+    this.simpleMissPathSerialMs = 0;
+    this.simpleMissPathWorkerBatchMs = 0;
+    this.simpleMissPathSyncMs = 0;
     this.chunkMixPrepareSumMs = 0;
     this.chunkMixAwaitSumMs = 0;
     this.chunkMixWorkerSumMs = 0;
     this.chunkMixQueueSumMs = 0;
     this.chunkMixPostSumMs = 0;
     this.chunkMixResidualSumMs = 0;
+    this.chunkMixResidualSamplesMs = [];
+    this.chunkMixHighResidualTiles = 0;
+    this.mixResidualWarnCount = 0;
+    this.mixResCorrN = 0;
+    this.mixResCorrSumR = 0;
+    this.mixResCorrSumE = 0;
+    this.mixResCorrSumS = 0;
+    this.mixResCorrSumRE = 0;
+    this.mixResCorrSumRS = 0;
+    this.mixResCorrSumE2 = 0;
+    this.mixResCorrSumS2 = 0;
+    this.mixResCorrSumR2 = 0;
     this.chunkMixCopyBackSumMs = 0;
     this.chunkMixMainSumMs = 0;
     this.chunkMixWorkerTiles = 0;
@@ -18935,7 +19527,9 @@ var Player = class _Player extends BasePlayer {
   recordChunkBake(ms, pureTa, parts) {
     this.chunkBakeCount++;
     this.chunkBakeSumMs += ms;
-    if (ms > this.chunkBakeMaxMs) this.chunkBakeMaxMs = ms;
+    const prevMax = this.chunkBakeMaxMs;
+    const isNewMax = ms > prevMax;
+    if (isNewMax) this.chunkBakeMaxMs = ms;
     const gw = parts?.gateWaitMs ?? 0;
     this.chunkGateWaitSumMs += gw;
     if (gw > this.chunkGateWaitMaxMs) this.chunkGateWaitMaxMs = gw;
@@ -19013,9 +19607,9 @@ var Player = class _Player extends BasePlayer {
       const sMissBake = p.simpleMissBakeMs ?? 0;
       const mixWorker = p.mixUsedWorker === true;
       const mixLine = mixWorker ? `mixDetail: prepare=${(p.mixPrepareMs ?? 0).toFixed(0)}ms await=${(p.mixAwaitMs ?? 0).toFixed(0)}ms queue=${(p.mixQueueMs ?? 0).toFixed(0)}ms post=${(p.mixPostMs ?? 0).toFixed(0)}ms worker=${(p.mixWorkerMs ?? 0).toFixed(0)}ms residual=${(p.mixResidualMs ?? 0).toFixed(0)}ms afterAwait=${(p.mixAfterAwaitMs ?? 0).toFixed(1)}ms copyBack=${(p.mixCopyBackMs ?? 0).toFixed(0)}ms | entries=${p.mixEntryCount ?? "?"} destSamples=${p.mixDestSamples ?? "?"} srcSamplesSum=${p.mixSrcSamplesSum ?? "?"} transferable=${p.mixTransferable ?? "?"} | concurrent: chunkBake=${p.mixChunkBakeActive ?? "?"} offline=${p.mixOfflineRenderActive ?? "?"} deferred=${p.mixDeferredBakes ?? "?"}` : p.mixUsedWorker === false ? `mixDetail: main=${(p.mixMainMs ?? 0).toFixed(0)}ms` : "";
-      if (this.debug && this.debugDetail) {
+      if (this.debug) {
         console.warn(
-          `[midy] chunk-heavy | e2e=${(gateWaitMs + workMs).toFixed(0)}ms gateWait=${gateWaitMs.toFixed(0)}ms work=${workMs.toFixed(0)}ms dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} start=${(p.chunkStart ?? 0).toFixed(2)}s notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} total=${simpleTotal} | cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${p.cxMod ?? 0} gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s cost=${(p.cost ?? 0).toFixed(2)} topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | parts: simple=${simpleMs.toFixed(0)}ms complex=${complexMs.toFixed(0)}ms mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms | simpleDetail: lookup=${sLookup.toFixed(0)}ms awaitInflight=${sAwaitInf.toFixed(0)}ms missBake=${sMissBake.toFixed(0)}ms` + (mixLine ? ` | ${mixLine}` : "")
+          `[midy] chunk-heavy | work=${workMs.toFixed(1)}ms newMax=${isNewMax ? 1 : 0} e2e=${(gateWaitMs + workMs).toFixed(0)}ms gateWait=${gateWaitMs.toFixed(0)}ms dominant=${dominant} path=${pureTa ? "pureTA" : "oac"} start=${(p.chunkStart ?? 0).toFixed(2)}s notes=${p.noteCount ?? "?"} complex=${p.complexCount ?? "?"} | simple: hits=${hits} missBake=${missBake} missDirect=${missDirect} total=${simpleTotal} | cx: bend=${p.cxBend ?? 0} pan=${p.cxPan ?? 0} mod=${p.cxMod ?? 0} gain=${p.cxGain ?? 0} otherCc=${p.cxOtherCc ?? 0} sysEx=${p.cxSysEx ?? 0} pc=${p.cxPc ?? 0} | sumDur=${(p.sumNoteDuration ?? 0).toFixed(2)}s bufDur=${(p.bufferDuration ?? 0).toFixed(2)}s cost=${(p.cost ?? 0).toFixed(2)} topNote=${(p.topNoteDuration ?? 0).toFixed(2)}s topRel=${(p.topReleaseTail ?? 0).toFixed(2)}s | parts: simple=${simpleMs.toFixed(0)}ms complex=${complexMs.toFixed(0)}ms mix=${mixMs.toFixed(0)}ms oac=${oacMs.toFixed(0)}ms | simpleDetail: lookup=${sLookup.toFixed(0)}ms awaitInflight=${sAwaitInf.toFixed(0)}ms missBake=${sMissBake.toFixed(0)}ms` + (mixLine ? ` | ${mixLine}` : "")
         );
       }
     }
@@ -19047,6 +19641,113 @@ var Player = class _Player extends BasePlayer {
   }
   noteCacheRecordComplexMiss() {
     this.complexNoteCacheMisses++;
+  }
+  /**
+   * Decrement remaining uses for a simple-note key. Does not free buffers
+   * here — mix may still need the AudioBuffer / MixPcmCache entry in the
+   * same turn. Actual free is {@link releasePastSimpleNoteCaches} (playhead)
+   * and {@link cleanupMixPcmAfterTile} (one-shot PCM left in mixPcmCache).
+   */
+  releaseSimpleNoteIfExhausted(key) {
+    if (this.noteCacheStatsInPrewarm) return;
+    if (this.loop) return;
+    const rem = this.simpleNoteRemaining.get(key);
+    if (rem === void 0) return;
+    const next = rem - 1;
+    if (next > 0) {
+      this.simpleNoteRemaining.set(key, next);
+      return;
+    }
+    this.simpleNoteRemaining.delete(key);
+  }
+  /** Decrement remaining uses for a complex-note key (buffer free is deferred). */
+  releaseComplexNoteIfExhausted(key) {
+    if (this.noteCacheStatsInPrewarm) return;
+    if (this.loop) return;
+    const rem = this.complexNoteRemaining.get(key);
+    if (rem === void 0) return;
+    const next = rem - 1;
+    if (next > 0) {
+      this.complexNoteRemaining.set(key, next);
+      return;
+    }
+    this.complexNoteRemaining.delete(key);
+    const buf = this.complexNoteBufferCache.get(key);
+    if (!(buf instanceof Promise)) {
+      this.complexNoteBufferCache.delete(key);
+    }
+  }
+  /** Settled AudioBuffers still retained by the simple-note cache. */
+  retainedSimpleNoteBuffers() {
+    const set = /* @__PURE__ */ new Set();
+    for (const v of this.simpleNoteBufferCache.values()) {
+      if (v instanceof AudioBuffer) set.add(v);
+    }
+    return set;
+  }
+  /**
+   * Drop MixPcmCache entries for sources that are no longer in
+   * simpleNoteBufferCache. Tile mix calls ensure()/takeForTransfer on every
+   * source — including one-shot (count≤1) buffers that never enter the
+   * simple-note Map. Without this, mixPcmCache grows by one full PCM copy
+   * per unique note for the whole song.
+   */
+  cleanupMixPcmAfterTile(sources) {
+    const retained = this.retainedSimpleNoteBuffers();
+    for (const src of sources) {
+      if (!retained.has(src)) this.mixPcmCache.delete(src);
+    }
+  }
+  /**
+   * Free simple-note buffers that have no remaining reuse.
+   *
+   * Only drop when we can *prove* the key is done:
+   * - remaining uses exhausted (or never tracked), AND
+   * - onset list exists and last onset is older than retainPastSec.
+   *
+   * Critical: keys with no onset metadata must NOT be dropped here.
+   * Cache keys at mix time can differ from buildSimpleNoteCounts keys
+   * (channel-state / bakeMix snapshot). Dropping "unknown" keys on every
+   * playhead pass was re-baking them (hit rate stuck ~78% regardless of
+   * margin; playheadRelease=false restored 86%).
+   * Untracked keys are left to maxSize eviction / end-of-play clear.
+   */
+  releasePastSimpleNoteCaches(songT) {
+    if (this.loop) return;
+    if (!this.simpleNoteCachePlayheadRelease) return;
+    const cache = this.simpleNoteBufferCache;
+    if (cache.size === 0) return;
+    let retainPastSec = this.simpleNoteCacheRetainPastSec;
+    if (retainPastSec < 0) {
+      retainPastSec = Math.max(this.tileDuration, 1) + Math.max(this.maxReleaseTailSec, 0);
+    }
+    const retainThreshold = songT - retainPastSec;
+    const onsetsMap = this.simpleNoteOnsets;
+    const releaseOnsets = this.simpleNoteReleaseOnsets;
+    const cacheToRelease = this.simpleNoteCacheReleaseKey;
+    const remaining = this.simpleNoteRemaining;
+    const toDrop = [];
+    for (const key of cache.keys()) {
+      const rKey = cacheToRelease.get(key);
+      let onsets = rKey ? releaseOnsets.get(rKey) : void 0;
+      if (!onsets || onsets.length === 0) {
+        onsets = onsetsMap.get(key);
+      }
+      if (!onsets || onsets.length === 0) continue;
+      if (this.nextSimpleOnsetAtOrAfter(onsets, retainThreshold) !== null) {
+        continue;
+      }
+      toDrop.push(key);
+    }
+    for (let i = 0; i < toDrop.length; i++) {
+      const key = toDrop[i];
+      const buf = cache.get(key);
+      if (buf instanceof Promise) continue;
+      if (buf instanceof AudioBuffer) this.mixPcmCache.delete(buf);
+      cache.delete(key);
+      remaining.delete(key);
+      cacheToRelease.delete(key);
+    }
   }
   noteCacheRecordComplexUnique() {
     this.complexNoteCacheUniqueBakes++;
@@ -19131,12 +19832,14 @@ var Player = class _Player extends BasePlayer {
     const cached = this.complexNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordComplexHit();
+      this.releaseComplexNoteIfExhausted(key);
       return cached;
     }
     if (cached instanceof Promise) {
       try {
         const buf = await cached;
         this.noteCacheRecordComplexHit();
+        this.releaseComplexNoteIfExhausted(key);
         return buf;
       } catch {
         return null;
@@ -19228,15 +19931,18 @@ var Player = class _Player extends BasePlayer {
   async lookupSimpleNoteBuffer(n, bakeChannelMix) {
     if (!this.simpleNoteCache) return null;
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+    this.bindSimpleNoteReleaseKey(key, n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordSimpleHit();
+      this.releaseSimpleNoteIfExhausted(key);
       return cached;
     }
     if (cached instanceof Promise) {
       try {
         const buf = await cached;
         this.noteCacheRecordSimpleHit();
+        this.releaseSimpleNoteIfExhausted(key);
         return buf;
       } catch {
         return null;
@@ -19543,6 +20249,7 @@ var Player = class _Player extends BasePlayer {
   // in-interval automation, so the event replay loop is a no-op).
   async getSimpleNoteBuffer(n, bakeChannelMix = true, fromOuterSlot = false) {
     const key = this.makeSimpleNoteKey(n, bakeChannelMix);
+    this.bindSimpleNoteReleaseKey(key, n, bakeChannelMix);
     const cached = this.simpleNoteBufferCache.get(key);
     if (cached instanceof AudioBuffer) {
       this.noteCacheRecordSimpleHit();
@@ -19566,6 +20273,7 @@ var Player = class _Player extends BasePlayer {
       return await renderPromise;
     } catch (err) {
       this.simpleNoteBufferCache.delete(key);
+      this.simpleNoteCacheReleaseKey.delete(key);
       throw err;
     }
   }
@@ -19583,9 +20291,15 @@ var Player = class _Player extends BasePlayer {
   async bakeSimpleNotesBatch(entries, bakeChannelMix = true) {
     if (entries.length === 0) return [];
     if (entries.length === 1) {
-      return [
-        await this.getSimpleNoteBuffer(entries[0], bakeChannelMix, false)
-      ];
+      const tOne0 = performance.now();
+      const one = await this.getSimpleNoteBuffer(
+        entries[0],
+        bakeChannelMix,
+        false
+      );
+      this.simpleMissPathSerialNotes++;
+      this.simpleMissPathSerialMs += performance.now() - tOne0;
+      return [one];
     }
     const out = new Array(entries.length).fill(null);
     const misses = [];
@@ -19595,6 +20309,7 @@ var Player = class _Player extends BasePlayer {
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       const key = this.makeSimpleNoteKey(entry, bakeChannelMix);
+      this.bindSimpleNoteReleaseKey(key, entry, bakeChannelMix);
       const cached = this.simpleNoteBufferCache.get(key);
       if (cached instanceof AudioBuffer) {
         this.noteCacheRecordSimpleHit();
@@ -19639,6 +20354,7 @@ var Player = class _Player extends BasePlayer {
       return true;
     });
     if (!canBatch) {
+      const tSerial0 = performance.now();
       for (const m of misses) {
         const buf = await this.getSimpleNoteBuffer(
           m.entry,
@@ -19651,6 +20367,8 @@ var Player = class _Player extends BasePlayer {
           for (let a = 0; a < aliases.length; a++) out[aliases[a]] = buf;
         }
       }
+      this.simpleMissPathSerialNotes += misses.length;
+      this.simpleMissPathSerialMs += performance.now() - tSerial0;
       return out;
     }
     const sampleRate2 = this.audioContext.sampleRate;
@@ -19810,6 +20528,7 @@ var Player = class _Player extends BasePlayer {
       if (owned.length === 0) continue;
       try {
         let monos;
+        const tChunk0 = performance.now();
         if (useWorker) {
           const pool = this.getBakeWorkerPool();
           const batch = await pool.renderSamplesBatch(
@@ -19817,8 +20536,13 @@ var Player = class _Player extends BasePlayer {
             this.useWorkerTransferable
           );
           monos = batch.results.map((r) => r.channels[0]);
+          this.simpleMissPathWorkerBatchJobs++;
+          this.simpleMissPathWorkerBatchNotes += owned.length;
+          this.simpleMissPathWorkerBatchMs += performance.now() - tChunk0;
         } else {
           monos = renderChunkOnMain(owned);
+          this.simpleMissPathSerialNotes += owned.length;
+          this.simpleMissPathSerialMs += performance.now() - tChunk0;
         }
         for (let k = 0; k < owned.length; k++) {
           finishJob(owned[k], expandToBuffer(owned[k], monos[k]));
@@ -19827,6 +20551,8 @@ var Player = class _Player extends BasePlayer {
         for (const job of owned) {
           failJob(job, err);
         }
+        const tFb0 = performance.now();
+        let fbN = 0;
         for (const job of owned) {
           if (out[job.miss.entryIdx] !== null) continue;
           try {
@@ -19836,8 +20562,13 @@ var Player = class _Player extends BasePlayer {
               false
             );
             assignOut(job.miss.key, job.miss.entryIdx, buf);
+            fbN++;
           } catch {
           }
+        }
+        if (fbN > 0) {
+          this.simpleMissPathSerialNotes += fbN;
+          this.simpleMissPathSerialMs += performance.now() - tFb0;
         }
       }
       await Promise.resolve();
@@ -20852,6 +21583,22 @@ var Player = class _Player extends BasePlayer {
     }
     return super.soundOffNote(note, scheduleTime);
   }
+  /**
+   * After channel/residual stops, force-silence any worklet/WASM voices that
+   * were started by an in-flight sample upload after stopChannelNotes ran
+   * (upload completed with workletVoiceId allocated only after the stop
+   * pass). Without this, hybrid/worklet voices can keep sounding past
+   * song-end / stop.
+   */
+  async stopNotes(scheduleTime) {
+    const result = await super.stopNotes(scheduleTime);
+    const engine = this.workletEngine;
+    if (engine) {
+      engine.allSoundOff();
+      this.workletPendingGroups.clear();
+    }
+    return result;
+  }
   // ---------------------------------------------------------------------------
   // Worklet mode (cacheMode === "worklet")
   // ---------------------------------------------------------------------------
@@ -21151,6 +21898,14 @@ var Player = class _Player extends BasePlayer {
         }
         return;
       }
+    }
+    if (note.ending && (this.isStopping || this.isPausing || this.isSeeking || !this.isPlaying)) {
+      if (this.debug) {
+        engine.log(
+          `ABORT noteOn after stop race sampleId=${sampleId}`
+        );
+      }
+      return;
     }
     const now = this.audioContext.currentTime;
     if (this.debug && note.startTime < now - 0.01) {
