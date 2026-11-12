@@ -1,17 +1,22 @@
-/** Embed synth_core.wasm (+ simd) as base64 into src/. */
+/** Embed synth_core.wasm variants as base64 into src/. */
 
 async function embed(
   wasmUrl: URL,
   outUrl: URL,
   exportName: string,
   label: string,
+  required: boolean,
 ): Promise<void> {
   let bytes: Uint8Array;
   try {
     bytes = await Deno.readFile(wasmUrl);
   } catch {
-    console.error(`Missing ${wasmUrl.pathname} — run: bash wasm/build.sh`);
-    Deno.exit(1);
+    if (required) {
+      console.error(`Missing ${wasmUrl.pathname} — run: bash wasm/build.sh`);
+      Deno.exit(1);
+    }
+    console.warn(`skip ${label} embed (no ${wasmUrl.pathname})`);
+    return;
   }
   let binary = "";
   const chunk = 0x8000;
@@ -33,17 +38,19 @@ await embed(
   new URL("../../src/synth_core_wasm_b64.ts", import.meta.url),
   "SYNTH_CORE_WASM_BASE64",
   "scalar",
+  true,
 );
-
-const simdWasm = new URL("../dist/synth_core_simd.wasm", import.meta.url);
-try {
-  await Deno.stat(simdWasm);
-  await embed(
-    simdWasm,
-    new URL("../../src/synth_core_wasm_simd_b64.ts", import.meta.url),
-    "SYNTH_CORE_WASM_BASE64",
-    "simd128",
-  );
-} catch {
-  console.warn("skip simd embed (no dist/synth_core_simd.wasm)");
-}
+await embed(
+  new URL("../dist/synth_core_simd.wasm", import.meta.url),
+  new URL("../../src/synth_core_wasm_simd_b64.ts", import.meta.url),
+  "SYNTH_CORE_WASM_BASE64",
+  "simd128",
+  false,
+);
+await embed(
+  new URL("../dist/synth_core_threads.wasm", import.meta.url),
+  new URL("../../src/synth_core_wasm_threads_b64.ts", import.meta.url),
+  "SYNTH_CORE_WASM_BASE64",
+  "threads",
+  false,
+);

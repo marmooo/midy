@@ -1,16 +1,18 @@
 /**
- * midy build — pure JS, WASM, and WASM-SIMD worklet variants.
+ * midy build — pure JS, WASM, WASM-SIMD, and WASM-threads worklet variants.
  *
  * Usage:
  *   deno run -RWE --allow-run build.ts --target=js
  *   deno run -RWE --allow-run build.ts --target=wasm
  *   deno run -RWE --allow-run build.ts --target=wasm-simd
+ *   deno run -RWE --allow-run build.ts --target=wasm-threads
  *   deno run -RWE --allow-run build.ts --target=all
  *
  * Outputs:
  *   dist/midy.js / midy.min.js
  *   dist/midy.wasm.js
  *   dist/midy.wasm-simd.js
+ *   dist/midy.wasm-threads.js
  *   (+ GM1 / GM2 / GMLite variants)
  */
 import * as esbuild from "esbuild";
@@ -19,19 +21,24 @@ import { denoPlugins } from "@luca/esbuild-deno-loader";
 const root = Deno.cwd();
 const backendWasm = `${root}/src/worklet-backend-wasm.ts`;
 const backendWasmSimd = `${root}/src/worklet-backend-wasm-simd.ts`;
+const backendWasmThreads = `${root}/src/worklet-backend-wasm-threads.ts`;
 
 const customDenoPlugins = denoPlugins({
   configPath: await Deno.realPath("./deno.json"),
 }) as esbuild.Plugin[];
 
-type WasmKind = "wasm" | "wasm-simd" | false;
+type WasmKind = "wasm" | "wasm-simd" | "wasm-threads" | false;
 
 function backendAliasPlugin(kind: WasmKind): esbuild.Plugin {
   return {
     name: "midy-worklet-backend-alias",
     setup(build) {
       if (!kind) return;
-      const target = kind === "wasm-simd" ? backendWasmSimd : backendWasm;
+      const target = kind === "wasm-threads"
+        ? backendWasmThreads
+        : kind === "wasm-simd"
+        ? backendWasmSimd
+        : backendWasm;
       build.onResolve({ filter: /worklet-backend\.ts$/ }, (args) => {
         const normalized = args.path.replace(/\\/g, "/");
         if (
@@ -47,20 +54,29 @@ function backendAliasPlugin(kind: WasmKind): esbuild.Plugin {
   };
 }
 
-type Target = "js" | "wasm" | "wasm-simd" | "all";
+type Target = "js" | "wasm" | "wasm-simd" | "wasm-threads" | "all";
 
 function parseTarget(args: string[]): Target {
   for (const a of args) {
     if (a === "--target=js" || a === "--js") return "js";
+    // Check wasm-threads / wasm-simd before wasm (prefix match order).
+    if (a === "--target=wasm-threads" || a === "--wasm-threads") {
+      return "wasm-threads";
+    }
     if (a === "--target=wasm-simd" || a === "--wasm-simd") return "wasm-simd";
     if (a === "--target=wasm" || a === "--wasm") return "wasm";
     if (a === "--target=all" || a === "--all") return "all";
     if (a.startsWith("--target=")) {
       const v = a.slice("--target=".length);
-      if (v === "js" || v === "wasm" || v === "wasm-simd" || v === "all") {
+      if (
+        v === "js" || v === "wasm" || v === "wasm-simd" ||
+        v === "wasm-threads" || v === "all"
+      ) {
         return v;
       }
-      throw new Error(`Unknown --target=${v} (use js|wasm|wasm-simd|all)`);
+      throw new Error(
+        `Unknown --target=${v} (use js|wasm|wasm-simd|wasm-threads|all)`,
+      );
     }
   }
   return "all";
@@ -109,7 +125,7 @@ async function buildJs() {
 }
 
 async function buildWasmVariant(
-  kind: "wasm" | "wasm-simd",
+  kind: "wasm" | "wasm-simd" | "wasm-threads",
   suffix: string,
   b64File: string,
 ) {
@@ -141,6 +157,13 @@ async function main() {
       "wasm-simd",
       "wasm-simd",
       "synth_core_wasm_simd_b64.ts",
+    );
+  }
+  if (target === "wasm-threads" || target === "all") {
+    await buildWasmVariant(
+      "wasm-threads",
+      "wasm-threads",
+      "synth_core_wasm_threads_b64.ts",
     );
   }
   esbuild.stop();

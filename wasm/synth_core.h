@@ -71,6 +71,9 @@ void sc_set_master_gain(float g);
 void sc_set_frame0(float frame0);
 void sc_set_sample_rate(float sr);
 int32_t sc_process(int32_t frames);
+/** Add voices [v0,v1) into out_l/out_r (does not clear). */
+int32_t sc_process_range(int32_t frames, int32_t v0, int32_t v1,
+                        float *out_l, float *out_r);
 float *sc_output_l(void);
 float *sc_output_r(void);
 int32_t sc_active_voices(void);

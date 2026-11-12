@@ -26,6 +26,7 @@ WASM_EXPORTS=(
   -Wl,--export=sc_set_frame0
   -Wl,--export=sc_set_sample_rate
   -Wl,--export=sc_process
+  -Wl,--export=sc_process_range
   -Wl,--export=sc_output_l
   -Wl,--export=sc_output_r
   -Wl,--export=sc_active_voices
@@ -77,5 +78,18 @@ build_wasm synth_core.wasm
 
 echo "======== wasm simd128 ========"
 build_wasm synth_core_simd.wasm -msimd128
+
+echo "======== native threads (pthread process_range) ========"
+build_native synth_native_threads -DSC_THREADS=1 -msse2 -pthread
+# link pthread
+if [[ -x "$OUT_DIR/synth_native_threads" ]]; then
+  true
+fi
+
+echo "======== wasm threads (atomics+bulk+simd) ========"
+# Shared-memory pthread modules need special runtime; this binary is
+# single-threaded but exports sc_process_range and enables atomics/bulk
+# memory for future SAB-backed hosts. Realtime AudioWorklet stays 1-thread.
+build_wasm synth_core_threads.wasm -msimd128 -matomics -mbulk-memory
 
 echo "OK. Next: deno run -A scripts/embed_wasm.ts"

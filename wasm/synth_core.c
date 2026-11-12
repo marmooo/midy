@@ -793,7 +793,13 @@ static float process_mod_env(Voice *v, float dt) {
   return v->mod_level;
 }
 
-int32_t sc_process(int32_t frames) {
+/* Process voices in [v0, v1) into out_l/out_r (ADD, does not clear).
+ * Ranges must be disjoint for parallel use. Not thread-safe on g_ended_* /
+ * g_active if overlapping; each voice index is touched by at most one range.
+ * For parallel: use private out buffers per thread, then sum; merge ended
+ * ids on the main thread after join (see SC_NATIVE_MAIN bench).
+ */
+int32_t sc_process_range(int32_t frames, int32_t v0, int32_t v1, float *out_l, float *out_r) {
   int32_t i, vi;
   float inv_sr = g_inv_sr;
   float mg = g_master;
@@ -802,16 +808,14 @@ int32_t sc_process(int32_t frames) {
   float block_dt = inv_sr * (float)SC_MOD_BLOCK;
   float frame0 = g_frame0;
 
-  g_ended_count = 0;
-  if (g_active > g_peak_active) g_peak_active = g_active;
-
   if (frames <= 0) return 0;
   if (frames > SC_QUANTUM) frames = SC_QUANTUM;
+  if (!out_l || !out_r) return 0;
+  if (v0 < 0) v0 = 0;
+  if (v1 > SC_MAX_VOICES) v1 = SC_MAX_VOICES;
+  if (v0 >= v1) return frames;
 
-  sc_zero_f32(g_out_l, frames);
-  sc_zero_f32(g_out_r, frames);
-
-  for (vi = 0; vi < SC_MAX_VOICES; vi++) {
+for (vi = v0; vi < v1; vi++) {
     Voice *v = &g_voices[vi];
     Sample *s;
     const float *pcm_l;
@@ -1020,8 +1024,8 @@ int32_t sc_process(int32_t frames) {
       ampR = env * vol_lfo * gr;
       if (!sc_isfinite(ampL)) ampL = 0;
       if (!sc_isfinite(ampR)) ampR = 0;
-      g_out_l[i] += sL * ampL;
-      g_out_r[i] += sR * ampR;
+      out_l[i] += sL * ampL;
+      out_r[i] += sR * ampR;
     }
 
     /* keep phase bounded for looped voices */
@@ -1039,7 +1043,18 @@ int32_t sc_process(int32_t frames) {
     }
   }
 
-  /* final NaN sanitize on mix bus */
+  return frames;
+}
+
+int32_t sc_process(int32_t frames) {
+  int32_t i;
+  g_ended_count = 0;
+  if (g_active > g_peak_active) g_peak_active = g_active;
+  if (frames <= 0) return 0;
+  if (frames > SC_QUANTUM) frames = SC_QUANTUM;
+  sc_zero_f32(g_out_l, frames);
+  sc_zero_f32(g_out_r, frames);
+  sc_process_range(frames, 0, SC_MAX_VOICES, g_out_l, g_out_r);
   for (i = 0; i < frames; i++) {
     if (!sc_isfinite(g_out_l[i])) g_out_l[i] = 0;
     if (!sc_isfinite(g_out_r[i])) g_out_r[i] = 0;
@@ -1136,6 +1151,27 @@ void sc_mix_add(
 
 
 
+
+#if defined(SC_THREADS) && SC_THREADS
+#include <pthread.h>
+typedef struct {
+  int32_t v0, v1, frames, quantums;
+  float *ol, *or_;
+} ScThreadJob;
+
+static void *sc_thread_process_job(void *arg) {
+  ScThreadJob *j = (ScThreadJob *)arg;
+  int32_t q, ii;
+  for (q = 0; q < j->quantums; q++) {
+    for (ii = 0; ii < j->frames; ii++) {
+      j->ol[ii] = 0.0f;
+      j->or_[ii] = 0.0f;
+    }
+    sc_process_range(j->frames, j->v0, j->v1, j->ol, j->or_);
+  }
+  return 0;
+}
+#endif
 #ifdef SC_NATIVE_MAIN
 #include <stdio.h>
 #include <time.h>
@@ -1185,6 +1221,54 @@ int main(void) {
            MIX_N, MIX_ITERS, us,
            (MIX_N * 2.0) / (us > 0 ? us : 1.0), SC_HAS_SIMD);
   }
+
+#if defined(SC_THREADS) && SC_THREADS
+  {
+    int nt_list[] = {1, 2, 4};
+    int nti, nthreads;
+    voices = 256;
+    printf("threads bench (process_range partitions, quantums=1000, voices=%d)\n", voices);
+    for (nti = 0; nti < 3; nti++) {
+      nthreads = nt_list[nti];
+      {
+        pthread_t th[4];
+        ScThreadJob jobs[4];
+        float outs_l[4][SC_QUANTUM];
+        float outs_r[4][SC_QUANTUM];
+        int t, vchunk;
+        struct timespec t0, t1;
+        double us_per_q;
+        sc_all_sound_off();
+        started = sc_bench_start_n(sid, voices, 1.0f, 0.05f);
+        for (i = 0; i < 50; i++) sc_process(SC_QUANTUM);
+        /* Partition only the active voice slot range [0, started). */
+        vchunk = (started + nthreads - 1) / nthreads;
+        if (vchunk < 1) vchunk = 1;
+        for (t = 0; t < nthreads; t++) {
+          jobs[t].v0 = t * vchunk;
+          jobs[t].v1 = (t + 1) * vchunk;
+          if (jobs[t].v1 > started) jobs[t].v1 = started;
+          jobs[t].frames = SC_QUANTUM;
+          jobs[t].quantums = 1000;
+          jobs[t].ol = outs_l[t];
+          jobs[t].or_ = outs_r[t];
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (nthreads == 1) {
+          sc_thread_process_job(&jobs[0]);
+        } else {
+          for (t = 0; t < nthreads; t++)
+            pthread_create(&th[t], 0, sc_thread_process_job, &jobs[t]);
+          for (t = 0; t < nthreads; t++) pthread_join(th[t], 0);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        us_per_q = ((t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3) / 1000.0;
+        printf("  threads=%d us/quantum=%.2f wall (started=%d vchunk=%d)\n",
+               nthreads, us_per_q, started, vchunk);
+      }
+    }
+  }
+#endif
   return 0;
 }
 #endif
