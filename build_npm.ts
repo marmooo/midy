@@ -17,7 +17,7 @@ await build({
     name: "@marmooo/midy",
     version: "0.7.3",
     description:
-      "A MIDI player/synthesizer written in TypeScript that supports GM-Lite/GM1 and SF2/SF3.",
+      "A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3. TypeScript API with C/Wasm cores.",
     license: "Apache-2.0",
     repository: {
       type: "git",
