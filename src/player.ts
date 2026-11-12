@@ -12773,44 +12773,106 @@ export class Player<
    * reserve is layer count from noteOnChannel — for group-based counting,
    * clamp to 1 so a multi-zone noteOn does not over-steal before it joins.
    */
+  /**
+   * segment/chunk leftovers play on WorkletEngine. Continuous-sustain SMFs
+   * previously either (a) got chopped by maxPedalVoices=32, or (b) with a
+   * full unlimited main-thread policy, piled hundreds of worklet voices
+   * until the audio graph stalled. Policy:
+   * - Always enforce maxVoices (or workletVoiceLimit numeric/match).
+   * - Raise effective maxPedalVoices to maxVoices so pedal residuals can
+   *   fill the polyphony budget without a separate tighter pedal knife.
+   * Pedal steals use graceful release (see stealOldestVoice).
+   */
+  protected isWorkletHybridPath(): boolean {
+    return isTiledCacheMode(this.cacheMode);
+  }
+
+  protected resolveHybridMainMaxVoices(): number {
+    // Prefer explicit workletVoiceLimit when set to a number or "match".
+    const lim = this.workletVoiceLimit;
+    if (lim === "match") {
+      const m = this.maxVoices | 0;
+      return m <= 0 ? 64 : m;
+    }
+    if (typeof lim === "number" && Number.isFinite(lim)) {
+      const n = lim | 0;
+      return n <= 0 ? 64 : n;
+    }
+    // "unlimited": still cap hybrid on main to prevent worklet overload.
+    // Processor hard ceiling is 1024; main uses maxVoices (default 64).
+    const m = this.maxVoices | 0;
+    return m <= 0 ? 64 : m;
+  }
+
+  protected resolveHybridMainMaxPedalVoices(): number {
+    // Allow pedal residuals up to the same ceiling as total voices so
+    // continuous sustain is not double-limited by maxPedalVoices=32.
+    return this.resolveHybridMainMaxVoices();
+  }
+
   protected override enforceMaxVoices(
     scheduleTime: number,
     reserve = 1,
   ): void {
-    if (this.cacheMode !== "worklet") {
-      super.enforceMaxVoices(scheduleTime, reserve);
+    if (this.cacheMode === "worklet") {
+      const effective = this.resolveWorkletMainMaxVoices();
+      if (this.workletEngine) {
+        this.syncWorkletVoiceLimit(this.workletEngine);
+      }
+      if (effective <= 0) return;
+      const prev = this.maxVoices;
+      this.maxVoices = effective;
+      const groupReserve = Math.min(1, Math.max(0, reserve | 0));
+      try {
+        super.enforceMaxVoices(scheduleTime, groupReserve);
+      } finally {
+        this.maxVoices = prev;
+      }
       return;
     }
-    const effective = this.resolveWorkletMainMaxVoices();
-    if (this.workletEngine) {
-      this.syncWorkletVoiceLimit(this.workletEngine);
+    if (this.isWorkletHybridPath()) {
+      const effective = this.resolveHybridMainMaxVoices();
+      if (this.workletEngine) {
+        this.syncWorkletVoiceLimit(this.workletEngine);
+      }
+      const prev = this.maxVoices;
+      this.maxVoices = effective;
+      const groupReserve = Math.min(1, Math.max(0, reserve | 0));
+      try {
+        super.enforceMaxVoices(scheduleTime, groupReserve);
+      } finally {
+        this.maxVoices = prev;
+      }
+      return;
     }
-    if (effective <= 0) return;
-    const prev = this.maxVoices;
-    this.maxVoices = effective;
-    // One MIDI noteOn = one group, regardless of SF2 layer count.
-    const groupReserve = Math.min(1, Math.max(0, reserve | 0));
-    try {
-      super.enforceMaxVoices(scheduleTime, groupReserve);
-    } finally {
-      this.maxVoices = prev;
-    }
+    super.enforceMaxVoices(scheduleTime, reserve);
   }
 
   protected override enforceMaxPedalVoices(scheduleTime: number): void {
-    if (this.cacheMode !== "worklet") {
-      super.enforceMaxPedalVoices(scheduleTime);
+    if (this.cacheMode === "worklet") {
+      const effective = this.resolveWorkletMainMaxPedalVoices();
+      if (effective <= 0) return;
+      const prev = this.maxPedalVoices;
+      this.maxPedalVoices = effective;
+      try {
+        super.enforceMaxPedalVoices(scheduleTime);
+      } finally {
+        this.maxPedalVoices = prev;
+      }
       return;
     }
-    const effective = this.resolveWorkletMainMaxPedalVoices();
-    if (effective <= 0) return;
-    const prev = this.maxPedalVoices;
-    this.maxPedalVoices = effective;
-    try {
-      super.enforceMaxPedalVoices(scheduleTime);
-    } finally {
-      this.maxPedalVoices = prev;
+    if (this.isWorkletHybridPath()) {
+      const effective = this.resolveHybridMainMaxPedalVoices();
+      const prev = this.maxPedalVoices;
+      this.maxPedalVoices = effective;
+      try {
+        super.enforceMaxPedalVoices(scheduleTime);
+      } finally {
+        this.maxPedalVoices = prev;
+      }
+      return;
     }
+    super.enforceMaxPedalVoices(scheduleTime);
   }
 
   /**
@@ -13017,9 +13079,18 @@ export class Player<
       }
     }
 
-    // Abort if stop/pause/seek won the race during sample upload. Do not
-    // confuse with lookAhead noteOff (ending=true while still isPlaying and
-    // not stopping) — that path still needs noteOn + ready-chained release.
+    // Abort if stop/pause/seek or a hard steal (killed) won the race during
+    // sample upload. lookAhead noteOff sets ending while still isPlaying
+    // and is not killed — that path still needs noteOn + ready-chained
+    // releaseNote.
+    if (note.killed) {
+      if (this.debug) {
+        engine.log(
+          `ABORT noteOn after kill race sampleId=${sampleId}`,
+        );
+      }
+      return;
+    }
     if (
       note.ending &&
       (this.isStopping || this.isPausing || this.isSeeking || !this.isPlaying)

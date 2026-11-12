@@ -457,6 +457,12 @@ export class Note {
   noteGroupId: number = 0;
   /** Voice id inside WorkletEngine when cacheMode === "worklet". */
   workletVoiceId: number | null = null;
+  /**
+   * Set by hard steal / force-stop paths. Distinct from lookAhead noteOff
+   * (ending only): a killed note must not start a worklet voice after a
+   * late sample upload.
+   */
+  killed: boolean = false;
 
   constructor(noteNumber: number, velocity: number, startTime: number) {
     this.noteNumber = noteNumber;
@@ -3197,11 +3203,9 @@ export class BasePlayer<
     return n;
   }
 
-  // Remove a note from activeNotes / sustainNotes on every channel that
-  // might hold it, then force-stop the audio graph.
-  protected forceStopVoice(note: TNote, scheduleTime: number): void {
-    note.ending = true;
-    note.heldByPedal = false;
+  // Drop note from activeNotes / sustainNotes on every channel that might
+  // hold it. Does not touch the audio graph.
+  protected unlinkVoiceFromChannels(note: TNote): void {
     const channels = this.channels;
     for (let ch = 0; ch < channels.length; ch++) {
       const channel = channels[ch];
@@ -3210,15 +3214,30 @@ export class BasePlayer<
       if (stack) {
         const idx = stack.indexOf(note);
         if (idx >= 0) stack.splice(idx, 1);
+        if (stack.length === 0) delete channel.activeNotes[note.noteNumber];
       }
       const sIdx = channel.sustainNotes.indexOf(note);
       if (sIdx >= 0) channel.sustainNotes.splice(sIdx, 1);
     }
+  }
+
+  // Hard stop (polyphony emergency / all-sound-off style).
+  protected forceStopVoice(note: TNote, scheduleTime: number): void {
+    note.ending = true;
+    note.heldByPedal = false;
+    note.killed = true;
+    this.unlinkVoiceFromChannels(note);
     void this.soundOffNote(note, scheduleTime);
   }
 
-  // Force-stop the oldest live voice (FIFO via Set insertion order).
-  // pedalOnly: only steal notes with heldByPedal (sustain residual).
+  /**
+   * Steal the oldest live voice (FIFO via Set insertion order).
+   * pedalOnly: only notes with heldByPedal (sustain residual).
+   *
+   * Pedal residuals use a normal release envelope instead of an instant
+   * mute — continuous-sustain SMFs under maxVoices pressure otherwise
+   * sound like random note-offs. Still-held keys keep hard stop.
+   */
   protected stealOldestVoice(
     scheduleTime: number,
     pedalOnly = false,
@@ -3226,6 +3245,28 @@ export class BasePlayer<
     for (const note of this.soundingNotes) {
       if (note.ending || note.isTiledGhost) continue;
       if (pedalOnly && !note.heldByPedal) continue;
+      if (note.heldByPedal) {
+        note.ending = true;
+        note.heldByPedal = false;
+        this.unlinkVoiceFromChannels(note);
+        // Graceful release; keep in soundingNotes until release ends.
+        void Promise.resolve(note.ready).then(() => {
+          if (
+            !note.voice && note.workletVoiceId == null && !note.bufferSource &&
+            !note.volumeNode
+          ) {
+            this.soundingNotes.delete(note);
+            return;
+          }
+          return this.releaseNote(
+            // Channel is only used for ADS paths; worklet release ignores it.
+            this.channels[0]!,
+            note,
+            scheduleTime,
+          );
+        });
+        return true;
+      }
       this.forceStopVoice(note, scheduleTime);
       return true;
     }
@@ -3580,15 +3621,33 @@ export class BasePlayer<
         }
       }
       if (0.5 <= channel.state.sustainPedal) {
-        // Defer release to pedal-up, but mark as pedal residual so
-        // maxPedalVoices can drop the oldest when the sustain pile grows.
-        const deferred = this.findNoteForOff(channel, noteNumber);
-        if (deferred && !deferred.heldByPedal) {
-          deferred.heldByPedal = true;
-          if (channel.sustainNotes.indexOf(deferred) < 0) {
-            channel.sustainNotes.push(deferred);
+        // Defer release to pedal-up. Mark every non-ending layer of the
+        // oldest noteGroupId (multi-zone SF2 stacks share one MIDI noteOff).
+        const stack = channel.activeNotes[noteNumber];
+        if (stack && stack.length > 0) {
+          let targetGroupId: number | undefined;
+          for (let i = 0; i < stack.length; i++) {
+            const n = stack[i];
+            if (n && !n.ending) {
+              targetGroupId = n.noteGroupId;
+              break;
+            }
           }
-          this.enforceMaxPedalVoices(endTime);
+          if (targetGroupId !== undefined) {
+            let marked = false;
+            for (let i = 0; i < stack.length; i++) {
+              const n = stack[i];
+              if (!n || n.ending || n.noteGroupId !== targetGroupId) continue;
+              if (!n.heldByPedal) {
+                n.heldByPedal = true;
+                marked = true;
+              }
+              if (channel.sustainNotes.indexOf(n) < 0) {
+                channel.sustainNotes.push(n);
+              }
+            }
+            if (marked) this.enforceMaxPedalVoices(endTime);
+          }
         }
         return;
       }
