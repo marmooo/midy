@@ -13,6 +13,137 @@ void *memcpy(void *d, const void *s, unsigned long n) {
   return d;
 }
 
+
+/* ---- SIMD (wasm simd128 / native SSE); SC_FORCE_SCALAR=1 disables ---- */
+#if defined(SC_FORCE_SCALAR) && SC_FORCE_SCALAR
+#define SC_HAS_SIMD 0
+#elif defined(__wasm_simd128__)
+#include <wasm_simd128.h>
+#define SC_HAS_SIMD 1
+#define SC_SIMD_WASM 1
+#elif defined(__SSE__)
+#include <xmmintrin.h>
+#define SC_HAS_SIMD 1
+#define SC_SIMD_SSE 1
+#else
+#define SC_HAS_SIMD 0
+#endif
+
+static void sc_zero_f32(float *dst, int32_t n) {
+  int32_t i = 0;
+#if SC_HAS_SIMD
+# if defined(SC_SIMD_WASM)
+  v128_t z = wasm_f32x4_splat(0.0f);
+  for (; i + 4 <= n; i += 4) wasm_v128_store(dst + i, z);
+# elif defined(SC_SIMD_SSE)
+  __m128 z = _mm_setzero_ps();
+  for (; i + 4 <= n; i += 4) _mm_storeu_ps(dst + i, z);
+# endif
+#endif
+  for (; i < n; i++) dst[i] = 0.0f;
+}
+
+static void sc_axpy_f32(float *dest, const float *src, float gain, int32_t n) {
+  int32_t i = 0;
+  if (gain == 1.0f) {
+#if SC_HAS_SIMD
+# if defined(SC_SIMD_WASM)
+    for (; i + 4 <= n; i += 4) {
+      v128_t d = wasm_v128_load(dest + i);
+      v128_t s = wasm_v128_load(src + i);
+      wasm_v128_store(dest + i, wasm_f32x4_add(d, s));
+    }
+# elif defined(SC_SIMD_SSE)
+    for (; i + 4 <= n; i += 4) {
+      _mm_storeu_ps(dest + i, _mm_add_ps(_mm_loadu_ps(dest + i), _mm_loadu_ps(src + i)));
+    }
+# endif
+#endif
+    for (; i < n; i++) dest[i] += src[i];
+    return;
+  }
+#if SC_HAS_SIMD
+# if defined(SC_SIMD_WASM)
+  {
+    v128_t g = wasm_f32x4_splat(gain);
+    for (; i + 4 <= n; i += 4) {
+      v128_t d = wasm_v128_load(dest + i);
+      v128_t s = wasm_v128_load(src + i);
+      wasm_v128_store(dest + i, wasm_f32x4_add(d, wasm_f32x4_mul(s, g)));
+    }
+  }
+# elif defined(SC_SIMD_SSE)
+  {
+    __m128 g = _mm_set1_ps(gain);
+    for (; i + 4 <= n; i += 4) {
+      _mm_storeu_ps(dest + i,
+        _mm_add_ps(_mm_loadu_ps(dest + i), _mm_mul_ps(_mm_loadu_ps(src + i), g)));
+    }
+  }
+# endif
+#endif
+  for (; i < n; i++) dest[i] += src[i] * gain;
+}
+
+static void sc_axpy_stereo_f32(
+    float *dest_l, float *dest_r,
+    const float *src_l, const float *src_r,
+    float gain_l, float gain_r, int32_t n
+) {
+  int32_t i = 0;
+  if (gain_l == 1.0f && gain_r == 1.0f) {
+#if SC_HAS_SIMD
+# if defined(SC_SIMD_WASM)
+    for (; i + 4 <= n; i += 4) {
+      wasm_v128_store(dest_l + i, wasm_f32x4_add(wasm_v128_load(dest_l + i), wasm_v128_load(src_l + i)));
+      wasm_v128_store(dest_r + i, wasm_f32x4_add(wasm_v128_load(dest_r + i), wasm_v128_load(src_r + i)));
+    }
+# elif defined(SC_SIMD_SSE)
+    for (; i + 4 <= n; i += 4) {
+      _mm_storeu_ps(dest_l + i, _mm_add_ps(_mm_loadu_ps(dest_l + i), _mm_loadu_ps(src_l + i)));
+      _mm_storeu_ps(dest_r + i, _mm_add_ps(_mm_loadu_ps(dest_r + i), _mm_loadu_ps(src_r + i)));
+    }
+# endif
+#endif
+    for (; i < n; i++) { dest_l[i] += src_l[i]; dest_r[i] += src_r[i]; }
+    return;
+  }
+  if (gain_l == gain_r) {
+    sc_axpy_f32(dest_l, src_l, gain_l, n);
+    sc_axpy_f32(dest_r, src_r, gain_l, n);
+    return;
+  }
+#if SC_HAS_SIMD
+# if defined(SC_SIMD_WASM)
+  {
+    v128_t gl = wasm_f32x4_splat(gain_l);
+    v128_t gr = wasm_f32x4_splat(gain_r);
+    for (; i + 4 <= n; i += 4) {
+      wasm_v128_store(dest_l + i, wasm_f32x4_add(wasm_v128_load(dest_l + i),
+        wasm_f32x4_mul(wasm_v128_load(src_l + i), gl)));
+      wasm_v128_store(dest_r + i, wasm_f32x4_add(wasm_v128_load(dest_r + i),
+        wasm_f32x4_mul(wasm_v128_load(src_r + i), gr)));
+    }
+  }
+# elif defined(SC_SIMD_SSE)
+  {
+    __m128 gl = _mm_set1_ps(gain_l);
+    __m128 gr = _mm_set1_ps(gain_r);
+    for (; i + 4 <= n; i += 4) {
+      _mm_storeu_ps(dest_l + i, _mm_add_ps(_mm_loadu_ps(dest_l + i),
+        _mm_mul_ps(_mm_loadu_ps(src_l + i), gl)));
+      _mm_storeu_ps(dest_r + i, _mm_add_ps(_mm_loadu_ps(dest_r + i),
+        _mm_mul_ps(_mm_loadu_ps(src_r + i), gr)));
+    }
+  }
+# endif
+#endif
+  for (; i < n; i++) {
+    dest_l[i] += src_l[i] * gain_l;
+    dest_r[i] += src_r[i] * gain_r;
+  }
+}
+
 /* ---- math (no libm) ---- */
 #define SC_PI 3.14159265358979323846f
 #define SC_TWO_PI 6.28318530717958647692f
@@ -677,10 +808,8 @@ int32_t sc_process(int32_t frames) {
   if (frames <= 0) return 0;
   if (frames > SC_QUANTUM) frames = SC_QUANTUM;
 
-  for (i = 0; i < frames; i++) {
-    g_out_l[i] = 0.0f;
-    g_out_r[i] = 0.0f;
-  }
+  sc_zero_f32(g_out_l, frames);
+  sc_zero_f32(g_out_r, frames);
 
   for (vi = 0; vi < SC_MAX_VOICES; vi++) {
     Voice *v = &g_voices[vi];
@@ -927,12 +1056,9 @@ int32_t sc_peak_active(void) { return g_peak_active; }
  * ------------------------------------------------------------------------- */
 
 void sc_mix_clear(float *dest_l, float *dest_r, int32_t dest_len) {
-  int32_t i;
   if (!dest_l || dest_len <= 0) return;
-  for (i = 0; i < dest_len; i++) dest_l[i] = 0.0f;
-  if (dest_r) {
-    for (i = 0; i < dest_len; i++) dest_r[i] = 0.0f;
-  }
+  sc_zero_f32(dest_l, dest_len);
+  if (dest_r) sc_zero_f32(dest_r, dest_len);
 }
 
 void sc_mix_add(
@@ -947,7 +1073,7 @@ void sc_mix_add(
     float gain_r,
     const float *curve
 ) {
-  int32_t copy_len, i, di, n;
+  int32_t copy_len, i, di;
   float g_mono;
   const float *sr;
 
@@ -959,15 +1085,14 @@ void sc_mix_add(
   if (copy_len <= 0) return;
 
   if (!dest_r) {
-    /* mono dest: equal-power when L/R gains differ (center pan → 1.0) */
     if (gain_l != gain_r) {
       g_mono = sc_sqrtf(gain_l * gain_l + gain_r * gain_r);
     } else {
       g_mono = gain_l;
     }
-    i = 0;
-    di = start;
     if (curve) {
+      i = 0;
+      di = start;
       if (g_mono == 1.0f) {
         while (i < copy_len) {
           dest_l[di] += src_l[i] * curve[i];
@@ -979,41 +1104,16 @@ void sc_mix_add(
           i++; di++;
         }
       }
-    } else if (g_mono == 1.0f) {
-      n = copy_len - 3;
-      while (i < n) {
-        dest_l[di]     += src_l[i];
-        dest_l[di + 1] += src_l[i + 1];
-        dest_l[di + 2] += src_l[i + 2];
-        dest_l[di + 3] += src_l[i + 3];
-        i += 4; di += 4;
-      }
-      while (i < copy_len) {
-        dest_l[di] += src_l[i];
-        i++; di++;
-      }
     } else {
-      n = copy_len - 3;
-      while (i < n) {
-        dest_l[di]     += src_l[i] * g_mono;
-        dest_l[di + 1] += src_l[i + 1] * g_mono;
-        dest_l[di + 2] += src_l[i + 2] * g_mono;
-        dest_l[di + 3] += src_l[i + 3] * g_mono;
-        i += 4; di += 4;
-      }
-      while (i < copy_len) {
-        dest_l[di] += src_l[i] * g_mono;
-        i++; di++;
-      }
+      sc_axpy_f32(dest_l + start, src_l, g_mono, copy_len);
     }
     return;
   }
 
-  /* stereo dest */
   sr = src_r ? src_r : src_l;
-  i = 0;
-  di = start;
   if (curve) {
+    i = 0;
+    di = start;
     if (gain_l == 1.0f && gain_r == 1.0f) {
       while (i < copy_len) {
         float cg = curve[i];
@@ -1029,63 +1129,11 @@ void sc_mix_add(
         i++; di++;
       }
     }
-  } else if (gain_l == 1.0f && gain_r == 1.0f) {
-    n = copy_len - 3;
-    while (i < n) {
-      dest_l[di]     += src_l[i];
-      dest_r[di]     += sr[i];
-      dest_l[di + 1] += src_l[i + 1];
-      dest_r[di + 1] += sr[i + 1];
-      dest_l[di + 2] += src_l[i + 2];
-      dest_r[di + 2] += sr[i + 2];
-      dest_l[di + 3] += src_l[i + 3];
-      dest_r[di + 3] += sr[i + 3];
-      i += 4; di += 4;
-    }
-    while (i < copy_len) {
-      dest_l[di] += src_l[i];
-      dest_r[di] += sr[i];
-      i++; di++;
-    }
-  } else if (gain_l == gain_r) {
-    float g = gain_l;
-    n = copy_len - 3;
-    while (i < n) {
-      dest_l[di]     += src_l[i] * g;
-      dest_r[di]     += sr[i] * g;
-      dest_l[di + 1] += src_l[i + 1] * g;
-      dest_r[di + 1] += sr[i + 1] * g;
-      dest_l[di + 2] += src_l[i + 2] * g;
-      dest_r[di + 2] += sr[i + 2] * g;
-      dest_l[di + 3] += src_l[i + 3] * g;
-      dest_r[di + 3] += sr[i + 3] * g;
-      i += 4; di += 4;
-    }
-    while (i < copy_len) {
-      dest_l[di] += src_l[i] * g;
-      dest_r[di] += sr[i] * g;
-      i++; di++;
-    }
   } else {
-    n = copy_len - 3;
-    while (i < n) {
-      dest_l[di]     += src_l[i] * gain_l;
-      dest_r[di]     += sr[i] * gain_r;
-      dest_l[di + 1] += src_l[i + 1] * gain_l;
-      dest_r[di + 1] += sr[i + 1] * gain_r;
-      dest_l[di + 2] += src_l[i + 2] * gain_l;
-      dest_r[di + 2] += sr[i + 2] * gain_r;
-      dest_l[di + 3] += src_l[i + 3] * gain_l;
-      dest_r[di + 3] += sr[i + 3] * gain_r;
-      i += 4; di += 4;
-    }
-    while (i < copy_len) {
-      dest_l[di] += src_l[i] * gain_l;
-      dest_r[di] += sr[i] * gain_r;
-      i++; di++;
-    }
+    sc_axpy_stereo_f32(dest_l + start, dest_r + start, src_l, sr, gain_l, gain_r, copy_len);
   }
 }
+
 
 
 #ifdef SC_NATIVE_MAIN
@@ -1112,8 +1160,31 @@ int main(void) {
   t1 = clock();
   us_per_q = (double)(t1 - t0) / CLOCKS_PER_SEC * 1e6 / quantums;
   budget_us = 1000000.0 * SC_QUANTUM / 48000.0;
-  printf("voices=%d started=%d us/quantum=%.2f budget=%.1f (%.1f%%) active=%d\n",
-         voices, started, us_per_q, budget_us, 100.0 * us_per_q / budget_us, sc_active_voices());
+  printf("simd=%d voices=%d started=%d us/quantum=%.2f budget=%.1f (%.1f%%) active=%d\n",
+         SC_HAS_SIMD, voices, started, us_per_q, budget_us,
+         100.0 * us_per_q / budget_us, sc_active_voices());
+
+  {
+    enum { MIX_N = 1 << 16, MIX_ITERS = 200 };
+    static float dl[MIX_N], dr[MIX_N], sl[MIX_N], sr[MIX_N];
+    int k;
+    clock_t mt0, mt1;
+    double us;
+    for (k = 0; k < MIX_N; k++) {
+      sl[k] = 0.01f * (float)(k & 255);
+      sr[k] = 0.02f * (float)(k & 127);
+    }
+    sc_mix_clear(dl, dr, MIX_N);
+    mt0 = clock();
+    for (k = 0; k < MIX_ITERS; k++) {
+      sc_mix_add(dl, dr, MIX_N, sl, sr, 0, MIX_N, 0.7f, 0.7f, 0);
+    }
+    mt1 = clock();
+    us = (double)(mt1 - mt0) / CLOCKS_PER_SEC * 1e6 / MIX_ITERS;
+    printf("mix_add N=%d iters=%d us/iter=%.2f (%.1f Mfloats/s) simd=%d\n",
+           MIX_N, MIX_ITERS, us,
+           (MIX_N * 2.0) / (us > 0 ? us : 1.0), SC_HAS_SIMD);
+  }
   return 0;
 }
 #endif

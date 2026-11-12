@@ -13,10 +13,12 @@
     "web-audio-api": "npm:web-audio-api@^1.6.0"
   },
   "tasks": {
-    "build": "deno task build:js && deno task build:wasm",
+    "build": "deno task build:js && deno task build:wasm && deno task build:wasm-simd",
     "build:js": "deno run -RWE --allow-run build.ts --target=js",
     "build:wasm": "deno run -RWE --allow-run build.ts --target=wasm",
+    "build:wasm-simd": "deno run -RWE --allow-run build.ts --target=wasm-simd",
     "build:wasm-core": "bash wasm/build.sh && deno run -A wasm/scripts/embed_wasm.ts",
+    "bench:native": "bash wasm/build.sh",
     "build:all": "deno task build:wasm-core && deno task build"
   },
   "exclude": ["dist", ".cache"]

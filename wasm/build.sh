@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build native bench binary + synth_core.wasm for midy worklet hot path.
+# Build native bench binaries (scalar + SIMD) + synth_core.wasm (+ simd).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-for d in /usr/lib/llvm-18/bin /usr/lib/llvm-17/bin /usr/lib/llvm-16/bin /opt/homebrew/opt/llvm/bin; do
-  if [[ -x "$d/wasm-ld" ]]; then
+for d in /usr/lib/llvm-18/bin /usr/lib/llvm-17/bin /usr/lib/llvm-16/bin /opt/homebrew/opt/llvm/bin /usr/local/bin; do
+  if [[ -x "$d/wasm-ld" ]] || [[ -x "$d/wasm-ld-18" ]]; then
     export PATH="$d:$PATH"
     break
   fi
@@ -14,51 +14,68 @@ CLANG="${CLANG:-clang}"
 OUT_DIR="${OUT_DIR:-dist}"
 mkdir -p "$OUT_DIR"
 
-echo "== native bench =="
-NATIVE_BIN="$OUT_DIR/synth_native"
-if ! "$CLANG" -O3 -DSC_NATIVE_MAIN -o "$NATIVE_BIN" synth_core.c -lm 2>/dev/null \
-  || ! "$NATIVE_BIN" 2>/dev/null; then
-  NATIVE_BIN=/tmp/synth_native
-  "$CLANG" -O3 -DSC_NATIVE_MAIN -o "$NATIVE_BIN" synth_core.c -lm
-  "$NATIVE_BIN"
+WASM_EXPORTS=(
+  -Wl,--export=sc_init
+  -Wl,--export=sc_sample_alloc
+  -Wl,--export=sc_sample_register
+  -Wl,--export=sc_voice_on
+  -Wl,--export=sc_voice_off
+  -Wl,--export=sc_voice_stop
+  -Wl,--export=sc_all_sound_off
+  -Wl,--export=sc_set_master_gain
+  -Wl,--export=sc_set_frame0
+  -Wl,--export=sc_set_sample_rate
+  -Wl,--export=sc_process
+  -Wl,--export=sc_output_l
+  -Wl,--export=sc_output_r
+  -Wl,--export=sc_active_voices
+  -Wl,--export=sc_bench_start_n
+  -Wl,--export=sc_ended_count
+  -Wl,--export=sc_ended_id
+  -Wl,--export=sc_peak_active
+  -Wl,--export=sc_complex_vq
+  -Wl,--export=sc_simple_vq
+  -Wl,--export=sc_mix_clear
+  -Wl,--export=sc_mix_add
+)
+
+build_native() {
+  local name="$1"; shift
+  local bin="$OUT_DIR/$name"
+  echo "== native $name ($*) =="
+  "$CLANG" -O3 -DSC_NATIVE_MAIN "$@" -o "$bin" synth_core.c -lm
+  "$bin"
+}
+
+echo "======== native scalar (SC_FORCE_SCALAR) ========"
+build_native synth_native_scalar \
+  -DSC_FORCE_SCALAR=1 -fno-vectorize -fno-slp-vectorize -fno-tree-vectorize
+
+echo "======== native SIMD (SSE) ========"
+build_native synth_native_simd -msse2
+
+build_wasm() {
+  local out="$1"; shift
+  echo "== wasm32 → $out ($*) =="
+  "$CLANG" --target=wasm32 -O3 -fno-builtin -nostdlib -Wl,--no-entry \
+    -Wl,-z,stack-size=65536 \
+    -Wl,--initial-memory=167772160 \
+    "${WASM_EXPORTS[@]}" \
+    "$@" \
+    -o "$OUT_DIR/$out" \
+    synth_core.c
+  ls -la "$OUT_DIR/$out"
+}
+
+if ! command -v wasm-ld >/dev/null 2>&1 && ! command -v wasm-ld-18 >/dev/null 2>&1; then
+  echo "WARNING: wasm-ld not found — skipping wasm builds (native benches OK)." >&2
+  exit 0
 fi
 
-echo "== wasm32 =="
-if ! command -v wasm-ld >/dev/null 2>&1; then
-  echo "ERROR: wasm-ld not found." >&2
-  echo "  Ubuntu/Debian: sudo apt install lld-18   (or lld)" >&2
-  echo "  macOS: brew install llvm" >&2
-  exit 1
-fi
+echo "======== wasm scalar ========"
+build_wasm synth_core.wasm
 
-# 32M float PCM heap ≈ 128MB; reserve 160MB initial (2560 * 64KB pages)
-"$CLANG" --target=wasm32 -O3 -fno-builtin -nostdlib -Wl,--no-entry \
-  -Wl,-z,stack-size=65536 \
-  -Wl,--initial-memory=167772160 \
-  -Wl,--export=sc_init \
-  -Wl,--export=sc_sample_alloc \
-  -Wl,--export=sc_sample_register \
-  -Wl,--export=sc_voice_on \
-  -Wl,--export=sc_voice_off \
-  -Wl,--export=sc_voice_stop \
-  -Wl,--export=sc_all_sound_off \
-  -Wl,--export=sc_set_master_gain \
-  -Wl,--export=sc_set_frame0 \
-  -Wl,--export=sc_set_sample_rate \
-  -Wl,--export=sc_process \
-  -Wl,--export=sc_output_l \
-  -Wl,--export=sc_output_r \
-  -Wl,--export=sc_active_voices \
-  -Wl,--export=sc_bench_start_n \
-  -Wl,--export=sc_ended_count \
-  -Wl,--export=sc_ended_id \
-  -Wl,--export=sc_peak_active \
-  -Wl,--export=sc_complex_vq \
-  -Wl,--export=sc_simple_vq \
-  -Wl,--export=sc_mix_clear \
-  -Wl,--export=sc_mix_add \
-  -o "$OUT_DIR/synth_core.wasm" \
-  synth_core.c
+echo "======== wasm simd128 ========"
+build_wasm synth_core_simd.wasm -msimd128
 
-ls -la "$OUT_DIR/synth_core.wasm"
 echo "OK. Next: deno run -A scripts/embed_wasm.ts"
