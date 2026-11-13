@@ -1064,14 +1064,19 @@ self.onmessage = function(ev) {
         filterFreqs = filterFreqs.slice();
       }
     }
+    // Rate curves must never ride a shared/detached buffer into the worker.
+    // A zero-length (already-transferred) view arrives with length 0 →
+    // useRateCurve false → onset-bent notes play at the stripped base rate
+    // (wrong pitch in chunk/worker path). Always own a fresh copy first.
     let rateMultipliers: Float32Array | null = params.rateMultipliers ?? null;
     if (rateMultipliers) {
-      if (useTransferable) {
-        if (rateMultipliers.buffer.byteLength > 0) {
-          transfer.push(rateMultipliers.buffer);
-        }
+      if (rateMultipliers.buffer.byteLength === 0) {
+        rateMultipliers = null;
       } else {
         rateMultipliers = rateMultipliers.slice();
+        if (useTransferable && rateMultipliers.buffer.byteLength > 0) {
+          transfer.push(rateMultipliers.buffer);
+        }
       }
     }
 
@@ -1152,14 +1157,17 @@ self.onmessage = function(ev) {
           filterFreqs = filterFreqs.slice();
         }
       }
+      // Same ownership rule as renderSample: never post a detached or
+      // shared rate curve. Chunk tiles batch many almost-simple bend notes.
       let rateMultipliers: Float32Array | null = params.rateMultipliers ?? null;
       if (rateMultipliers) {
-        if (useTransferable) {
-          if (rateMultipliers.buffer.byteLength > 0) {
-            transfer.push(rateMultipliers.buffer);
-          }
+        if (rateMultipliers.buffer.byteLength === 0) {
+          rateMultipliers = null;
         } else {
           rateMultipliers = rateMultipliers.slice();
+          if (useTransferable && rateMultipliers.buffer.byteLength > 0) {
+            transfer.push(rateMultipliers.buffer);
+          }
         }
       }
       items[n] = {

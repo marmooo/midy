@@ -272,3 +272,40 @@ Deno.test("almost-simple pitchbend: full-scale up stays absolute at onset max", 
   const expected = Math.pow(2, 200 / 1200);
   assertAlmostEquals(rates[0], expected, expected * 0.02);
 });
+
+Deno.test("almost-simple pitchbend: max-down onset (-8192) absolute rate", () => {
+  const player = makePlayer();
+  // deno-lint-ignore no-explicit-any
+  const p = player as any;
+  const entry = noteEntry([
+    pitchBend(0, -8192),
+    pitchBend(120, -4096),
+    pitchBend(240, 0),
+  ]);
+  const sampleRate = 480;
+  const length = sampleRate;
+  const rates = p.computePitchBendRateCurve(
+    entry,
+    0 / 16383,
+    2 / 128,
+    length,
+    sampleRate,
+    1.0,
+  ) as Float32Array;
+  const rateMaxDown = Math.pow(2, -200 / 1200);
+  const rateHalfDown = Math.pow(2, -100 / 1200);
+  assertAlmostEquals(rates[0], rateMaxDown, rateMaxDown * 0.01);
+  assertAlmostEquals(rates[120], rateHalfDown, rateHalfDown * 0.01);
+  assertAlmostEquals(rates[240], 1.0, 1e-5);
+});
+
+Deno.test("almost-simple pitchbend: normalize signed -8192 and 0", () => {
+  const player = makePlayer();
+  // deno-lint-ignore no-explicit-any
+  const p = player as any;
+  assertEquals(p.normalizePitchBendValue(0), 8192);
+  assertEquals(p.normalizePitchBendValue(-8192), 0);
+  assertEquals(p.normalizePitchBendValue(-4096), 4096);
+  assertEquals(p.normalizePitchBendValue(8192), 8192);
+  assertEquals(p.normalizePitchBendValue(16383), 16383);
+});

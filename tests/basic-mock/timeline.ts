@@ -411,7 +411,11 @@ export function registerTimelineTests(
       p.ticksPerBeat = 480;
       const { timeline } = p.extractMidiData(midi);
       p.timeline = timeline;
-      assertEquals(timeline.length >= 3, true, "precondition: trailing events present");
+      assertEquals(
+        timeline.length >= 3,
+        true,
+        "precondition: trailing events present",
+      );
       p.trimTrailingSilence();
       assertEquals(
         p.timeline[p.timeline.length - 1].type,

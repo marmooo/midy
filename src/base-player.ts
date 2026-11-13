@@ -781,6 +781,9 @@ export class Channel<TNote extends Note = Note> {
           scheduleTime,
         );
       } else {
+        // pitchWheel is applied absolutely via setPitchBend below — do not
+        // poke state first or the delta becomes 0 and residual detune sticks.
+        if (key === "pitchWheel") continue;
         state[key] = defaultValue;
       }
     }
@@ -817,6 +820,12 @@ export class Channel<TNote extends Note = Note> {
     this.resetSettings(
       (player.constructor as typeof BasePlayer).channelSettings,
     );
+    // setPitchBend is delta-based against state.pitchWheel. Assigning the
+    // default wheel above does not undo cents already accumulated in
+    // channel.detune (cacheVoiceIds walk, live playback, seek). Force an
+    // absolute baseline so GM1SystemOn / seek rebuild starts clean.
+    this.detune = 0;
+    player.updateChannelDetune(this, t);
   }
 
   allNotesOff(scheduleTime?: number): Promise<void[]> {
@@ -2013,8 +2022,12 @@ export class BasePlayer<
     const { timeline, resumeTime } = this;
     const inverseTempo = 1 / this.tempo;
     const now = this.audioContext.currentTime;
-    if (nextQueueIndex < queueIndex) queueIndex = 0;
-    for (let i = queueIndex; i < nextQueueIndex; i++) {
+    // Pitch bend (and other delta-based channel state) cannot be patched by
+    // replaying only [queueIndex, nextQueueIndex) when seeking backward —
+    // residual detune from the old position would remain. Always rebuild
+    // from GM defaults then walk [0, nextQueueIndex).
+    this.resetChannels(this.channels, now);
+    for (let i = 0; i < nextQueueIndex; i++) {
       const event = timeline[i];
       const t = now - resumeTime + event.startTime * inverseTempo;
       this.processTimelineEvent(event, Math.max(now, t));
@@ -2183,6 +2196,11 @@ export class BasePlayer<
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
+    // Rebuild absolute channel state for resumeTime (pause+seek safety).
+    {
+      const qi = this.getQueueIndex(this.resumeTime);
+      this.updateStates(0, qi);
+    }
     this.startTime = audioContext.currentTime;
     if (paused) {
       this.dispatchEvent(new Event("resumed"));

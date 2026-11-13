@@ -891,6 +891,8 @@ export class Channel extends BaseChannel<Note> {
           scheduleTime,
         );
       } else {
+        // pitchWheel: apply via setPitchBend so detune delta is correct.
+        if (key === "pitchWheel") continue;
         state[key] = defaultValue;
       }
     }
@@ -929,6 +931,12 @@ export class Channel extends BaseChannel<Note> {
     );
     this.mono = false;
     this.resetTable();
+    // Absolute detune baseline: wheel is center, channel fine/coarse are 0
+    // from resetSettings. Keep master fine/coarse (player-level SysEx) so a
+    // channel reset does not undo global tuning.
+    this.detune = (player.masterFineTuning || 0) +
+      (player.masterCoarseTuning || 0);
+    player.updateChannelDetune(this, t);
   }
 
   override allNotesOff(scheduleTime?: number): Promise<void[]> {

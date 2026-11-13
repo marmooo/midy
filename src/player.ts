@@ -3116,6 +3116,8 @@ export class Player<
         parts.push(this.serializePanAutomationEvents(n.noteEvent));
       }
       if (this.hasPitchBendOnlyAutomation(n.noteEvent)) {
+        const onsetAbs = this.readPitchWheelAbs(n.channelStateArray);
+        parts.push(onsetAbs);
         parts.push(this.serializePitchBendAutomationEvents(n.noteEvent));
       }
     }
@@ -3821,6 +3823,14 @@ export class Player<
     const paused = this.isPaused;
     this.isPlaying = true;
     this.isPaused = false;
+    // Rebuild channel controller / pitch-bend state for resumeTime.
+    // pause keeps residual detune; seek-while-paused only moves resumeTime.
+    // Without this, preroll snapshots and live note-ons inherit the wrong
+    // wheel/detune (chunk almost-simple onset snapshots go sharp/flat).
+    {
+      const qi = this.getQueueIndex(this.resumeTime);
+      this.updateStates(0, qi);
+    }
     // Step 2 of pre-start bake (after simple prewarm in start()): tiled head
     // for [resumeTime, resumeTime + prerollSec]. Same time axis as simple
     // phase-1 head (prerollSec + tileDuration). Arm startTime only after.
