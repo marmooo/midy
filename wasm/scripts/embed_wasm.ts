@@ -54,3 +54,10 @@ await embed(
   "threads",
   false,
 );
+await embed(
+  new URL("../dist/synth_core_threaded_simd.wasm", import.meta.url),
+  new URL("../../src/synth_core_wasm_threaded_simd_b64.ts", import.meta.url),
+  "SYNTH_CORE_WASM_BASE64",
+  "threaded-simd",
+  false,
+);

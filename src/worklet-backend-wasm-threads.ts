@@ -1,8 +1,8 @@
 /**
  * WASM-threads worklet backend — build.ts --target=wasm-threads
  *
- * Embeds the atomics/bulk-memory/simd synth_core binary which exports
- * sc_process_range for host-side parallel offline use.
+ * Embeds the atomics/bulk-memory synth_core binary (NO SIMD).
+ * Exports sc_process_range for host-side parallel offline use.
  *
  * Realtime AudioWorklet still runs sc_process on a single audio thread:
  * Atomics.wait is not allowed there, and worker round-trips cannot meet
