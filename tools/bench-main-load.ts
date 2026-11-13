@@ -17,6 +17,22 @@
 //     --set debug=true \
 //     --out-dir ./bench-logs
 //
+//   # Compare one WASM bundle (js|wasm|wasm-simd|wasm-threads|wasm-threaded-simd)
+//   deno run -A tools/bench-main-load.ts \
+//     --midi ./songs/foo.mid \
+//     --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
+//     --bundle wasm-simd \
+//     --set cacheMode=segment \
+//     --set debug=true \
+//     --out-dir ./bench-logs/simd
+//
+//   # All four WASM builds (see tools/bench-configs.wasm-bundles.json)
+//   deno run -A tools/bench-main-load.ts \
+//     --midi ./songs/foo.mid \
+//     --sf3 ./tools/GeneralUser_GS_v1.472.sf3 \
+//     --configs ./tools/bench-configs.wasm-bundles.json \
+//     --out-dir ./bench-logs/wasm4
+//
 //   # Multiple configs from JSON + one or more MIDIs
 //   deno run -A tools/bench-main-load.ts \
 //     --midi-dir ./songs \
@@ -58,11 +74,32 @@ type GlobalWithBench = typeof globalThis & {
   __benchMainLoad?: BenchMainLoadFn;
 };
 
+/** dist/ midy build id (harness maps to ../dist/midy.<id>.js except js → midy.js). */
+export type MidyBundle =
+  | "js"
+  | "wasm"
+  | "wasm-simd"
+  | "wasm-threads"
+  | "wasm-threaded-simd";
+
+export const MIDY_BUNDLES: readonly MidyBundle[] = [
+  "js",
+  "wasm",
+  "wasm-simd",
+  "wasm-threads",
+  "wasm-threaded-simd",
+] as const;
+
 export interface BenchConfig {
   /** Short name used in log filenames (e.g. "baseline"). */
   name: string;
   /** Arbitrary Midy instance properties applied after construction. */
   set: Record<string, unknown>;
+  /**
+   * Which dist build the harness imports.
+   * Default: CLI --bundle, else "js" (dist/midy.js).
+   */
+  bundle?: MidyBundle | string;
 }
 
 export interface BenchRunOptions {
@@ -77,6 +114,8 @@ export interface BenchRunOptions {
   maxPlaySec?: number;
   headed?: boolean;
   executablePath?: string;
+  /** Fallback bundle when a config omits `bundle` (CLI --bundle). */
+  defaultBundle?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,10 +200,13 @@ async function loadConfigs(
       throw new Error(`--configs must be a non-empty JSON array`);
     }
     for (const c of parsed) {
-      if (!c.name || typeof c.set !== "object") {
+      if (!c.name || typeof c.set !== "object" || c.set === null) {
         throw new Error(
-          `each config needs { "name": string, "set": object }`,
+          `each config needs { "name": string, "set": object, "bundle"?: string }`,
         );
+      }
+      if (c.bundle != null && typeof c.bundle !== "string") {
+        throw new Error(`config ${c.name}: bundle must be a string`);
       }
     }
     return parsed;
@@ -178,8 +220,11 @@ async function loadConfigs(
   }
   if (!set.cacheMode) set.cacheMode = "chunk";
   if (set.debug === undefined) set.debug = true;
-  return [{ name: flags.name ?? "run", set }];
+  const inline: BenchConfig = { name: flags.name ?? "run", set };
+  if (flags.bundle) inline.bundle = flags.bundle;
+  return [inline];
 }
+
 
 async function collectMidiPaths(
   flags: Record<string, string>,
@@ -344,7 +389,16 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
         let result: Record<string, unknown> | null = null;
         const t0 = performance.now();
         try {
-          await page.goto(`${url}/${harnessDir}/bench-harness.html`, {
+          const bundle =
+            (config.bundle as string | undefined) ??
+            options.defaultBundle ??
+            "js";
+          const harnessUrl =
+            `${url}/${harnessDir}/bench-harness.html?bundle=${
+              encodeURIComponent(bundle)
+            }`;
+          push(`[bench-host] harness=${harnessUrl}`);
+          await page.goto(harnessUrl, {
             waitUntil: "load",
             timeout: 60_000,
           });
@@ -391,6 +445,10 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
           runId,
           midiPath,
           config: config.name,
+          bundle:
+            (config.bundle as string | undefined) ??
+            options.defaultBundle ??
+            "js",
           settings: config.set,
           logPath,
           result,
@@ -472,5 +530,6 @@ if (import.meta.main) {
       : undefined,
     headed: flags.headed === "true",
     executablePath: flags["executable-path"],
+    defaultBundle: flags.bundle,
   });
 }

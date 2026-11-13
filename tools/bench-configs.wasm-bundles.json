@@ -1,0 +1,34 @@
+[
+  {
+    "name": "wasm",
+    "bundle": "wasm",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true
+    }
+  },
+  {
+    "name": "wasm-simd",
+    "bundle": "wasm-simd",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true
+    }
+  },
+  {
+    "name": "wasm-threads",
+    "bundle": "wasm-threads",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true
+    }
+  },
+  {
+    "name": "wasm-threaded-simd",
+    "bundle": "wasm-threaded-simd",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true
+    }
+  }
+]

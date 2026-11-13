@@ -10,6 +10,7 @@
 
 const METRIC_KEYS = [
   "config",
+  "bundle",
   "timedOut",
   "tiles",
   "bakeAvg",
@@ -31,6 +32,10 @@ const METRIC_KEYS = [
   "clsAdsFallback",
   "clsExclBake",
   "elapsedMs",
+  "mainBusyPct",
+  "workerMixMs",
+  "avgProcUs",
+  "prerollWallMs",
 ] as const;
 
 type Row = Record<string, string | number>;
@@ -117,6 +122,31 @@ function parseLog(text: string, configHint: string): Row {
     if (el) row.elapsedMs = Math.round(+el[1]);
   }
 
+  const bundleLine = m(/\[bench\] bundle=([\w-]+) import=/);
+  if (bundleLine) row.bundle = bundleLine[1];
+  else {
+    const b2 = m(/\[bench\] start play bundle=([\w-]+)/);
+    if (b2) row.bundle = b2[1];
+  }
+
+  const playLoad = m(
+    /\[midy\] play-load \|[^\n]*mainBusyPct=([\d.]+)%[^\n]*workerMixMs=([\d.]+)/,
+  );
+  if (playLoad) {
+    row.mainBusyPct = +playLoad[1];
+    row.workerMixMs = +playLoad[2];
+  }
+
+  const worklet = m(
+    /\[midy\] worklet-hybrid \|[^\n]*avgProcUs=([\d.]+)/,
+  );
+  if (worklet) row.avgProcUs = +worklet[1];
+
+  const preroll = m(
+    /\[midy\] preroll done \|[^\n]*wall=([\d.]+)ms/,
+  );
+  if (preroll) row.prerollWallMs = +preroll[1];
+
   return row;
 }
 
@@ -144,20 +174,18 @@ function printTable(rows: Row[], sortKey: string) {
 
   const cols = [
     "config",
+    "bundle",
+    "mainBusyPct",
+    "workerMixMs",
+    "avgProcUs",
+    "prerollWallMs",
     "bakeAvg",
     "bakeP95",
     "bakeMax",
-    "gateWaitAvg",
-    "simpleSum",
     "mixMainMs",
     "mixMainRatio",
-    "residualSum",
-    "clsTiled",
-    "clsNoteBake",
-    "clsAdsFallback",
     "late",
     "dropped",
-    "cacheHit",
     "timedOut",
   ];
 
@@ -178,7 +206,10 @@ function printTable(rows: Row[], sortKey: string) {
   }
 
   console.log(
-    "\nHints: lower bakeMax/gateWaitAvg/simpleSum → fewer hitches; late/dropped must stay 0.",
+    "\nHints: for WASM 4-way compare, mainBusyPct / workerMixMs / avgProcUs should match within pairs",
+  );
+  console.log(
+    "       (wasm ~ wasm-threads, wasm-simd ~ wasm-threaded-simd). late/dropped must stay 0.",
   );
   console.log(
     "       mixMainRatio near 0 = live mix off main (game-friendly, watch residual).",

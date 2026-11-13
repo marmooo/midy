@@ -1,10 +1,21 @@
 // Realtime playback harness for main-thread load benchmarking.
 // Loaded inside headless Chromium by tools/bench-main-load.ts.
 //
+// Bundle selection via query string:
+//   bench-harness.html?bundle=wasm-simd
+// Supported: js | wasm | wasm-simd | wasm-threads | wasm-threaded-simd
+//
 // Unlike midy-harness.js (offline render → WAV), this path calls
 // player.start() so liveRealtime / updateChunkPipeline / worker mix paths
 // actually run — the same code paths as interactive browser playback.
-import { Midy } from "../dist/midy.js";
+
+const BUNDLE_PATHS = {
+  js: "../dist/midy.js",
+  wasm: "../dist/midy.wasm.js",
+  "wasm-simd": "../dist/midy.wasm-simd.js",
+  "wasm-threads": "../dist/midy.wasm-threads.js",
+  "wasm-threaded-simd": "../dist/midy.wasm-threaded-simd.js",
+};
 
 function bytesFromBase64(base64) {
   const binary = atob(base64);
@@ -23,7 +34,6 @@ function applySettings(player, settings) {
   const skipped = [];
   for (const [key, value] of Object.entries(settings)) {
     try {
-      // Always attempt assignment — Midy has many public knobs.
       player[key] = value;
       applied[key] = player[key];
       console.log(`[bench] set ${key}=${JSON.stringify(player[key])}`);
@@ -35,6 +45,23 @@ function applySettings(player, settings) {
   return { applied, skipped };
 }
 
+async function resolveMidyCtor() {
+  const params = new URLSearchParams(globalThis.location?.search ?? "");
+  const bundle = params.get("bundle") || "js";
+  const path = BUNDLE_PATHS[bundle] || BUNDLE_PATHS.js;
+  if (!BUNDLE_PATHS[bundle]) {
+    console.warn(
+      `[bench] unknown bundle=${JSON.stringify(bundle)}, falling back to js`,
+    );
+  }
+  console.log(`[bench] bundle=${bundle} import=${path}`);
+  const mod = await import(path);
+  if (!mod || typeof mod.Midy !== "function") {
+    throw new Error(`Midy export missing from ${path}`);
+  }
+  return { Midy: mod.Midy, bundle, path };
+}
+
 /**
  * @param {{
  *   midiBytesBase64: string,
@@ -43,15 +70,9 @@ function applySettings(player, settings) {
  *   settings?: Record<string, unknown>,
  *   maxPlaySec?: number,
  * }} params
- * @returns {Promise<{
- *   totalTime: number,
- *   elapsedMs: number,
- *   applied: Record<string, unknown>,
- *   skipped: string[],
- *   cacheMode: string,
- * }>}
  */
 async function benchMainLoad(params) {
+  const { Midy, bundle, path } = await resolveMidyCtor();
   const sampleRate = params.sampleRate ?? 48000;
   const audioContext = new (globalThis.AudioContext ||
     globalThis.webkitAudioContext)({ sampleRate });
@@ -87,7 +108,8 @@ async function benchMainLoad(params) {
 
   const totalTime = typeof player.totalTime === "number" ? player.totalTime : 0;
   console.log(
-    `[bench] start play totalTime=${totalTime.toFixed(2)}s ` +
+    `[bench] start play bundle=${bundle} path=${path} ` +
+      `totalTime=${totalTime.toFixed(2)}s ` +
       `cacheMode=${player.cacheMode} sampleRate=${sampleRate}`,
   );
 
@@ -119,7 +141,7 @@ async function benchMainLoad(params) {
   const elapsedMs = performance.now() - t0;
   console.log(
     `[bench] play finished elapsedMs=${elapsedMs.toFixed(0)} ` +
-      `timedOut=${timedOut} totalTime=${totalTime.toFixed(2)}s`,
+      `timedOut=${timedOut} totalTime=${totalTime.toFixed(2)}s bundle=${bundle}`,
   );
 
   try {
@@ -135,7 +157,10 @@ async function benchMainLoad(params) {
     applied,
     skipped,
     cacheMode: String(player.cacheMode ?? ""),
+    bundle,
+    path,
   };
 }
 
 globalThis.__benchMainLoad = benchMainLoad;
+console.log("[bench] harness ready (dynamic bundle import)");
