@@ -20,7 +20,7 @@
 //
 // Curve computation (ADSR / filter / pan) stays on the main thread.
 
-import { SYNTH_CORE_WASM_BASE64 } from "./synth_core_wasm_b64.ts";
+import { SYNTH_CORE_WASM_BASE64 } from "./bake-wasm.ts";
 
 export type MixSourceEntry = {
   /** Left (or mono) channel data. */

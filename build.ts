@@ -26,6 +26,10 @@ const backendWasmSimd = `${root}/src/worklet-backend-wasm-simd.ts`;
 const backendWasmThreads = `${root}/src/worklet-backend-wasm-threads.ts`;
 const backendWasmThreadedSimd =
   `${root}/src/worklet-backend-wasm-threaded-simd.ts`;
+const bakeWasm = `${root}/src/bake-wasm.ts`;
+const bakeWasmSimd = `${root}/src/bake-wasm-simd.ts`;
+const bakeWasmThreads = `${root}/src/bake-wasm-threads.ts`;
+const bakeWasmThreadedSimd = `${root}/src/bake-wasm-threaded-simd.ts`;
 
 const customDenoPlugins = denoPlugins({
   configPath: await Deno.realPath("./deno.json"),
@@ -40,10 +44,10 @@ type WasmKind =
 
 function backendAliasPlugin(kind: WasmKind): esbuild.Plugin {
   return {
-    name: "midy-worklet-backend-alias",
+    name: "midy-wasm-backend-alias",
     setup(build) {
       if (!kind) return;
-      const target = kind === "wasm-threaded-simd"
+      const workletTarget = kind === "wasm-threaded-simd"
         ? backendWasmThreadedSimd
         : kind === "wasm-threads"
         ? backendWasmThreads
@@ -57,7 +61,27 @@ function backendAliasPlugin(kind: WasmKind): esbuild.Plugin {
           normalized.endsWith("/worklet-backend.ts") ||
           normalized === "worklet-backend.ts"
         ) {
-          return { path: target };
+          return { path: workletTarget };
+        }
+        return undefined;
+      });
+      // Bake mix path: same binary family as the worklet target so
+      // midy.wasm-simd.js actually uses simd128 sc_mix_* in workers.
+      const bakeTarget = kind === "wasm-threaded-simd"
+        ? bakeWasmThreadedSimd
+        : kind === "wasm-threads"
+        ? bakeWasmThreads
+        : kind === "wasm-simd"
+        ? bakeWasmSimd
+        : bakeWasm;
+      build.onResolve({ filter: /bake-wasm\.ts$/ }, (args) => {
+        const normalized = args.path.replace(/\\/g, "/");
+        if (
+          normalized === "./bake-wasm.ts" ||
+          normalized.endsWith("/bake-wasm.ts") ||
+          normalized === "bake-wasm.ts"
+        ) {
+          return { path: bakeTarget };
         }
         return undefined;
       });
