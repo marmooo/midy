@@ -160,6 +160,16 @@ export class BakeWorkerPool {
   private readonly size: number;
   private started = false;
   private workerUrl: string | null = null;
+  /** Workers that successfully instantiated the bake WASM core. */
+  private wasmReadyCount = 0;
+  private wasmFailedCount = 0;
+  private wasmReadyWaiters: Array<() => void> = [];
+  /**
+   * True once every worker has answered initWasm (ok or fail).
+   * Mix still runs on JS fallback if WASM failed; we only wait so the
+   * first large tile can prefer the SIMD/atomics binary when available.
+   */
+  private wasmInitSettled = false;
 
   /** Minimum number of mix entries before offloading to a worker is worth it. */
   /** Aligned with Player.workerMixMinEntries default (1). */
@@ -167,6 +177,12 @@ export class BakeWorkerPool {
 
   /** Minimum dest length (samples) before simple-note render is offloaded. */
   static readonly MIN_SAMPLES_FOR_RENDER = 2048;
+
+  /**
+   * Max time to wait for at least one worker WASM init before first mix.
+   * Keeps preroll from stalling if instantiate is slow / fails.
+   */
+  static readonly WASM_READY_WAIT_MS = 80;
 
   constructor(size = 0) {
     const hw = typeof navigator !== "undefined"
@@ -178,6 +194,47 @@ export class BakeWorkerPool {
   /** Number of worker threads in the pool. */
   get poolSize(): number {
     return this.size;
+  }
+
+  /** How many workers reported successful WASM instantiate. */
+  get wasmWorkersReady(): number {
+    return this.wasmReadyCount;
+  }
+
+  /**
+   * Resolve when ≥1 worker has WASM ready, all workers settled, or timeout.
+   * Safe to call before ensureStarted (no-op then).
+   */
+  private waitForWasmReady(
+    timeoutMs = BakeWorkerPool.WASM_READY_WAIT_MS,
+  ): Promise<void> {
+    if (this.wasmReadyCount > 0 || this.wasmInitSettled) {
+      return Promise.resolve();
+    }
+    if (!this.started) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      this.wasmReadyWaiters.push(finish);
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  private notifyWasmSettled(ok: boolean): void {
+    if (ok) this.wasmReadyCount++;
+    else this.wasmFailedCount++;
+    if (this.wasmReadyCount + this.wasmFailedCount >= this.size) {
+      this.wasmInitSettled = true;
+    }
+    if (ok || this.wasmInitSettled) {
+      const waiters = this.wasmReadyWaiters;
+      this.wasmReadyWaiters = [];
+      for (let i = 0; i < waiters.length; i++) waiters[i]();
+    }
   }
 
   private ensureStarted(): void {
@@ -206,9 +263,19 @@ function b64ToU8(b64) {
 function ensureWasm(b64) {
   if (__wasmReady || __wasmFailed) return Promise.resolve(__wasmReady);
   if (!b64) { __wasmFailed = true; return Promise.resolve(false); }
-  return WebAssembly.instantiate(b64ToU8(b64), {}).then(function(r) {
-    __wasmExports = r.instance.exports;
-    __wasmMemory = __wasmExports.memory;
+  var bytes = b64ToU8(b64);
+  // Scalar / simd / atomics builds all export their own memory (no
+  // --shared-memory in wasm/build.sh). Instantiate with empty imports.
+  // Atomics opcodes on non-shared memory still work single-threaded;
+  // multi-core bake parallelism comes from multiple Worker instances,
+  // each with its own WASM module (JS worker pool = "threads").
+  return WebAssembly.instantiate(bytes, {}).then(function(r) {
+    var exp = r.instance.exports;
+    if (typeof exp.sc_mix_clear !== "function" || typeof exp.sc_mix_add !== "function") {
+      throw new Error("bake WASM missing sc_mix_clear/sc_mix_add");
+    }
+    __wasmExports = exp;
+    __wasmMemory = exp.memory;
     __wasmReady = true;
     return true;
   }).catch(function(err) {
@@ -700,6 +767,7 @@ self.onmessage = function(ev) {
     };
     if (data && data.type === "wasm-ready") {
       // Mix falls back to JS until ready; no pending job to resolve.
+      this.notifyWasmSettled(!!data.ok);
       return;
     }
     const pending = this.pendingById.get(data.id);
@@ -857,6 +925,13 @@ self.onmessage = function(ev) {
     destChCount: 1 | 2,
     useTransferable = false,
   ): Promise<MixResult> {
+    this.ensureStarted();
+    // Give WASM (simd / atomics) a short window so the first tile after
+    // pool start does not fall back to pure JS mix.
+    if (destLen >= 2048 && this.wasmReadyCount === 0 && !this.wasmInitSettled) {
+      await this.waitForWasmReady();
+    }
+
     const id = this.nextId++;
     // deno-lint-ignore no-explicit-any
     const msgEntries: any[] = new Array(entries.length);
@@ -901,13 +976,18 @@ self.onmessage = function(ev) {
   static readonly MAX_TILES_PER_MIX_BATCH = 4;
 
   /**
-   * Mix several tiles in one postMessage. Prefer this when 2+ closed tiles
-   * are ready so structured-clone / queue overhead is paid once.
-   * Single-tile callers should keep using {@link mix} (no coalesce delay).
-   * Returns results in the same order as jobs.
+   * Mix several tiles.
    *
-   * Transferable selection is across the whole batch: only ArrayBuffers that
-   * appear once among all jobs' entries are transferred.
+   * When the pool has 2+ workers and there are 2+ jobs, fan out **one mix
+   * per worker** so wasm-threads / wasm-threaded-simd actually use multiple
+   * cores (each worker owns its own WASM instance with sc_mix_*). Packing
+   * every tile into a single mixBatch message serialised them on one thread
+   * and made the threads binary look identical to single-thread.
+   *
+   * Fallback: if only one worker is free / size===1, keep the original
+   * single-postMessage mixBatch amortisation.
+   *
+   * Single-tile callers should keep using {@link mix}.
    */
   async mixBatch(
     jobs: MixBatchJob[],
@@ -926,10 +1006,38 @@ self.onmessage = function(ev) {
       return { results: [one], queueMs: one.queueMs, postMs: one.postMs };
     }
 
+    this.ensureStarted();
+    // Prefer SIMD/atomics mix on the first batch after startup.
+    await this.waitForWasmReady();
+
+    // Multi-worker fan-out: true parallelism for wasm-threads* bake path.
+    if (this.size > 1) {
+      const parts = await Promise.all(
+        jobs.map((job) =>
+          this.mix(
+            job.entries,
+            job.destLen,
+            job.destChCount,
+            // Never transfer when fanning out: the same source buffer can
+            // appear in several tiles (dry-simple reuse). Transfer would
+            // detach it after the first job.
+            false,
+          )
+        ),
+      );
+      let queueMs = 0;
+      let postMs = 0;
+      for (let i = 0; i < parts.length; i++) {
+        queueMs += parts[i].queueMs ?? 0;
+        postMs += parts[i].postMs ?? 0;
+      }
+      return { results: parts, queueMs, postMs };
+    }
+
+    // Single-worker path: one mixBatch message amortises postMessage cost.
     const id = this.nextId++;
     // deno-lint-ignore no-explicit-any
     const msgJobs: any[] = new Array(jobs.length);
-    // Flatten for unique-transferable scan across the whole batch.
     const allEntries: MixSourceEntry[] = [];
 
     for (let j = 0; j < jobs.length; j++) {
@@ -973,6 +1081,10 @@ self.onmessage = function(ev) {
 
   /**
    * Split entries across pool workers, mix partial results, then sum on main.
+   * Each partial mix uses the per-worker WASM core (SIMD when the bundle is
+   * wasm-simd / wasm-threaded-simd). Parallelism = JS worker pool (the same
+   * model as wasm-threads for bake — multi-instance, not SharedArrayBuffer
+   * pthreads inside one module).
    */
   async mixParallel(
     entries: MixSourceEntry[],
@@ -986,6 +1098,9 @@ self.onmessage = function(ev) {
         right: destChCount > 1 ? new Float32Array(destLen) : undefined,
       };
     }
+
+    this.ensureStarted();
+    await this.waitForWasmReady();
 
     const workers = Math.min(
       this.size,
@@ -1017,13 +1132,26 @@ self.onmessage = function(ev) {
       if (typeof partials[p].workerMs === "number") {
         workerMs += partials[p].workerMs!;
       }
-      for (let i = 0; i < destLen; i++) {
+      // Unrolled add — main-thread combine of partial WASM mixes.
+      let i = 0;
+      const n = destLen;
+      const n4 = n - 3;
+      for (; i < n4; i += 4) {
         left[i] += pl[i];
+        left[i + 1] += pl[i + 1];
+        left[i + 2] += pl[i + 2];
+        left[i + 3] += pl[i + 3];
       }
+      for (; i < n; i++) left[i] += pl[i];
       if (right && pr) {
-        for (let i = 0; i < destLen; i++) {
+        i = 0;
+        for (; i < n4; i += 4) {
           right[i] += pr[i];
+          right[i + 1] += pr[i + 1];
+          right[i + 2] += pr[i + 2];
+          right[i + 3] += pr[i + 3];
         }
+        for (; i < n; i++) right[i] += pr[i];
       }
     }
 
@@ -1251,6 +1379,10 @@ self.onmessage = function(ev) {
     this.free = [];
     this.queue = [];
     this.pendingById.clear();
+    this.wasmReadyCount = 0;
+    this.wasmFailedCount = 0;
+    this.wasmInitSettled = false;
+    this.wasmReadyWaiters = [];
     if (this.workerUrl) {
       URL.revokeObjectURL(this.workerUrl);
       this.workerUrl = null;
