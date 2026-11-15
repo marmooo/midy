@@ -2018,7 +2018,7 @@ export class BasePlayer<
     return new ControllerState();
   }
 
-  updateStates(queueIndex: number, nextQueueIndex: number): void {
+  updateStates(_queueIndex: number, nextQueueIndex: number): void {
     const { timeline, resumeTime } = this;
     const inverseTempo = 1 / this.tempo;
     const now = this.audioContext.currentTime;
