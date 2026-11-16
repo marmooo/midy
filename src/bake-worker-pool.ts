@@ -190,17 +190,37 @@ export class BakeWorkerPool {
   /**
    * Minimum entries*destLen "work units" before mixParallel splits across
    * workers. Below this, postMessage + combine overhead dominates.
+   *
+   * Raised from 4*2048 after benches: at ~32k dest the pure mix is only
+   * ~1ms while worker round-trip is several ms, so parallel rarely pays
+   * off until work is substantially larger.
    */
-  static readonly MIN_WORK_FOR_PARALLEL = 4 * 2048;
+  static readonly MIN_WORK_FOR_PARALLEL = 16 * 8192;
 
   /**
-   * Prefer time-axis split when dest is long but entries are few
-   * (long notes / sparse tiles). Samples per slice target.
+   * Target samples per time-split slice. Larger slices reduce the number
+   * of worker jobs (and thus postMessage overhead) while still giving
+   * useful parallelism on long tiles.
    */
-  static readonly TIME_SPLIT_SLICE_SAMPLES = 8192;
+  static readonly TIME_SPLIT_SLICE_SAMPLES = 16384;
 
   /** Minimum destLen to consider time-split at all. */
-  static readonly MIN_DEST_FOR_TIME_SPLIT = 8192;
+  static readonly MIN_DEST_FOR_TIME_SPLIT = 16384;
+
+  /**
+   * Above this destLen, always prefer time-split over entry-split when
+   * parallelising. Entry-split combine cost scales with destLen and
+   * becomes dominant (benches: combine alone ~6–8ms at 65k–262k).
+   */
+  static readonly PREFER_TIME_SPLIT_DEST = 32768;
+
+  /**
+   * Entry-split is only worth it when there are enough entries to give
+   * each worker real work AND dest is short enough that combine stays
+   * cheap. Below this many entries (relative to pool size) we skip
+   * entry-split entirely.
+   */
+  static readonly MIN_ENTRIES_PER_WORKER_FOR_ENTRY_SPLIT = 4;
 
   /**
    * Max time to wait for at least one worker WASM init before first mix.
@@ -1047,9 +1067,9 @@ self.onmessage = function(ev) {
     await this.waitForWasmReady();
 
     // Multi-worker fan-out: true parallelism for wasm-threads* bake path.
-    // Heavy tiles (many entries × long dest) go through mixParallel so a
-    // single dense tile can still use multiple cores; light tiles stay on
-    // plain mix to avoid combine overhead.
+    // Heavy tiles go through mixParallel (which itself prefers time-split
+    // for long dest / sparse entries, entry-split only for dense short
+    // tiles). Light tiles stay on plain mix to avoid postMessage overhead.
     if (this.size > 1) {
       const parts = await Promise.all(
         jobs.map((job) => {
@@ -1133,10 +1153,13 @@ self.onmessage = function(ev) {
   /**
    * Split work across pool workers, mix partial results, then sum on main.
    *
-   * Strategy (in order):
+   * Strategy (in order, based on benches 2026-11):
    * 1. Too little work → single {@link mix}.
-   * 2. Few entries but long dest → {@link mixTimeSplit} (time-axis slices).
-   * 3. Otherwise → entry batches across workers (existing path).
+   * 2. Prefer {@link mixTimeSplit} whenever dest is long or entries are
+   *    not abundant. Time-split has near-zero combine cost (placement
+   *    only) and scales more reliably than entry-split.
+   * 3. Entry-split only when entries are dense AND dest is short enough
+   *    that combining full-size partials stays cheap.
    *
    * Each partial mix uses the per-worker WASM core (SIMD when the bundle is
    * wasm-simd / wasm-threaded-simd). Parallelism = JS worker pool (the same
@@ -1161,26 +1184,50 @@ self.onmessage = function(ev) {
     await this.waitForWasmReady();
 
     const work = entries.length * destLen;
-    const workers = Math.min(
-      this.size,
-      Math.max(1, Math.ceil(entries.length / 2)),
-    );
+    const poolWorkers = Math.max(1, this.size);
 
-    // Sparse long tiles: entry-split gives almost no parallelism.
+    // Not worth parallelising at all.
     if (
-      workers > 1 &&
-      destLen >= BakeWorkerPool.MIN_DEST_FOR_TIME_SPLIT &&
-      entries.length < workers * 2 &&
-      work >= BakeWorkerPool.MIN_WORK_FOR_PARALLEL
-    ) {
-      return this.mixTimeSplit(entries, destLen, destChCount, workers);
-    }
-
-    if (
-      workers <= 1 ||
+      poolWorkers <= 1 ||
       entries.length < BakeWorkerPool.MIN_ENTRIES_FOR_WORKER ||
       work < BakeWorkerPool.MIN_WORK_FOR_PARALLEL
     ) {
+      const one = await this.mix(
+        entries,
+        destLen,
+        destChCount,
+        useTransferable,
+      );
+      one.parts = 1;
+      return one;
+    }
+
+    // --- Decide time-split vs entry-split ---------------------------------
+    // Time-split wins in almost all measured cases because combine is O(1)
+    // placement instead of O(destLen * parts) additive merge. Entry-split
+    // only remains useful for dense, short-dest tiles.
+    const preferTimeSplit = destLen >= BakeWorkerPool.MIN_DEST_FOR_TIME_SPLIT &&
+      (destLen >= BakeWorkerPool.PREFER_TIME_SPLIT_DEST ||
+        entries.length <
+          poolWorkers * BakeWorkerPool.MIN_ENTRIES_PER_WORKER_FOR_ENTRY_SPLIT);
+
+    if (preferTimeSplit) {
+      const slices = Math.min(
+        poolWorkers,
+        Math.max(
+          1,
+          Math.ceil(destLen / BakeWorkerPool.TIME_SPLIT_SLICE_SAMPLES),
+        ),
+      );
+      return this.mixTimeSplit(entries, destLen, destChCount, slices);
+    }
+
+    // Entry-split path: only reached for dense + short-dest tiles.
+    const workers = Math.min(
+      poolWorkers,
+      Math.max(1, Math.ceil(entries.length / 2)),
+    );
+    if (workers <= 1) {
       const one = await this.mix(
         entries,
         destLen,
