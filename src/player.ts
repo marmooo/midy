@@ -658,6 +658,18 @@ export class Player<
   // 1 = offload almost every pureTA tile mix (entriesAvg ~10–15). Was 4,
   // which still left most short tiles on the main thread (mainTiles ≫ workerTiles).
   workerMixMinEntries: number = 1;
+  /**
+   * Cap parallel parts for tile mixParallel / mixTimeSplit.
+   * 0 = auto (up to pool size). 1 = single-worker mix (default).
+   *
+   * Default is 1: op1a A/B showed parallel time-split (parts=4) inflated
+   * await/residual (often 30–70ms) while pure worker work stayed ~5–15ms.
+   * Single-worker mix kept residual ~1ms and lower wall await. Main-thread
+   * load was unchanged (mainBusyMs ≈ same). Re-enable parallel (0 or 2+)
+   * only after residual is addressed (e.g. shared dest / SAB).
+   * Applied to the shared BakeWorkerPool on getBakeWorkerPool().
+   */
+  mixParallelMaxParts: number = 1;
 
   /**
    * During live playback, only offload tile mix to the worker when the tile
@@ -4300,6 +4312,7 @@ export class Player<
             `(noteBake also used in segment/chunk when dest is long enough) ` +
             `transferable=${this.useWorkerTransferable} ` +
             `poolSize=${poolSize} ` +
+            `mixParallelMaxParts=${this.mixParallelMaxParts || "auto"} ` +
             `mixMinEntries=${this.workerMixMinEntries} ` +
             `mixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
             `preferLiveMix=${this.preferWorkerMixDuringLive} ` +
@@ -7722,6 +7735,8 @@ export class Player<
     if (!this.bakeWorkerPool) {
       this.bakeWorkerPool = getSharedBakeWorkerPool(this.workerPoolSize);
     }
+    // Keep pool cap in sync with Player setting (bench --set friendly).
+    this.bakeWorkerPool.maxParallelParts = this.mixParallelMaxParts;
     return this.bakeWorkerPool;
   }
 

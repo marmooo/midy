@@ -212,7 +212,7 @@ export class BakeWorkerPool {
    * parallelising. Entry-split combine cost scales with destLen and
    * becomes dominant (benches: combine alone ~6–8ms at 65k–262k).
    */
-  static readonly PREFER_TIME_SPLIT_DEST = 32768;
+  static readonly PREFER_TIME_SPLIT_DEST = 65536;
 
   /**
    * Entry-split is only worth it when there are enough entries to give
@@ -228,6 +228,13 @@ export class BakeWorkerPool {
    */
   static readonly WASM_READY_WAIT_MS = 80;
 
+  /**
+   * Cap on parallel parts for mixParallel / mixTimeSplit.
+   * 0 = no extra cap (use pool size). 1 = force single-worker mix (A/B baseline).
+   * Set from Player.mixParallelMaxParts via getBakeWorkerPool().
+   */
+  maxParallelParts = 0;
+
   constructor(size = 0) {
     const hw = typeof navigator !== "undefined"
       ? (navigator.hardwareConcurrency || 2)
@@ -238,6 +245,15 @@ export class BakeWorkerPool {
   /** Number of worker threads in the pool. */
   get poolSize(): number {
     return this.size;
+  }
+
+  /** Effective parallel-parts cap (1..poolSize). */
+  private effectiveMaxParts(): number {
+    const pool = Math.max(1, this.size);
+    if (this.maxParallelParts > 0) {
+      return Math.max(1, Math.min(pool, this.maxParallelParts | 0));
+    }
+    return pool;
   }
 
   /** How many workers reported successful WASM instantiate. */
@@ -1184,9 +1200,9 @@ self.onmessage = function(ev) {
     await this.waitForWasmReady();
 
     const work = entries.length * destLen;
-    const poolWorkers = Math.max(1, this.size);
+    const poolWorkers = this.effectiveMaxParts();
 
-    // Not worth parallelising at all.
+    // Not worth parallelising at all (includes maxParallelParts === 1).
     if (
       poolWorkers <= 1 ||
       entries.length < BakeWorkerPool.MIN_ENTRIES_FOR_WORKER ||
