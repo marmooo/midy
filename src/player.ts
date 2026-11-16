@@ -84,6 +84,12 @@ type MixTileDetail = {
   chunkBakeActive?: number;
   offlineRenderActive?: number;
   deferredBakes?: number;
+  /** Main-thread combine of parallel partials (ms). 0 for single-worker mix. */
+  combineMs?: number;
+  /** Number of parallel parts used (1 = no split). */
+  parts?: number;
+  /** True when mixTimeSplit path was used instead of entry-split. */
+  timeSplit?: boolean;
 };
 
 // Re-export cache strategy API (backward compatible with previous player.ts exports).
@@ -434,6 +440,12 @@ export class Player<
   chunkMixPrepareSumMs: number = 0;
   chunkMixAwaitSumMs: number = 0;
   chunkMixWorkerSumMs: number = 0;
+  /** Main-thread combine of parallel partials (from MixResult.combineMs). */
+  chunkMixCombineSumMs: number = 0;
+  /** Worker-path tiles that used mixParallel / mixTimeSplit (parts > 1). */
+  chunkMixParallelTiles: number = 0;
+  /** Worker-path tiles that used the time-split path. */
+  chunkMixTimeSplitTiles: number = 0;
   /** Pool queue wait before postMessage (from MixResult.queueMs). */
   chunkMixQueueSumMs: number = 0;
   /** Main-thread postMessage call duration (from MixResult.postMs). */
@@ -4262,7 +4274,11 @@ export class Player<
               ` mainSchedSum=${this.playMainSchedSumMs.toFixed(0)}ms` +
               ` mainSchedAvg=${schedAvg.toFixed(2)}ms` +
               ` mainSchedMax=${this.playMainSchedMaxMs.toFixed(0)}ms` +
-              ` workerMixMs=${mixWorkerMs.toFixed(0)}`,
+              ` workerMixMs=${mixWorkerMs.toFixed(0)}` +
+              ` combineMs=${this.chunkMixCombineSumMs.toFixed(0)}` +
+              ` parallelTiles=${this.chunkMixParallelTiles}` +
+              ` timeSplitTiles=${this.chunkMixTimeSplitTiles}` +
+              ` workerTiles=${this.chunkMixWorkerTiles}`,
           );
         }
       }
@@ -6972,6 +6988,9 @@ export class Player<
           mixChunkBakeActive: mixDetail.chunkBakeActive,
           mixOfflineRenderActive: mixDetail.offlineRenderActive,
           mixDeferredBakes: mixDetail.deferredBakes,
+          mixCombineMs: mixDetail.combineMs,
+          mixParts: mixDetail.parts,
+          mixTimeSplit: mixDetail.timeSplit,
         });
         // [diag B] tile-bake-detail (sampled + always when heavy/complex/mix-heavy)
         const mixAddMs = mixDetail.usedWorker
@@ -8415,7 +8434,12 @@ export class Player<
       const combineMs = typeof result.combineMs === "number"
         ? result.combineMs
         : 0;
+      const parts = typeof result.parts === "number" ? result.parts : 1;
+      const timeSplit = !!result.timeSplit;
       this.chunkMixWorkerSumMs += workerMs;
+      this.chunkMixCombineSumMs += combineMs;
+      if (parts > 1) this.chunkMixParallelTiles++;
+      if (timeSplit) this.chunkMixTimeSplitTiles++;
       this.chunkMixQueueSumMs += queueMs;
       this.chunkMixPostSumMs += postMs;
       // Residual = reply path + event-loop lag (not explained by
@@ -8501,6 +8525,9 @@ export class Player<
         detailOut.chunkBakeActive = concurrentSnap.chunkBakeActive;
         detailOut.offlineRenderActive = concurrentSnap.offlineRenderActive;
         detailOut.deferredBakes = concurrentSnap.deferredBakes;
+        detailOut.combineMs = combineMs;
+        detailOut.parts = parts;
+        detailOut.timeSplit = timeSplit;
       }
       // Residual ≥ residualWarnMs is already audible as main-thread jank.
       // Log under debug alone (not only debugDetail), rate-limited.
@@ -9760,6 +9787,9 @@ export class Player<
     this.chunkMixPrepareSumMs = 0;
     this.chunkMixAwaitSumMs = 0;
     this.chunkMixWorkerSumMs = 0;
+    this.chunkMixCombineSumMs = 0;
+    this.chunkMixParallelTiles = 0;
+    this.chunkMixTimeSplitTiles = 0;
     this.chunkMixQueueSumMs = 0;
     this.chunkMixPostSumMs = 0;
     this.chunkMixResidualSumMs = 0;
@@ -9923,6 +9953,9 @@ export class Player<
       mixChunkBakeActive?: number;
       mixOfflineRenderActive?: number;
       mixDeferredBakes?: number;
+      mixCombineMs?: number;
+      mixParts?: number;
+      mixTimeSplit?: boolean;
     },
   ): void {
     this.chunkBakeCount++;
@@ -10016,6 +10049,7 @@ export class Player<
           `queue=${(p.mixQueueMs ?? 0).toFixed(0)}ms ` +
           `post=${(p.mixPostMs ?? 0).toFixed(0)}ms ` +
           `worker=${(p.mixWorkerMs ?? 0).toFixed(0)}ms ` +
+          `combine=${(p.mixCombineMs ?? 0).toFixed(2)}ms ` +
           `residual=${(p.mixResidualMs ?? 0).toFixed(0)}ms ` +
           `afterAwait=${(p.mixAfterAwaitMs ?? 0).toFixed(1)}ms ` +
           `copyBack=${(p.mixCopyBackMs ?? 0).toFixed(0)}ms | ` +
@@ -10023,6 +10057,7 @@ export class Player<
             p.mixDestSamples ?? "?"
           } ` +
           `srcSamplesSum=${p.mixSrcSamplesSum ?? "?"} ` +
+          `parts=${p.mixParts ?? 1} timeSplit=${p.mixTimeSplit === true} ` +
           `transferable=${p.mixTransferable ?? "?"} | ` +
           `concurrent: chunkBake=${p.mixChunkBakeActive ?? "?"} ` +
           `offline=${p.mixOfflineRenderActive ?? "?"} ` +
