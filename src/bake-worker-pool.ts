@@ -55,6 +55,15 @@ export type MixResult = {
   queueMs?: number;
   /** Duration of the main-thread postMessage call itself (clone/transfer, ms). */
   postMs?: number;
+  /**
+   * Main-thread time to sum partial results after mixParallel / time-split
+   * (ms). Zero or omitted for single-worker mix.
+   */
+  combineMs?: number;
+  /** Number of parallel parts used (1 = no split). Diagnostic only. */
+  parts?: number;
+  /** True when mixTimeSplit path was used instead of entry split. */
+  timeSplit?: boolean;
 };
 
 /** One tile mix job for {@link BakeWorkerPool.mixBatch}. */
@@ -177,6 +186,21 @@ export class BakeWorkerPool {
 
   /** Minimum dest length (samples) before simple-note render is offloaded. */
   static readonly MIN_SAMPLES_FOR_RENDER = 2048;
+
+  /**
+   * Minimum entries*destLen "work units" before mixParallel splits across
+   * workers. Below this, postMessage + combine overhead dominates.
+   */
+  static readonly MIN_WORK_FOR_PARALLEL = 4 * 2048;
+
+  /**
+   * Prefer time-axis split when dest is long but entries are few
+   * (long notes / sparse tiles). Samples per slice target.
+   */
+  static readonly TIME_SPLIT_SLICE_SAMPLES = 8192;
+
+  /** Minimum destLen to consider time-split at all. */
+  static readonly MIN_DEST_FOR_TIME_SPLIT = 8192;
 
   /**
    * Max time to wait for at least one worker WASM init before first mix.
@@ -727,11 +751,23 @@ self.onmessage = function(ev) {
   }
 };
 `;
-    const blob = new Blob([workerSource], { type: "application/javascript" });
+    // Deno rejects classic Workers ("Classic workers are not supported").
+    // Module workers accept the same onmessage script from a blob URL.
+    // Browsers keep the classic Worker path (no type option).
+    const isDeno =
+      typeof (globalThis as { Deno?: unknown }).Deno !== "undefined";
+    const blobSource = isDeno
+      ? `${workerSource}
+;export {};
+`
+      : workerSource;
+    const blob = new Blob([blobSource], { type: "application/javascript" });
     this.workerUrl = URL.createObjectURL(blob);
 
     for (let i = 0; i < this.size; i++) {
-      const w = new Worker(this.workerUrl);
+      const w = isDeno
+        ? new Worker(this.workerUrl, { type: "module" })
+        : new Worker(this.workerUrl);
       w.onmessage = (ev: MessageEvent) => this.onWorkerMessage(w, ev);
       w.onerror = (err) => {
         console.error("[midy bake-worker]", err.message);
@@ -1011,10 +1047,25 @@ self.onmessage = function(ev) {
     await this.waitForWasmReady();
 
     // Multi-worker fan-out: true parallelism for wasm-threads* bake path.
+    // Heavy tiles (many entries × long dest) go through mixParallel so a
+    // single dense tile can still use multiple cores; light tiles stay on
+    // plain mix to avoid combine overhead.
     if (this.size > 1) {
       const parts = await Promise.all(
-        jobs.map((job) =>
-          this.mix(
+        jobs.map((job) => {
+          const work = job.entries.length * job.destLen;
+          if (
+            job.entries.length >= 4 &&
+            work >= BakeWorkerPool.MIN_WORK_FOR_PARALLEL
+          ) {
+            return this.mixParallel(
+              job.entries,
+              job.destLen,
+              job.destChCount,
+              false,
+            );
+          }
+          return this.mix(
             job.entries,
             job.destLen,
             job.destChCount,
@@ -1022,8 +1073,8 @@ self.onmessage = function(ev) {
             // appear in several tiles (dry-simple reuse). Transfer would
             // detach it after the first job.
             false,
-          )
-        ),
+          );
+        }),
       );
       let queueMs = 0;
       let postMs = 0;
@@ -1080,7 +1131,13 @@ self.onmessage = function(ev) {
   }
 
   /**
-   * Split entries across pool workers, mix partial results, then sum on main.
+   * Split work across pool workers, mix partial results, then sum on main.
+   *
+   * Strategy (in order):
+   * 1. Too little work → single {@link mix}.
+   * 2. Few entries but long dest → {@link mixTimeSplit} (time-axis slices).
+   * 3. Otherwise → entry batches across workers (existing path).
+   *
    * Each partial mix uses the per-worker WASM core (SIMD when the bundle is
    * wasm-simd / wasm-threaded-simd). Parallelism = JS worker pool (the same
    * model as wasm-threads for bake — multi-instance, not SharedArrayBuffer
@@ -1096,20 +1153,42 @@ self.onmessage = function(ev) {
       return {
         left: new Float32Array(destLen),
         right: destChCount > 1 ? new Float32Array(destLen) : undefined,
+        parts: 0,
       };
     }
 
     this.ensureStarted();
     await this.waitForWasmReady();
 
+    const work = entries.length * destLen;
     const workers = Math.min(
       this.size,
-      Math.max(1, Math.ceil(entries.length / 4)),
+      Math.max(1, Math.ceil(entries.length / 2)),
     );
+
+    // Sparse long tiles: entry-split gives almost no parallelism.
     if (
-      workers <= 1 || entries.length < BakeWorkerPool.MIN_ENTRIES_FOR_WORKER
+      workers > 1 &&
+      destLen >= BakeWorkerPool.MIN_DEST_FOR_TIME_SPLIT &&
+      entries.length < workers * 2 &&
+      work >= BakeWorkerPool.MIN_WORK_FOR_PARALLEL
     ) {
-      return this.mix(entries, destLen, destChCount, useTransferable);
+      return this.mixTimeSplit(entries, destLen, destChCount, workers);
+    }
+
+    if (
+      workers <= 1 ||
+      entries.length < BakeWorkerPool.MIN_ENTRIES_FOR_WORKER ||
+      work < BakeWorkerPool.MIN_WORK_FOR_PARALLEL
+    ) {
+      const one = await this.mix(
+        entries,
+        destLen,
+        destChCount,
+        useTransferable,
+      );
+      one.parts = 1;
+      return one;
     }
 
     const chunkSize = Math.ceil(entries.length / workers);
@@ -1118,13 +1197,144 @@ self.onmessage = function(ev) {
       const start = w * chunkSize;
       if (start >= entries.length) break;
       const slice = entries.slice(start, start + chunkSize);
+      // Never transfer when fanning out: same buffer can appear in several
+      // entry groups after a naive slice; safer and matches mixBatch policy.
       tasks.push(this.mix(slice, destLen, destChCount, false));
     }
 
     const partials = await Promise.all(tasks);
+    return BakeWorkerPool.combineMixPartials(partials, destLen, destChCount);
+  }
+
+  /**
+   * Split destination along the time axis. Each worker mixes only the
+   * entries that overlap its [offset, offset+len) window, with startSample
+   * rewritten relative to the slice. Results are copied into the full dest
+   * (no overlap, so no add — pure placement).
+   */
+  async mixTimeSplit(
+    entries: MixSourceEntry[],
+    destLen: number,
+    destChCount: 1 | 2,
+    slices = 0,
+  ): Promise<MixResult> {
+    const n = slices > 0 ? slices : Math.min(
+      this.size,
+      Math.max(
+        1,
+        Math.ceil(destLen / BakeWorkerPool.TIME_SPLIT_SLICE_SAMPLES),
+      ),
+    );
+    if (n <= 1 || destLen < BakeWorkerPool.MIN_DEST_FOR_TIME_SPLIT) {
+      const one = await this.mix(entries, destLen, destChCount, false);
+      one.parts = 1;
+      one.timeSplit = false;
+      return one;
+    }
+
+    this.ensureStarted();
+    await this.waitForWasmReady();
+
+    const sliceLen = Math.ceil(destLen / n);
+    const tasks: Promise<{ offset: number; result: MixResult }>[] = [];
+
+    for (let s = 0; s < n; s++) {
+      const offset = s * sliceLen;
+      const len = Math.min(sliceLen, destLen - offset);
+      if (len <= 0) break;
+
+      const local: MixSourceEntry[] = [];
+      for (let ei = 0; ei < entries.length; ei++) {
+        const e = entries[ei];
+        const srcLen = e.left.length;
+        const absStart = e.startSample | 0;
+        const absEnd = absStart + srcLen;
+        if (absEnd <= offset || absStart >= offset + len) continue;
+
+        // Overlap in destination coordinates.
+        const dst0 = Math.max(absStart, offset);
+        const dst1 = Math.min(absEnd, offset + len);
+        const src0 = dst0 - absStart;
+        const copyLen = dst1 - dst0;
+        if (copyLen <= 0) continue;
+
+        const left = e.left.subarray(src0, src0 + copyLen);
+        const right = e.right
+          ? e.right.subarray(src0, src0 + copyLen)
+          : undefined;
+        let gainCurve: Float32Array | undefined;
+        if (e.gainCurve) {
+          gainCurve = e.gainCurve.subarray(src0, src0 + copyLen);
+        }
+        local.push({
+          left,
+          right,
+          startSample: dst0 - offset,
+          gain: e.gain,
+          gainRight: e.gainRight,
+          gainCurve,
+        });
+      }
+
+      if (local.length === 0) {
+        tasks.push(Promise.resolve({
+          offset,
+          result: {
+            left: new Float32Array(len),
+            right: destChCount > 1 ? new Float32Array(len) : undefined,
+            workerMs: 0,
+            parts: 1,
+          },
+        }));
+        continue;
+      }
+
+      tasks.push(
+        this.mix(local, len, destChCount, false).then((result) => ({
+          offset,
+          result,
+        })),
+      );
+    }
+
+    const parts = await Promise.all(tasks);
     const left = new Float32Array(destLen);
     const right = destChCount > 1 ? new Float32Array(destLen) : null;
     let workerMs = 0;
+    const t0 = performance.now();
+
+    for (let p = 0; p < parts.length; p++) {
+      const { offset, result } = parts[p];
+      if (typeof result.workerMs === "number") workerMs += result.workerMs;
+      left.set(result.left, offset);
+      if (right && result.right) right.set(result.right, offset);
+    }
+
+    const combineMs = performance.now() - t0;
+    return {
+      left,
+      right: right ?? undefined,
+      workerMs,
+      combineMs,
+      parts: parts.length,
+      timeSplit: true,
+    };
+  }
+
+  /**
+   * Sum partial full-dest mixes from entry-split parallel jobs.
+   */
+  private static combineMixPartials(
+    partials: MixResult[],
+    destLen: number,
+    destChCount: 1 | 2,
+  ): MixResult {
+    const left = new Float32Array(destLen);
+    const right = destChCount > 1 ? new Float32Array(destLen) : null;
+    let workerMs = 0;
+    let queueMs = 0;
+    let postMs = 0;
+    const t0 = performance.now();
 
     for (let p = 0; p < partials.length; p++) {
       const pl = partials[p].left;
@@ -1132,7 +1342,12 @@ self.onmessage = function(ev) {
       if (typeof partials[p].workerMs === "number") {
         workerMs += partials[p].workerMs!;
       }
-      // Unrolled add — main-thread combine of partial WASM mixes.
+      if (typeof partials[p].queueMs === "number") {
+        queueMs += partials[p].queueMs!;
+      }
+      if (typeof partials[p].postMs === "number") {
+        postMs += partials[p].postMs!;
+      }
       let i = 0;
       const n = destLen;
       const n4 = n - 3;
@@ -1155,7 +1370,17 @@ self.onmessage = function(ev) {
       }
     }
 
-    return { left, right: right ?? undefined, workerMs };
+    const combineMs = performance.now() - t0;
+    return {
+      left,
+      right: right ?? undefined,
+      workerMs,
+      queueMs: queueMs || undefined,
+      postMs: postMs || undefined,
+      combineMs,
+      parts: partials.length,
+      timeSplit: false,
+    };
   }
 
   /**

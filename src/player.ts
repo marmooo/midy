@@ -7750,14 +7750,26 @@ export class Player<
         const pool = this.getBakeWorkerPool();
         try {
           if (batch.length === 1) {
-            // Single-tile: immediate pool.mix (no batch wrapper).
+            // Single-tile: heavy tiles use mixParallel (entry or time split
+            // across the pool); light tiles stay on pool.mix.
             const j = batch[0];
-            const result = await pool.mix(
-              j.entries,
-              j.destLen,
-              j.destChCount,
-              j.transferable,
-            );
+            const work = j.entries.length * j.destLen;
+            const result = (
+                j.entries.length >= 4 &&
+                work >= BakeWorkerPool.MIN_WORK_FOR_PARALLEL
+              )
+              ? await pool.mixParallel(
+                j.entries,
+                j.destLen,
+                j.destChCount,
+                j.transferable,
+              )
+              : await pool.mix(
+                j.entries,
+                j.destLen,
+                j.destChCount,
+                j.transferable,
+              );
             j.resolve(result);
           } else {
             // Closed tiles / preroll: up to 4 tiles in one postMessage.
@@ -8400,11 +8412,18 @@ export class Player<
         : 0;
       const queueMs = typeof result.queueMs === "number" ? result.queueMs : 0;
       const postMs = typeof result.postMs === "number" ? result.postMs : 0;
+      const combineMs = typeof result.combineMs === "number"
+        ? result.combineMs
+        : 0;
       this.chunkMixWorkerSumMs += workerMs;
       this.chunkMixQueueSumMs += queueMs;
       this.chunkMixPostSumMs += postMs;
-      // Residual = reply path + event-loop lag (not explained by queue/post/worker).
-      const residualMs = Math.max(0, awaitMs - queueMs - postMs - workerMs);
+      // Residual = reply path + event-loop lag (not explained by
+      // queue/post/worker/combine). combineMs is main-thread sum of partials.
+      const residualMs = Math.max(
+        0,
+        awaitMs - queueMs - postMs - workerMs - combineMs,
+      );
       this.chunkMixResidualSumMs += residualMs;
       this.chunkMixResidualSamplesMs.push(residualMs);
       if (residualMs >= this.residualWarnMs) {
