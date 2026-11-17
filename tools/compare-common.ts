@@ -222,7 +222,9 @@ export function checkSingleNoteWav(
     throw new Error(`${label}: no onset found above threshold`);
   }
   const onsetTime = onsetFrame / wav.sampleRate;
-  if (onsetTime > 0.2) {
+  // Offline renders are ~0s; realtime worklet capture may still show a small
+  // lead-in after harness trim. 0.35s keeps the sanity check meaningful.
+  if (onsetTime > 0.35) {
     throw new Error(
       `${label}: onset at ${onsetTime.toFixed(3)}s, expected near 0s`,
     );

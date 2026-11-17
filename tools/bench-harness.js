@@ -159,7 +159,9 @@ async function benchMainLoad(params) {
   const elapsedMs = performance.now() - t0;
   console.log(
     `[bench] play finished elapsedMs=${elapsedMs.toFixed(0)} ` +
-      `timedOut=${timedOut} totalTime=${totalTime.toFixed(2)}s bundle=${bundle}`,
+      `timedOut=${timedOut} totalTime=${
+        totalTime.toFixed(2)
+      }s bundle=${bundle}`,
   );
 
   try {

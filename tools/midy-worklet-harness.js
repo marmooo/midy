@@ -10,14 +10,22 @@ function encodeWavFloat32FromChannels(channelData, sampleRate) {
   const dataSize = numFrames * blockAlign;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
-  const ws = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
-  ws(0, "RIFF"); view.setUint32(4, 36 + dataSize, true);
-  ws(8, "WAVE"); ws(12, "fmt ");
-  view.setUint32(16, 16, true); view.setUint16(20, 3, true);
-  view.setUint16(22, numChannels, true); view.setUint32(24, sampleRate, true);
+  const ws = (o, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i));
+  };
+  ws(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  ws(8, "WAVE");
+  ws(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 3, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true); view.setUint16(34, 32, true);
-  ws(36, "data"); view.setUint32(40, dataSize, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 32, true);
+  ws(36, "data");
+  view.setUint32(40, dataSize, true);
   let off = 44;
   for (let f = 0; f < numFrames; f++) {
     for (let c = 0; c < numChannels; c++) {
@@ -29,8 +37,9 @@ function encodeWavFloat32FromChannels(channelData, sampleRate) {
 }
 function base64FromBytes(bytes) {
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000)
+  for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
   return btoa(binary);
 }
 function bytesFromBase64(base64) {
@@ -40,6 +49,35 @@ function bytesFromBase64(base64) {
   return bytes;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Drop leading near-silence so single-note onset is near t=0 for compares. */
+function trimLeadingSilence(left, right, sampleRate) {
+  let peak = 0;
+  for (let i = 0; i < left.length; i++) {
+    const a = Math.abs(left[i]);
+    const b = Math.abs(right[i]);
+    if (a > peak) peak = a;
+    if (b > peak) peak = b;
+  }
+  const thr = Math.max(peak * 0.05, 1e-4);
+  let i = 0;
+  while (
+    i < left.length &&
+    Math.abs(left[i]) < thr &&
+    Math.abs(right[i]) < thr
+  ) {
+    i++;
+  }
+  // Keep a few ms of pre-roll so attack is not clipped.
+  const pre = Math.min(i, Math.floor(0.005 * sampleRate));
+  const start = Math.max(0, i - pre);
+  if (start <= 0) return { left, right, trimmedFrames: 0 };
+  return {
+    left: left.subarray(start),
+    right: right.subarray(start),
+    trimmedFrames: start,
+  };
+}
 
 const CAPTURE_SRC = `
 class MidyCaptureProcessor extends AudioWorkletProcessor {
@@ -74,22 +112,32 @@ async function renderMidyWorklet(params) {
   const sampleRate = params.sampleRate ?? 48000;
   const tailSec = params.tailSec ?? 0.5;
   const logs = [];
-  const log = (m) => { logs.push(String(m)); console.log("[worklet-harness] " + m); };
+  const log = (m) => {
+    logs.push(String(m));
+    console.log("[worklet-harness] " + m);
+  };
 
   const ctx = new (globalThis.AudioContext || globalThis.webkitAudioContext)({
-    sampleRate, latencyHint: "interactive",
+    sampleRate,
+    latencyHint: "interactive",
   });
   if (ctx.state === "suspended") await ctx.resume();
   log("ctx sr=" + ctx.sampleRate + " state=" + ctx.state + " harness=v4");
 
   const blob = new Blob([CAPTURE_SRC], { type: "application/javascript" });
   const url = URL.createObjectURL(blob);
-  try { await ctx.audioWorklet.addModule(url); }
-  finally { URL.revokeObjectURL(url); }
+  try {
+    await ctx.audioWorklet.addModule(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 
   const capturer = new AudioWorkletNode(ctx, "midy-pcm-capture", {
-    numberOfInputs: 1, numberOfOutputs: 1,
-    outputChannelCount: [2], channelCount: 2, channelCountMode: "explicit",
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [2],
+    channelCount: 2,
+    channelCountMode: "explicit",
   });
   const leftBlocks = [], rightBlocks = [];
   let peak = 0;
@@ -113,12 +161,15 @@ async function renderMidyWorklet(params) {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     g.gain.value = 0.2;
-    osc.connect(g); g.connect(capturer);
+    osc.connect(g);
+    g.connect(capturer);
     osc.start();
     await sleep(200);
     osc.stop();
     await sleep(30);
-    try { g.disconnect(); } catch { /* */ }
+    try {
+      g.disconnect();
+    } catch { /* */ }
     // Peak may stay 0 because gate is closed — that's OK for v4
     log("testA_done (gate closed, peak ignored)");
   }
@@ -129,7 +180,9 @@ async function renderMidyWorklet(params) {
   player.startDelay = 0;
   await player.loadSoundFont(bytesFromBase64(params.soundFontBytesBase64));
   await player.loadMIDI(bytesFromBase64(params.midiBytesBase64));
-  log("midi totalTime=" + player.totalTime + " startDelay=" + player.startDelay);
+  log(
+    "midi totalTime=" + player.totalTime + " startDelay=" + player.startDelay,
+  );
 
   await player.ensureWorkletEngine();
   const engine = player.workletEngine;
@@ -143,28 +196,57 @@ async function renderMidyWorklet(params) {
     if (msg?.type === "voiceEnded") log("proc:voiceEnded " + msg.voiceId);
   };
 
-  try { player.masterVolume.connect(capturer); } catch { /* */ }
-  try { engine.node.connect(capturer); } catch { /* */ }
-  try { engine.dryGain?.connect(capturer); } catch { /* */ }
+  try {
+    player.masterVolume.connect(capturer);
+  } catch { /* */ }
+  try {
+    engine.node.connect(capturer);
+  } catch { /* */ }
+  try {
+    engine.dryGain?.connect(capturer);
+  } catch { /* */ }
 
   // ---- Test B: synth self-test (gate still closed) ----
   {
     const sr = ctx.sampleRate;
     const sine = new Float32Array(Math.floor(sr * 0.3));
-    for (let i = 0; i < sine.length; i++)
+    for (let i = 0; i < sine.length; i++) {
       sine[i] = Math.sin(2 * Math.PI * 440 * i / sr) * 0.3;
+    }
     engine.loadSample(900001, sine, null, sr, 0, sine.length, false);
     await sleep(40);
     const vid = engine.allocVoiceId();
     engine.noteOn(vid, {
-      sampleId: 900001, when: ctx.currentTime + 0.01, playbackRate: 1,
-      gain: 1, pan: 0, delay: 0, attack: 0.005, hold: 0, decay: 0.05,
-      sustain: 0.9, release: 0.05,
-      filterFcCents: 13500, filterQ: 0.7071, filterDcGain: 1,
-      delayModEnv: 0, attackModEnv: 0.01, holdModEnv: 0, decayModEnv: 0.1,
-      sustainModEnv: 0, releaseModEnv: 0.05, modEnvToPitch: 0, modEnvToFilterFc: 0,
-      delayModLFO: 0, freqModLFO: 5, modLfoToPitch: 0, modLfoToFilterFc: 0,
-      modLfoToVolume: 0, delayVibLFO: 0, freqVibLFO: 5, vibLfoToPitch: 0,
+      sampleId: 900001,
+      when: ctx.currentTime + 0.01,
+      playbackRate: 1,
+      gain: 1,
+      pan: 0,
+      delay: 0,
+      attack: 0.005,
+      hold: 0,
+      decay: 0.05,
+      sustain: 0.9,
+      release: 0.05,
+      filterFcCents: 13500,
+      filterQ: 0.7071,
+      filterDcGain: 1,
+      delayModEnv: 0,
+      attackModEnv: 0.01,
+      holdModEnv: 0,
+      decayModEnv: 0.1,
+      sustainModEnv: 0,
+      releaseModEnv: 0.05,
+      modEnvToPitch: 0,
+      modEnvToFilterFc: 0,
+      delayModLFO: 0,
+      freqModLFO: 5,
+      modLfoToPitch: 0,
+      modLfoToFilterFc: 0,
+      modLfoToVolume: 0,
+      delayVibLFO: 0,
+      freqVibLFO: 5,
+      vibLfoToPitch: 0,
     });
     await sleep(250);
     engine.noteOff(vid, ctx.currentTime, 0.03);
@@ -176,7 +258,9 @@ async function renderMidyWorklet(params) {
   // ---- Open gate & capture MIDI only ----
   // Processor may not have setGate yet if CAPTURE_SRC not updated — also
   // clear buffers and rely on MIDI-only accumulation below.
-  leftBlocks.length = 0; rightBlocks.length = 0; peak = 0;
+  leftBlocks.length = 0;
+  rightBlocks.length = 0;
+  peak = 0;
 
   // Rebuild capturer message path: enable recording flag on main side
   let record = true;
@@ -206,25 +290,39 @@ async function renderMidyWorklet(params) {
   const right = new Float32Array(total);
   let o = 0;
   for (let i = 0; i < leftBlocks.length; i++) {
-    left.set(leftBlocks[i], o); right.set(rightBlocks[i], o);
+    left.set(leftBlocks[i], o);
+    right.set(rightBlocks[i], o);
     o += leftBlocks[i].length;
   }
   let midiPeak = 0;
-  for (let i = 0; i < left.length; i++)
+  for (let i = 0; i < left.length; i++) {
     midiPeak = Math.max(midiPeak, Math.abs(left[i]), Math.abs(right[i]));
+  }
   log("midiPeak=" + midiPeak + " frames=" + total);
 
   if (midiPeak < 1e-6) {
     throw new Error("MIDI silent. logs=" + logs.join(" | "));
   }
 
-  const wavBytes = encodeWavFloat32FromChannels([left, right], ctx.sampleRate);
-  try { await ctx.close(); } catch { /* */ }
+  // Realtime worklet capture often has 100–250ms of leading silence (graph
+  // settle + scheduling). Trim so quality compares see onset near t=0.
+  const trimmed = trimLeadingSilence(left, right, ctx.sampleRate);
+  log(
+    "trimLeading=" + trimmed.trimmedFrames +
+      " frames (" + (trimmed.trimmedFrames / ctx.sampleRate).toFixed(3) + "s)",
+  );
+  const outL = trimmed.left;
+  const outR = trimmed.right;
+
+  const wavBytes = encodeWavFloat32FromChannels([outL, outR], ctx.sampleRate);
+  try {
+    await ctx.close();
+  } catch { /* */ }
   return {
     wavBase64: base64FromBytes(wavBytes),
     cacheMode: "worklet",
     sampleRate: ctx.sampleRate,
-    frames: total,
+    frames: outL.length,
     peak: midiPeak,
     logs,
   };
