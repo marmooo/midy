@@ -1,0 +1,36 @@
+[
+  {
+    "name": "sab-off",
+    "bundle": "wasm-threaded-simd",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 1,
+      "useSharedDestMix": false,
+      "useWorkerTypedArrayMix": true
+    }
+  },
+  {
+    "name": "sab-on-1",
+    "bundle": "wasm-threaded-simd",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 1,
+      "useSharedDestMix": true,
+      "useWorkerTypedArrayMix": true
+    }
+  },
+  {
+    "name": "sab-on-4",
+    "bundle": "wasm-threaded-simd",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 4,
+      "workerPoolSize": 4,
+      "useSharedDestMix": true,
+      "useWorkerTypedArrayMix": true
+    }
+  }
+]

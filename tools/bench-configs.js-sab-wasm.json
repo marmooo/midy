@@ -1,0 +1,35 @@
+[
+  {
+    "name": "js-off",
+    "bundle": "js",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 1,
+      "useSharedDestMix": false,
+      "useWorkerTypedArrayMix": true
+    }
+  },
+  {
+    "name": "js-on",
+    "bundle": "js",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 1,
+      "useSharedDestMix": true,
+      "useWorkerTypedArrayMix": true
+    }
+  },
+  {
+    "name": "wasm-simd-on",
+    "bundle": "wasm-simd",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true,
+      "mixParallelMaxParts": 1,
+      "useSharedDestMix": true,
+      "useWorkerTypedArrayMix": true
+    }
+  }
+]

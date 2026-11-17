@@ -672,6 +672,14 @@ export class Player<
   mixParallelMaxParts: number = 1;
 
   /**
+   * When true (default), tile time-split mix may write a SharedArrayBuffer
+   * dest in-place (no large result transfer / combine) when the page is
+   * cross-origin isolated. Set false to force the copy path for A/B benches.
+   * Applied to BakeWorkerPool.preferSharedDest on getBakeWorkerPool().
+   */
+  useSharedDestMix: boolean = true;
+
+  /**
    * During live playback, only offload tile mix to the worker when the tile
    * has at least this many entries. Smaller tiles mix on main (sync).
    * 0 = fall back to workerMixMinEntries. Default 12.
@@ -4313,6 +4321,8 @@ export class Player<
             `transferable=${this.useWorkerTransferable} ` +
             `poolSize=${poolSize} ` +
             `mixParallelMaxParts=${this.mixParallelMaxParts || "auto"} ` +
+            `useSharedDestMix=${this.useSharedDestMix} ` +
+            `sharedDest=${BakeWorkerPool.canUseSharedDest()} ` +
             `mixMinEntries=${this.workerMixMinEntries} ` +
             `mixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
             `preferLiveMix=${this.preferWorkerMixDuringLive} ` +
@@ -7737,6 +7747,8 @@ export class Player<
     }
     // Keep pool cap in sync with Player setting (bench --set friendly).
     this.bakeWorkerPool.maxParallelParts = this.mixParallelMaxParts;
+    // SAB dest path: allow benches to force the copy fallback.
+    BakeWorkerPool.preferSharedDest = this.useSharedDestMix;
     return this.bakeWorkerPool;
   }
 

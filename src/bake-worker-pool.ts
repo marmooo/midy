@@ -241,12 +241,22 @@ export class BakeWorkerPool {
   static readonly WASM_READY_WAIT_MS = 80;
 
   /**
+   * When false, always use the private-partial + combine/placement path
+   * even if SharedArrayBuffer is available. Intended for A/B benches
+   * (SAB on vs off under the same COOP/COEP page).
+   * Default true. Set from Player.useSharedDestMix via getBakeWorkerPool().
+   */
+  static preferSharedDest = true;
+
+  /**
    * True when SharedArrayBuffer is usable for shared dest mix.
    * Browsers require cross-origin isolation (COOP+COEP). Deno exposes SAB
-   * without COOP/COEP. Cache the result — it does not change for the process.
+   * without COOP/COEP. Platform result is cached; preferSharedDest is
+   * consulted on every call so benches can flip it per run.
    */
   private static _canUseSharedDest: boolean | null = null;
   static canUseSharedDest(): boolean {
+    if (!BakeWorkerPool.preferSharedDest) return false;
     if (BakeWorkerPool._canUseSharedDest != null) {
       return BakeWorkerPool._canUseSharedDest;
     }
