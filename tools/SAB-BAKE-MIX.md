@@ -1,4 +1,4 @@
-# SharedArrayBuffer bake mix path
+# SharedArrayBuffer (SAB) bake mix path
 
 ## What changed
 
