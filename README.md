@@ -50,6 +50,8 @@ This library provides several files depending on the implementation level.
     rhythm game with various notes
   - [Zip Zap Notes](https://marmooo.github.io/zip-zap-notes) - Falling-note game
     where you dodge notes
+  - [Pick Pack Notes](https://marmooo.github.io/pick-pack-notes) - Falling-note
+    game where you collect notes
 
 ## Support Status
 
