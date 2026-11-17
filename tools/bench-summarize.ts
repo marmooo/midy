@@ -25,6 +25,12 @@ const METRIC_KEYS = [
   "mixMainMs",
   "mixWorkerMs",
   "mixMainRatio",
+  "parallelTiles",
+  "sharedTiles",
+  "fallbackTiles",
+  "timeSplitTiles",
+  "partsAvg",
+  "combineSum",
   "residualSum",
   "cacheHit",
   "clsTiled",
@@ -91,6 +97,18 @@ function parseLog(text: string, configHint: string): Row {
   const residual = m(/residualSum=([\d.]+)ms/);
   if (residual && row.residualSum === undefined) {
     row.residualSum = +residual[1];
+  }
+
+  const parallel = m(
+    /\[midy\] chunk-mix-parallel \|[\s\S]*?parallelTiles=(\d+)[\s\S]*?timeSplitTiles=(\d+)[\s\S]*?sharedTiles=(\d+)[\s\S]*?(?:fallbackTiles=(\d+)[\s\S]*?)?partsAvg=([\d.]+)[\s\S]*?combineSum=([\d.]+)ms/,
+  );
+  if (parallel) {
+    row.parallelTiles = +parallel[1];
+    row.timeSplitTiles = +parallel[2];
+    row.sharedTiles = +parallel[3];
+    if (parallel[4] !== undefined) row.fallbackTiles = +parallel[4];
+    row.partsAvg = +parallel[5];
+    row.combineSum = +parallel[6];
   }
 
   const cache = m(
@@ -184,6 +202,11 @@ function printTable(rows: Row[], sortKey: string) {
     "bakeMax",
     "mixMainMs",
     "mixMainRatio",
+    "parallelTiles",
+    "sharedTiles",
+    "fallbackTiles",
+    "partsAvg",
+    "combineSum",
     "late",
     "dropped",
     "timedOut",
