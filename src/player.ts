@@ -10079,6 +10079,8 @@ export class Player<
       mixCombineMs?: number;
       mixParts?: number;
       mixTimeSplit?: boolean;
+      /** SAB in-place dest (MixResult.shared / MixTileDetail.shared). */
+      mixShared?: boolean;
     },
   ): void {
     this.chunkBakeCount++;
@@ -10181,6 +10183,7 @@ export class Player<
           } ` +
           `srcSamplesSum=${p.mixSrcSamplesSum ?? "?"} ` +
           `parts=${p.mixParts ?? 1} timeSplit=${p.mixTimeSplit === true} ` +
+          `shared=${p.mixShared === true} ` +
           `transferable=${p.mixTransferable ?? "?"} | ` +
           `concurrent: chunkBake=${p.mixChunkBakeActive ?? "?"} ` +
           `offline=${p.mixOfflineRenderActive ?? "?"} ` +
