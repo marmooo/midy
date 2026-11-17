@@ -18,6 +18,13 @@
 // Uses structured clone by default; Transferable ArrayBuffers when requested
 // to minimise copy cost for large PCM payloads.
 //
+// SharedArrayBuffer path (cross-origin isolated / COOP+COEP):
+//   mixTimeSplit allocates one SAB dest (L/R). Each worker mixes only its
+//   non-overlapping time slice *directly into* that SAB via mixIntoShared.
+//   Workers post only {id, workerMs} — no large result transfer, no combine.
+//   Entry-split still uses private partials + combine (f32 add is not atomic).
+//   Requires SharedArrayBuffer (crossOriginIsolated in browsers).
+//
 // Curve computation (ADSR / filter / pan) stays on the main thread.
 
 import { SYNTH_CORE_WASM_BASE64 } from "./bake-wasm.ts";
@@ -64,6 +71,11 @@ export type MixResult = {
   parts?: number;
   /** True when mixTimeSplit path was used instead of entry split. */
   timeSplit?: boolean;
+  /**
+   * True when dest was a SharedArrayBuffer written in-place by workers
+   * (no large result transfer, combineMs ≈ 0).
+   */
+  shared?: boolean;
 };
 
 /** One tile mix job for {@link BakeWorkerPool.mixBatch}. */
@@ -148,7 +160,7 @@ type QueuedJob = {
 
 function jobPriority(request: { type?: string }): number {
   const t = request?.type;
-  if (t === "mix" || t === "mixBatch") return 0;
+  if (t === "mix" || t === "mixBatch" || t === "mixIntoShared") return 0;
   return 1;
 }
 
@@ -227,6 +239,36 @@ export class BakeWorkerPool {
    * Keeps preroll from stalling if instantiate is slow / fails.
    */
   static readonly WASM_READY_WAIT_MS = 80;
+
+  /**
+   * True when SharedArrayBuffer is usable for shared dest mix.
+   * Browsers require cross-origin isolation (COOP+COEP). Deno exposes SAB
+   * without COOP/COEP. Cache the result — it does not change for the process.
+   */
+  private static _canUseSharedDest: boolean | null = null;
+  static canUseSharedDest(): boolean {
+    if (BakeWorkerPool._canUseSharedDest != null) {
+      return BakeWorkerPool._canUseSharedDest;
+    }
+    let ok = false;
+    try {
+      if (typeof SharedArrayBuffer === "undefined") {
+        ok = false;
+      } else if (
+        typeof crossOriginIsolated === "boolean" && !crossOriginIsolated
+      ) {
+        // Browser without COOP/COEP: SAB constructor may throw or be neutered.
+        ok = false;
+      } else {
+        const sab = new SharedArrayBuffer(4);
+        ok = sab.byteLength === 4;
+      }
+    } catch {
+      ok = false;
+    }
+    BakeWorkerPool._canUseSharedDest = ok;
+    return ok;
+  }
 
   /**
    * Cap on parallel parts for mixParallel / mixTimeSplit.
@@ -628,6 +670,33 @@ function handleMix(msg) {
   );
 }
 
+// Mix directly into a SharedArrayBuffer-backed Float32Array view (time-slice).
+// destLeft/destRight are views of length destLen already positioned at the
+// slice; main thread zeroed the full SAB once. No result payload — only timing.
+function handleMixIntoShared(msg) {
+  var t0 = performance.now();
+  var destLen = msg.destLen | 0;
+  var destChCount = msg.destChCount | 0;
+  var destLeft = msg.destLeft;
+  var destRight = destChCount > 1 ? (msg.destRight || null) : null;
+  var usedWasm = false;
+  if (__wasmReady && destLen >= 2048 && msg.entries && msg.entries.length > 0) {
+    var mixed = wasmMix(destLen, destChCount, msg.entries);
+    if (mixed) {
+      destLeft.set(mixed.left);
+      if (destRight && mixed.right) destRight.set(mixed.right);
+      usedWasm = true;
+    }
+  }
+  if (!usedWasm) {
+    // mixEntriesInto does += ; dest was zeroed on main for the whole SAB.
+    mixEntriesInto(destLeft, destRight, destLen, msg.entries);
+  }
+  var workerMs = performance.now() - t0;
+  // Intentionally no transfer list and no audio buffers in the reply.
+  self.postMessage({ type: "mix-shared-result", id: msg.id, workerMs: workerMs });
+}
+
 function handleMixBatch(msg) {
   var t0 = performance.now();
   var jobs = msg.jobs;
@@ -771,6 +840,8 @@ self.onmessage = function(ev) {
     }
     if (msg.type === "mix") {
       handleMix(msg);
+    } else if (msg.type === "mixIntoShared") {
+      handleMixIntoShared(msg);
     } else if (msg.type === "mixBatch") {
       handleMixBatch(msg);
     } else if (msg.type === "renderSample") {
@@ -858,6 +929,15 @@ self.onmessage = function(ev) {
         workerMs: data.workerMs,
         queueMs: pending.queueMs,
         postMs: pending.postMs,
+      });
+    } else if (data.type === "mix-shared-result") {
+      // Dest was written in-place on a SharedArrayBuffer; no buffers returned.
+      pending.resolve({
+        left: new Float32Array(0), // placeholder; caller ignores
+        workerMs: data.workerMs,
+        queueMs: pending.queueMs,
+        postMs: pending.postMs,
+        shared: true,
       });
     } else if (data.type === "mix-batch-result") {
       const batchResults = (data.results ?? []).map((r) => ({
@@ -1178,9 +1258,11 @@ self.onmessage = function(ev) {
    *    that combining full-size partials stays cheap.
    *
    * Each partial mix uses the per-worker WASM core (SIMD when the bundle is
-   * wasm-simd / wasm-threaded-simd). Parallelism = JS worker pool (the same
-   * model as wasm-threads for bake — multi-instance, not SharedArrayBuffer
-   * pthreads inside one module).
+   * wasm-simd / wasm-threaded-simd). Parallelism = JS worker pool.
+   * When SharedArrayBuffer is available, mixTimeSplit writes a single shared
+   * dest in-place (true multi-worker sc_mix without large result transfer).
+   * Without SAB, same multi-instance model as before (private partials +
+   * combine / placement).
    */
   async mixParallel(
     entries: MixSourceEntry[],
@@ -1220,10 +1302,13 @@ self.onmessage = function(ev) {
 
     // --- Decide time-split vs entry-split ---------------------------------
     // Time-split wins in almost all measured cases because combine is O(1)
-    // placement instead of O(destLen * parts) additive merge. Entry-split
-    // only remains useful for dense, short-dest tiles.
+    // placement (or zero with SAB) instead of O(destLen * parts) additive
+    // merge. Entry-split only remains useful for dense, short-dest tiles.
+    // With SAB, prefer time-split even earlier — no result transfer / combine.
+    const sab = BakeWorkerPool.canUseSharedDest();
     const preferTimeSplit = destLen >= BakeWorkerPool.MIN_DEST_FOR_TIME_SPLIT &&
-      (destLen >= BakeWorkerPool.PREFER_TIME_SPLIT_DEST ||
+      (sab ||
+        destLen >= BakeWorkerPool.PREFER_TIME_SPLIT_DEST ||
         entries.length <
           poolWorkers * BakeWorkerPool.MIN_ENTRIES_PER_WORKER_FOR_ENTRY_SPLIT);
 
@@ -1272,8 +1357,11 @@ self.onmessage = function(ev) {
   /**
    * Split destination along the time axis. Each worker mixes only the
    * entries that overlap its [offset, offset+len) window, with startSample
-   * rewritten relative to the slice. Results are copied into the full dest
-   * (no overlap, so no add — pure placement).
+   * rewritten relative to the slice.
+   *
+   * When SharedArrayBuffer is available (cross-origin isolated), workers
+   * write *directly* into one shared dest — no large result transfer and
+   * no combine copy. Otherwise falls back to private partials + placement.
    */
   async mixTimeSplit(
     entries: MixSourceEntry[],
@@ -1298,6 +1386,125 @@ self.onmessage = function(ev) {
     this.ensureStarted();
     await this.waitForWasmReady();
 
+    if (BakeWorkerPool.canUseSharedDest()) {
+      return this.mixTimeSplitShared(entries, destLen, destChCount, n);
+    }
+    return this.mixTimeSplitCopy(entries, destLen, destChCount, n);
+  }
+
+  /**
+   * SAB path: one shared dest, each worker mixes its non-overlapping slice
+   * in place. Reply is timing-only — residual large transfers disappear.
+   */
+  private async mixTimeSplitShared(
+    entries: MixSourceEntry[],
+    destLen: number,
+    destChCount: 1 | 2,
+    n: number,
+  ): Promise<MixResult> {
+    const sabL = new SharedArrayBuffer(destLen * 4);
+    const left = new Float32Array(sabL);
+    // Explicit zero (SAB contents are zeroed by the platform, but keep
+    // the contract obvious and safe under older engines).
+    left.fill(0);
+    let right: Float32Array | null = null;
+    if (destChCount > 1) {
+      const sabR = new SharedArrayBuffer(destLen * 4);
+      right = new Float32Array(sabR);
+      right.fill(0);
+    }
+
+    const sliceLen = Math.ceil(destLen / n);
+    const tasks: Promise<MixResult>[] = [];
+    let queueMs = 0;
+    let postMs = 0;
+
+    for (let s = 0; s < n; s++) {
+      const offset = s * sliceLen;
+      const len = Math.min(sliceLen, destLen - offset);
+      if (len <= 0) break;
+
+      const local = BakeWorkerPool.buildTimeSliceEntries(
+        entries,
+        offset,
+        len,
+      );
+      if (local.length === 0) {
+        tasks.push(Promise.resolve({
+          left: new Float32Array(0),
+          workerMs: 0,
+          shared: true,
+        }));
+        continue;
+      }
+
+      const destLeftView = left.subarray(offset, offset + len);
+      const destRightView = right
+        ? right.subarray(offset, offset + len)
+        : undefined;
+
+      const id = this.nextId++;
+      // deno-lint-ignore no-explicit-any
+      const msgEntries: any[] = new Array(local.length);
+      for (let i = 0; i < local.length; i++) {
+        const e = local[i];
+        msgEntries[i] = {
+          left: e.left,
+          right: e.right,
+          startSample: e.startSample,
+          gain: e.gain,
+          gainRight: e.gainRight,
+          gainCurve: e.gainCurve,
+        };
+      }
+
+      tasks.push(
+        this.enqueue(
+          {
+            type: "mixIntoShared",
+            id,
+            destLen: len,
+            destChCount,
+            destLeft: destLeftView,
+            destRight: destRightView,
+            entries: msgEntries,
+          },
+          [], // SAB views are shared via structured clone; never transfer
+        ).then((r) => r as MixResult),
+      );
+    }
+
+    const parts = await Promise.all(tasks);
+    let workerMs = 0;
+    for (let p = 0; p < parts.length; p++) {
+      if (typeof parts[p].workerMs === "number") workerMs += parts[p].workerMs!;
+      if (typeof parts[p].queueMs === "number") queueMs += parts[p].queueMs!;
+      if (typeof parts[p].postMs === "number") postMs += parts[p].postMs!;
+    }
+
+    return {
+      left,
+      right: right ?? undefined,
+      workerMs,
+      queueMs: queueMs || undefined,
+      postMs: postMs || undefined,
+      combineMs: 0,
+      parts: parts.length,
+      timeSplit: true,
+      shared: true,
+    };
+  }
+
+  /**
+   * Non-SAB time-split: private partials + placement into a new dest
+   * (original path; combine is O(dest) copy, not additive).
+   */
+  private async mixTimeSplitCopy(
+    entries: MixSourceEntry[],
+    destLen: number,
+    destChCount: 1 | 2,
+    n: number,
+  ): Promise<MixResult> {
     const sliceLen = Math.ceil(destLen / n);
     const tasks: Promise<{ offset: number; result: MixResult }>[] = [];
 
@@ -1306,38 +1513,11 @@ self.onmessage = function(ev) {
       const len = Math.min(sliceLen, destLen - offset);
       if (len <= 0) break;
 
-      const local: MixSourceEntry[] = [];
-      for (let ei = 0; ei < entries.length; ei++) {
-        const e = entries[ei];
-        const srcLen = e.left.length;
-        const absStart = e.startSample | 0;
-        const absEnd = absStart + srcLen;
-        if (absEnd <= offset || absStart >= offset + len) continue;
-
-        // Overlap in destination coordinates.
-        const dst0 = Math.max(absStart, offset);
-        const dst1 = Math.min(absEnd, offset + len);
-        const src0 = dst0 - absStart;
-        const copyLen = dst1 - dst0;
-        if (copyLen <= 0) continue;
-
-        const left = e.left.subarray(src0, src0 + copyLen);
-        const right = e.right
-          ? e.right.subarray(src0, src0 + copyLen)
-          : undefined;
-        let gainCurve: Float32Array | undefined;
-        if (e.gainCurve) {
-          gainCurve = e.gainCurve.subarray(src0, src0 + copyLen);
-        }
-        local.push({
-          left,
-          right,
-          startSample: dst0 - offset,
-          gain: e.gain,
-          gainRight: e.gainRight,
-          gainCurve,
-        });
-      }
+      const local = BakeWorkerPool.buildTimeSliceEntries(
+        entries,
+        offset,
+        len,
+      );
 
       if (local.length === 0) {
         tasks.push(Promise.resolve({
@@ -1381,7 +1561,48 @@ self.onmessage = function(ev) {
       combineMs,
       parts: parts.length,
       timeSplit: true,
+      shared: false,
     };
+  }
+
+  /** Build local MixSourceEntry[] overlapping [offset, offset+len). */
+  private static buildTimeSliceEntries(
+    entries: MixSourceEntry[],
+    offset: number,
+    len: number,
+  ): MixSourceEntry[] {
+    const local: MixSourceEntry[] = [];
+    for (let ei = 0; ei < entries.length; ei++) {
+      const e = entries[ei];
+      const srcLen = e.left.length;
+      const absStart = e.startSample | 0;
+      const absEnd = absStart + srcLen;
+      if (absEnd <= offset || absStart >= offset + len) continue;
+
+      const dst0 = Math.max(absStart, offset);
+      const dst1 = Math.min(absEnd, offset + len);
+      const src0 = dst0 - absStart;
+      const copyLen = dst1 - dst0;
+      if (copyLen <= 0) continue;
+
+      const left = e.left.subarray(src0, src0 + copyLen);
+      const right = e.right
+        ? e.right.subarray(src0, src0 + copyLen)
+        : undefined;
+      let gainCurve: Float32Array | undefined;
+      if (e.gainCurve) {
+        gainCurve = e.gainCurve.subarray(src0, src0 + copyLen);
+      }
+      local.push({
+        left,
+        right,
+        startSample: dst0 - offset,
+        gain: e.gain,
+        gainRight: e.gainRight,
+        gainCurve,
+      });
+    }
+    return local;
   }
 
   /**

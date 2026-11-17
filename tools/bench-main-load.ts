@@ -225,7 +225,6 @@ async function loadConfigs(
   return [inline];
 }
 
-
 async function collectMidiPaths(
   flags: Record<string, string>,
   midis: string[],
@@ -258,13 +257,24 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** Response headers required for SharedArrayBuffer (wasm-threads path). */
+const CROSS_ORIGIN_ISOLATION_HEADERS: Record<string, string> = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  // Same-origin CORP so module scripts / workers under COEP are fine.
+  "Cross-Origin-Resource-Policy": "same-origin",
+};
+
 function serveDir(dir: string): { url: string; close: () => void } {
   const server = Deno.serve(
     { port: 0, onListen: () => {} },
     async (req) => {
       const url = new URL(req.url);
       if (url.pathname === "/favicon.ico") {
-        return new Response(null, { status: 204 });
+        return new Response(null, {
+          status: 204,
+          headers: CROSS_ORIGIN_ISOLATION_HEADERS,
+        });
       }
       const path = url.pathname === "/" ? "/bench-harness.html" : url.pathname;
       try {
@@ -273,12 +283,22 @@ function serveDir(dir: string): { url: string; close: () => void } {
           ? "text/javascript"
           : path.endsWith(".html")
           ? "text/html"
+          : path.endsWith(".css")
+          ? "text/css"
+          : path.endsWith(".wasm")
+          ? "application/wasm"
           : "application/octet-stream";
         return new Response(data, {
-          headers: { "content-type": contentType },
+          headers: {
+            "content-type": contentType,
+            ...CROSS_ORIGIN_ISOLATION_HEADERS,
+          },
         });
       } catch {
-        return new Response("not found", { status: 404 });
+        return new Response("not found", {
+          status: 404,
+          headers: CROSS_ORIGIN_ISOLATION_HEADERS,
+        });
       }
     },
   );
@@ -389,19 +409,35 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
         let result: Record<string, unknown> | null = null;
         const t0 = performance.now();
         try {
-          const bundle =
-            (config.bundle as string | undefined) ??
+          const bundle = (config.bundle as string | undefined) ??
             options.defaultBundle ??
             "js";
-          const harnessUrl =
-            `${url}/${harnessDir}/bench-harness.html?bundle=${
-              encodeURIComponent(bundle)
-            }`;
+          const harnessUrl = `${url}/${harnessDir}/bench-harness.html?bundle=${
+            encodeURIComponent(bundle)
+          }`;
           push(`[bench-host] harness=${harnessUrl}`);
           await page.goto(harnessUrl, {
             waitUntil: "load",
             timeout: 60_000,
           });
+
+          // Confirm COOP/COEP took effect (SAB / wasm-threads bake path).
+          const isolation = await page.evaluate(() => ({
+            crossOriginIsolated:
+              !!(globalThis as { crossOriginIsolated?: boolean })
+                .crossOriginIsolated,
+            hasSAB: typeof SharedArrayBuffer !== "undefined",
+          }));
+          push(
+            `[bench-host] isolation crossOriginIsolated=${isolation.crossOriginIsolated} ` +
+              `SharedArrayBuffer=${isolation.hasSAB}`,
+          );
+          if (!isolation.crossOriginIsolated || !isolation.hasSAB) {
+            push(
+              `[bench-host] WARN: page is not cross-origin isolated — ` +
+                `wasm-threads SAB mix path will not activate`,
+            );
+          }
 
           // Wait until the module has exposed the entry point.
           await page.waitForFunction(
@@ -445,8 +481,7 @@ export async function runBench(options: BenchRunOptions): Promise<void> {
           runId,
           midiPath,
           config: config.name,
-          bundle:
-            (config.bundle as string | undefined) ??
+          bundle: (config.bundle as string | undefined) ??
             options.defaultBundle ??
             "js",
           settings: config.set,
@@ -487,6 +522,10 @@ function printUsage(): void {
 
 Primary output: raw browser console logs under --out-dir (one file per song×config).
 Also writes manifest.json with run metadata.
+
+The local static server always sends COOP/COEP so SharedArrayBuffer is
+available (required for the wasm-threads / wasm-threaded-simd SAB bake path).
+Look for [bench-host] isolation crossOriginIsolated=true in the log.
 
 --set examples:
   --set cacheMode=chunk

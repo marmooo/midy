@@ -4,7 +4,8 @@
     "bundle": "wasm",
     "set": {
       "cacheMode": "segment",
-      "debug": true
+      "debug": true,
+      "mixParallelMaxParts": 1
     }
   },
   {
@@ -12,7 +13,8 @@
     "bundle": "wasm-simd",
     "set": {
       "cacheMode": "segment",
-      "debug": true
+      "debug": true,
+      "mixParallelMaxParts": 1
     }
   },
   {
@@ -20,7 +22,10 @@
     "bundle": "wasm-threads",
     "set": {
       "cacheMode": "segment",
-      "debug": true
+      "debug": true,
+      "mixParallelMaxParts": 4,
+      "workerPoolSize": 4,
+      "useWorkerTypedArrayMix": true
     }
   },
   {
@@ -28,7 +33,28 @@
     "bundle": "wasm-threaded-simd",
     "set": {
       "cacheMode": "segment",
-      "debug": true
+      "debug": true,
+      "mixParallelMaxParts": 4,
+      "workerPoolSize": 4,
+      "useWorkerTypedArrayMix": true
+    }
+  },
+  {
+    "name": "wasm-threads-serial",
+    "bundle": "wasm-threads",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true,
+      "mixParallelMaxParts": 1
+    }
+  },
+  {
+    "name": "wasm-threaded-simd-serial",
+    "bundle": "wasm-threaded-simd",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true,
+      "mixParallelMaxParts": 1
     }
   }
 ]

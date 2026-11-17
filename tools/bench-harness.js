@@ -72,6 +72,24 @@ async function resolveMidyCtor() {
  * }} params
  */
 async function benchMainLoad(params) {
+  // COOP/COEP must already be on the document (bench-main-load serveDir).
+  const coi = !!globalThis.crossOriginIsolated;
+  let sabOk = false;
+  try {
+    sabOk = typeof SharedArrayBuffer !== "undefined" &&
+      new SharedArrayBuffer(4).byteLength === 4;
+  } catch {
+    sabOk = false;
+  }
+  console.log(
+    `[bench] isolation crossOriginIsolated=${coi} SharedArrayBuffer=${sabOk}`,
+  );
+  if (!coi || !sabOk) {
+    console.warn(
+      "[bench] WARN: not cross-origin isolated — SAB bake mix will fall back to copy path",
+    );
+  }
+
   const { Midy, bundle, path } = await resolveMidyCtor();
   const sampleRate = params.sampleRate ?? 48000;
   const audioContext = new (globalThis.AudioContext ||
@@ -159,6 +177,8 @@ async function benchMainLoad(params) {
     cacheMode: String(player.cacheMode ?? ""),
     bundle,
     path,
+    crossOriginIsolated: coi,
+    sharedArrayBuffer: sabOk,
   };
 }
 
