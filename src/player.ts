@@ -90,6 +90,11 @@ type MixTileDetail = {
   parts?: number;
   /** True when mixTimeSplit path was used instead of entry-split. */
   timeSplit?: boolean;
+  /**
+   * True when dest was a SharedArrayBuffer written in-place by workers
+   * (MixResult.shared; combineMs ≈ 0, no large result transfer).
+   */
+  shared?: boolean;
 };
 
 // Re-export cache strategy API (backward compatible with previous player.ts exports).
@@ -446,6 +451,22 @@ export class Player<
   chunkMixParallelTiles: number = 0;
   /** Worker-path tiles that used the time-split path. */
   chunkMixTimeSplitTiles: number = 0;
+  /** Worker-path tiles that used SAB in-place dest (MixResult.shared). */
+  chunkMixSharedTiles: number = 0;
+  /** Sum of MixResult.parts over worker-path tiles (for partsAvg). */
+  chunkMixPartsSum: number = 0;
+  /** destSamples sum for worker tiles with parts > 1. */
+  chunkMixDestSumParallel: number = 0;
+  /** destSamples sum for worker tiles with parts <= 1. */
+  chunkMixDestSumSerial: number = 0;
+  /** Worker-path tile counts split by parts (serial vs parallel). */
+  chunkMixSerialTiles: number = 0;
+  /**
+   * Worker mix returned a result but copyBack / post-processing threw and
+   * the tile fell back to main-thread mix (e.g. SAB view rejected by
+   * copyToChannel). debug summary exposes this as fallbackTiles.
+   */
+  chunkMixWorkerFallbackTiles: number = 0;
   /** Pool queue wait before postMessage (from MixResult.queueMs). */
   chunkMixQueueSumMs: number = 0;
   /** Main-thread postMessage call duration (from MixResult.postMs). */
@@ -4298,6 +4319,8 @@ export class Player<
               ` combineMs=${this.chunkMixCombineSumMs.toFixed(0)}` +
               ` parallelTiles=${this.chunkMixParallelTiles}` +
               ` timeSplitTiles=${this.chunkMixTimeSplitTiles}` +
+              ` sharedTiles=${this.chunkMixSharedTiles}` +
+              ` fallbackTiles=${this.chunkMixWorkerFallbackTiles}` +
               ` workerTiles=${this.chunkMixWorkerTiles}`,
           );
         }
@@ -4699,6 +4722,38 @@ export class Player<
               `workerMixMinEntriesLive=${this.workerMixMinEntriesLive} ` +
               `workerMixMinEntries=${this.workerMixMinEntries} ` +
               `preferWorkerMixDuringLive=${this.preferWorkerMixDuringLive}`,
+          );
+        }
+        // Parallel / SAB dest summary (debug only; per-tile detail is debugDetail).
+        if (this.debug) {
+          const par = this.chunkMixParallelTiles;
+          const ser = this.chunkMixSerialTiles;
+          const wt = mw; // worker tiles
+          // partsAvg over result-bearing tiles (par+ser), not only successful
+          // copyBack workerTiles — otherwise a copy failure collapses the avg.
+          const resultTiles = par + ser;
+          const partsAvg = resultTiles > 0
+            ? this.chunkMixPartsSum / resultTiles
+            : 0;
+          const combineSum = this.chunkMixCombineSumMs;
+          const combineAvg = resultTiles > 0 ? combineSum / resultTiles : 0;
+          const destAvgPar = par > 0 ? this.chunkMixDestSumParallel / par : 0;
+          const destAvgSer = ser > 0 ? this.chunkMixDestSumSerial / ser : 0;
+          const shared = this.chunkMixSharedTiles;
+          const timeSplit = this.chunkMixTimeSplitTiles;
+          const fallback = this.chunkMixWorkerFallbackTiles;
+          console.log(
+            `[midy] chunk-mix-parallel | ` +
+              `workerTiles=${wt} parallelTiles=${par} serialTiles=${ser} ` +
+              `timeSplitTiles=${timeSplit} sharedTiles=${shared} ` +
+              `fallbackTiles=${fallback} | ` +
+              `partsAvg=${partsAvg.toFixed(2)} ` +
+              `combineSum=${combineSum.toFixed(0)}ms ` +
+              `combineAvg=${combineAvg.toFixed(2)}ms | ` +
+              `destAvgParallel=${destAvgPar.toFixed(0)} ` +
+              `destAvgSerial=${destAvgSer.toFixed(0)} ` +
+              `useSharedDestMix=${this.useSharedDestMix} ` +
+              `sharedDest=${BakeWorkerPool.canUseSharedDest()}`,
           );
         }
         // Offload summary (same numbers, easy to grep alongside older logs).
@@ -6905,6 +6960,7 @@ export class Player<
                 `usedWorker=${mixDetail.usedWorker} ` +
                 `main=${mixDetail.mainMs.toFixed(0)} ` +
                 `residual=${mixDetail.residualMs.toFixed(0)} ` +
+                `parts=${mixDetail.parts ?? 1} shared=${!!mixDetail.shared} ` +
                 `chunkStart=${chunk.chunkStart.toFixed(2)}s ` +
                 `entries=${allEntries.length} ` +
                 `chunkBake=${this.chunkBakeActive}`,
@@ -6938,6 +6994,10 @@ export class Player<
                 `worker=${mixDetail.workerMs.toFixed(1)} ` +
                 `residual=${mixDetail.residualMs.toFixed(1)} ` +
                 `copyBack=${mixDetail.copyBackMs.toFixed(1)} ` +
+                `parts=${mixDetail.parts ?? 1} ` +
+                `timeSplit=${!!mixDetail.timeSplit} ` +
+                `shared=${!!mixDetail.shared} ` +
+                `combine=${(mixDetail.combineMs ?? 0).toFixed(1)} ` +
                 `afterAwait=${(mixDetail.afterAwaitMs ?? 0).toFixed(1)} ` +
                 `entries=${mixDetail.entryCount ?? allEntries.length} ` +
                 `srcSum=${mixDetail.srcSamplesSum ?? 0} ` +
@@ -7014,6 +7074,7 @@ export class Player<
           mixCombineMs: mixDetail.combineMs,
           mixParts: mixDetail.parts,
           mixTimeSplit: mixDetail.timeSplit,
+          mixShared: mixDetail.shared,
         });
         // [diag B] tile-bake-detail (sampled + always when heavy/complex/mix-heavy)
         const mixAddMs = mixDetail.usedWorker
@@ -8463,10 +8524,19 @@ export class Player<
         : 0;
       const parts = typeof result.parts === "number" ? result.parts : 1;
       const timeSplit = !!result.timeSplit;
+      const shared = !!result.shared;
       this.chunkMixWorkerSumMs += workerMs;
       this.chunkMixCombineSumMs += combineMs;
-      if (parts > 1) this.chunkMixParallelTiles++;
+      this.chunkMixPartsSum += parts;
+      if (parts > 1) {
+        this.chunkMixParallelTiles++;
+        this.chunkMixDestSumParallel += bufferLength;
+      } else {
+        this.chunkMixSerialTiles++;
+        this.chunkMixDestSumSerial += bufferLength;
+      }
       if (timeSplit) this.chunkMixTimeSplitTiles++;
+      if (shared) this.chunkMixSharedTiles++;
       this.chunkMixQueueSumMs += queueMs;
       this.chunkMixPostSumMs += postMs;
       // Residual = reply path + event-loop lag (not explained by
@@ -8496,11 +8566,22 @@ export class Player<
       }
 
       // Gap between promise resolve and copyBack (microtask / other main work).
+      // Prefer getChannelData().set over copyToChannel: SAB-backed Float32Array
+      // (mixTimeSplitShared dest) is rejected by copyToChannel in Chromium and
+      // was aborting into the main-thread fallback (sharedTiles≫workerTiles).
       const tCopy0 = performance.now();
       const afterAwaitMs = tCopy0 - tAwaitDone;
-      buffer.copyToChannel(result.left as Float32Array<ArrayBuffer>, 0);
-      if (destChCount > 1 && result.right) {
-        buffer.copyToChannel(result.right as Float32Array<ArrayBuffer>, 1);
+      {
+        const dstL = buffer.getChannelData(0);
+        const srcL = result.left;
+        const nL = srcL.length < dstL.length ? srcL.length : dstL.length;
+        dstL.set(nL === srcL.length ? srcL : srcL.subarray(0, nL), 0);
+        if (destChCount > 1 && result.right) {
+          const dstR = buffer.getChannelData(1);
+          const srcR = result.right;
+          const nR = srcR.length < dstR.length ? srcR.length : dstR.length;
+          dstR.set(nR === srcR.length ? srcR : srcR.subarray(0, nR), 0);
+        }
       }
       const copyBackMs = performance.now() - tCopy0;
       this.chunkMixCopyBackSumMs += copyBackMs;
@@ -8555,6 +8636,7 @@ export class Player<
         detailOut.combineMs = combineMs;
         detailOut.parts = parts;
         detailOut.timeSplit = timeSplit;
+        detailOut.shared = shared;
       }
       // Residual ≥ residualWarnMs is already audible as main-thread jank.
       // Log under debug alone (not only debugDetail), rate-limited.
@@ -8573,7 +8655,9 @@ export class Player<
               copyBackMs.toFixed(0)
             }ms | ` +
             `entries=${mixEntries.length} destSamples=${bufferLength} ` +
-            `srcSamplesSum=${srcSamplesSum} transferable=${transferable} | ` +
+            `srcSamplesSum=${srcSamplesSum} transferable=${transferable} ` +
+            `parts=${parts} timeSplit=${timeSplit} shared=${shared} ` +
+            `combine=${combineMs.toFixed(1)}ms | ` +
             `concurrent: chunkBake=${concurrentSnap.chunkBakeActive} ` +
             `offline=${concurrentSnap.offlineRenderActive} ` +
             `deferred=${concurrentSnap.deferredBakes}` +
@@ -8583,19 +8667,18 @@ export class Player<
       return buffer;
     } catch (err) {
       // Worker failure → fall back to main-thread mix so playback continues.
-      if (this.debug && this.debugDetail) {
+      // Includes copyBack failures (historically SAB + copyToChannel).
+      this.chunkMixWorkerFallbackTiles++;
+      if (this.debug && this.chunkMixWorkerFallbackTiles <= 8) {
         console.warn(
           "[midy] worker mix failed, falling back to main thread",
           err,
         );
-        // [diag E] mix-path fallback
-        if (this.mixPathLogCount < this.mixPathLogMax) {
-          this.mixPathLogCount++;
-          console.warn(
-            `[midy] mix-path | entries=${entries.length} path=main reason=error ` +
-              `destSamples=${bufferLength} n=${this.mixPathLogCount}`,
-          );
-        }
+        console.warn(
+          `[midy] mix-path | entries=${entries.length} path=main reason=error ` +
+            `destSamples=${bufferLength} ` +
+            `fallbackTiles=${this.chunkMixWorkerFallbackTiles}`,
+        );
       }
       const tMain0 = performance.now();
       this.mixSimpleBuffersTypedArray(buffer, entries, sampleRate, gain);
@@ -9817,6 +9900,12 @@ export class Player<
     this.chunkMixCombineSumMs = 0;
     this.chunkMixParallelTiles = 0;
     this.chunkMixTimeSplitTiles = 0;
+    this.chunkMixSharedTiles = 0;
+    this.chunkMixPartsSum = 0;
+    this.chunkMixDestSumParallel = 0;
+    this.chunkMixDestSumSerial = 0;
+    this.chunkMixSerialTiles = 0;
+    this.chunkMixWorkerFallbackTiles = 0;
     this.chunkMixQueueSumMs = 0;
     this.chunkMixPostSumMs = 0;
     this.chunkMixResidualSumMs = 0;
