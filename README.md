@@ -229,24 +229,24 @@ await midy.loadSoundFont(paths);
 // await midy.loadSoundFont(paths, { fallback: null }); // disable
 ```
 
-## Browser builds (JS / WASM / SIMD / threads)
+## Browser builds (JavaScript / Wasm / SIMD / threads)
 
 Pick a dist file at **load time**. Midy does not switch bundles for you.
 
 | Dist                         | Notes                                   |
 | ---------------------------- | --------------------------------------- |
-| `midy.js`                    | Pure JS                                 |
-| `midy.wasm.js`               | WASM scalar                             |
-| `midy.wasm-simd.js`          | WASM + SIMD — needs SIMD in the browser |
-| `midy.wasm-threads.js`       | WASM + atomics binary                   |
+| `midy.js`                    | Pure JavaScript                         |
+| `midy.wasm.js`               | Wasm scalar                             |
+| `midy.wasm-simd.js`          | Wasm + SIMD — needs SIMD in the browser |
+| `midy.wasm-threads.js`       | Wasm + atomics binary                   |
 | `midy.wasm-threaded-simd.js` | SIMD + atomics                          |
 
 **SIMD is not auto-selected.** If you ship a `*-simd*` build, detect support in
 the app (e.g.
 [wasm-feature-detect](https://github.com/GoogleChromeLabs/wasm-feature-detect))
 and import the matching file. Loading a SIMD build on a non-SIMD engine fails
-module instantiation; mix may fall back to JS inside the worker, but you should
-still choose the right bundle up front.
+module instantiation; mix may fall back to JavaScript inside the worker, but you
+should still choose the right bundle up front.
 
 ```js
 import { simd, threads } from "wasm-feature-detect";
@@ -299,7 +299,7 @@ More detail: [`tools/SAB-BAKE-MIX.md`](tools/SAB-BAKE-MIX.md).
 
 ## Build
 
-### Prerequisites (WASM core)
+### Prerequisites (Wasm core)
 
 `deno task build:wasm-core` compiles `wasm/synth_core.c` to WebAssembly and
 embeds it into TypeScript. You need a clang that can target `wasm32` and
@@ -324,7 +324,7 @@ embeds it into TypeScript. You need a clang that can target `wasm32` and
   ```
 
 Rebuild the core only when `wasm/synth_core.c` (or related scripts) change.
-Day-to-day JS/TS builds do not require clang.
+Day-to-day Javascript/TypeScript builds do not require clang.
 
 ### Tasks
 
