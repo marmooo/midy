@@ -227,6 +227,74 @@ await midy.loadSoundFont(paths);
 // await midy.loadSoundFont(paths, { fallback: null }); // disable
 ```
 
+## Browser builds (JS / WASM / SIMD / threads)
+
+Pick a dist file at **load time**. Midy does not switch bundles for you.
+
+| Dist                         | Notes                                   |
+| ---------------------------- | --------------------------------------- |
+| `midy.js`                    | Pure JS                                 |
+| `midy.wasm.js`               | WASM scalar                             |
+| `midy.wasm-simd.js`          | WASM + SIMD — needs SIMD in the browser |
+| `midy.wasm-threads.js`       | WASM + atomics binary                   |
+| `midy.wasm-threaded-simd.js` | SIMD + atomics                          |
+
+**SIMD is not auto-selected.** If you ship a `*-simd*` build, detect support in
+the app (e.g.
+[wasm-feature-detect](https://github.com/GoogleChromeLabs/wasm-feature-detect))
+and import the matching file. Loading a SIMD build on a non-SIMD engine fails
+module instantiation; mix may fall back to JS inside the worker, but you should
+still choose the right bundle up front.
+
+```js
+import { simd, threads } from "wasm-feature-detect";
+
+const hasSimd = await simd();
+// threads() ≈ atomics; also need crossOriginIsolated for SharedArrayBuffer
+const hasThreads = crossOriginIsolated && await threads();
+
+const url = hasSimd && hasThreads
+  ? "./dist/midy.wasm-threaded-simd.js"
+  : hasSimd
+  ? "./dist/midy.wasm-simd.js"
+  : hasThreads
+  ? "./dist/midy.wasm-threads.js"
+  : "./dist/midy.wasm.js";
+
+const { Midy } = await import(url);
+```
+
+### SharedArrayBuffer (SAB) and COOP / COEP
+
+**SharedArrayBuffer (SAB)** is a browser memory type that can be seen by
+multiple Workers. Midy can use it as a **shared mix destination** when tile mix
+is split across workers (`mixParallelMaxParts > 1` and
+`useSharedDestMix === true`).
+
+That path needs a **cross-origin isolated** page:
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+```js
+crossOriginIsolated === true;
+typeof SharedArrayBuffer === "function";
+```
+
+**You do not need SAB for normal playback.** Default is
+`mixParallelMaxParts = 1` (single-worker tile mix). If SAB is unavailable, Midy
+**automatically** uses private buffers and combines on the main side — audio
+still works.
+
+Use COOP/COEP when you specifically want SAB shared-dest mix with
+`mixParallelMaxParts > 1`, or other app features that need isolation. Headers
+can be set on the static server (or injected by a service worker if the host
+allows).
+
+More detail: [`tools/SAB-BAKE-MIX.md`](tools/SAB-BAKE-MIX.md).
+
 ## Build
 
 ### Prerequisites (WASM core)
@@ -259,11 +327,14 @@ Day-to-day JS/TS builds do not require clang.
 ### Tasks
 
 ```
-deno task build            # js + wasm
-deno task build:js         # dist/midy.js, midy.min.js, …
-deno task build:wasm       # dist/midy.wasm.js, … (minify only)
-deno task build:wasm-core  # clang → wasm → embed (when rebuilding the core)
-deno task build:all        # build:wasm-core then build
+deno task build                   # js + wasm + wasm-simd + wasm-threads + wasm-threaded-simd
+deno task build:js                # dist/midy.js, midy.min.js, …
+deno task build:wasm              # dist/midy.wasm.js, …
+deno task build:wasm-simd         # dist/midy.wasm-simd.js, …
+deno task build:wasm-threads      # dist/midy.wasm-threads.js, …
+deno task build:wasm-threaded-simd
+deno task build:wasm-core         # clang → wasm → embed (when rebuilding the core)
+deno task build:all               # build:wasm-core then build
 ```
 
 ## Test
