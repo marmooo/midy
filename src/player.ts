@@ -683,12 +683,15 @@ export class Player<
    * Cap parallel parts for tile mixParallel / mixTimeSplit.
    * 0 = auto (up to pool size). 1 = single-worker mix (default).
    *
-   * Default is 1: op1a A/B showed parallel time-split (parts=4) inflated
-   * await/residual (often 30–70ms) while pure worker work stayed ~5–15ms.
-   * Single-worker mix kept residual ~1ms and lower wall await. Main-thread
-   * load was unchanged (mainBusyMs ≈ same). Re-enable parallel (0 or 2+)
-   * only after residual is addressed (e.g. shared dest / SAB).
-   * Applied to the shared BakeWorkerPool on getBakeWorkerPool().
+   * Default stays 1 for release. 2026-11 chunk/op1a benches (SAB copyBack
+   * fixed, fallbackTiles=0):
+   *   - parts=1: best bakeAvg / workerMixMs / preroll
+   *   - parts=2 and parts=4: time-split + SAB dest works (sharedTiles≈tiles,
+   *     combineSum=0) but wall time regresses vs parts=1
+   * Root cause is source fan-out (structured clone of overlapping PCM into
+   * each worker), not dest combine. Shared dest alone does not pay for
+   * parallel. Re-enable 2+ only after source PCM is shared (SAB / single
+   * clone) or a workload shows clear wins. Applied on getBakeWorkerPool().
    */
   mixParallelMaxParts: number = 1;
 
@@ -696,6 +699,10 @@ export class Player<
    * When true (default), tile time-split mix may write a SharedArrayBuffer
    * dest in-place (no large result transfer / combine) when the page is
    * cross-origin isolated. Set false to force the copy path for A/B benches.
+   *
+   * Only applies when mixTimeSplit runs with parts > 1. Single-worker
+   * pool.mix does not use the shared dest. Keep true in production: no
+   * cost when parts=1, and required for any future parallel opt-in.
    * Applied to BakeWorkerPool.preferSharedDest on getBakeWorkerPool().
    */
   useSharedDestMix: boolean = true;

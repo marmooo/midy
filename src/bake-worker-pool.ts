@@ -25,6 +25,11 @@
 //   Entry-split still uses private partials + combine (f32 add is not atomic).
 //   Requires SharedArrayBuffer (crossOriginIsolated in browsers).
 //
+// Release note (2026-11, chunk/op1a): SAB dest path is correct (combineMs=0,
+// fallbackTiles=0 after copyBack via getChannelData().set). Parallel parts=2/4
+// still regress vs parts=1 because each slice structured-clones overlapping
+// source PCM. Do not raise maxParallelParts until sources are shared too.
+//
 // Curve computation (ADSR / filter / pan) stays on the main thread.
 
 import { SYNTH_CORE_WASM_BASE64 } from "./bake-wasm.ts";
@@ -1273,6 +1278,11 @@ self.onmessage = function(ev) {
    * dest in-place (true multi-worker sc_mix without large result transfer).
    * Without SAB, same multi-instance model as before (private partials +
    * combine / placement).
+   *
+   * Performance: dest SAB removes combine/result transfer, but source entries
+   * are still cloned per slice. On current chunk tiles that cost dominates, so
+   * Player.mixParallelMaxParts defaults to 1. Prefer fixing source sharing
+   * before relying on parts > 1 for throughput.
    */
   async mixParallel(
     entries: MixSourceEntry[],
@@ -1404,7 +1414,11 @@ self.onmessage = function(ev) {
 
   /**
    * SAB path: one shared dest, each worker mixes its non-overlapping slice
-   * in place. Reply is timing-only — residual large transfers disappear.
+   * in-place. No large result transfer; combineMs = 0.
+   *
+   * Callers must copy result channels with getChannelData().set (or equivalent).
+   * AudioBuffer.copyToChannel rejects SharedArrayBuffer-backed views in Chromium
+   * and used to force main-thread fallback (sharedTiles ≫ workerTiles).
    */
   private async mixTimeSplitShared(
     entries: MixSourceEntry[],
