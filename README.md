@@ -233,13 +233,13 @@ await midy.loadSoundFont(paths);
 
 Pick a dist file at **load time**. Midy does not switch bundles for you.
 
-| Dist                         | Notes                                   |
-| ---------------------------- | --------------------------------------- |
-| `midy.js`                    | Pure JavaScript                         |
-| `midy.wasm.js`               | Wasm scalar                             |
-| `midy.wasm-simd.js`          | Wasm + SIMD — needs SIMD in the browser |
-| `midy.wasm-threads.js`       | Wasm + atomics binary                   |
-| `midy.wasm-threaded-simd.js` | SIMD + atomics                          |
+| Dist                         | Notes                           |
+| ---------------------------- | ------------------------------- |
+| `midy.js`                    | Pure JavaScript                 |
+| `midy.wasm.js`               | Wasm scalar                     |
+| `midy.wasm-simd.js`          | Wasm + SIMD (needs SIMD support |
+| `midy.wasm-threads.js`       | Wasm + atomics binary           |
+| `midy.wasm-threaded-simd.js` | SIMD + atomics                  |
 
 **SIMD is not auto-selected.** If you ship a `*-simd*` build, detect support in
 the app (e.g.
