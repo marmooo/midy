@@ -2434,9 +2434,22 @@ export class MidyGM2 extends Player<Note, Channel> {
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     // Worklet path lives on Player; MidyGM2 must not skip it.
-    if (this.cacheMode === "worklet") {
-      await this.setNoteAudioNodeWorklet(channel, note, realtime);
-      return;
+    // OfflineAudioContext: fall through (OAC + AudioWorklet hangs).
+    if (
+      this.cacheMode === "worklet" &&
+      isAudioWorkletUsable(this.audioContext)
+    ) {
+      try {
+        await this.setNoteAudioNodeWorklet(channel, note, realtime);
+        return;
+      } catch (err) {
+        if (this.debug) {
+          console.warn(
+            "[midy] worklet note path failed; residual graph:",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
     }
     if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound

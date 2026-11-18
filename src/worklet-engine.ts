@@ -38,10 +38,25 @@ function ensureWorkletModule(
   return pending;
 }
 
-/** True when this runtime can construct AudioWorkletNode on the context. */
+/** True when ctx is an OfflineAudioContext (realm-safe). */
+export function isOfflineAudioContext(
+  ctx: AudioContext | OfflineAudioContext | BaseAudioContext,
+): boolean {
+  // instanceof can fail across realms; startRendering is OAC-only.
+  return typeof (ctx as OfflineAudioContext).startRendering === "function";
+}
+
+/**
+ * True when this runtime can run midy worklet synthesis on the context.
+ *
+ * OfflineAudioContext is intentionally excluded: headless Chromium hangs in
+ * startRendering() with our AudioWorkletNode graph (live AudioContext is fine).
+ * Offline export falls back to the main-thread residual path instead.
+ */
 export function isAudioWorkletUsable(
   ctx: AudioContext | OfflineAudioContext,
 ): boolean {
+  if (isOfflineAudioContext(ctx)) return false;
   return typeof AudioWorkletNode === "function" &&
     !!ctx.audioWorklet &&
     typeof ctx.audioWorklet.addModule === "function";

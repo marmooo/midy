@@ -7278,16 +7278,25 @@ export class Player<
 
     let buffer: AudioBuffer | undefined;
     switch (this.cacheMode) {
+      case "none":
       case "note":
       case "segment":
       case "chunk":
-      case "none":
+      case "worklet":
+        // Live: full worklet. Offline OAC: main-thread residual (AudioWorklet
+        // on OfflineAudioContext hangs in headless Chromium startRendering).
         buffer = await this.renderWholeSongLive(this.cacheMode);
         break;
       case "audio":
-      default:
+        // Windowed offline mix — not the live "audio" play path (which just
+        // plays a pre-rendered buffer). Kept separate because a single full-
+        // song OfflineAudioContext graph can be unreliable under heavy nodes.
         buffer = await this.renderFastMode();
         break;
+      default: {
+        const _exhaustive: never = this.cacheMode;
+        throw new Error(`render: unknown cacheMode ${_exhaustive}`);
+      }
     }
 
     this.renderedAudioBuffer = buffer ?? null;
@@ -7296,12 +7305,13 @@ export class Player<
     return this.renderedAudioBuffer ?? undefined;
   }
 
-  // Belongs to no cacheMode's real pipeline (see render() doc above).
+  // Used by cacheMode "audio" export only (not live playback of any mode).
   // Collect every note into ChunkNoteEntry[], then bake in short time
-  // windows via renderChunkBuffer(). A single OfflineAudioContext holding
-  // the entire song can produce a buffer where only the opening attack is
-  // audible under heavy per-note graphs. Windowed renders keep the node
-  // count bounded; windows are mixed into one final AudioBuffer.
+  // windows via renderChunkBuffer(). Faster than one giant OfflineAudioContext
+  // for the whole song because: (1) node count stays bounded per window,
+  // (2) avoids OAC graphs that can drop later notes under heavy polyphony,
+  // (3) windows mix with simple buffer addition. Call explicitly if needed;
+  // other modes use renderWholeSongLive (playback-parity path).
   async renderFastMode(): Promise<AudioBuffer | undefined> {
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
@@ -7553,9 +7563,12 @@ export class Player<
     // from `this.cacheVoiceIds()` unless `this.cacheMode === cacheMode`.
     offlinePlayer.cacheVoiceIds();
     await offlinePlayer.preloadSamples();
-    // Ultra-long / exclusive leftovers use worklet on OAC; upload samples first.
+    // Worklet samples only on live AudioContext (never OfflineAudioContext).
     if (
-      isTiledCacheMode(cacheMode) && offlinePlayer.hasWorkletHybridCandidates()
+      isAudioWorkletUsable(offlinePlayer.audioContext) &&
+      (cacheMode === "worklet" ||
+        (isTiledCacheMode(cacheMode) &&
+          offlinePlayer.hasWorkletHybridCandidates()))
     ) {
       await offlinePlayer.preloadWorkletSamples();
     }
@@ -9418,6 +9431,8 @@ export class Player<
     // mid-song on the worklet thread starves process() and sounds like the
     // dense passages go silent until traffic thins out.
     // segment/chunk hybrid only needs uploads when classification left leftovers.
+    // Skip entirely when AudioWorklet is unusable (OfflineAudioContext export).
+    if (!isAudioWorkletUsable(this.audioContext)) return;
     if (this.cacheMode === "worklet") {
       await this.preloadWorkletSamples();
     } else if (
@@ -9432,6 +9447,14 @@ export class Player<
    * than once; already-loaded sampleIds are skipped.
    */
   async preloadWorkletSamples(): Promise<void> {
+    if (!isAudioWorkletUsable(this.audioContext)) {
+      if (this.debug) {
+        console.log(
+          "[worklet] preloadWorkletSamples skipped (AudioWorklet unusable)",
+        );
+      }
+      return;
+    }
     const entries = this.preloadEntries;
     if (entries.length === 0) {
       if (this.debug) {
@@ -12200,8 +12223,21 @@ export class Player<
     note.voiceParams = voiceParams;
     if (!voiceParams) return;
     if (this.cacheMode === "worklet") {
-      await this.setNoteAudioNodeWorklet(channel, note, realtime);
-      return;
+      if (isAudioWorkletUsable(this.audioContext)) {
+        try {
+          await this.setNoteAudioNodeWorklet(channel, note, realtime);
+          return;
+        } catch (err) {
+          if (this.debug) {
+            console.warn(
+              "[midy] worklet note path failed; residual graph:",
+              err instanceof Error ? err.message : err,
+            );
+          }
+          // Fall through to main-thread residual.
+        }
+      }
+      // Offline / no-AudioWorklet: main-thread residual (raw + envelope).
     }
     if (note.isTiledGhost) {
       // No real bufferSource/volumeNode is created: this note's sound
@@ -12649,10 +12685,9 @@ export class Player<
   shouldRouteNoteToWorkletHybrid(note: TNote): boolean {
     if (!isTiledCacheMode(this.cacheMode)) return false;
     if (note.isTiledGhost) return false;
-    // Live MIDI / unindexed notes → worklet (realtime only; offline always has indices).
-    if (note.timelineIndex == null) {
-      return !(this.audioContext instanceof OfflineAudioContext);
-    }
+    if (!isAudioWorkletUsable(this.audioContext)) return false;
+    // Live MIDI / unindexed notes → worklet.
+    if (note.timelineIndex == null) return true;
     const i = note.timelineIndex;
     // noteBake (moderate long / exclusive choke) stays offline buffer.
     if (this.longNoteBakedSet.has(i)) return false;
@@ -12703,8 +12738,9 @@ export class Player<
       return this.workletEngine;
     }
     const ctx = this.audioContext;
-    // OfflineAudioContext supports audioWorklet in modern browsers; used for
-    // ultra-long hybrid notes during render()/export (avoids multi-MB noteBake).
+    if (!isAudioWorkletUsable(ctx)) {
+      throw new Error("AudioWorklet is not supported in this environment");
+    }
     const engine = new WorkletEngine(ctx);
     await engine.ensureStarted(this.masterVolume, effects);
     if (this.debug) engine.setDebug(true);
