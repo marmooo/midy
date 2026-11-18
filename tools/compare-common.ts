@@ -138,8 +138,6 @@ export const RETRIG_ENV_CORR_MIN = 0.65;
 
 const ALL_CACHE_MODES: CacheMode[] = [
   "none",
-  "ads",
-  "adsr",
   "note",
   "segment",
   "chunk",

@@ -14,7 +14,6 @@ import {
   DEFAULT_SF2_VOLUME_EXPR_GAIN,
   DEFAULT_VOLUME_MSB,
   envelopeCurve,
-  f64ToBigInt,
   getVoiceParams,
   isFilterAudible,
   Note,
@@ -28,7 +27,6 @@ import {
 import {
   bakeChannelMixForMode,
   type BakeNoteEntry,
-  type CacheEntry,
   type CacheMode,
   type ChunkNoteEntry,
   type ChunkState,
@@ -59,7 +57,7 @@ import {
 } from "./bake-worker-pool.ts";
 
 import { MixPcmCache } from "./mix-pcm-cache.ts";
-import { WorkletEngine } from "./worklet-engine.ts";
+import { isAudioWorkletUsable, WorkletEngine } from "./worklet-engine.ts";
 import { WORKLET_MAX_VOICES } from "./worklet-protocol.ts";
 
 /** Per-tile mix phase timings filled by mixEntriesToBuffer (chunk-heavy logs). */
@@ -162,12 +160,6 @@ export class Player<
   // bigint key: (audioBufferId << 14) | (velocity * 128 + noteNumber)
   // One-level Map (no nesting). bigint avoids Number precision loss when
   // audioBufferId is large after the non-overlapping getVoiceId packing.
-  voiceCache: Map<bigint, CacheEntry> = new Map();
-  realtimeVoiceCache: Map<bigint, RenderedBuffer> = new Map();
-  adsrVoiceCache: Map<
-    number,
-    Map<bigint, RenderedBuffer | Promise<RenderedBuffer>>
-  > = new Map();
   // Simple-note cache (shared by note / segment / chunk / audio modes).
   // Notes with no pitch-bend / CC automation during their interval can be
   // fully baked once and reused (keyed by voice params + duration + channel
@@ -293,21 +285,12 @@ export class Player<
   maxTiledNoteDuration: number = 4;
   /**
    * Upper bound (seconds, duration+releaseTail) for full-note offline bake.
-   * Notes longer than this stay off longNoteBakedSet and play via ADS
-   * (createAdsrRenderedBuffer) so 40s+ pads cannot starve the tile pipeline.
-   * Must be >= maxTiledNoteDuration. 0 = no cap (legacy: all long notes bake).
+   * Notes longer than this stay off longNoteBakedSet and play via worklet
+   * hybrid (live and OfflineAudioContext) so 40s+ pads do not allocate
+   * multi-MB PCM buffers. Must be >= maxTiledNoteDuration. 0 = no cap
+   * (all long notes noteBake — memory heavy).
    */
   maxNoteBakeDuration: number = 12;
-  /**
-   * Upper bound (seconds) for ADS offline bake length
-   * (`delay+attack+hold+decay` of the volume envelope).
-   * When a note's natural ADS duration exceeds this, the bake is capped:
-   * decay is compressed so the envelope still reaches sustain inside the
-   * buffer. Pitch stays baked into the PCM (ADS lean path unchanged).
-   * 0 = no cap (legacy: always bake full ADS length).
-   * Default 4s — avoids multi-MB bakes from extreme SF2 decays.
-   */
-  maxAdsBakeDuration: number = 4;
   /**
    * Ceiling (seconds) for extreme SF2 release tails used in classification
    * (and optionally playback). Units match `releaseVolEnv * envelopeCurve * 5`
@@ -346,7 +329,7 @@ export class Player<
    *     maxTiledNoteDuration < duration+releaseTail <= maxNoteBakeDuration
    * - exclusive-class notes with choke time precomputed from the MIDI
    *   timeline (scheduled playback only; live realtime stays ADS)
-   * Notes longer than maxNoteBakeDuration use ADS (not listed here).
+   * Notes longer than maxNoteBakeDuration use worklet hybrid (not listed here).
    */
   longNoteBakedSet: Set<number> = new Set();
   /**
@@ -1998,8 +1981,9 @@ export class Player<
         // Moderate long note: single-note offline bake.
         longSet.add(i);
       } else {
-        // Ultra-long (pads etc.): leave both sets → ADS realtime path.
-        // Full-note bake of 40s+ buffers starves tile pipeline (ready=0).
+        // Ultra-long (pads etc.): leave both sets → worklet hybrid
+        // (live AudioContext and OfflineAudioContext + AudioWorklet).
+        // Full-note bake of 40s+ buffers would explode memory.
         adsFallback++;
       }
     }
@@ -2010,7 +1994,7 @@ export class Player<
       console.warn(
         `[midy] segment-classify | tiled=${this.tiledBakedSet.size} ` +
           `noteBake=${this.longNoteBakedSet.size} ` +
-          `adsFallback=${adsFallback} ` +
+          `workletOffline=${adsFallback} ` +
           `releaseCapped=${releaseCapped} ` +
           `exclBake=${
             this.noteBakeDurations.filter((d) => d !== undefined).length
@@ -3727,9 +3711,6 @@ export class Player<
     this.renderedAudioBuffer = null;
 
     this.rawAudioBufferCache.clear();
-    this.voiceCache.clear();
-    this.realtimeVoiceCache.clear();
-    this.adsrVoiceCache.clear();
     // PCM slices hold strong refs to the same buffers as simpleNoteBufferCache.
     // Without this, end-of-play / stop leave multi-MB Float32Arrays alive even
     // after the note-buffer Maps are replaced.
@@ -5076,7 +5057,6 @@ export class Player<
       needsNoteOnDurations(cacheMode)
     ) {
       this.buildNoteOnDurations();
-      this.adsrVoiceCache.clear();
     }
     if (isTiledCacheMode(cacheMode)) {
       this.finalizeSegmentClassification();
@@ -7301,8 +7281,6 @@ export class Player<
       case "note":
       case "segment":
       case "chunk":
-      case "adsr":
-      case "ads":
       case "none":
         buffer = await this.renderWholeSongLive(this.cacheMode);
         break;
@@ -7554,6 +7532,11 @@ export class Player<
     offlinePlayer.workerMixMinEntriesLive = this.workerMixMinEntriesLive;
     offlinePlayer.maxChunkNotes = this.maxChunkNotes;
     offlinePlayer.maxTiledNoteDuration = this.maxTiledNoteDuration;
+    offlinePlayer.maxNoteBakeDuration = this.maxNoteBakeDuration;
+    offlinePlayer.maxReleaseTailSec = this.maxReleaseTailSec;
+    offlinePlayer.classifyReleaseCap = this.classifyReleaseCap;
+    offlinePlayer.playReleaseCap = this.playReleaseCap;
+    offlinePlayer.releaseKillMs = this.releaseKillMs;
     offlinePlayer.lookAhead = this.lookAhead;
     offlinePlayer.cacheMode = cacheMode;
     // Almost-simple pitch-bend path must follow the outer player: otherwise
@@ -7570,6 +7553,12 @@ export class Player<
     // from `this.cacheVoiceIds()` unless `this.cacheMode === cacheMode`.
     offlinePlayer.cacheVoiceIds();
     await offlinePlayer.preloadSamples();
+    // Ultra-long / exclusive leftovers use worklet on OAC; upload samples first.
+    if (
+      isTiledCacheMode(cacheMode) && offlinePlayer.hasWorkletHybridCandidates()
+    ) {
+      await offlinePlayer.preloadWorkletSamples();
+    }
 
     const isSegmentMode = isSegmentCacheMode(cacheMode);
     const isChunkMode = isChunkCacheMode(cacheMode);
@@ -8953,49 +8942,8 @@ export class Player<
     }
   }
 
-  // Precompute ADS volume envelope gains (no release; holds at sustain).
-  // Matches setVolumeEnvelope; pass attenuationScale = filterDcGain when filter is on.
-  protected computeAdsVolumeGains(
-    voiceParams: VoiceParams,
-    length: number,
-    sampleRate: number,
-    attenuationScale = 1,
-  ): Float32Array {
-    const gains = new Float32Array(length);
-    const attackVolume = cbToRatio(-voiceParams.initialAttenuation) *
-      attenuationScale;
-    const sustainVolume = attackVolume *
-      cbToRatio(-1000 * voiceParams.sustainVolEnv);
-    const delay = voiceParams.delayVolEnv;
-    const attackEnd = delay + voiceParams.attackVolEnv;
-    const holdEnd = attackEnd + voiceParams.holdVolEnv;
-    const decayEnd = holdEnd + voiceParams.decayVolEnv;
-    const attackDur = voiceParams.attackVolEnv;
-    const decayDur = voiceParams.decayVolEnv;
-    const invSr = 1 / sampleRate;
-    for (let i = 0; i < length; i++) {
-      const t = i * invSr;
-      if (t < delay) {
-        gains[i] = 0;
-      } else if (t < attackEnd) {
-        const frac = attackDur > 0 ? (t - delay) / attackDur : 1;
-        const startG = 1e-6;
-        gains[i] = startG * Math.pow(attackVolume / startG, frac);
-      } else if (t < holdEnd) {
-        gains[i] = attackVolume;
-      } else if (t < decayEnd) {
-        const frac = decayDur > 0 ? (t - holdEnd) / decayDur : 1;
-        gains[i] = attackVolume *
-          Math.pow(sustainVolume / attackVolume, frac);
-      } else {
-        gains[i] = sustainVolume;
-      }
-    }
-    return gains;
-  }
-
   // Precompute full ADSR volume envelope gains including release.
-  // Matches createAdsrRenderedBuffer manual note-off ramp (setTargetAtTime).
+  // Matches ADSR volume release ramp (setTargetAtTime).
   protected computeAdsrVolumeGains(
     voiceParams: VoiceParams,
     noteOffTime: number,
@@ -9575,264 +9523,6 @@ export class Player<
     })();
     this.workletSampleUploads.set(sampleId, pending);
     return pending;
-  }
-
-  /**
-   * ADS volume-envelope length in seconds (delay + attack + hold + decay).
-   * Same formula as createAdsRenderedBuffer / createAdsrRenderedBuffer.
-   */
-  computeAdsDuration(voiceParams: VoiceParams): number {
-    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
-    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    return holdVolEnvTime + voiceParams.decayVolEnv;
-  }
-
-  /**
-   * True when natural ADS length exceeds maxAdsBakeDuration (bake will be
-   * capped). maxAdsBakeDuration <= 0 disables the cap.
-   */
-  shouldCapAdsBake(voiceParams: VoiceParams): boolean {
-    const cap = this.maxAdsBakeDuration;
-    if (!(cap > 0)) return false;
-    return this.computeAdsDuration(voiceParams) > cap;
-  }
-
-  createAdsRenderedBuffer(
-    channel: TChannel,
-    note: TNote,
-    voiceParams: VoiceParams,
-    audioBuffer: AudioBuffer,
-    isDrum = false,
-  ): RenderedBuffer {
-    const isLoop = isDrum
-      ? (this.isLoopDrum(channel, note.noteNumber) &&
-        voiceParams.sampleModes % 2 !== 0)
-      : (voiceParams.sampleModes % 2 !== 0);
-    const decayDuration = voiceParams.decayVolEnv;
-    const naturalAdsDuration = this.computeAdsDuration(voiceParams);
-    // Cap the baked buffer length and the adsDuration meta. Envelope time
-    // constants (delay/attack/hold/decay) stay natural — gains are sampled
-    // from the true curve up to the cap, then lean playback holds/loops the
-    // level reached at that point. Compressing decayVolEnv itself made piano
-    // body ~6dB quieter and inflated CC7/CC11 drops vs fluidsynth.
-    const adsCap = this.maxAdsBakeDuration;
-    const adsDuration = adsCap > 0
-      ? Math.min(naturalAdsDuration, adsCap)
-      : naturalAdsDuration;
-    if (
-      adsCap > 0 && naturalAdsDuration > adsCap && this.debug &&
-      this.debugDetail
-    ) {
-      console.log(
-        `[midy] ads-bake-cap | note=${note.noteNumber} ` +
-          `envAds=${naturalAdsDuration.toFixed(3)}s bakeSpan=${
-            adsDuration.toFixed(3)
-          }s ` +
-          `decay kept=${decayDuration.toFixed(3)}s`,
-      );
-    }
-    const sampleLoopStart = voiceParams.loopStart / voiceParams.sampleRate;
-    const sampleLoopDuration = isLoop
-      ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
-      : 0;
-    const playbackRate = voiceParams.playbackRate;
-    const outputLoopStart = sampleLoopStart / playbackRate;
-    const outputLoopDuration = sampleLoopDuration / playbackRate;
-    // Buffer time span follows adsDuration (already capped). For uncapped
-    // looped voices, expand to loopExpandDurationSec so offline sustain does
-    // not depend only on AudioBufferSourceNode.loop (none-mode parity).
-    // When capped, realtime keeps the short buffer (source.loop holds the
-    // level). Offline (audio mode / TypedArray mix) still expands so long
-    // notes are not truncated past the ADS cap.
-    const expandSec = (typeof this.loopExpandDurationSec === "number" &&
-        this.loopExpandDurationSec > 0)
-      ? this.loopExpandDurationSec
-      : 8;
-    const isOffline = this.offlineRenderOnly ||
-      this.audioContext instanceof OfflineAudioContext;
-    let targetSpan: number;
-    if (isLoop) {
-      if (adsCap > 0 && naturalAdsDuration > adsCap && !isOffline) {
-        // Realtime capped: stay short; AudioBufferSourceNode.loop holds.
-        targetSpan = adsDuration;
-      } else {
-        // Uncapped, or offline (even when meta is capped): expand PCM.
-        targetSpan = Math.max(adsDuration, expandSec);
-      }
-    } else {
-      // Non-loop one-shots: keep full pitched sample duration (do not cut).
-      targetSpan = audioBuffer.duration / playbackRate;
-    }
-    const loopCount = isLoop && targetSpan > outputLoopStart &&
-        outputLoopDuration > 1e-9
-      ? Math.ceil((targetSpan - outputLoopStart) / outputLoopDuration)
-      : 0;
-    const alignedLoopStart = outputLoopStart + loopCount * outputLoopDuration;
-    const renderDuration = isLoop
-      ? alignedLoopStart + outputLoopDuration
-      : targetSpan;
-    const sampleRate = this.audioContext.sampleRate;
-    const length = Math.ceil(renderDuration * sampleRate);
-    // [diag] How large is this ADS bake? Long decayVolEnv → large loopCount.
-    if (this.debug && this.debugDetail) {
-      const bytes = length * audioBuffer.numberOfChannels * 4;
-      console.log(
-        `[midy] ads-bake-size | note=${note.noteNumber} ` +
-          `adsDur=${adsDuration.toFixed(3)}s ` +
-          `decay=${voiceParams.decayVolEnv.toFixed(3)}s ` +
-          `atk=${voiceParams.attackVolEnv.toFixed(3)}s ` +
-          `hold=${voiceParams.holdVolEnv.toFixed(3)}s ` +
-          `loop=${isLoop} loopDur=${outputLoopDuration.toFixed(3)}s ` +
-          `loopCount=${loopCount} renderDur=${renderDuration.toFixed(3)}s ` +
-          `samples=${length} ~${(bytes / 1024 / 1024).toFixed(2)}MB`,
-      );
-    }
-    const buffer = this.createEmptyBuffer(
-      audioBuffer.numberOfChannels,
-      length,
-      sampleRate,
-    );
-
-    const filterAudible = isFilterAudible(
-      voiceParams.initialFilterFc,
-      voiceParams.initialFilterQ,
-      voiceParams.modEnvToFilterFc,
-    );
-    let filterDcGain = 1;
-    let filterQ = Math.SQRT1_2;
-    if (filterAudible) {
-      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
-      filterQ = qDc.q;
-      filterDcGain = qDc.dcGain;
-    }
-    // Always use the natural envelope time constants (never a compressed
-    // decay). Buffer may be shorter than full ADS; lean playback loops the
-    // tail at whatever level the true envelope has reached.
-    const gains = this.computeAdsVolumeGains(
-      voiceParams,
-      length,
-      sampleRate,
-      filterDcGain,
-    );
-    // ADS buffer has no note-off; filter holds at mod-sustain (noteOffTime=null)
-    const filterFreqs = this.computeFilterFreqCurve(
-      voiceParams,
-      length,
-      sampleRate,
-      null,
-    );
-    const startOffsetSrc = voiceParams.sample.type === "compressed"
-      ? voiceParams.start / audioBuffer.sampleRate
-      : 0;
-    this.renderSampleTypedArray(
-      audioBuffer,
-      buffer,
-      playbackRate,
-      isLoop,
-      sampleLoopStart,
-      sampleLoopStart + sampleLoopDuration,
-      startOffsetSrc,
-      gains,
-      filterFreqs,
-      filterQ,
-    );
-    return new RenderedBuffer(buffer, {
-      isLoop,
-      adsDuration,
-      loopStart: alignedLoopStart,
-      loopDuration: outputLoopDuration,
-    });
-  }
-
-  createAdsrRenderedBuffer(
-    channel: TChannel,
-    note: TNote,
-    voiceParams: VoiceParams,
-    audioBuffer: AudioBuffer,
-    noteDuration: number,
-    isDrum = false,
-  ): RenderedBuffer {
-    const isLoop = isDrum
-      ? (this.isLoopDrum(channel, note.noteNumber) &&
-        voiceParams.sampleModes % 2 !== 0)
-      : (voiceParams.sampleModes % 2 !== 0);
-    const attackVolEnvTime = voiceParams.delayVolEnv + voiceParams.attackVolEnv;
-    const holdVolEnvTime = attackVolEnvTime + voiceParams.holdVolEnv;
-    const decayDuration = voiceParams.decayVolEnv;
-    const adsDuration = holdVolEnvTime + decayDuration;
-    const releaseDuration = this.playReleaseDurationSec(
-      voiceParams.releaseVolEnv,
-    );
-    const loopStartTime = voiceParams.loopStart / voiceParams.sampleRate;
-    const loopDuration = isLoop
-      ? (voiceParams.loopEnd - voiceParams.loopStart) / voiceParams.sampleRate
-      : 0;
-    // SF2 volume release starts at the actual MIDI note-off, not at a
-    // loop-phase boundary. Aligning the gain envelope to the loop end made
-    // every normal note-off look like an "early cut" (endTime < alignedEnd),
-    // which then applied scheduleVolumeRelease on top of the already-baked
-    // release and drove late levels to -80dB+.
-    // Sample playback still loops inside renderSampleTypedArray for the full
-    // buffer length; only the gain timeline follows MIDI.
-    // When playReleaseCap is on, releaseDuration is capped to
-    // maxReleaseTailSec + releaseKillMs/1000 (see playReleaseDurationSec).
-    const noteOffTime = Math.max(0, noteDuration);
-    const totalDuration = noteOffTime + releaseDuration;
-    const sampleRate = this.audioContext.sampleRate;
-    const length = Math.ceil(totalDuration * sampleRate);
-    const buffer = this.createEmptyBuffer(
-      audioBuffer.numberOfChannels,
-      length,
-      sampleRate,
-    );
-
-    const filterAudible = isFilterAudible(
-      voiceParams.initialFilterFc,
-      voiceParams.initialFilterQ,
-      voiceParams.modEnvToFilterFc,
-    );
-    let filterDcGain = 1;
-    let filterQ = Math.SQRT1_2;
-    if (filterAudible) {
-      const qDc = sf2FilterQ(voiceParams.initialFilterQ);
-      filterQ = qDc.q;
-      filterDcGain = qDc.dcGain;
-    }
-    const gains = this.computeAdsrVolumeGains(
-      voiceParams,
-      noteOffTime,
-      length,
-      sampleRate,
-      filterDcGain,
-    );
-    const filterFreqs = this.computeFilterFreqCurve(
-      voiceParams,
-      length,
-      sampleRate,
-      noteOffTime,
-    );
-    const startOffsetSrc = voiceParams.sample.type === "compressed"
-      ? voiceParams.start / audioBuffer.sampleRate
-      : 0;
-    this.renderSampleTypedArray(
-      audioBuffer,
-      buffer,
-      voiceParams.playbackRate,
-      isLoop,
-      loopStartTime,
-      loopStartTime + loopDuration,
-      startOffsetSrc,
-      gains,
-      filterFreqs,
-      filterQ,
-    );
-    return new RenderedBuffer(buffer, {
-      isLoop: false,
-      isFull: false,
-      adsDuration,
-      noteDuration: noteOffTime,
-      releaseDuration,
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -11943,7 +11633,7 @@ export class Player<
   // in-interval automation) when modulation wheel is unused. Also covers
   // "almost simple" notes whose only automation is volume/expression and/or
   // pan: gain curves (computeGainOnlyChannelCurve) multiply into ADSR gains;
-  // pan curves (computePanCurve) scale L/R on stereo expand. Mirrors createAdsrRenderedBuffer
+  // pan curves (computePanCurve) scale L/R on stereo expand. Mirrors ADS bake
   // (resample + loop + time-varying lowpass + ADSR gains) and optionally
   // bakes channel volume/pan into stereo for mix modes. Avoids OfflineAudioContext,
   // offline Player construction, node graph build, and startRendering.
@@ -12360,8 +12050,6 @@ export class Player<
         ) {
           return await this.getNoteModeBuffer(channel, note, audioBufferId);
         }
-      } else if (cacheMode === "adsr") {
-        return await this.getAdsrCachedBuffer(channel, note, audioBufferId);
       } else if (
         isTiledCacheMode(cacheMode) &&
         note.timelineIndex != null &&
@@ -12381,143 +12069,15 @@ export class Player<
         note.voiceParams as VoiceParams,
       );
     }
-    // fallback to ADS cache:
-    // - "ads" (realtime or not)
-    // - "adsr" + realtime
-    // - "note" + realtime
-    // - "note" + exclusive-class (skipped full bake above)
-    // - segment/chunk non-tiled short notes and exclusive long notes
-    return await this.getAdsCachedBuffer(
-      channel,
-      note,
+    // Residual main-thread path (worklet unavailable, or unclassified live
+    // note). Raw sample + realtime envelope in setNoteAudioNode — no ADS lean.
+    if (!audioBufferId) {
+      return await this.createAudioBuffer(note.voiceParams as VoiceParams);
+    }
+    return await this.getRawAudioBuffer(
       audioBufferId,
-      realtime,
+      note.voiceParams as VoiceParams,
     );
-  }
-
-  async getAdsCachedBuffer(
-    channel: TChannel,
-    note: TNote,
-    audioBufferId: number | undefined,
-    realtime: boolean,
-  ): Promise<RenderedBuffer | AudioBuffer | undefined> {
-    if (!audioBufferId) return undefined;
-    // Include velocity: ADS bake embeds initialAttenuation (velocity-dependent).
-    // Without it, soft and loud notes of the same sample collide and dynamics vanish.
-    // Include noteNumber: shared samples still need distinct playbackRate/rootKey.
-    // Single-level Map with a bigint key — no nesting, no Number precision loss.
-    const cacheKey = (BigInt(audioBufferId) << 14n) |
-      BigInt((note.velocity & 0x7f) * 128 + (note.noteNumber & 0x7f));
-    const voiceParams = note.voiceParams;
-    if (!voiceParams) return undefined;
-
-    // Long SF2 decay/hold is capped inside createAdsRenderedBuffer
-    // (maxAdsBakeDuration) so we still return a pitch-baked RenderedBuffer
-    // and keep the ADS lean graph. Returning raw here previously broke pitch
-    // when cacheMode stayed "ads"/segment/chunk (lean path assumes baked rate).
-
-    if (realtime) {
-      const cached = this.realtimeVoiceCache.get(cacheKey);
-      if (cached) return cached;
-      const rawBuffer = await this.getRawAudioBuffer(
-        audioBufferId,
-        voiceParams,
-      );
-      const rendered = await this.createAdsRenderedBuffer(
-        channel,
-        note,
-        voiceParams,
-        rawBuffer,
-        channel.isDrum,
-      );
-      this.realtimeVoiceCache.set(cacheKey, rendered);
-      return rendered;
-    } else {
-      const cache = this.voiceCache.get(cacheKey);
-      if (cache) {
-        cache.counter += 1;
-        if (cache.maxCount <= cache.counter) {
-          this.voiceCache.delete(cacheKey);
-        }
-        return cache.audioBuffer;
-      } else {
-        // voiceCounter is keyed by audioBufferId alone (see cacheVoiceIds).
-        const maxCount = this.voiceCounter.get(audioBufferId) ?? 0;
-        const rawBuffer = await this.getRawAudioBuffer(
-          audioBufferId,
-          voiceParams,
-        );
-        const rendered = await this.createAdsRenderedBuffer(
-          channel,
-          note,
-          voiceParams,
-          rawBuffer,
-          channel.isDrum,
-        );
-        const entry = { audioBuffer: rendered, maxCount, counter: 1 };
-        this.voiceCache.set(cacheKey, entry);
-        return rendered;
-      }
-    }
-  }
-
-  async getAdsrCachedBuffer(
-    channel: TChannel,
-    note: TNote,
-    audioBufferId: number | undefined,
-  ): Promise<RenderedBuffer | AudioBuffer | undefined> {
-    if (!audioBufferId) return undefined;
-    const voiceParams = note.voiceParams;
-    if (!voiceParams) return undefined;
-    const timelineIndex = note.timelineIndex;
-    if (timelineIndex === null) return undefined;
-    const noteEvent = this.noteOnEvents[timelineIndex];
-    const noteDurationTicks = noteEvent?.durationTicks ?? 0;
-    const safeTicks = noteDurationTicks === Infinity
-      ? 0xFFFFFFFFn
-      : BigInt(noteDurationTicks);
-    const volReleaseBits = f64ToBigInt(voiceParams.releaseVolEnv);
-    const playbackRateBits = f64ToBigInt(voiceParams.playbackRate);
-    const cacheKey = (BigInt(audioBufferId) << 160n) |
-      (playbackRateBits << 96n) |
-      (safeTicks << 64n) |
-      volReleaseBits;
-    let durationMap = this.adsrVoiceCache.get(audioBufferId);
-    if (!durationMap) {
-      durationMap = new Map();
-      this.adsrVoiceCache.set(audioBufferId, durationMap);
-    }
-    const cached = durationMap.get(cacheKey);
-    if (cached instanceof RenderedBuffer) {
-      return cached;
-    }
-    if (cached instanceof Promise) {
-      return await cached;
-    }
-    const noteDuration = noteEvent?.duration ?? 0;
-    const renderPromise = (async () => {
-      try {
-        const rawBuffer = await this.getRawAudioBuffer(
-          audioBufferId!,
-          voiceParams,
-        );
-        const rendered = await this.createAdsrRenderedBuffer(
-          channel,
-          note,
-          voiceParams,
-          rawBuffer,
-          noteDuration,
-          channel.isDrum,
-        );
-        durationMap!.set(cacheKey, rendered);
-        return rendered;
-      } catch (err) {
-        durationMap!.delete(cacheKey);
-        throw err;
-      }
-    })();
-    durationMap.set(cacheKey, renderPromise);
-    return await renderPromise;
   }
 
   // "note" mode buffer: simple notes share simpleNoteBufferCache; complex
@@ -12653,10 +12213,24 @@ export class Player<
       return;
     }
 
-    // segment/chunk hybrid: notes that would have used ADS/realtime
-    // (not tiled, not noteBake) play via worklet instead of main-thread ADS.
-    // Offline export keeps the classic ADS path (no AudioWorklet).
-    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+    // Live MIDI (no timeline index): worklet when available (not "none"/offline).
+    // Deno/npm:web-audio-api has no AudioWorkletNode — fall through to
+    // main-thread raw buffer + realtime envelope.
+    if (
+      note.timelineIndex == null &&
+      this.cacheMode !== "none" &&
+      !(this.audioContext instanceof OfflineAudioContext) &&
+      isAudioWorkletUsable(this.audioContext)
+    ) {
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
+      return;
+    }
+
+    // segment/chunk hybrid leftovers → worklet when usable (live + OAC export).
+    if (
+      this.shouldRouteNoteToWorkletHybrid(note) &&
+      isAudioWorkletUsable(this.audioContext)
+    ) {
       this.noteBakeWorkletHybridCount++;
       await this.setNoteAudioNodeWorklet(channel, note, realtime);
       return;
@@ -12685,7 +12259,7 @@ export class Player<
     // Full realtime graph when:
     // - cacheMode is "none", or
     // - the buffer is raw (not a RenderedBuffer) — e.g. ADS bake skipped by
-    //   maxAdsBakeDuration fallback. ADS lean path assumes pitch+volume are
+    //   noteBake path assumes pitch+volume are
     //   already baked into PCM; applying it to a raw sample leaves notes at
     //   root-key pitch (broken intervals).
     const useRealtimeEnvelope = cacheMode === "none" || !isRendered;
@@ -12748,7 +12322,7 @@ export class Player<
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-    } else { // "ads" / "adsr" mode (RenderedBuffer, pitch already baked)
+    } else { // RenderedBuffer (noteBake / residual), pitch already baked
       // Lean graph: ADS/ADSR PCM already has pitched sample + volume curve.
       // Only reached when isRendered && !isFull. Raw-buffer ADS fallbacks
       // take useRealtimeEnvelope above so root-key pitch is never left bare.
@@ -13066,17 +12640,19 @@ export class Player<
   }
 
   /**
-   * segment/chunk Phase-1 hybrid: route classification leftovers (adsFallback,
-   * exclusive without noteBake, etc.) to the worklet synth instead of the
-   * main-thread ADS graph. Tiled ghosts and longNoteBakedSet notes stay on
-   * BufferSource paths.
+   * segment/chunk hybrid: route classification leftovers and live MIDI
+   * (no timelineIndex) to the worklet synth. Tiled ghosts and
+   * longNoteBakedSet notes stay on BufferSource paths.
+   * OfflineAudioContext uses the same worklet path for ultra-long /
+   * exclusive leftovers (no full-note PCM bake).
    */
   shouldRouteNoteToWorkletHybrid(note: TNote): boolean {
     if (!isTiledCacheMode(this.cacheMode)) return false;
     if (note.isTiledGhost) return false;
-    if (this.audioContext instanceof OfflineAudioContext) return false;
-    // Live MIDI / unindexed notes: keep ADS (no stable classification).
-    if (note.timelineIndex == null) return false;
+    // Live MIDI / unindexed notes → worklet (realtime only; offline always has indices).
+    if (note.timelineIndex == null) {
+      return !(this.audioContext instanceof OfflineAudioContext);
+    }
     const i = note.timelineIndex;
     // noteBake (moderate long / exclusive choke) stays offline buffer.
     if (this.longNoteBakedSet.has(i)) return false;
@@ -13127,9 +12703,8 @@ export class Player<
       return this.workletEngine;
     }
     const ctx = this.audioContext;
-    if (ctx instanceof OfflineAudioContext) {
-      throw new Error("worklet mode is not supported on OfflineAudioContext");
-    }
+    // OfflineAudioContext supports audioWorklet in modern browsers; used for
+    // ultra-long hybrid notes during render()/export (avoids multi-MB noteBake).
     const engine = new WorkletEngine(ctx);
     await engine.ensureStarted(this.masterVolume, effects);
     if (this.debug) engine.setDebug(true);

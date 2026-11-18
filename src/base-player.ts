@@ -2795,7 +2795,7 @@ export class BasePlayer<
     g.setValueAtTime(0, Math.min(scheduleTime, startTime));
     g.setValueAtTime(1e-6, delayVolEnvTime);
     // Attack/decay: multi-segment linearRamp approximating the same exponential
-    // curve as computeAdsVolumeGains (pow). OfflineAudioContext has been
+    // curve as ADS volume envelope (pow). OfflineAudioContext has been
     // unreliable with exponentialRampToValueAtTime on long/short spans.
     const N = 8;
     if (attackDur > 1e-6) {
@@ -2830,8 +2830,8 @@ export class BasePlayer<
     // playbackRate setValueAtTime is observed in the rendered buffer.
     if (this.audioContext instanceof OfflineAudioContext) {
       // ADS / ADSR (and any non-full RenderedBuffer) already baked
-      // voiceParams.playbackRate into the PCM during createAdsRenderedBuffer /
-      // createAdsrRenderedBuffer. Re-multiplying it here double-shifts pitch
+      // voiceParams.playbackRate into the PCM during offline note bake /
+      // ADS bake. Re-multiplying it here double-shifts pitch
       // for any sample whose root key ≠ note number (e.g. the upper note of
       // a chord) and collapses polyphony residual vs fluidsynth.
       // Full "note" mode buffers skip setDetune entirely; raw ("none")

@@ -28,6 +28,7 @@ import {
   volumeEnvelopeKeySet,
 } from "./player.ts";
 import { type MidiData, type MidiSetTempoEvent } from "midi-file";
+import { isAudioWorkletUsable } from "./worklet-engine.ts";
 import { type Voice } from "@marmooo/soundfont";
 import {
   createConvolutionReverb,
@@ -271,7 +272,7 @@ const defaultControlValues = new Int8Array([
 // attenuation [or, for the Modulation Envelope, zero value] were reached"
 // starting from full scale (release). Both reference the same 100dB/100%
 // change from full scale, so decay and release share one curve constant
-// — used identically across every cache mode ("none"/"ads"/"adsr"/
+// — used identically across every cache mode ("none"/
 // "segment"/"full") for both the Volume and Modulation envelopes.
 
 // https://www.synthfont.com/sfspec24.pdf
@@ -2447,9 +2448,22 @@ export class MidyGM2 extends Player<Note, Channel> {
       return;
     }
 
-    // segment/chunk hybrid: adsFallback leftovers → worklet (same as Player).
-    // Without this, MidyGM2's override always falls through to ADS/buffer.
-    if (this.shouldRouteNoteToWorkletHybrid(note)) {
+    // Live MIDI (no timeline): worklet when available (same as Player).
+    if (
+      note.timelineIndex == null &&
+      this.cacheMode !== "none" &&
+      !(this.audioContext instanceof OfflineAudioContext) &&
+      isAudioWorkletUsable(this.audioContext)
+    ) {
+      await this.setNoteAudioNodeWorklet(channel, note, realtime);
+      return;
+    }
+
+    // segment/chunk hybrid leftovers → worklet when available.
+    if (
+      this.shouldRouteNoteToWorkletHybrid(note) &&
+      isAudioWorkletUsable(this.audioContext)
+    ) {
       this.noteBakeWorkletHybridCount++;
       await this.setNoteAudioNodeWorklet(channel, note, realtime);
       return;
@@ -2548,7 +2562,7 @@ export class MidyGM2 extends Player<Note, Channel> {
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       note.bufferSource.connect(note.volumeNode);
-    } else { // "ads" / "adsr" mode
+    } else { // RenderedBuffer (noteBake / residual)
       note.volumeEnvelopeNode = null;
       note.filterEnvelopeNode = null;
       this.setDetune(channel, note, now);
@@ -2698,7 +2712,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     //   again would double-schedule layers and break dry rewire (only the
     //   primary volumeNode was reconnected to the offline destination).
     // Only segment/chunk per-zone bakers set offlineRenderOnly. Full-song
-    // OfflineAudioContext (none/ads/adsr/note) must still expand every zone.
+    // OfflineAudioContext (none/note/segment/...) must still expand every zone.
     const singleZoneBake = !!note?.voice && note.audioBufferId !== undefined &&
       !!this.offlineRenderOnly;
     const layers = singleZoneBake
@@ -2734,7 +2748,7 @@ export class MidyGM2 extends Player<Note, Channel> {
         : this.createNoteInstance(noteNumber, velocity, t);
       layerNote.noteGroupId = groupId;
       layerNote.voice = layers[i].voice;
-      // Secondary layers need the same timeline identity so adsr/note mode
+      // Secondary layers need the same timeline identity so note mode
       // bakes use the real MIDI noteDuration (not 0). Each zone must use
       // its own sample id — getVoiceId() only returns the primary zone.
       if (i > 0 && primary) {
@@ -2826,7 +2840,7 @@ export class MidyGM2 extends Player<Note, Channel> {
     }
   }
 
-  // releaseFullCache() was removed; full/adsr release follows Player.releaseNote
+  // releaseFullCache() was removed; full-note release follows Player.releaseNote
   // (waitSourceEnded disconnects the note — no separate cache callback).
   override releaseNote(
     _channel: Channel,

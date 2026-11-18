@@ -14,13 +14,18 @@ import {
 } from "./worklet-backend.ts";
 
 /**
- * addModule + registerProcessor is once-per-AudioContext. A second Blob URL
+ * addModule + registerProcessor is once-per-BaseAudioContext. A second Blob URL
  * would re-run registerProcessor and throw NotSupportedError. Cache the load
  * promise (and keep the blob URL alive for the context lifetime).
  */
-const workletModuleByContext = new WeakMap<AudioContext, Promise<string>>();
+const workletModuleByContext = new WeakMap<
+  AudioContext | OfflineAudioContext,
+  Promise<string>
+>();
 
-function ensureWorkletModule(ctx: AudioContext): Promise<string> {
+function ensureWorkletModule(
+  ctx: AudioContext | OfflineAudioContext,
+): Promise<string> {
   let pending = workletModuleByContext.get(ctx);
   if (!pending) {
     pending = (async () => {
@@ -31,6 +36,15 @@ function ensureWorkletModule(ctx: AudioContext): Promise<string> {
     workletModuleByContext.set(ctx, pending);
   }
   return pending;
+}
+
+/** True when this runtime can construct AudioWorkletNode on the context. */
+export function isAudioWorkletUsable(
+  ctx: AudioContext | OfflineAudioContext,
+): boolean {
+  return typeof AudioWorkletNode === "function" &&
+    !!ctx.audioWorklet &&
+    typeof ctx.audioWorklet.addModule === "function";
 }
 
 export type WorkletNoteOnParams = {
@@ -95,7 +109,7 @@ export class WorkletEngine {
   };
   /** Mirror logs to console when true (set via setDebug). */
   debug = false;
-  readonly audioContext: AudioContext;
+  readonly audioContext: AudioContext | OfflineAudioContext;
   node: AudioWorkletNode | null = null;
   private moduleURL: string | null = null;
   private ready: Promise<void> | null = null;
@@ -119,7 +133,7 @@ export class WorkletEngine {
 
   private effectInputs: WorkletEffectInputs = {};
 
-  constructor(audioContext: AudioContext) {
+  constructor(audioContext: AudioContext | OfflineAudioContext) {
     this.audioContext = audioContext;
   }
 
@@ -217,7 +231,7 @@ export class WorkletEngine {
 
   private async init(destination: AudioNode): Promise<void> {
     const ctx = this.audioContext;
-    if (!(ctx.audioWorklet)) {
+    if (!isAudioWorkletUsable(ctx)) {
       throw new Error("AudioWorklet is not supported in this environment");
     }
     // Shared per AudioContext — never revoke; worklet scope keeps the processor.

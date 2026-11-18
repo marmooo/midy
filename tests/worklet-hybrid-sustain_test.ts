@@ -80,9 +80,9 @@ Deno.test("hybrid-sustain: pedal ceiling matches voice ceiling (not 32)", () => 
   );
 });
 
-Deno.test("hybrid-sustain: pure ads still uses maxPedalVoices=32", () => {
+Deno.test("hybrid-sustain: non-hybrid mode still uses maxPedalVoices=32", () => {
   const player = makePlayer();
-  player.cacheMode = "ads";
+  player.cacheMode = "none";
   const maxP = player.maxPedalVoices;
   for (let i = 0; i < maxP + 5; i++) {
     const n = new Note(40 + (i % 40), 80, 0);

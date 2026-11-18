@@ -5,7 +5,7 @@
 //      One (or a few parallel) postMessage(s) per tile — the intended path
 //      for high-throughput segment/chunk modes.
 //
-//   2) Note-level simple-note sample render (note / ads / adsr):
+//   2) Note-level simple-note sample render (note / ADS lean):
 //        resample + loop + optional lowpass + gains
 //      Useful to keep the main thread free during realtime onsets.
 //

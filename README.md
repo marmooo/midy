@@ -120,8 +120,6 @@ midy.addEventListener("tempoChanged", func);
 ### Cache Mode
 
 - `"none"` Full real-time control (dynamic CC, LFO, pitch). Highest CPU.
-- `"ads"` Pre-render ADS; release fades in real time. LFO stays live.
-- `"adsr"` Pre-render full ADSR keyed by duration ticks + volRelease.
 - `"note"` Per-note offline bake (automation in-interval). MIDI-file only.
 - `"segment"` Per-channel tiled offline buffers; channel vol/pan stay live.
 - `"chunk"` All-channel tiled offline mix; vol/pan snapshotted into buffer.

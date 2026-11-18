@@ -3,13 +3,13 @@
 // Modes
 // -----
 // - `"none"`    Full real-time control (dynamic CC, LFO, pitch). Highest CPU.
-// - `"ads"`     Pre-render ADS; release fades in real time. LFO stays live.
-// - `"adsr"`    Pre-render full ADSR keyed by duration ticks + releaseVolEnv.
 // - `"note"`    Per-note offline bake (automation in-interval). MIDI-file only.
 // - `"segment"` Per-channel tiled offline buffers; channel vol/pan stay live.
 // - `"chunk"`   All-channel tiled offline mix; vol/pan snapshotted into buffer.
 // - `"audio"`   Entire song pre-rendered to one buffer. Lowest CPU.
 // - `"worklet"` Real-time sample synthesis in AudioWorklet (none-equivalent).
+//
+// Removed: `"ads"` / `"adsr"` (superseded by worklet + ADS lean fallback).
 //
 // Simple vs complex notes (note / segment / chunk / audio)
 // -----
@@ -37,8 +37,6 @@ export const DEFAULT_CACHE_MODE: CacheMode = "segment";
 
 export type CacheMode =
   | "none"
-  | "ads"
-  | "adsr"
   | "note"
   | "segment"
   | "chunk"
@@ -61,7 +59,6 @@ export function isChunkCacheMode(mode: CacheMode): boolean {
 // Modes that need note-on → note-off duration analysis (`buildNoteOnDurations`).
 export function needsNoteOnDurations(mode: CacheMode): boolean {
   return (
-    mode === "adsr" ||
     mode === "note" ||
     mode === "audio" ||
     mode === "segment" ||
@@ -88,8 +85,7 @@ export function bakeChannelMixForMode(mode: CacheMode): boolean {
 
 // Modes that primarily schedule Web Audio nodes in real time (not full bake).
 export function isRealtimeCacheMode(mode: CacheMode): boolean {
-  return mode === "none" || mode === "ads" || mode === "adsr" ||
-    mode === "worklet";
+  return mode === "none" || mode === "worklet";
 }
 
 export function isWorkletCacheMode(mode: CacheMode): boolean {
@@ -117,7 +113,7 @@ export interface CacheEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Note-on duration / automation timeline (adsr / note / segment / chunk / audio)
+// Note-on duration / automation timeline (note / segment / chunk / audio)
 // ---------------------------------------------------------------------------
 
 export interface NoteOnEventEntry {

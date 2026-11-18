@@ -29,8 +29,6 @@ import puppeteer from "npm:puppeteer@25.10.0";
 
 export type CacheMode =
   | "none"
-  | "ads"
-  | "adsr"
   | "note"
   | "segment"
   | "chunk"

@@ -6,7 +6,7 @@
 //   - cacheMode recognition
 //   - processor source contains Phase-2 feature markers
 //   - WorkletEngine bookkeeping (voice ids, samples, effect send maps)
-//   - OfflineAudioContext rejection for ensureWorkletEngine
+//   - OfflineAudioContext + missing AudioWorklet still rejects ensureWorkletEngine
 
 import "./mock-shared.ts";
 import { assertEquals, assertNotEquals } from "./mock-shared.ts";
@@ -100,8 +100,6 @@ Deno.test("cache-strategy: isWorkletCacheMode", () => {
   assertEquals(isWorkletCacheMode("worklet"), true);
   const others: CacheMode[] = [
     "none",
-    "ads",
-    "adsr",
     "note",
     "segment",
     "chunk",
@@ -299,7 +297,7 @@ Deno.test("WorkletEngine: noteOn/noteOff/setVoiceParams safe without node", () =
 // Player integration (OfflineAudioContext must reject worklet)
 // ---------------------------------------------------------------------------
 
-Deno.test("ensureWorkletEngine rejects OfflineAudioContext", async () => {
+Deno.test("ensureWorkletEngine on OfflineAudioContext without AudioWorklet fails", async () => {
   const offline = new WebOfflineAudioContext(
     2,
     44100,
@@ -307,10 +305,11 @@ Deno.test("ensureWorkletEngine rejects OfflineAudioContext", async () => {
   ) as unknown as OfflineAudioContext;
   const midy = new MidyGMLite(offline);
   midy.cacheMode = "worklet";
+  // OAC is allowed in principle; npm:web-audio-api still lacks AudioWorkletNode.
   await assertRejects(
     () => midy.ensureWorkletEngine(),
     Error,
-    "OfflineAudioContext",
+    "AudioWorklet",
   );
 });
 

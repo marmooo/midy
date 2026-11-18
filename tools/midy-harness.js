@@ -78,7 +78,7 @@ function bytesFromBase64(base64) {
  * @param {{
  *   midiBytesBase64: string,
  *   soundFontBytesBase64: string,
- *   cacheMode: "none"|"ads"|"adsr"|"note"|"segment"|"chunk"|"audio",
+ *   cacheMode: "none"|"note"|"segment"|"chunk"|"audio",
  *   sampleRate?: number,
  *   useAlmostSimplePitchBend?: boolean,
  * }} params
