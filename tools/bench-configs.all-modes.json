@@ -1,0 +1,44 @@
+[
+  {
+    "name": "none",
+    "set": {
+      "cacheMode": "none",
+      "debug": true
+    }
+  },
+  {
+    "name": "note",
+    "set": {
+      "cacheMode": "note",
+      "debug": true
+    }
+  },
+  {
+    "name": "segment",
+    "set": {
+      "cacheMode": "segment",
+      "debug": true
+    }
+  },
+  {
+    "name": "chunk",
+    "set": {
+      "cacheMode": "chunk",
+      "debug": true
+    }
+  },
+  {
+    "name": "worklet",
+    "set": {
+      "cacheMode": "worklet",
+      "debug": true
+    }
+  },
+  {
+    "name": "audio",
+    "set": {
+      "cacheMode": "audio",
+      "debug": true
+    }
+  }
+]

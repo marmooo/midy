@@ -32,7 +32,8 @@ export type CacheMode =
   | "note"
   | "segment"
   | "chunk"
-  | "audio";
+  | "audio"
+  | "worklet";
 
 export interface RenderMidyModeOptions {
   /** Directory containing harness.html + midy-harness.js, given as a path

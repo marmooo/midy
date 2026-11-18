@@ -78,11 +78,22 @@ function bytesFromBase64(base64) {
  * @param {{
  *   midiBytesBase64: string,
  *   soundFontBytesBase64: string,
- *   cacheMode: "none"|"note"|"segment"|"chunk"|"audio",
+ *   cacheMode: "none"|"note"|"segment"|"chunk"|"audio"|"worklet",
  *   sampleRate?: number,
  *   useAlmostSimplePitchBend?: boolean,
+ *   timingOnly?: boolean,
  * }} params
- * @returns {Promise<string>} base64-encoded WAV bytes
+ * @returns {Promise<{
+ *   wavBase64?: string,
+ *   useAlmostSimplePitchBend: boolean,
+ *   cacheMode: string,
+ *   loadMidiMs: number,
+ *   renderMs: number,
+ *   totalMs: number,
+ *   bufferDurationSec: number,
+ *   sampleRate: number,
+ *   frames: number,
+ * }>}
  */
 async function renderMidyMode(params) {
   const audioContext = new (globalThis.AudioContext ||
@@ -91,7 +102,9 @@ async function renderMidyMode(params) {
   });
 
   const player = new Midy(audioContext);
+  const tSf0 = performance.now();
   await player.loadSoundFont(bytesFromBase64(params.soundFontBytesBase64));
+  const loadSfMs = performance.now() - tSf0;
   player.cacheMode = params.cacheMode; // set before loadMIDI
 
   // Optional experimental flags — must be applied BEFORE loadMIDI so
@@ -118,24 +131,70 @@ async function renderMidyMode(params) {
     );
   }
 
+  // Time loadMIDI separately — "audio" mode also runs render() inside it.
+  const tLoad0 = performance.now();
   await player.loadMIDI(bytesFromBase64(params.midiBytesBase64));
+  const loadMidiMs = performance.now() - tLoad0;
 
   // "audio" mode renders automatically inside loadMIDI() when cacheMode was
   // already "audio" at load time; every other mode needs an explicit call.
-  const rendered = player.renderedAudioBuffer ?? await player.render();
+  // For fair render timing when buffer is already present (audio), count that
+  // work under renderMs via loadMidi (see renderMs attribution below).
+  const tRender0 = performance.now();
+  let rendered = player.renderedAudioBuffer;
+  let renderMs;
+  if (rendered) {
+    // Render happened inside loadMIDI (audio mode). Attribute loadMIDI cost
+    // to renderMs for apples-to-apples mode comparison of "time to buffer".
+    renderMs = loadMidiMs;
+  } else {
+    rendered = await player.render();
+    renderMs = performance.now() - tRender0;
+  }
   if (!rendered) {
     throw new Error(
       `render() returned nothing for cacheMode=${params.cacheMode}`,
     );
   }
-  const wavBytes = encodeWavFloat32(rendered);
-  // Structured return so Deno tests can assert the flag without relying on
-  // page console forwarding (easy to miss under `deno test` output).
-  return {
-    wavBase64: base64FromBytes(wavBytes),
+
+  const bufferDurationSec = rendered.duration ??
+    (rendered.length / rendered.sampleRate);
+  const frames = rendered.length;
+  const sampleRate = rendered.sampleRate;
+  const totalMs = loadSfMs + loadMidiMs +
+    (player.renderedAudioBuffer && params.cacheMode === "audio"
+      ? 0
+      : (rendered && params.cacheMode !== "audio" ? renderMs : 0));
+  // Simpler total: SF load is shared noise; primary metric is renderMs.
+  console.log(
+    `[midy-harness] timing cacheMode=${params.cacheMode} ` +
+      `loadSfMs=${loadSfMs.toFixed(0)} loadMidiMs=${loadMidiMs.toFixed(0)} ` +
+      `renderMs=${renderMs.toFixed(0)} bufferSec=${bufferDurationSec.toFixed(2)}`,
+  );
+
+  const out = {
     useAlmostSimplePitchBend: !!player.useAlmostSimplePitchBend,
     cacheMode: params.cacheMode,
+    loadSfMs,
+    loadMidiMs,
+    renderMs,
+    totalMs: loadSfMs + (params.cacheMode === "audio" ? loadMidiMs : loadMidiMs + renderMs),
+    bufferDurationSec,
+    sampleRate,
+    frames,
   };
+
+  if (!params.timingOnly) {
+    const wavBytes = encodeWavFloat32(rendered);
+    out.wavBase64 = base64FromBytes(wavBytes);
+  }
+
+  try {
+    await audioContext.close();
+  } catch {
+    // ignore
+  }
+  return out;
 }
 
 // Exposed for Puppeteer's page.evaluate() to call by name.

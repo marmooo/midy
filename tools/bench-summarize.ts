@@ -11,7 +11,15 @@
 const METRIC_KEYS = [
   "config",
   "bundle",
+  "elapsedMs",
+  "wallMs",
+  "totalTimeSec",
+  "rtf",
   "timedOut",
+  "prerollWallMs",
+  "mainBusyPct",
+  "workerMixMs",
+  "avgProcUs",
   "tiles",
   "bakeAvg",
   "bakeP50",
@@ -35,13 +43,8 @@ const METRIC_KEYS = [
   "cacheHit",
   "clsTiled",
   "clsNoteBake",
-  "clsAdsFallback",
+  "clsWorkletOffline",
   "clsExclBake",
-  "elapsedMs",
-  "mainBusyPct",
-  "workerMixMs",
-  "avgProcUs",
-  "prerollWallMs",
 ] as const;
 
 type Row = Record<string, string | number>;
@@ -116,28 +119,51 @@ function parseLog(text: string, configHint: string): Row {
   );
   if (cache) row.cacheHit = +cache[1];
 
-  // segment-classify | tiled=N noteBake=N adsFallback=N exclBake=N ...
+  // segment-classify | tiled=N noteBake=N workletOffline=N|adsFallback=N exclBake=N
   const cls = m(
-    /\[midy\] segment-classify \| tiled=(\d+) noteBake=(\d+)(?: adsFallback=(\d+))? exclBake=(\d+)/,
+    /\[midy\] segment-classify \| tiled=(\d+) noteBake=(\d+)(?: (?:workletOffline|adsFallback)=(\d+))?[^\n]*exclBake=(\d+)/,
   );
   if (cls) {
     row.clsTiled = +cls[1];
     row.clsNoteBake = +cls[2];
-    if (cls[3] !== undefined) row.clsAdsFallback = +cls[3];
+    if (cls[3] !== undefined) row.clsWorkletOffline = +cls[3];
     row.clsExclBake = +cls[4];
   }
 
   const finished = m(
-    /\[bench\] play finished elapsedMs=([\d.]+) timedOut=(true|false)/,
+    /\[bench\] play finished elapsedMs=([\d.]+) timedOut=(true|false)(?: totalTime=([\d.]+)s)?/,
   );
   if (finished) {
     row.elapsedMs = Math.round(+finished[1]);
     row.timedOut = finished[2];
+    if (finished[3] !== undefined) row.totalTimeSec = +finished[3];
   } else {
     const host = m(/"timedOut":\s*(true|false)/);
     if (host) row.timedOut = host[1];
     const el = m(/"elapsedMs":\s*([\d.]+)/);
     if (el) row.elapsedMs = Math.round(+el[1]);
+  }
+
+  // Host wall clock (includes Chrome page setup); secondary to elapsedMs.
+  const wall = m(/wallMs=([\d.]+)/);
+  if (wall) row.wallMs = Math.round(+wall[1]);
+  const wallJson = m(/"wallMs":\s*([\d.]+)/);
+  if (wallJson && row.wallMs === undefined) {
+    row.wallMs = Math.round(+wallJson[1]);
+  }
+
+  // totalTime from start-play line if not on finished line.
+  if (row.totalTimeSec === undefined) {
+    const tt = m(/\[bench\] start play[^\n]*totalTime=([\d.]+)s/);
+    if (tt) row.totalTimeSec = +tt[1];
+  }
+  // Realtime factor: elapsed / song length. 1.0 = realtime, lower = faster.
+  if (
+    typeof row.elapsedMs === "number" &&
+    typeof row.totalTimeSec === "number" &&
+    row.totalTimeSec > 0
+  ) {
+    row.rtf = +(row.elapsedMs / 1000 / row.totalTimeSec).toFixed(3);
   }
 
   const bundleLine = m(/\[bench\] bundle=([\w-]+) import=/);
@@ -190,26 +216,22 @@ function printTable(rows: Row[], sortKey: string) {
     return String(a.config).localeCompare(String(b.config));
   });
 
+  // Cross-mode comparison first; chunk-only bake metrics still available via --csv.
   const cols = [
     "config",
     "bundle",
+    "elapsedMs",
+    "rtf",
+    "totalTimeSec",
+    "timedOut",
+    "prerollWallMs",
     "mainBusyPct",
     "workerMixMs",
     "avgProcUs",
-    "prerollWallMs",
     "bakeAvg",
-    "bakeP95",
     "bakeMax",
-    "mixMainMs",
-    "mixMainRatio",
-    "parallelTiles",
-    "sharedTiles",
-    "fallbackTiles",
-    "partsAvg",
-    "combineSum",
     "late",
     "dropped",
-    "timedOut",
   ];
 
   const widths = cols.map((c) =>
@@ -229,16 +251,19 @@ function printTable(rows: Row[], sortKey: string) {
   }
 
   console.log(
-    "\nHints: for WASM 4-way compare, mainBusyPct / workerMixMs / avgProcUs should match within pairs",
+    "\nHints: elapsedMs / rtf are the primary cross-mode speed metrics.",
   );
   console.log(
-    "       (wasm ~ wasm-threads, wasm-simd ~ wasm-threaded-simd). late/dropped must stay 0.",
+    "       rtf = elapsed/songLength (<1 faster than realtime). timedOut=true → discard that row.",
   );
   console.log(
-    "       mixMainRatio near 0 = live mix off main (game-friendly, watch residual).",
+    "       prerollWallMs = startup cost; mainBusyPct / avgProcUs = live CPU shape.",
   );
   console.log(
-    "       clsTiled/clsNoteBake/clsAdsFallback = segment-classify split (long-note policy).",
+    "       bakeAvg/bakeMax only apply to segment/chunk tiles (others stay - or 0).",
+  );
+  console.log(
+    "       Full columns: --csv. Sort: --sort elapsedMs|rtf|prerollWallMs|bakeMax",
   );
 }
 
@@ -265,7 +290,9 @@ Parses *.log from bench-main-load and prints a comparison table.
   const dir = args.find((a) => !a.startsWith("--")) ?? "./bench-logs";
   const csv = args.includes("--csv");
   const sortIdx = args.indexOf("--sort");
-  const sortKey = sortIdx >= 0 ? (args[sortIdx + 1] ?? "bakeMax") : "bakeMax";
+  const sortKey = sortIdx >= 0
+    ? (args[sortIdx + 1] ?? "elapsedMs")
+    : "elapsedMs";
 
   const rows: Row[] = [];
   for await (const e of Deno.readDir(dir)) {
