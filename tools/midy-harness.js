@@ -161,15 +161,13 @@ async function renderMidyMode(params) {
     (rendered.length / rendered.sampleRate);
   const frames = rendered.length;
   const sampleRate = rendered.sampleRate;
-  const totalMs = loadSfMs + loadMidiMs +
-    (player.renderedAudioBuffer && params.cacheMode === "audio"
-      ? 0
-      : (rendered && params.cacheMode !== "audio" ? renderMs : 0));
   // Simpler total: SF load is shared noise; primary metric is renderMs.
   console.log(
     `[midy-harness] timing cacheMode=${params.cacheMode} ` +
       `loadSfMs=${loadSfMs.toFixed(0)} loadMidiMs=${loadMidiMs.toFixed(0)} ` +
-      `renderMs=${renderMs.toFixed(0)} bufferSec=${bufferDurationSec.toFixed(2)}`,
+      `renderMs=${renderMs.toFixed(0)} bufferSec=${
+        bufferDurationSec.toFixed(2)
+      }`,
   );
 
   const out = {
@@ -178,7 +176,8 @@ async function renderMidyMode(params) {
     loadSfMs,
     loadMidiMs,
     renderMs,
-    totalMs: loadSfMs + (params.cacheMode === "audio" ? loadMidiMs : loadMidiMs + renderMs),
+    totalMs: loadSfMs +
+      (params.cacheMode === "audio" ? loadMidiMs : loadMidiMs + renderMs),
     bufferDurationSec,
     sampleRate,
     frames,

@@ -23,6 +23,7 @@ class MidySynthProcessor extends AudioWorkletProcessor {
     this.idMap = new Map();
     this.nextSlot = 0;
     this.sampleMeta = new Map();
+    this.voiceSampleRate = new Map();
     this.debug = false;
 
     this.statNoteOn = 0;
@@ -260,7 +261,10 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         let rate = +msg.playbackRate;
         if (!(rate > 0) || !isFinite(rate)) rate = 1;
         if (meta && meta.sampleRate > 0) {
+          if (this.voiceSampleRate) this.voiceSampleRate.set(msg.voiceId | 0, meta.sampleRate);
           rate = rate * (meta.sampleRate / sampleRate);
+        } else {
+          if (this.voiceSampleRate) this.voiceSampleRate.set(msg.voiceId | 0, sampleRate);
         }
         const gain = isFinite(+msg.gain) ? +msg.gain : 0;
         const pan = isFinite(+msg.pan) ? +msg.pan : 0;
@@ -345,8 +349,28 @@ class MidySynthProcessor extends AudioWorkletProcessor {
         this.masterGain = +msg.value || 0;
         break;
       case "setVoiceLimit":
-      case "setVoiceParams":
+      case "setVoiceParams": {
+        if (!this.ready || !this.exports) break;
+        // Older wasm binaries lack sc_voice_set_params — no-op instead of throw.
+        if (typeof this.exports.sc_voice_set_params !== "function") break;
+        const vid = msg.voiceId | 0;
+        let rate = NaN;
+        if (msg.playbackRate != null && isFinite(+msg.playbackRate) && +msg.playbackRate > 0) {
+          rate = +msg.playbackRate;
+          const metaRate = this.voiceSampleRate && this.voiceSampleRate.get(vid);
+          if (metaRate > 0) rate = rate * (metaRate / sampleRate);
+        }
+        const gain = (msg.gain != null && isFinite(+msg.gain)) ? +msg.gain : NaN;
+        let panL = NaN, panR = NaN;
+        if (msg.pan != null && isFinite(+msg.pan)) {
+          const pan = Math.max(-1, Math.min(1, +msg.pan));
+          const angle = (pan + 1) * 0.25 * Math.PI;
+          panL = Math.cos(angle);
+          panR = Math.sin(angle);
+        }
+        this.exports.sc_voice_set_params(vid, rate, gain, panL, panR);
         break;
+      }
       default:
         break;
     }

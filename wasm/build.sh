@@ -22,6 +22,7 @@ WASM_EXPORTS=(
   -Wl,--export=sc_voice_on
   -Wl,--export=sc_voice_off
   -Wl,--export=sc_voice_stop
+  -Wl,--export=sc_voice_set_params
   -Wl,--export=sc_all_sound_off
   -Wl,--export=sc_set_master_gain
   -Wl,--export=sc_set_frame0

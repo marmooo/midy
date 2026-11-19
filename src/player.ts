@@ -12249,12 +12249,14 @@ export class Player<
       return;
     }
 
-    // Live MIDI (no timeline index): worklet when available (not "none"/offline).
-    // Deno/npm:web-audio-api has no AudioWorkletNode — fall through to
-    // main-thread raw buffer + realtime envelope.
+    // Live MIDI (no timeline index): only use worklet when explicitly requested.
+    // 0.7.4 routed all non-"none" live notes to worklet, but WASM setVoiceParams
+    // was a no-op — live MPE pitch bend / CC (4x4pad etc.) stopped working.
+    // Explicit cacheMode === "worklet" keeps the low-CPU live path; default
+    // segment/chunk live notes use bufferSource + setDetune again (0.7.3).
     if (
       note.timelineIndex == null &&
-      this.cacheMode !== "none" &&
+      this.cacheMode === "worklet" &&
       !(this.audioContext instanceof OfflineAudioContext) &&
       isAudioWorkletUsable(this.audioContext)
     ) {
@@ -12676,18 +12678,19 @@ export class Player<
   }
 
   /**
-   * segment/chunk hybrid: route classification leftovers and live MIDI
-   * (no timelineIndex) to the worklet synth. Tiled ghosts and
-   * longNoteBakedSet notes stay on BufferSource paths.
-   * OfflineAudioContext uses the same worklet path for ultra-long /
-   * exclusive leftovers (no full-note PCM bake).
+   * segment/chunk hybrid: route classification leftovers (timeline notes
+   * that were neither tiled nor note-baked) to the worklet synth.
+   * Live MIDI (no timelineIndex) stays on BufferSource so setDetune works.
+   * Tiled ghosts and longNoteBakedSet notes stay on BufferSource paths.
    */
   shouldRouteNoteToWorkletHybrid(note: TNote): boolean {
     if (!isTiledCacheMode(this.cacheMode)) return false;
     if (note.isTiledGhost) return false;
     if (!isAudioWorkletUsable(this.audioContext)) return false;
-    // Live MIDI / unindexed notes → worklet.
-    if (note.timelineIndex == null) return true;
+    // Live MIDI / unindexed notes: keep main-thread bufferSource so
+    // setPitchBend → updateChannelDetune → setDetune works. (Worklet path
+    // needs setVoiceParams; WASM core historically ignored it.)
+    if (note.timelineIndex == null) return false;
     const i = note.timelineIndex;
     // noteBake (moderate long / exclusive choke) stays offline buffer.
     if (this.longNoteBakedSet.has(i)) return false;

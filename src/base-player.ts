@@ -2747,6 +2747,21 @@ export class BasePlayer<
     // Apply synchronously to notes that already have a bufferSource.
     // processScheduledNotes() defers via note.ready.then(...), which can
     // race offline timeline walks that do not await controller events.
+    //
+    // Worklet voices have no bufferSource: fold channel+voice cents into
+    // playbackRate and push via WorkletEngine.setVoiceParams (same pattern
+    // as updateChannelVolume). Without this, live MIDI / MPE under the
+    // 0.7.4 "live → worklet when cacheMode !== none" route never hears
+    // setPitchBend / setPitchBendRange.
+    const engine = (this as unknown as {
+      workletEngine?: {
+        setVoiceParams: (
+          id: number,
+          p: { gain?: number; pan?: number; playbackRate?: number },
+        ) => void;
+      } | null;
+    }).workletEngine;
+
     for (let i = 0; i < 128; i++) {
       const stack = channel.activeNotes[i];
       if (!stack) continue;
@@ -2754,8 +2769,18 @@ export class BasePlayer<
         const note = stack[j];
         if (note.ending) continue;
         if (note.renderedBuffer?.isFull || note.isTiledGhost) continue;
-        if (!note.bufferSource) continue;
-        this.setDetune(channel, note, scheduleTime);
+
+        if (note.bufferSource) {
+          this.setDetune(channel, note, scheduleTime);
+          continue;
+        }
+
+        const voiceId = note.workletVoiceId;
+        if (voiceId == null || !engine) continue;
+        const baseRate = note.voiceParams?.playbackRate ?? 1;
+        const detuneCents = this.calcNoteDetune(channel, note);
+        const playbackRate = baseRate * Math.pow(2, detuneCents / 1200);
+        engine.setVoiceParams(voiceId, { playbackRate });
       }
     }
   }
@@ -4043,7 +4068,7 @@ export class BasePlayer<
       workletEngine?: {
         setVoiceParams: (
           id: number,
-          p: { gain?: number; pan?: number },
+          p: { gain?: number; pan?: number; playbackRate?: number },
         ) => void;
       } | null;
     }).workletEngine;

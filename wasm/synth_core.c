@@ -633,6 +633,30 @@ void sc_voice_stop(int32_t voice_id) {
   }
 }
 
+void sc_voice_set_params(
+    int32_t voice_id, float rate, float gain, float pan_l, float pan_r
+) {
+  int32_t i;
+  Voice *v;
+  for (i = 0; i < SC_MAX_VOICES; i++) {
+    v = &g_voices[i];
+    if (!v->active || v->voice_id != voice_id) continue;
+    /* NaN / non-finite = leave field unchanged */
+    if (sc_isfinite(rate) && rate > 1e-6f && rate < 64.0f) {
+      v->rate = rate;
+    }
+    if (sc_isfinite(gain) && gain >= 0.0f) {
+      v->gain = gain;
+    }
+    if (sc_isfinite(pan_l) && sc_isfinite(pan_r)) {
+      v->pan_l = pan_l;
+      v->pan_r = pan_r;
+    }
+    return;
+  }
+}
+
+
 void sc_all_sound_off(void) {
   int32_t i;
   for (i = 0; i < SC_MAX_VOICES; i++) {

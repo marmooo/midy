@@ -110,7 +110,6 @@ registerProcessor("midy-pcm-capture", MidyCaptureProcessor);
 
 async function renderMidyWorklet(params) {
   const sampleRate = params.sampleRate ?? 48000;
-  const tailSec = params.tailSec ?? 0.5;
   const logs = [];
   const log = (m) => {
     logs.push(String(m));

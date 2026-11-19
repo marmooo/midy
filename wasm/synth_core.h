@@ -66,6 +66,8 @@ int32_t sc_voice_on(
 
 void sc_voice_off(int32_t voice_id, float release_sec, float at_frame);
 void sc_voice_stop(int32_t voice_id);
+/** Live update rate/gain/pan on an active voice (0 = leave unchanged for rate if rate<=0). */
+void sc_voice_set_params(int32_t voice_id, float rate, float gain, float pan_l, float pan_r);
 void sc_all_sound_off(void);
 void sc_set_master_gain(float g);
 void sc_set_frame0(float frame0);
