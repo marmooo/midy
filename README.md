@@ -1,7 +1,7 @@
 # Midy
 
-A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3. TypeScript API with
-C/Wasm cores.
+A MIDI player/synthesizer for GM-Lite/GM1/GM2 and SF2/SF3, with a TypeScript API
+and C/Wasm cores.
 
 This library provides several files depending on the implementation level.
 
