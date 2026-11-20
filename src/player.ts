@@ -7288,10 +7288,14 @@ export class Player<
         buffer = await this.renderWholeSongLive(this.cacheMode);
         break;
       case "audio":
-        // Windowed offline mix — not the live "audio" play path (which just
-        // plays a pre-rendered buffer). Kept separate because a single full-
-        // song OfflineAudioContext graph can be unreliable under heavy nodes.
-        buffer = await this.renderFastMode();
+        // Playback-parity path: bake via the same chunk offline graph that
+        // live "chunk" mode uses, then peak-normalize once for the whole
+        // song. The older windowed renderFastMode() diverged in envelope /
+        // gain / automation handling and produced clearly different audio;
+        // keep it available for optional fast export but do not use it as
+        // the default for cacheMode === "audio".
+        buffer = await this.renderWholeSongLive("chunk");
+        if (buffer) this.peakNormalizeBuffer(buffer);
         break;
       default: {
         const _exhaustive: never = this.cacheMode;
@@ -7305,13 +7309,14 @@ export class Player<
     return this.renderedAudioBuffer ?? undefined;
   }
 
-  // Used by cacheMode "audio" export only (not live playback of any mode).
-  // Collect every note into ChunkNoteEntry[], then bake in short time
-  // windows via renderChunkBuffer(). Faster than one giant OfflineAudioContext
-  // for the whole song because: (1) node count stays bounded per window,
-  // (2) avoids OAC graphs that can drop later notes under heavy polyphony,
-  // (3) windows mix with simple buffer addition. Call explicitly if needed;
-  // other modes use renderWholeSongLive (playback-parity path).
+  // Optional windowed offline mix (not used by default for cacheMode
+  // "audio" anymore — render() now uses renderWholeSongLive("chunk") for
+  // playback parity). Collect every note into ChunkNoteEntry[], then bake
+  // in short time windows via renderChunkBuffer(). Faster than one giant
+  // OfflineAudioContext for the whole song because: (1) node count stays
+  // bounded per window, (2) avoids OAC graphs that can drop later notes
+  // under heavy polyphony, (3) windows mix with simple buffer addition.
+  // Call explicitly if a speed-oriented export is preferred over parity.
   async renderFastMode(): Promise<AudioBuffer | undefined> {
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;
