@@ -2156,6 +2156,10 @@ export class MidyGM2 extends Player<Note, Channel> {
     // Apply synchronously. processScheduledNotes() defers via note.ready.then
     // and offline timeline walks do not await controller events, so pitch
     // bend / RPN updates would otherwise miss already-started bufferSources.
+    //
+    // Worklet voices have no bufferSource — push folded playbackRate via
+    // WorkletEngine.setVoiceParams (same contract as updateChannelVolume).
+    const engine = this.workletEngine;
     for (let i = 0; i < 128; i++) {
       const stack = channel.activeNotes[i];
       if (!stack) continue;
@@ -2163,12 +2167,22 @@ export class MidyGM2 extends Player<Note, Channel> {
         const note = stack[j];
         if (note.ending) continue;
         if (note.renderedBuffer?.isFull || note.isTiledGhost) continue;
-        if (!note.bufferSource) continue;
-        if (this.isPortamento(channel, note)) {
-          this.setPortamentoDetune(channel, note, scheduleTime);
-        } else {
-          this.setDetune(channel, note, scheduleTime);
+
+        if (note.bufferSource) {
+          if (this.isPortamento(channel, note)) {
+            this.setPortamentoDetune(channel, note, scheduleTime);
+          } else {
+            this.setDetune(channel, note, scheduleTime);
+          }
+          continue;
         }
+
+        const voiceId = note.workletVoiceId;
+        if (voiceId == null || !engine) continue;
+        const baseRate = note.voiceParams?.playbackRate ?? 1;
+        const detuneCents = this.calcNoteDetune(channel, note);
+        const playbackRate = baseRate * Math.pow(2, detuneCents / 1200);
+        engine.setVoiceParams(voiceId, { playbackRate });
       }
     }
   }

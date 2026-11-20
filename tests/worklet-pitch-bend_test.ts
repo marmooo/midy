@@ -15,7 +15,6 @@ type VoiceParamCall = {
   pan?: number;
 };
 
-
 /** Absolute PB 0..16383 → rate multiplier at default ±2 semitone (200 cent) range. */
 function rateAtDefaultRange(absolute: number): number {
   const signed = (absolute - 8192) / 8192;

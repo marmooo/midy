@@ -56,7 +56,6 @@ Deno.test("synth_core declares sc_voice_set_params", async () => {
   assertEquals(src.includes("void sc_voice_set_params"), true);
 });
 
-
 Deno.test("midy-GM2 source: live notes require cacheMode worklet", async () => {
   const text = await Deno.readTextFile(
     new URL("../src/midy-GM2.ts", import.meta.url),
@@ -64,8 +63,18 @@ Deno.test("midy-GM2 source: live notes require cacheMode worklet", async () => {
   // Must not force live → worklet for every non-none mode (Player override).
   assertEquals(text.includes('this.cacheMode !== "none"'), false);
   assertEquals(
-    text.includes('note.timelineIndex == null') &&
+    text.includes("note.timelineIndex == null") &&
       text.includes('this.cacheMode === "worklet"'),
     true,
   );
+});
+
+Deno.test("midy-GM2 updateChannelDetune updates worklet voices", async () => {
+  const text = await Deno.readTextFile(
+    new URL("../src/midy-GM2.ts", import.meta.url),
+  );
+  const start = text.indexOf("override updateChannelDetune");
+  const body = text.slice(start, start + 1500);
+  assertEquals(body.includes("workletVoiceId"), true);
+  assertEquals(body.includes("setVoiceParams"), true);
 });
