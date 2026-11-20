@@ -2475,12 +2475,11 @@ export class MidyGM2 extends Player<Note, Channel> {
       return;
     }
 
-    // Live MIDI (no timeline): only when cacheMode === "worklet".
-    // Must match Player.setNoteAudioNode — 0.7.4 used !== "none" and forced
-    // live MPE (4x4pad) onto WASM worklet where setVoiceParams ignored pitch.
+    // Live MIDI residual: worklet / segment / chunk → worklet; none / note →
+    // bufferSource. Must match Player.setNoteAudioNode.
     if (
       note.timelineIndex == null &&
-      this.cacheMode === "worklet" &&
+      (this.cacheMode === "worklet" || isTiledCacheMode(this.cacheMode)) &&
       !(this.audioContext instanceof OfflineAudioContext) &&
       isAudioWorkletUsable(this.audioContext)
     ) {

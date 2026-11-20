@@ -12249,14 +12249,13 @@ export class Player<
       return;
     }
 
-    // Live MIDI (no timeline index): only use worklet when explicitly requested.
-    // 0.7.4 routed all non-"none" live notes to worklet, but WASM setVoiceParams
-    // was a no-op — live MPE pitch bend / CC (4x4pad etc.) stopped working.
-    // Explicit cacheMode === "worklet" keeps the low-CPU live path; default
-    // segment/chunk live notes use bufferSource + setDetune again (0.7.3).
+    // Live MIDI (no timeline index) residual path:
+    // - worklet / segment / chunk → worklet (lightweight realtime; pitch via
+    //   setVoiceParams). segment/chunk tiles only apply to timeline notes.
+    // - none / note → main-thread bufferSource + setDetune.
     if (
       note.timelineIndex == null &&
-      this.cacheMode === "worklet" &&
+      (this.cacheMode === "worklet" || isTiledCacheMode(this.cacheMode)) &&
       !(this.audioContext instanceof OfflineAudioContext) &&
       isAudioWorkletUsable(this.audioContext)
     ) {
@@ -12680,16 +12679,14 @@ export class Player<
   /**
    * segment/chunk hybrid: route classification leftovers (timeline notes
    * that were neither tiled nor note-baked) to the worklet synth.
-   * Live MIDI (no timelineIndex) stays on BufferSource so setDetune works.
+   * Live MIDI (no timelineIndex) is handled in setNoteAudioNode (worklet).
    * Tiled ghosts and longNoteBakedSet notes stay on BufferSource paths.
    */
   shouldRouteNoteToWorkletHybrid(note: TNote): boolean {
     if (!isTiledCacheMode(this.cacheMode)) return false;
     if (note.isTiledGhost) return false;
     if (!isAudioWorkletUsable(this.audioContext)) return false;
-    // Live MIDI / unindexed notes: keep main-thread bufferSource so
-    // setPitchBend → updateChannelDetune → setDetune works. (Worklet path
-    // needs setVoiceParams; WASM core historically ignored it.)
+    // Live notes are routed in setNoteAudioNode; hybrid is timeline-only.
     if (note.timelineIndex == null) return false;
     const i = note.timelineIndex;
     // noteBake (moderate long / exclusive choke) stays offline buffer.
