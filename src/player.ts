@@ -1483,8 +1483,19 @@ export class Player<
     // Drop that trailing silence so the scheduler does not wait for it.
     this.trimTrailingSilence();
     this.totalTime = this.calcTotalTime();
+    // audio mode needs samples. MIDIPlayer loads split SF2/SF3 in start(),
+    // so baking here would often run with an empty soundfont table and leave
+    // renderedAudioBuffer null (or stuck isRendering if render threw).
     if (this.cacheMode === "audio") {
-      await this.render();
+      const hasSf = Array.isArray(this.soundFonts) &&
+        this.soundFonts.length > 0;
+      if (hasSf) {
+        await this.render();
+      } else if (this.debug) {
+        console.log(
+          "[midy] audio bake deferred until soundfonts are loaded (start/render)",
+        );
+      }
     }
   }
 
@@ -3700,6 +3711,23 @@ export class Player<
     return queueIndex;
   }
 
+  // Drop intermediate bake maps after cacheMode "audio" has a final buffer.
+  // Must NOT clear renderedAudioBuffer / audioModeBufferSource.
+  protected releaseAudioModeBakeCaches(): void {
+    this.releaseTiledPlaybackResources();
+    this.rawAudioBufferCache.clear();
+    this.mixPcmCache.clear();
+    this.simpleNoteBufferCache = new Map();
+    this.simpleNoteCounts = new Map();
+    this.simpleNoteOnsets = new Map();
+    this.simpleNoteReleaseOnsets = new Map();
+    this.simpleNoteCacheReleaseKey = new Map();
+    this.simpleNoteRemaining = new Map();
+    this.complexNoteBufferCache = new Map();
+    this.complexNoteCounts = new Map();
+    this.complexNoteRemaining = new Map();
+  }
+
   override clearPlaybackCaches(): void {
     // Drop tiled sources + pending buffers first so large AudioBuffers are
     // detached from live AudioBufferSourceNodes before Map.clear().
@@ -3800,8 +3828,14 @@ export class Player<
         naturalEnded = true;
       };
       while (true) {
-        const now = audioContext.currentTime;
-        await this.scheduleTask(() => {}, now + this.noteCheckInterval);
+        // Prefer a plain timer during audio-mode playback: scheduleTask()
+        // allocates a one-shot AudioBufferSourceNode every tick and was
+        // measurable on long songs (shk_mid_215) even though the music
+        // path is a single BufferSource.
+        await new Promise<void>((resolve) => {
+          const ms = Math.max(50, (this.noteCheckInterval || 0.1) * 1000);
+          setTimeout(resolve, ms);
+        });
         if (naturalEnded || this.currentTime() >= this.totalTime) {
           this.neuterBufferSource(bufferSource);
           this.audioModeBufferSource = null;
@@ -3858,7 +3892,19 @@ export class Player<
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
-    if (this.cacheMode === "audio" && this.renderedAudioBuffer) {
+    // audio mode must stay on the single pre-rendered buffer path. Falling
+    // through to scheduleTimelineEvents (e.g. after clearPlaybackCaches left
+    // renderedAudioBuffer null) is both heavy and sonically wrong.
+    if (this.cacheMode === "audio") {
+      if (!this.renderedAudioBuffer) {
+        await this.render();
+      }
+      if (!this.renderedAudioBuffer) {
+        throw new Error(
+          'cacheMode="audio": render produced no AudioBuffer ' +
+            `(timeline=${this.timeline.length} totalTime=${this.totalTime})`,
+        );
+      }
       return await this.playAudioBuffer();
     }
     const paused = this.isPaused;
@@ -4046,16 +4092,36 @@ export class Player<
       return;
     }
     this.resumeTime = 0;
+    const isAudioMode = this.cacheMode === "audio";
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
+    // Samples must be present before an audio-mode bake (MIDIPlayer loads SF
+    // immediately before start()).
     if (preload) await this.preloadSamples();
     // Hit/miss rates for this play (including prewarm). Counters survive
     // end-of-song map clears so the post-play log remains meaningful.
     this.resetNoteCacheHitStats();
-    // Pre-start bake order (shared head window = prerollSec when tiled):
-    //   1) simple-note keys (this prewarm) — cheap, reusable PCM
-    //   2) tiled preroll in playNotes() — mixes those keys into head tiles
-    // Keeps early tiles on BufferSource hits instead of blocking per-note OACs.
-    if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
+    // audio: bake the whole song once samples are ready, then skip simple
+    // prewarm (that was the 3.5s "simple-prewarm" cost on shk_mid_215).
+    if (isAudioMode) {
+      if (!this.renderedAudioBuffer) {
+        if (this.debug) {
+          console.log("[midy] audio mode: baking full buffer in start()");
+        }
+        await this.render();
+      }
+      if (!this.renderedAudioBuffer) {
+        throw new Error(
+          'cacheMode="audio": render produced no AudioBuffer in start() ' +
+            `(timeline=${this.timeline.length} totalTime=${this.totalTime} ` +
+            `soundFonts=${
+              Array.isArray(this.soundFonts) ? this.soundFonts.length : 0
+            })`,
+        );
+      }
+    } else if (preload && usesSimpleComplexNoteCache(this.cacheMode)) {
+      // Pre-start bake order (shared head window = prerollSec when tiled):
+      //   1) simple-note keys (this prewarm) — cheap, reusable PCM
+      //   2) tiled preroll in playNotes() — mixes those keys into head tiles
       await this.prewarmSimpleNoteCache();
     }
     // Wall-clock start for post-play RTF (worklet-perf / chunk-perf / segment-perf).
@@ -7269,54 +7335,86 @@ export class Player<
   }
 
   async render(): Promise<AudioBuffer | undefined> {
-    if (this.isRendering) return;
+    if (this.isRendering) {
+      if (this.debug) {
+        console.warn("[midy] render() skipped: already rendering");
+      }
+      return this.renderedAudioBuffer ?? undefined;
+    }
     if (this.timeline.length === 0) return;
     if (this.voiceCounter.size === 0) this.cacheVoiceIds();
     this.isRendering = true;
     this.renderedAudioBuffer = null;
     this.dispatchEvent(new Event("rendering"));
 
-    let buffer: AudioBuffer | undefined;
-    switch (this.cacheMode) {
-      case "none":
-      case "note":
-      case "segment":
-      case "chunk":
-      case "worklet":
-        // Live: full worklet. Offline OAC: main-thread residual (AudioWorklet
-        // on OfflineAudioContext hangs in headless Chromium startRendering).
-        buffer = await this.renderWholeSongLive(this.cacheMode);
-        break;
-      case "audio":
-        // Playback-parity path: bake via the same chunk offline graph that
-        // live "chunk" mode uses, then peak-normalize once for the whole
-        // song. The older windowed renderFastMode() diverged in envelope /
-        // gain / automation handling and produced clearly different audio;
-        // keep it available for optional fast export but do not use it as
-        // the default for cacheMode === "audio".
-        buffer = await this.renderWholeSongLive("chunk");
-        if (buffer) this.peakNormalizeBuffer(buffer);
-        break;
-      default: {
-        const _exhaustive: never = this.cacheMode;
-        throw new Error(`render: unknown cacheMode ${_exhaustive}`);
+    try {
+      let buffer: AudioBuffer | undefined;
+      switch (this.cacheMode) {
+        case "none":
+        case "note":
+        case "segment":
+        case "chunk":
+        case "worklet":
+          // Live: full worklet. Offline OAC: main-thread residual (AudioWorklet
+          // on OfflineAudioContext hangs in headless Chromium startRendering).
+          buffer = await this.renderWholeSongLive(this.cacheMode);
+          break;
+        case "audio": {
+          // Prefer full-song chunk parity; fall back to windowed mix if the
+          // OfflineAudioContext path returns nothing (some environments).
+          buffer = await this.renderWholeSongLive("chunk");
+          if (!buffer) {
+            if (this.debug) {
+              console.warn(
+                "[midy] renderWholeSongLive(chunk) returned empty; trying renderFastMode",
+              );
+            }
+            buffer = await this.renderFastMode();
+          }
+          if (buffer) this.peakNormalizeBuffer(buffer);
+          break;
+        }
+        default: {
+          const _exhaustive: never = this.cacheMode;
+          throw new Error(`render: unknown cacheMode ${_exhaustive}`);
+        }
       }
-    }
 
-    this.renderedAudioBuffer = buffer ?? null;
-    this.isRendering = false;
-    this.dispatchEvent(new Event("rendered"));
-    return this.renderedAudioBuffer ?? undefined;
+      this.renderedAudioBuffer = buffer ?? null;
+      if (
+        this.cacheMode === "audio" &&
+        this.renderedAudioBuffer &&
+        this.totalTime > 0
+      ) {
+        const bufSec = this.renderedAudioBuffer.duration;
+        if (bufSec + 0.05 < this.totalTime * 0.9) {
+          console.warn(
+            `[midy] audio bake shorter than song: buffer=${
+              bufSec.toFixed(2)
+            }s ` +
+              `totalTime=${this.totalTime.toFixed(2)}s — check render path`,
+          );
+        } else if (this.debug) {
+          console.log(
+            `[midy] audio bake ok: buffer=${bufSec.toFixed(2)}s ` +
+              `totalTime=${
+                this.totalTime.toFixed(2)
+              }s frames=${this.renderedAudioBuffer.length}`,
+          );
+        }
+        // Playback only needs renderedAudioBuffer.
+        this.releaseAudioModeBakeCaches();
+      }
+      this.dispatchEvent(new Event("rendered"));
+      return this.renderedAudioBuffer ?? undefined;
+    } finally {
+      this.isRendering = false;
+    }
   }
 
-  // Optional windowed offline mix (not used by default for cacheMode
-  // "audio" anymore — render() now uses renderWholeSongLive("chunk") for
-  // playback parity). Collect every note into ChunkNoteEntry[], then bake
-  // in short time windows via renderChunkBuffer(). Faster than one giant
-  // OfflineAudioContext for the whole song because: (1) node count stays
-  // bounded per window, (2) avoids OAC graphs that can drop later notes
-  // under heavy polyphony, (3) windows mix with simple buffer addition.
-  // Call explicitly if a speed-oriented export is preferred over parity.
+  // Optional windowed offline mix (not the default for cacheMode "audio").
+  // Default audio path is renderWholeSongLive("chunk") for completeness and
+  // parity. Call this explicitly only when a speed-oriented export is preferred.
   async renderFastMode(): Promise<AudioBuffer | undefined> {
     const settings = (this.constructor as typeof Player).channelSettings;
     const numChannels = this.numChannels;

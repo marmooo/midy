@@ -1,9 +1,5 @@
-// cacheMode "audio" must match the chunk offline path (playback parity).
-//
-// Regression for: audio mode used a separate windowed renderFastMode() that
-// produced clearly different envelopes / gain / automation than live chunk.
-// render() for "audio" now bakes via renderWholeSongLive("chunk") + one
-// peakNormalize pass; residual vs chunk should stay small after gain match.
+// cacheMode "audio" must match the chunk offline path (playback parity)
+// and must not fall back to live scheduling after bake.
 //
 // Usage:
 //   deno test -A tools/compare-audio-mode_test.ts
@@ -31,7 +27,7 @@ async function renderMode(
   midiPath: string,
   cacheMode: "audio" | "chunk",
   outName: string,
-): Promise<{ mono: Float32Array; sampleRate: number }> {
+): Promise<{ mono: Float32Array; sampleRate: number; durationSec: number }> {
   const wavBytes = await renderMidyMode({
     harnessDir: HARNESS_DIR,
     midiPath,
@@ -46,7 +42,11 @@ async function renderMode(
   await Deno.writeFile(outPath, wavBytes);
   await assertNonEmptyFile(outPath);
   const wav = readWav(wavBytes);
-  return { mono: toMono(wav), sampleRate: wav.sampleRate };
+  return {
+    mono: toMono(wav),
+    sampleRate: wav.sampleRate,
+    durationSec: wav.numFrames / wav.sampleRate,
+  };
 }
 
 function assertAudioMatchesChunk(
@@ -85,12 +85,12 @@ Deno.test("audio mode matches chunk (single note)", async (t) => {
     await assertNonEmptyFile(midiPath);
   });
 
-  let chunk: { mono: Float32Array; sampleRate: number };
+  let chunk: { mono: Float32Array; sampleRate: number; durationSec: number };
   await t.step("render chunk", async () => {
     chunk = await renderMode(midiPath, "chunk", "audio-mode-single-chunk.wav");
   });
 
-  let audio: { mono: Float32Array; sampleRate: number };
+  let audio: { mono: Float32Array; sampleRate: number; durationSec: number };
   await t.step("render audio", async () => {
     audio = await renderMode(midiPath, "audio", "audio-mode-single-audio.wav");
   });
@@ -98,8 +98,14 @@ Deno.test("audio mode matches chunk (single note)", async (t) => {
   await t.step("compare audio vs chunk", () => {
     if (chunk!.sampleRate !== audio!.sampleRate) {
       throw new Error(
-        `sample rate mismatch chunk=${chunk!.sampleRate} audio=${audio!.sampleRate}`,
+        `sample rate mismatch chunk=${chunk!.sampleRate} audio=${
+          audio!.sampleRate
+        }`,
       );
+    }
+    // Both paths should produce a non-trivial buffer (not an empty/truncated bake).
+    if (audio!.durationSec < 0.2) {
+      throw new Error(`audio bake too short: ${audio!.durationSec}s`);
     }
     assertAudioMatchesChunk(
       "single-note",
@@ -125,12 +131,12 @@ Deno.test("audio mode matches chunk (melody piano)", async (t) => {
     await assertNonEmptyFile(midiPath);
   });
 
-  let chunk: { mono: Float32Array; sampleRate: number };
+  let chunk: { mono: Float32Array; sampleRate: number; durationSec: number };
   await t.step("render chunk", async () => {
     chunk = await renderMode(midiPath, "chunk", "audio-mode-melody-chunk.wav");
   });
 
-  let audio: { mono: Float32Array; sampleRate: number };
+  let audio: { mono: Float32Array; sampleRate: number; durationSec: number };
   await t.step("render audio", async () => {
     audio = await renderMode(midiPath, "audio", "audio-mode-melody-audio.wav");
   });

@@ -1635,7 +1635,26 @@ export class MidyGM2 extends Player<Note, Channel> {
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
-    if (this.cacheMode === "audio" && this.renderedAudioBuffer) {
+    // Midy / MidyGM2 override — must not fall through to the live timeline
+    // when cacheMode is "audio". That path is what makes playback heavy.
+    if (this.cacheMode === "audio") {
+      if (!this.renderedAudioBuffer) {
+        await this.render();
+      }
+      if (!this.renderedAudioBuffer) {
+        throw new Error(
+          'cacheMode="audio": render produced no AudioBuffer ' +
+            `(timeline=${this.timeline.length} totalTime=${this.totalTime})`,
+        );
+      }
+      if (this.debug) {
+        console.log(
+          `[midy] playNotes audio path | buffer=${
+            this.renderedAudioBuffer.duration.toFixed(2)
+          }s ` +
+            `totalTime=${this.totalTime.toFixed(2)}s`,
+        );
+      }
       return await this.playAudioBuffer();
     }
     const paused = this.isPaused;
