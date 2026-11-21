@@ -5916,11 +5916,42 @@ export class Player<
     this.chunkState = { openChunk: null, pending: [] };
   }
 
+  /**
+   * Abandon deferred / not-yet-baked chunk tiles. Live closeChunk() parks
+   * work on deferredChunkBakes with a Promise that only resolves when
+   * pumpDeferredChunkBakes starts the bake. At song end the play loop no
+   * longer pumps, so those Promises would hang drainChunkPipeline forever
+   * (hunter.mid / dense files with "chunk missed its scheduled start").
+   */
+  protected abandonDeferredChunkBakes(reason: string): void {
+    const deferred = this.deferredChunkBakes;
+    this.deferredChunkBakes = [];
+    if (deferred.length > 0 && this.debug) {
+      console.warn(
+        `[midy] abandon deferred chunk bakes | n=${deferred.length} (${reason})`,
+      );
+    }
+    for (let i = 0; i < deferred.length; i++) {
+      const d = deferred[i];
+      d.pending.buffer = null;
+      d.pending.bufferReady = true;
+      d.pending.done = true;
+      try {
+        d.resolve(null);
+      } catch {
+        /* already settled */
+      }
+    }
+  }
+
   async drainChunkPipeline(): Promise<void> {
     const state = this.chunkState;
     if (state.openChunk) {
       this.closeChunk(state);
     }
+    // Must run after closeChunk (which may push more deferred entries).
+    this.abandonDeferredChunkBakes("drainChunkPipeline");
+
     const pending = state.pending;
     const allBufferPromises: Promise<AudioBuffer | null>[] = new Array(
       pending.length,
@@ -5928,9 +5959,21 @@ export class Player<
     for (let i = 0; i < pending.length; i++) {
       allBufferPromises[i] = pending[i].bufferPromise;
     }
-    await Promise.allSettled(allBufferPromises);
+    // Bound the wait: a stuck bake gate must not prevent song end.
+    const timeoutMs = Math.max(1000, this.drainTimeoutMs);
+    await Promise.race([
+      Promise.allSettled(allBufferPromises),
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
     for (let i = 0; i < pending.length; i++) {
       const p = pending[i];
+      if (!p.bufferReady) {
+        // Timed out still baking — drop so waitForPendingSources can finish.
+        p.buffer = null;
+        p.bufferReady = true;
+        p.done = true;
+        continue;
+      }
       if (!p.source && p.bufferReady) {
         this.startPendingChunk(p);
       }
@@ -5943,6 +5986,8 @@ export class Player<
     // stopSegmentSources -- stale renders must not be scheduled after a
     // seek/stop/loop). Also neuter sources + drop buffer refs for iOS.
     this.chunkGeneration++;
+    // Resolve deferred park promises so nothing awaits them after stop.
+    this.abandonDeferredChunkBakes("stopChunkSources");
     const state = this.chunkState;
     const pending = state.pending;
     for (let i = 0; i < pending.length; i++) {

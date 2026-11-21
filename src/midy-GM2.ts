@@ -1723,8 +1723,12 @@ export class MidyGM2 extends Player<Note, Channel> {
             this.dispatchEvent(new Event("looped"));
             continue;
           } else {
-            if (this.cacheMode === "segment") await this.drainSegmentPipeline();
-            if (this.cacheMode === "chunk") await this.drainChunkPipeline();
+            // Force-stop tiled sources instead of drain-wait. drainChunkPipeline
+            // used to await every pending.bufferPromise; late tiles parked on
+            // deferredChunkBakes never resolve once the play loop stops pumping
+            // (dense MIDI + "chunk missed its scheduled start"), so ended never
+            // fired. Player.playNotes already uses stopTiledSources here.
+            this.stopTiledSources();
             await this.stopNotes(now);
             await this.suspendAudioContext();
             exitReason = "ended";
