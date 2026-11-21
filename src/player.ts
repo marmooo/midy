@@ -1643,7 +1643,10 @@ export class Player<
               }
               activeNotes.clear();
             }
-          } else {
+          } else if (this.sysExAffectsNoteWaveform(data)) {
+            // Only attach SysEx that can reshape sounding note PCM.
+            // Master Volume (7F 7F 04 01 …) and similar must not pollute
+            // every active note's automation list (false complex).
             const pairs = Array.from(activeNotes);
             for (let pi = 0; pi < pairs.length; pi++) {
               const entries = pairs[pi][1];
@@ -2140,13 +2143,69 @@ export class Player<
     return false;
   }
 
+  /**
+   * Whether a SysEx payload can change the PCM of notes already sounding.
+   * Used to decide complex-note classification and whether to attach the
+   * event to noteEvent.events.
+   *
+   * Hunter.mid (and many SMFs) spam Universal Real-Time Master Volume
+   * (F0 7F 7F 04 01 …). That only moves the player master GainNode; it does
+   * not require a per-note OfflineAudioContext re-bake. Treating every SysEx
+   * as complex made 98%+ of notes "onlySysEx" and caused multi-second tile
+   * bakes / end-of-song silence in chunk mode.
+   */
+  protected sysExAffectsNoteWaveform(
+    data: ArrayLike<number> | undefined | null,
+  ): boolean {
+    if (!data || data.length < 3) return false;
+    // midi-file SysEx event.data is the payload after F0 (may include F7).
+    let i = 0;
+    // Tolerate accidental leading F0.
+    if (data[0] === 0xf0) i = 1;
+    if (i + 2 >= data.length) return false;
+    const mfr = data[i];
+    // Universal Non-Real-Time (0x7E) / Real-Time (0x7F)
+    if (mfr === 0x7e || mfr === 0x7f) {
+      // data[i+1] = device id (often 0x7F broadcast)
+      const sub1 = data[i + 2];
+      const sub2 = i + 3 < data.length ? data[i + 3] : -1;
+      // Device Control (sub1=4): master volume/balance vs tuning
+      if (sub1 === 0x04) {
+        // 01 Master Volume, 02 Master Balance → global bus, not note PCM
+        if (sub2 === 0x01 || sub2 === 0x02) return false;
+        // 03/04 Master Fine/Coarse Tuning → pitch of sounding notes
+        if (sub2 === 0x03 || sub2 === 0x04) return true;
+        // 05 Global Parameter Control (reverb/chorus macro) → FX bus
+        if (sub2 === 0x05) return false;
+        return false;
+      }
+      // GM System On/Off / On2 (sub1=9 under 7E) — mode switch; duration
+      // builder handles note cuts. Does not reshape an in-flight sample.
+      if (mfr === 0x7e && sub1 === 0x09) return false;
+      // Scale/octave tuning (common under 7E/7F sub1=8)
+      if (sub1 === 0x08) return true;
+      // Controller destination / pressure / key-based instrument control
+      // (sub1 9/10 under real-time) can alter sounding notes.
+      if (mfr === 0x7f && (sub1 === 0x09 || sub1 === 0x0a)) return true;
+      // Other universal: ignore for complex classification
+      return false;
+    }
+    // Manufacturer-specific (Roland GS, Yamaha XG, …). Midy's note bake path
+    // does not re-apply arbitrary GS/XG dumps into an already-started sample;
+    // live handlers may change channel state for *future* notes. Attaching
+    // every vendor SysEx to every active note was the false-complex path.
+    // Only treat as waveform-affecting when we know it retunes/reshapes
+    // sounding notes (none identified as mandatory here).
+    return false;
+  }
+
   // Sustain (CC#64) and note-stop controllers only determine the duration,
   // which buildNoteOnDurations has already resolved. They do not alter a
   // baked waveform, so they must not force an expensive complex-note bake.
   // Volume (7) / expression (11) also no longer force complex: they are
   // handled as a per-sample gain curve on the simple TypedArray bake path
-  // ("almost simple"). Pitch bend, SysEx, pan, modulation, etc. still force
-  // the full complex Offline path.
+  // ("almost simple"). Pitch bend, pan, modulation, and *waveform* SysEx
+  // still force the full complex path; Master Volume SysEx does not.
   protected hasWaveformAutomation(noteEvent: NoteOnEventEntry): boolean {
     const events = noteEvent.events;
     for (let i = 0; i < events.length; i++) {
@@ -2155,7 +2214,10 @@ export class Player<
         if (!this.useAlmostSimplePitchBend) return true;
         continue;
       }
-      if (event.type === "sysEx") return true;
+      if (event.type === "sysEx") {
+        if (this.sysExAffectsNoteWaveform(event.data)) return true;
+        continue;
+      }
       if (event.type !== "controller") continue;
       const controller = event.controllerType ?? -1;
       if (this.isNonWaveformController(controller)) continue;
@@ -2183,7 +2245,11 @@ export class Player<
         if (!this.useAlmostSimplePitchBend) return false;
         continue;
       }
-      if (event.type === "sysEx") return false;
+      if (event.type === "sysEx") {
+        // Master volume etc. is global; do not disqualify gain-only.
+        if (this.sysExAffectsNoteWaveform(event.data)) return false;
+        continue;
+      }
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
@@ -2210,7 +2276,10 @@ export class Player<
         if (!this.useAlmostSimplePitchBend) return false;
         continue;
       }
-      if (event.type === "sysEx") return false;
+      if (event.type === "sysEx") {
+        if (this.sysExAffectsNoteWaveform(event.data)) return false;
+        continue;
+      }
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
@@ -2252,7 +2321,10 @@ export class Player<
         sawBend = true;
         continue;
       }
-      if (event.type === "sysEx") return false;
+      if (event.type === "sysEx") {
+        if (this.sysExAffectsNoteWaveform(event.data)) return false;
+        continue;
+      }
       if (event.type === "programChange") continue;
       if (event.type !== "controller") return false;
       const controller = event.controllerType ?? -1;
@@ -2370,7 +2442,7 @@ export class Player<
         continue;
       }
       if (event.type === "sysEx") {
-        sysEx = true;
+        if (this.sysExAffectsNoteWaveform(event.data)) sysEx = true;
         continue;
       }
       if (event.type === "programChange") {
@@ -3270,6 +3342,7 @@ export class Player<
         }
         case "sysEx": {
           const data = event.data as ArrayLike<number> | undefined;
+          if (!this.sysExAffectsNoteWaveform(data)) break;
           let dataStr = "";
           if (data) {
             const len = data.length;
